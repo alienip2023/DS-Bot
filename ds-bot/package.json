@@ -1,6 +1,6 @@
 {
   "name": "ds-bot",
-  "version": "0.2.7-fork.13",
+  "version": "0.2.7-fork.14",
   "description": "DS Bot: a team of long-lived Bots for DeepSeek Harness, with Main Bots, Bot-to-Bot messages and group chats",
   "keywords": [
     "dsh-plugin",
@@ -11,13 +11,13 @@
     "multi-agent",
     "agents"
   ],
-  "homepage": "https://github.com/Fei2411/DS-Bot#readme",
+  "homepage": "https://github.com/alienip2023/DS-Bot#readme",
   "bugs": {
-    "url": "https://github.com/Fei2411/DS-Bot/issues"
+    "url": "https://github.com/alienip2023/DS-Bot/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Fei2411/DS-Bot.git",
+    "url": "git+https://github.com/alienip2023/DS-Bot.git",
     "directory": "ds-bot"
   },
   "license": "Apache-2.0",

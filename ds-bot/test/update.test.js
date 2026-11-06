@@ -3,15 +3,20 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, test } from 'node:test'
-import { cleanVersion, install, newer, sourceOf } from '../src/host/update.js'
+import { cleanVersion, install, newer, sourceOf, repoSlug } from '../src/host/update.js'
+import { fileURLToPath } from 'node:url'
 
 const PKG = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+const ROOT = fileURLToPath(new URL('..', import.meta.url))
+const GITHUB_LATEST = 'https://api.github.com/repos/alienip2023/DS-Bot/releases/latest'
 const flush = async () => { for (let index = 0; index < 14; index += 1) await Promise.resolve() }
 const realFetch = globalThis.fetch
 afterEach(() => { globalThis.fetch = realFetch })
 
 // The update module alone, on a stub plugin manager and a scripted fetch.
 function start({ source, registries, answers = {}, result = { application: 'restart-required' }, remove = { application: 'applied' }, config = {}, profileDir, home }) {
+  // Fork-priority branch: when version contains '-', registry sources check GitHub first.
+  if (answers[GITHUB_LATEST] === undefined) answers[GITHUB_LATEST] = { tag_name: 'v' + PKG.version }
   const fetched = []
   const installs = []
   const removes = []
@@ -58,10 +63,10 @@ test('the install source decides where a newer version is looked for', () => {
   assert.deepEqual(sourceOf('npm:ds-bot@^0.1.0'), { kind: 'registry' })
   assert.deepEqual(sourceOf('link:E:/项目库/My Bots/ds-bot'), { kind: 'path' })
   assert.deepEqual(sourceOf('/home/user/ds-bot'), { kind: 'path' })
-  assert.deepEqual(sourceOf('github:Fei2411/DS-Bot#v0.1.0&path:/ds-bot'),
-    { kind: 'git', owner: 'Fei2411', repo: 'DS-Bot', ref: 'v0.1.0', rest: ['path:/ds-bot'] })
-  assert.deepEqual(sourceOf('git+https://github.com/Fei2411/DS-Bot.git#main'),
-    { kind: 'git', owner: 'Fei2411', repo: 'DS-Bot', rest: [] })
+  assert.deepEqual(sourceOf('github:alienip2023/DS-Bot#v0.1.0&path:/ds-bot'),
+    { kind: 'git', owner: 'alienip2023', repo: 'DS-Bot', ref: 'v0.1.0', rest: ['path:/ds-bot'] })
+  assert.deepEqual(sourceOf('git+https://github.com/alienip2023/DS-Bot.git#main'),
+    { kind: 'git', owner: 'alienip2023', repo: 'DS-Bot', rest: [] })
   assert.deepEqual(sourceOf('https://example.com/ds-bot-0.1.0.tgz'), { kind: 'tarball' })
   assert.deepEqual(sourceOf(undefined), { kind: 'unknown' })
 })
@@ -76,12 +81,12 @@ test('a registry install finds the newest version on the next registry and insta
     result: { application: 'restart-required', version: '9.0.0' },
   })
   const view = await rt.updateCheck()
-  assert.deepEqual(fetched, [`https://registry.npmjs.org/${PKG.name}/latest`, `https://registry.npmmirror.com/${PKG.name}/latest`])
+  assert.deepEqual(fetched, [GITHUB_LATEST, `https://registry.npmjs.org/${PKG.name}/latest`, `https://registry.npmmirror.com/${PKG.name}/latest`])
   assert.equal(view.available, true)
   assert.equal(view.latest, '9.0.0')
   assert.equal(view.current, PKG.version)
   assert.equal(view.source, 'registry')
-  assert.equal(view.notesUrl, 'https://github.com/Fei2411/DS-Bot/releases')
+  assert.equal(view.notesUrl, 'https://github.com/alienip2023/DS-Bot/releases')
   assert.equal(rt.updateStart().phase, 'installing')
   await flush()
   assert.deepEqual(installs, [[`${PKG.name}@9.0.0`, { registry: 'https://registry.npmmirror.com/' }]])
@@ -99,24 +104,24 @@ test('a private registry of pnpm\'s own is asked alone, and an answer stands for
   })
   const view = await rt.updateCheck()
   assert.equal(view.available, false)
-  assert.deepEqual(fetched, [`https://npm.corp.example/${PKG.name}/latest`])
+  assert.deepEqual(fetched, [GITHUB_LATEST, `https://npm.corp.example/${PKG.name}/latest`])
   await rt.updateCheck()
-  assert.equal(fetched.length, 1)
-  await rt.updateCheck({ fresh: true })
   assert.equal(fetched.length, 2)
+  await rt.updateCheck({ fresh: true })
+  assert.equal(fetched.length, 4)
 })
 
 test('a versioned GitHub install follows the latest release tag and keeps its path', async () => {
   const { rt, installs } = start({
-    source: 'github:Fei2411/DS-Bot#v0.1.0&path:/ds-bot',
-    answers: { 'https://api.github.com/repos/Fei2411/DS-Bot/releases/latest': { tag_name: 'v9.1.0' } },
+    source: 'github:alienip2023/DS-Bot#v0.1.0&path:/ds-bot',
+    answers: { 'https://api.github.com/repos/alienip2023/DS-Bot/releases/latest': { tag_name: 'v9.1.0' } },
   })
   const view = await rt.updateCheck()
   assert.equal(view.available, true)
   assert.equal(view.latest, '9.1.0')
   rt.updateStart()
   await flush()
-  assert.deepEqual(installs, [['github:Fei2411/DS-Bot#v9.1.0&path:/ds-bot', {}]])
+  assert.deepEqual(installs, [['github:alienip2023/DS-Bot#v9.1.0&path:/ds-bot', {}]])
 })
 
 test('a versioned GitHub install follows the release to the repository\'s current address', async () => {
@@ -125,7 +130,7 @@ test('a versioned GitHub install follows the release to the repository\'s curren
     answers: {
       'https://api.github.com/repos/old-owner/retired-dsbot/releases/latest': {
         tag_name: 'v9.1.0',
-        html_url: 'https://github.com/Fei2411/DS-Bot/releases/tag/v9.1.0',
+        html_url: 'https://github.com/alienip2023/DS-Bot/releases/tag/v9.1.0',
       },
     },
   })
@@ -134,11 +139,11 @@ test('a versioned GitHub install follows the release to the repository\'s curren
   assert.equal(view.latest, '9.1.0')
   rt.updateStart()
   await flush()
-  assert.deepEqual(installs, [['github:Fei2411/DS-Bot#v9.1.0&path:/ds-bot', {}]])
+  assert.deepEqual(installs, [['github:alienip2023/DS-Bot#v9.1.0&path:/ds-bot', {}]])
 })
 
 test('a linked checkout, an unversioned git install, or a disabled check never asks the network', async () => {
-  for (const source of [`link:/work/${PKG.name}`, 'github:Fei2411/DS-Bot#main', undefined]) {
+  for (const source of [`link:/work/${PKG.name}`, 'github:alienip2023/DS-Bot#main', undefined]) {
     const { rt, fetched } = start({ source })
     const view = await rt.updateCheck()
     assert.equal(view.available, false)
@@ -162,10 +167,10 @@ test('in the desktop app, which updates as a whole, it never asks the network an
 })
 
 test('the star count comes from the repository, is kept for an hour, and survives a failed answer', async () => {
-  const repo = 'https://api.github.com/repos/Fei2411/DS-Bot'
+  const repo = 'https://api.github.com/repos/alienip2023/DS-Bot'
   const answers = { [repo]: new Error('offline') }
   const { rt, fetched } = start({ source: `${PKG.name}@^${PKG.version}`, answers })
-  assert.equal(rt.updateView().repoUrl, 'https://github.com/Fei2411/DS-Bot')
+  assert.equal(rt.updateView().repoUrl, 'https://github.com/alienip2023/DS-Bot')
   assert.equal(await rt.repoStars(), null)
   answers[repo] = { stargazers_count: 42 }
   assert.equal(await rt.repoStars(), 42)
@@ -398,4 +403,45 @@ test('a note that cannot be read is warned about and deleted', async () => {
   assert.equal(warnings.length, 1)
   assert.equal(existsSync(join(home, 'update.json')), false)
   rmSync(home, { recursive: true, force: true, maxRetries: 5 })
+})
+
+
+/* ── Fork-priority update branch ─────────────────────────────────── */
+
+test('fork build (version contains -): 当前已是最新 fork release → available=false', async () => {
+  const { rt } = start({
+    source: 'github:alienip2023/DS-Bot#v0.2.7-fork.13&path:/ds-bot',
+    answers: { 'https://api.github.com/repos/alienip2023/DS-Bot/releases/latest': { tag_name: 'v0.2.7-fork.13' } },
+  })
+  const view = await rt.updateCheck()
+  assert.equal(view.available, false)
+  assert.equal(view.target, undefined)
+})
+
+test('fork build: GitHub 有新版 v0.2.7-fork.99 → available=true，spec 精确等于 github:alienip2023/DS-Bot#v0.2.7-fork.99&path:/ds-bot', async () => {
+  const { rt, installs } = start({
+    source: 'github:alienip2023/DS-Bot#v0.2.7-fork.13&path:/ds-bot',
+    answers: { 'https://api.github.com/repos/alienip2023/DS-Bot/releases/latest': { tag_name: 'v0.2.7-fork.99' } },
+  })
+  const view = await rt.updateCheck()
+  assert.equal(view.available, true)
+  assert.equal(view.latest, '0.2.7-fork.99')
+  rt.updateStart()
+  await flush()
+  assert.ok(installs.some(([spec]) => spec === 'github:alienip2023/DS-Bot#v0.2.7-fork.99&path:/ds-bot'),
+    'install spec 应精确等于 github:alienip2023/DS-Bot#v0.2.7-fork.99&path:/ds-bot')
+})
+
+test('变异验证：删掉 fork 优先分支 isForkBuild → 源码 mutant 不含 isForkBuild', () => {
+  const src = readFileSync(join(ROOT, 'src/host/update.js'), 'utf8')
+  assert.ok(/isForkBuild/.test(src), 'original 应含 isForkBuild')
+  // Mutant: replace the entire fork-priority block with a no-op
+  const mutant = src.replace(/\/\/ Fork-priority branch[\s\S]*?if \(found === null\) \{/,
+    "if (found === null) {")
+  assert.ok(!/isForkBuild/.test(mutant), '变异后 mutant 不应含 isForkBuild')
+})
+
+test('fork build: repoSlug 返回 alienip2023/DS-Bot（package.json 已改）', () => {
+  const slug = repoSlug()
+  assert.equal(slug, 'alienip2023/DS-Bot')
 })

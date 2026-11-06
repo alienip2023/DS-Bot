@@ -70,7 +70,7 @@ test('warnings are kept, cleaned, written to the log, and read back after a rest
   assert.equal(second.code, 'RATE_LIMIT')
 
   const report = await rt.diagnostics.report({ client: { surface: 'Web', language: 'zh-CN', userAgent: 'Test/1' }, clientErrors: [{ time: 1, text: 'state: HTTP 502' }] })
-  assert.match(report.markdown, /\| DS Bot \| \d+\.\d+\.\d+ \|/)
+  assert.match(report.markdown, /\| DS Bot \| \d+\.\d+\.\d+[\w.-]* \|/)
   assert.match(report.markdown, /\| Surface \| Web \|/)
   assert.match(report.markdown, /\| Models \| deepseek\/deepseek-chat \|/)
   assert.match(report.markdown, /WARN host \[EACCES\] state write failed/)
@@ -410,7 +410,7 @@ test('a turn refused for not being a model endpoint refuses that route', () => {
 
 test('issueUrl fills the issue form, keeps the versions when the errors are too long, and falls back to the clipboard', async () => {
   const { issueUrl } = await import('../src/client/diagnostics.js')
-  const base = 'https://github.com/Fei2411/DS-Bot/issues/new'
+  const base = 'https://github.com/alienip2023/DS-Bot/issues/new'
   const short = issueUrl(base, { what: 'Writer failed\nin the group', diagnostics: '| DS Bot | 0.1.0 |' })
   assert.equal(short.inline, true)
   const params = new URL(short.url).searchParams
@@ -446,4 +446,12 @@ test('a browser error is noted once, repeats are counted, and clear empties the 
   assert.deepEqual(clientErrors().map(entry => entry.text), ['state: HTTP 502 (×2)'])
   clearClientErrors()
   assert.equal(clientErrors().length, 0)
+})
+
+test('ISSUES_URL 指向 fork 仓库（alienip2023），不是上游（Fei2411）', async () => {
+  const { ISSUES_URL } = await import('../src/host/diagnostics.js')
+  assert.ok(ISSUES_URL.startsWith('https://github.com/alienip2023/DS-Bot/'),
+    `ISSUES_URL 应指向 alienip2023/DS-Bot，实际：${ISSUES_URL}`)
+  assert.ok(!ISSUES_URL.includes('Fei2411'),
+    `ISSUES_URL 不应包含 Fei2411，实际：${ISSUES_URL}`)
 })
