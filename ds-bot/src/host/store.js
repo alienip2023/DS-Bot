@@ -114,6 +114,8 @@ export function install(rt) {
     for (const key of Object.keys(state)) delete state[key]
     Object.assign(state, JSON.parse(EMPTY), parsed ?? {})
     state.prefs ??= {}
+    // Bot custom groups: must always be an object, never undefined/null.
+    if (state.groups === null || typeof state.groups !== 'object' || Array.isArray(state.groups)) state.groups = {}
     // Teams saved before the DSH Agent existed carry no `agents`; corrupt values reset.
     if (state.agents === null || typeof state.agents !== 'object' || Array.isArray(state.agents)) state.agents = {}
     let migrated = !hadCapabilities

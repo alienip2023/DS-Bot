@@ -346,7 +346,7 @@ export function install(rt) {
           if (typeof name !== 'string' || !name.trim()) return fail('Group name required', 'bot/invalid')
           if (!state.groups?.[id]) return fail('Unknown group', 'bot/not-found')
           state.groups[id].name = name.trim()
-          rt.save()
+          await rt.save()
           return ok({ groups: view().groups })
         }
         case 'toggle-bot-group': {
@@ -356,7 +356,7 @@ export function install(rt) {
           if (!state.groups) state.groups = {}
           if (!state.groups[id]) return fail('Unknown group', 'bot/not-found')
           state.groups[id].collapsed = !state.groups[id].collapsed
-          rt.save()
+          await rt.save()
           return ok({ groups: view().groups })
         }
         case 'create-bot-group': {
@@ -367,7 +367,7 @@ export function install(rt) {
           const { randomUUID } = await import('node:crypto')
           const groupId = randomUUID()
           state.groups[groupId] = { id: groupId, name: name.trim(), color: color ?? null, order: Object.keys(state.groups).length, collapsed: false, botIds: Array.isArray(botIds) ? botIds : [] }
-          rt.save()
+          await rt.save()
           return ok({ groups: view().groups })
         }
         case 'delete-bot-group': {
@@ -375,7 +375,7 @@ export function install(rt) {
           const { id } = body
           if (!state.groups?.[id]) return fail('Unknown group', 'bot/not-found')
           delete state.groups[id]
-          rt.save()
+          await rt.save()
           return ok({ groups: view().groups })
         }
         case 'move-bot-to-group': {
@@ -392,7 +392,7 @@ export function install(rt) {
           }
           // Update bot record groupId.
           if (state.bots[botId]) state.bots[botId].groupId = groupId ?? null
-          rt.save()
+          await rt.save()
           return ok({ groups: view().groups })
         }
         case 'agent-adopt':
