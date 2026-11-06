@@ -406,25 +406,26 @@ test('a note that cannot be read is warned about and deleted', async () => {
 
 /* ── Fork-priority update branch ─────────────────────────────────── */
 
-test('fork build (version contains -): registry 来源，GitHub 无新版 → available=false，且不查 registry', async () => {
-  const { rt, fetched } = start({
-    source: `${PKG.name}@${PKG.version}`,
+test('fork build: registry 来源（真实安装形态 ds-bot@0.2.7），GitHub 无新版 → available=false，installs 为空，不查 registry', async () => {
+  const { rt, fetched, installs } = start({
+    source: `${PKG.name}@0.2.7`,
     answers: {
-      // GitHub returns current version (no update)
+      // GitHub returns same version as installed (no update)
       [GITHUB_LATEST]: { tag_name: 'v' + PKG.version },
-      // Registry endpoint present but must NOT be fetched
+      // Registry endpoint present but must NOT be fetched for fork builds
       [`https://registry.npmjs.org/${PKG.name}/latest`]: { version: '0.2.7' },
     },
   })
   const view = await rt.updateCheck()
   assert.equal(view.available, false, 'no update should be available')
+  assert.deepEqual(installs, [], 'installs must be empty')
   assert.equal(fetched.some(u => u.includes('registry.npmjs.org')), false,
     'registry URL must NOT be queried for a fork build')
 })
 
-test('fork build: registry 来源，GitHub 有新版 → available=true，安装 github: spec，不查 registry', async () => {
+test('fork build: registry 来源（真实安装形态 ds-bot@0.2.7），GitHub 有新版 → available=true，安装 github: spec，不查 registry', async () => {
   const { rt, fetched, installs } = start({
-    source: `${PKG.name}@${PKG.version}`,
+    source: `${PKG.name}@0.2.7`,
     answers: {
       // GitHub has a newer release
       [GITHUB_LATEST]: { tag_name: 'v0.2.7-fork.99' },
@@ -450,7 +451,7 @@ test('变异验证：恢复 registry 回落 → fork build 查了 registry（行
   // old 'if (found === null) { ... registry ... }' fallback), this test goes red
   // because the registry URL appears in `fetched`.
   const { rt, fetched } = start({
-    source: `${PKG.name}@${PKG.version}`,
+    source: `${PKG.name}@0.2.7`,
     answers: {
       [GITHUB_LATEST]: { tag_name: 'v' + PKG.version }, // no update on GitHub
       [`https://registry.npmjs.org/${PKG.name}/latest`]: { version: '0.2.7' },
