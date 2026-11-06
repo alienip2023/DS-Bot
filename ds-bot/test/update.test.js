@@ -72,16 +72,18 @@ test('the install source decides where a newer version is looked for', () => {
 })
 
 test('a registry install finds the newest version on the next registry and installs it from there', async () => {
+  // Fork build: registry source → GitHub is checked first; newer GitHub release is used
   const { rt, fetched, installs } = start({
     source: `${PKG.name}@^${PKG.version}`,
     answers: {
-      [`https://registry.npmjs.org/${PKG.name}/latest`]: new Error('offline'),
-      [`https://registry.npmmirror.com/${PKG.name}/latest`]: { version: '9.0.0' },
+      [GITHUB_LATEST]: { tag_name: 'v9.0.0' },
+      // registry URL is present but must NOT be fetched (fork branch skips registry)
+      [`https://registry.npmjs.org/${PKG.name}/latest`]: { version: '9.0.0' },
     },
     result: { application: 'restart-required', version: '9.0.0' },
   })
   const view = await rt.updateCheck()
-  assert.deepEqual(fetched, [GITHUB_LATEST, `https://registry.npmjs.org/${PKG.name}/latest`, `https://registry.npmmirror.com/${PKG.name}/latest`])
+  assert.deepEqual(fetched, [GITHUB_LATEST])
   assert.equal(view.available, true)
   assert.equal(view.latest, '9.0.0')
   assert.equal(view.current, PKG.version)
@@ -89,7 +91,7 @@ test('a registry install finds the newest version on the next registry and insta
   assert.equal(view.notesUrl, 'https://github.com/alienip2023/DS-Bot/releases')
   assert.equal(rt.updateStart().phase, 'installing')
   await flush()
-  assert.deepEqual(installs, [[`${PKG.name}@9.0.0`, { registry: 'https://registry.npmmirror.com/' }]])
+  assert.deepEqual(installs, [['github:alienip2023/DS-Bot#v9.0.0&path:/ds-bot', {}]])
   const done = await rt.updateCheck()
   assert.equal(done.phase, 'installed')
   assert.equal(done.installed, '9.0.0')
@@ -97,18 +99,18 @@ test('a registry install finds the newest version on the next registry and insta
 })
 
 test('a private registry of pnpm\'s own is asked alone, and an answer stands for a while', async () => {
+  // Fork build: registry source → only GitHub is fetched (no registry fallback)
   const { rt, fetched } = start({
     source: `${PKG.name}@^${PKG.version}`,
-    registries: { registry: null, fallbackRegistries: ['https://registry.npmmirror.com/'], resolved: 'https://npm.corp.example/' },
-    answers: { [`https://npm.corp.example/${PKG.name}/latest`]: { version: PKG.version } },
+    // registries config is irrelevant for fork builds (registry never queried)
   })
   const view = await rt.updateCheck()
   assert.equal(view.available, false)
-  assert.deepEqual(fetched, [GITHUB_LATEST, `https://npm.corp.example/${PKG.name}/latest`])
+  assert.deepEqual(fetched, [GITHUB_LATEST])
   await rt.updateCheck()
-  assert.equal(fetched.length, 2)
+  assert.equal(fetched.length, 1)
   await rt.updateCheck({ fresh: true })
-  assert.equal(fetched.length, 4)
+  assert.equal(fetched.length, 2)
 })
 
 test('a versioned GitHub install follows the latest release tag and keeps its path', async () => {
@@ -182,9 +184,10 @@ test('the star count comes from the repository, is kept for an hour, and survive
 test('without a source from the plugin manager, the profile\'s own dependency entry decides', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'ds-bot-update-'))
   writeFileSync(join(dir, 'package.json'), JSON.stringify({ dependencies: { [PKG.name]: `^${PKG.version}` } }))
+  // Fork build: registry source in profileDir → GitHub checked first
   const { rt } = start({
     profileDir: dir,
-    answers: { [`https://registry.npmjs.org/${PKG.name}/latest`]: { version: '9.0.0' } },
+    answers: { [GITHUB_LATEST]: { tag_name: 'v9.0.0' } },
   })
   const view = await rt.updateCheck()
   assert.equal(view.source, 'registry')
@@ -198,8 +201,8 @@ test('a check that finds nothing clears the version a check before it found', as
   const dir = mkdtempSync(join(tmpdir(), 'ds-bot-update-'))
   const setSource = source => writeFileSync(join(dir, 'package.json'), JSON.stringify({ dependencies: { [PKG.name]: source } }))
   setSource(`^${PKG.version}`)
-  const latest = `https://registry.npmjs.org/${PKG.name}/latest`
-  const answers = { [latest]: { version: '9.0.0' } }
+  // Fork build: GitHub checked for registry source in profileDir
+  const answers = { [GITHUB_LATEST]: { tag_name: 'v9.0.0' } }
   const { rt } = start({ profileDir: dir, answers })
   const offered = await rt.updateCheck()
   assert.equal(offered.available, true)
@@ -210,8 +213,8 @@ test('a check that finds nothing clears the version a check before it found', as
   assert.equal(linked.available, false)
   assert.equal(linked.latest, null)
   assert.throws(() => rt.updateStart(), /No DS Bot update/)
-  // Back on the registry with no copy answering: the offer stays cleared.
-  delete answers[latest]
+  // Back on GitHub with no newer release: the offer stays cleared.
+  delete answers[GITHUB_LATEST]
   setSource(`^${PKG.version}`)
   const gone = await rt.updateCheck({ fresh: true })
   assert.equal(gone.available, false)
@@ -221,10 +224,10 @@ test('a check that finds nothing clears the version a check before it found', as
 
 test('a failed install reports why and can be tried again', async () => {
   let attempt = 0
+  // Fork build: GitHub release used as install spec
   const { rt, installs } = start({
     source: `${PKG.name}@^${PKG.version}`,
-    config: { updateRegistry: 'https://registry.example' },
-    answers: { [`https://registry.example/${PKG.name}/latest`]: { version: '9.0.0' } },
+    answers: { [GITHUB_LATEST]: { tag_name: 'v9.0.0' } },
     result: () => (++attempt === 1
       ? { application: 'failed', error: { code: 'incompatible-version', diagnostic: 'needs a newer DSH' } }
       : { application: 'restart-required', version: '9.0.0' }),
@@ -240,13 +243,13 @@ test('a failed install reports why and can be tried again', async () => {
   await flush()
   assert.equal((await rt.updateCheck()).phase, 'installed')
   assert.equal(installs.length, 2)
-  assert.deepEqual(installs[0][1], { registry: 'https://registry.example/' })
+  assert.deepEqual(installs[0], ['github:alienip2023/DS-Bot#v9.0.0&path:/ds-bot', {}])
 })
 
 // Under HMR the manager refuses a spec the profile already depends on with
 // 'already-installed'; the update then removes the bundle and installs it again,
 // leaving a note at <home>/update.json for the start that reloads the new copy.
-const NOTE = `${PKG.name}@9.0.0`
+const NOTE = 'github:alienip2023/DS-Bot#v9.0.0&path:/ds-bot'
 const newHome = () => mkdtempSync(join(tmpdir(), 'ds-bot-update-home-'))
 const noteIn = home => JSON.parse(readFileSync(join(home, 'update.json'), 'utf8'))
 
@@ -254,8 +257,7 @@ test('a plain refusal or success needs no removal and writes no note', async () 
   const home = newHome()
   const { rt, installs, removes } = start({
     source: `${PKG.name}@^${PKG.version}`,
-    config: { updateRegistry: 'https://registry.example' },
-    answers: { [`https://registry.example/${PKG.name}/latest`]: { version: '9.0.0' } },
+    answers: { [GITHUB_LATEST]: { tag_name: 'v9.0.0' } },
     result: { application: 'restart-required', version: '9.0.0' },
     home,
   })
@@ -274,8 +276,7 @@ test('an already-installed refusal removes the bundle, reinstalls and leaves a n
   const calls = []
   const { rt, installs, removes } = start({
     source: `${PKG.name}@^${PKG.version}`,
-    config: { updateRegistry: 'https://registry.example' },
-    answers: { [`https://registry.example/${PKG.name}/latest`]: { version: '9.0.0' } },
+    answers: { [GITHUB_LATEST]: { tag_name: 'v9.0.0' } },
     result: (count) => {
       calls.push(`install${count}`)
       return count === 1 ? { error: { code: 'already-installed' } } : { application: 'applied', version: '9.0.0' }
@@ -287,7 +288,7 @@ test('an already-installed refusal removes the bundle, reinstalls and leaves a n
   rt.updateStart()
   await flush()
   assert.deepEqual(calls, ['install1', 'install2'])
-  assert.deepEqual(installs, [[NOTE, { registry: 'https://registry.example/' }], [NOTE, { registry: 'https://registry.example/' }]])
+  assert.deepEqual(installs, [[NOTE, {}], [NOTE, {}]])
   assert.deepEqual(removes, [PKG.name])
   // The note was written before the removal — and still carries no error on success.
   const note = noteIn(home)
@@ -304,8 +305,7 @@ test('a failed removal fails the update without a second install', async () => {
   const home = newHome()
   const { rt, installs, removes } = start({
     source: `${PKG.name}@^${PKG.version}`,
-    config: { updateRegistry: 'https://registry.example' },
-    answers: { [`https://registry.example/${PKG.name}/latest`]: { version: '9.0.0' } },
+    answers: { [GITHUB_LATEST]: { tag_name: 'v9.0.0' } },
     result: count => (count === 1 ? { error: { code: 'already-installed' } } : { application: 'applied', version: '9.0.0' }),
     remove: { error: { code: 'bundle-in-use' } },
     home,
@@ -326,8 +326,7 @@ test('a failed reinstall writes its reason into the note', async () => {
   const home = newHome()
   const { rt } = start({
     source: `${PKG.name}@^${PKG.version}`,
-    config: { updateRegistry: 'https://registry.example' },
-    answers: { [`https://registry.example/${PKG.name}/latest`]: { version: '9.0.0' } },
+    answers: { [GITHUB_LATEST]: { tag_name: 'v9.0.0' } },
     result: count => (count === 1 ? { error: { code: 'already-installed' } } : { error: { code: 'operation-error', diagnostic: 'pnpm: tarball 500' } }),
     home,
   })
@@ -345,8 +344,7 @@ test('a reinstall refused by an application state also puts the old version back
   const home = newHome()
   const { rt, installs } = start({
     source: `${PKG.name}@^${PKG.version}`,
-    config: { updateRegistry: 'https://registry.example' },
-    answers: { [`https://registry.example/${PKG.name}/latest`]: { version: '9.0.0' } },
+    answers: { [GITHUB_LATEST]: { tag_name: 'v9.0.0' } },
     result: count => (count === 1 ? { error: { code: 'already-installed' } } : count === 2 ? { application: 'failed' } : { application: 'applied', version: PKG.version }),
     home,
   })
@@ -408,37 +406,59 @@ test('a note that cannot be read is warned about and deleted', async () => {
 
 /* ── Fork-priority update branch ─────────────────────────────────── */
 
-test('fork build (version contains -): 当前已是最新 fork release → available=false', async () => {
-  const { rt } = start({
-    source: 'github:alienip2023/DS-Bot#v0.2.7-fork.13&path:/ds-bot',
-    answers: { 'https://api.github.com/repos/alienip2023/DS-Bot/releases/latest': { tag_name: 'v0.2.7-fork.13' } },
+test('fork build (version contains -): registry 来源，GitHub 无新版 → available=false，且不查 registry', async () => {
+  const { rt, fetched } = start({
+    source: `${PKG.name}@${PKG.version}`,
+    answers: {
+      // GitHub returns current version (no update)
+      [GITHUB_LATEST]: { tag_name: 'v' + PKG.version },
+      // Registry endpoint present but must NOT be fetched
+      [`https://registry.npmjs.org/${PKG.name}/latest`]: { version: '0.2.7' },
+    },
   })
   const view = await rt.updateCheck()
-  assert.equal(view.available, false)
-  assert.equal(view.target, undefined)
+  assert.equal(view.available, false, 'no update should be available')
+  assert.equal(fetched.some(u => u.includes('registry.npmjs.org')), false,
+    'registry URL must NOT be queried for a fork build')
 })
 
-test('fork build: GitHub 有新版 v0.2.7-fork.99 → available=true，spec 精确等于 github:alienip2023/DS-Bot#v0.2.7-fork.99&path:/ds-bot', async () => {
-  const { rt, installs } = start({
-    source: 'github:alienip2023/DS-Bot#v0.2.7-fork.13&path:/ds-bot',
-    answers: { 'https://api.github.com/repos/alienip2023/DS-Bot/releases/latest': { tag_name: 'v0.2.7-fork.99' } },
+test('fork build: registry 来源，GitHub 有新版 → available=true，安装 github: spec，不查 registry', async () => {
+  const { rt, fetched, installs } = start({
+    source: `${PKG.name}@${PKG.version}`,
+    answers: {
+      // GitHub has a newer release
+      [GITHUB_LATEST]: { tag_name: 'v0.2.7-fork.99' },
+      // Registry endpoint present but must NOT be fetched
+      [`https://registry.npmjs.org/${PKG.name}/latest`]: { version: '0.2.7' },
+    },
+    result: { application: 'restart-required', version: '0.2.7-fork.99' },
   })
   const view = await rt.updateCheck()
   assert.equal(view.available, true)
   assert.equal(view.latest, '0.2.7-fork.99')
+  assert.equal(fetched.some(u => u.includes('registry.npmjs.org')), false,
+    'registry URL must NOT be queried for a fork build')
   rt.updateStart()
   await flush()
   assert.ok(installs.some(([spec]) => spec === 'github:alienip2023/DS-Bot#v0.2.7-fork.99&path:/ds-bot'),
     'install spec 应精确等于 github:alienip2023/DS-Bot#v0.2.7-fork.99&path:/ds-bot')
 })
 
-test('变异验证：删掉 fork 优先分支 isForkBuild → 源码 mutant 不含 isForkBuild', () => {
-  const src = readFileSync(join(ROOT, 'src/host/update.js'), 'utf8')
-  assert.ok(/isForkBuild/.test(src), 'original 应含 isForkBuild')
-  // Mutant: replace the entire fork-priority block with a no-op
-  const mutant = src.replace(/\/\/ Fork-priority branch[\s\S]*?if \(found === null\) \{/,
-    "if (found === null) {")
-  assert.ok(!/isForkBuild/.test(mutant), '变异后 mutant 不应含 isForkBuild')
+test('变异验证：恢复 registry 回落 → fork build 查了 registry（行为变异）', async () => {
+  // Behavioral mutation test: with the real code, a fork build must NOT query
+  // the registry endpoint. If the 'else if' guard is removed (restoring the
+  // old 'if (found === null) { ... registry ... }' fallback), this test goes red
+  // because the registry URL appears in `fetched`.
+  const { rt, fetched } = start({
+    source: `${PKG.name}@${PKG.version}`,
+    answers: {
+      [GITHUB_LATEST]: { tag_name: 'v' + PKG.version }, // no update on GitHub
+      [`https://registry.npmjs.org/${PKG.name}/latest`]: { version: '0.2.7' },
+    },
+  })
+  await rt.updateCheck()
+  assert.equal(fetched.some(u => u.includes('registry.npmjs.org')), false,
+    'fork build must not query registry — if this fails, the else-if guard was removed (mutation detected)')
 })
 
 test('fork build: repoSlug 返回 alienip2023/DS-Bot（package.json 已改）', () => {

@@ -200,8 +200,8 @@ export function install(rt) {
     let found = null
     try {
       // Fork-priority branch: for registry installs with pre-release versions,
-      // check GitHub releases first. If GitHub has a newer release, use it
-      // (install spec is a github: URL, not an npm spec).
+      // ONLY check GitHub releases — never fall back to registry.
+      // A fork build must not be offered the upstream npm release.
       const slug = repoSlug()
       const isForkBuild = typeof PKG.version === 'string' && PKG.version.includes('-')
       if (source.kind === 'registry' && isForkBuild && slug) {
@@ -209,14 +209,11 @@ export function install(rt) {
         const forkSource = { kind: 'git', owner: parts[0], repo: parts[1], ref: '', rest: [`path:/${PKG.repository?.directory ?? 'ds-bot'}`] }
         const ghFound = await newestFromGitHub(forkSource)
         if (ghFound !== null && newer(ghFound.version, PKG.version)) found = ghFound
-      }
-      // Normal path (also fallback when fork-priority found nothing newer on GitHub)
-      if (found === null) {
-        if (source.kind === 'registry') {
-          found = await newestFromRegistry()
-        } else if (source.kind === 'git') {
-          found = await newestFromGitHub(source)
-        }
+        // No registry fallback: found stays null if GitHub has nothing newer
+      } else if (source.kind === 'registry') {
+        found = await newestFromRegistry()
+      } else if (source.kind === 'git') {
+        found = await newestFromGitHub(source)
       }
     } catch (error) {
       rt.warn('ds-bot: update check failed: %s', error?.message ?? error)
