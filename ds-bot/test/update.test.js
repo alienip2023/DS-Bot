@@ -447,21 +447,21 @@ test('fork build: registry 来源（真实安装形态 ds-bot@0.2.7），GitHub 
     source: `${PKG.name}@0.2.7`,
     answers: {
       // GitHub has a newer release
-      [GITHUB_LATEST]: { tag_name: 'v0.3.0-fork.99' },
+      [GITHUB_LATEST]: { tag_name: 'v0.3.1-fork.99' },
       // Registry endpoint present but must NOT be fetched
       [`https://registry.npmjs.org/${PKG.name}/latest`]: { version: '0.2.7' },
     },
-    result: { application: 'restart-required', version: '0.3.0-fork.99' },
+    result: { application: 'restart-required', version: '0.3.1-fork.99' },
   })
   const view = await rt.updateCheck()
   assert.equal(view.available, true)
-  assert.equal(view.latest, '0.3.0-fork.99')
+  assert.equal(view.latest, '0.3.1-fork.99')
   assert.equal(fetched.some(u => u.includes('registry.npmjs.org')), false,
     'registry URL must NOT be queried for a fork build')
   rt.updateStart()
   await flush()
-  assert.ok(installs.some(([spec]) => spec === 'github:alienip2023/DS-Bot#v0.3.0-fork.99&path:/ds-bot'),
-    'install spec 应精确等于 github:alienip2023/DS-Bot#v0.3.0-fork.99&path:/ds-bot')
+  assert.ok(installs.some(([spec]) => spec === 'github:alienip2023/DS-Bot#v0.3.1-fork.99&path:/ds-bot'),
+    'install spec 应精确等于 github:alienip2023/DS-Bot#v0.3.1-fork.99&path:/ds-bot')
 })
 
 test('变异验证：恢复 registry 回落 → fork build 查了 registry（行为变异）', async () => {
