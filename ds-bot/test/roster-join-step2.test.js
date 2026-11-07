@@ -1,9 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import { shadowId } from '../src/host/roster-join.js'
 import { handleJoinedTurn, createBotTurnReceiver, install, BRIDGE_DOWN_TEXT } from '../src/host/joined-turn.js'
 import { install as installDelivery } from '../src/host/delivery.js'
+import { install as installTurns } from '../src/host/turns.js'
 
 function shadowFor(nodeId, remoteBotId) {
   const id = shadowId(nodeId, remoteBotId)
@@ -57,13 +57,28 @@ function controller(nodeId = 'node-a', remoteBotId = 'alpha') {
 }
 
 test('a joined shadow sends bot/turn and does not start an agent task', async () => {
-  const turns = readFileSync(new URL('../src/host/turns.js', import.meta.url), 'utf8')
-  const delivery = readFileSync(new URL('../src/host/delivery.js', import.meta.url), 'utf8')
-  assert.match(turns, /return rt\.handleJoinedTurn\(\{ fromId, toId, text: text \?\? '', role, exchangeId, replyTo, work \}\)/)
-  assert.match(turns, /return \{ ok: false, error: 'joined shadow cannot dispatch' \}/)
-  assert.match(delivery, /return rt\.handleJoinedTurn\(\{ fromId, toId, text, role, exchangeId, replyTo, work \}\)/)
-
   const { rt, shadow, reg, dispatched, replies } = controller()
+  rt.ctx.on = () => {}
+  const routedCalls = []
+  rt.handleJoinedTurn = (msg) => {
+    routedCalls.push(msg)
+    return 'routed'
+  }
+  installTurns(rt)
+  const routed = await rt.deliver({
+    fromId: 'local',
+    toId: shadow.id,
+    text: 'go',
+    role: 'request',
+    exchangeId: 'ex-1',
+  })
+  assert.equal(routed, 'routed')
+  assert.equal(routedCalls.length, 1)
+  assert.equal(routedCalls[0].toId, shadow.id)
+  assert.equal(routedCalls[0].role, 'request')
+  assert.equal(routedCalls[0].exchangeId, 'ex-1')
+  assert.deepEqual(dispatched, [])
+
   const result = await handleJoinedTurn(rt, {
     fromId: 'local',
     toId: shadow.id,
