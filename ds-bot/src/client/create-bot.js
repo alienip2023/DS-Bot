@@ -1,4 +1,4 @@
-import { createElement as h, useEffect, useRef, useState } from 'react'
+import { createElement as h, useEffect, useRef, useState, useCallback } from 'react'
 import { BotMark } from './mark.js'
 import { CharacterGrid } from './bot-settings.js'
 import { AvatarLibraryPanel, avatarImage } from './avatar-library.js'
@@ -33,20 +33,38 @@ export function CreateBot({ roster, actions, start, brief = '', onBack, canGoBac
   const [workerToken, setWorkerToken] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  // Remote node selection: '' = local machine, nodeId = create on that node
+  const [targetNodeId, setTargetNodeId] = useState('')
+  const [remoteNodes, setRemoteNodes] = useState([])
   const fileRef = useRef(null)
   const frame = useRef(null)
   useEscape(onBack)
   // Inside Settings the form opens below other sections, so it scrolls itself into view.
   useEffect(() => { if (inline) frame.current?.scrollIntoView({ block: 'start', behavior: 'smooth' }) }, [])
+  // Fetch online nodes so the user can pick a machine.
+  useEffect(() => {
+    let cancelled = false
+    actions.botCreateTargets?.().then(res => {
+      if (!cancelled && Array.isArray(res?.value)) setRemoteNodes(res.value)
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [])
   const fallbackName = freshBotName(roster, t('New Bot'))
   const finalName = name.trim() || fallbackName
   const clash = roster.bots.some(bot => bot.name.toLowerCase() === finalName.toLowerCase())
   const problem = nameProblem(finalName)
+  // When a remote node is selected, skip the worker-bot form fields entirely.
+  const isRemoteNode = targetNodeId !== ''
   const create = async () => {
     if (busy || clash || problem) return
     setError('')
     setBusy(true)
     try {
+      if (isRemoteNode) {
+        const result = await actions.createBot({ nodeId: targetNodeId, name: finalName, role: '' })
+        onCreated(result?.value ?? result)
+        return
+      }
       const extra = botType === 'remote-worker'
         ? { type: 'remote-worker', worker: { hubUrl: hubUrl.trim() || undefined, remotePort: remotePort ? Number(remotePort) : undefined, token: workerToken.trim() || undefined } }
         : {}
@@ -101,7 +119,21 @@ export function CreateBot({ roster, actions, start, brief = '', onBack, canGoBac
         : (roster.models ?? []).length > 0
           ? t('Pick a model here, or the Bot asks for one in its chat.')
           : t('Add a provider and a model in DeepSeek Harness first, or pick one in the Bot\'s chat later.'))),
-    h('div', { className: 'bt-field' },
+    remoteNodes.length > 0
+      ? h('div', { className: 'bt-field' },
+          h('span', { className: 'bt-field-label' }, t('Machine')),
+          h('select', {
+            className: 'bt-input', value: targetNodeId,
+            onChange: e => setTargetNodeId(e.target.value),
+            'aria-label': t('Machine'),
+          },
+            h('option', { value: '' }, t('This machine')),
+            remoteNodes.map(n => h('option', { key: n.nodeId, value: n.nodeId }, n.hostname ?? n.nodeId))),
+          h('span', { className: 'bt-note' }, targetNodeId
+            ? t('The Bot will be created on the selected remote machine.')
+            : t('Create the Bot on this machine, or pick a connected remote machine.')))
+      : null,
+    !isRemoteNode ? h('div', { className: 'bt-field' },
       h('span', { className: 'bt-field-label' }, t('Type')),
       h('select', {
         className: 'bt-input', value: botType,
@@ -112,8 +144,8 @@ export function CreateBot({ roster, actions, start, brief = '', onBack, canGoBac
         h('option', { value: 'remote-worker' }, t('Worker Bot (Remote Machine)'))),
       h('span', { className: 'bt-note' }, botType === 'remote-worker'
         ? t('A Worker Bot runs tasks on a remote machine via dsh-remote-agent.')
-        : t('A normal Bot runs in this DeepSeek Harness instance.'))),
-    h('div', { className: 'bt-field' },
+        : t('A normal Bot runs in this DeepSeek Harness instance.'))) : null,
+    !isRemoteNode ? h('div', { className: 'bt-field' },
       h('span', { className: 'bt-field-label' }, t('Memory Backend')),
       h('select', {
         className: 'bt-input', value: memoryBackend,
@@ -124,8 +156,8 @@ export function CreateBot({ roster, actions, start, brief = '', onBack, canGoBac
         h('option', { value: 'mneme' }, t('dsh-mneme (Force)')),
         h('option', { value: 'file' }, t('File Memory (Force)')),
         h('option', { value: 'none' }, t('Disabled'))),
-      h('span', { className: 'bt-note' }, t('Where this Bot keeps its memory. Auto Detect uses dsh-mneme when it is installed.'))),
-    botType === 'remote-worker' ? h('div', null,
+      h('span', { className: 'bt-note' }, t('Where this Bot keeps its memory. Auto Detect uses dsh-mneme when it is installed.'))) : null,
+    !isRemoteNode && botType === 'remote-worker' ? h('div', null,
       h('label', { className: 'bt-field' },
         h('span', { className: 'bt-field-label' }, t('Hub URL')),
         h('input', { className: 'bt-input', value: hubUrl, placeholder: 'https://hub.example.com', 'aria-label': t('Hub URL'), onChange: e => setHubUrl(e.target.value) }),

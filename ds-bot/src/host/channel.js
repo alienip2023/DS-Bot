@@ -282,9 +282,26 @@ export function install(rt) {
           return ok([...rt.roomProgress.entries()].filter(([, entry]) => entry.roomId === (room?.id ?? body.roomId)).map(([callId, entry]) => ({ callId, replies: entry.replies, speaking: entry.slots.filter(slot => slot.status === 'speaking').map(slot => slot.id) })))
         }
         case 'create-bot': {
+          if (body.nodeId) {
+            await rt.load()
+            const result = await rt.createBotOnNode({ nodeId: body.nodeId, name: body.name, role: body.role })
+            if (!result.ok) return fail(result.error, 'bot/refused')
+            return ok(result)
+          }
           await rt.bootstrap()
           const bot = await rt.createBot({ name: body.name, role: body.role, color: body.color, instructions: body.instructions, brief: body.brief, avatar: body.avatar, model: body.model, effort: body.effort, workDir: body.workDir, type: body.type, worker: body.worker, memoryConfig: body.memoryConfig })
           return ok(bot)
+        }
+        case 'bot-create-targets': {
+          await rt.load()
+          let nodes = []
+          try {
+            const registry = rt.ctx?.get?.('remote-agent:registry')
+            if (registry && typeof registry.onlineNodes === 'function') {
+              nodes = registry.onlineNodes().map(n => ({ nodeId: n.nodeId, hostname: n.hostname ?? n.nodeId, online: true }))
+            }
+          } catch { /* registry plugin absent */ }
+          return ok(nodes)
         }
         case 'update-bot':
           await rt.load()

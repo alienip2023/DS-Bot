@@ -2086,6 +2086,7 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
       ui2.set((state) => ({ ...state, newChat: null, exchange: null, details: state.newChat || state.exchange ? state.details : null }));
     },
     createBot: (payload) => after(call2("create-bot", payload)),
+    botCreateTargets: () => call2("bot-create-targets", {}),
     // The avatar library: photos the user imported once, kept by the host.
     avatarLibrary: (options = {}) => call2("avatar-library", options),
     importAvatars: (items) => call2("avatar-import", { items }),
@@ -6131,7 +6132,7 @@ var COMPUTER_CSS = `
 .bt-cstep-shot-open img{max-height:280px;max-width:480px}
 `;
 
-// node_modules/deep-view/src/react/ui.js
+// ../../../../../../../../../../../private/tmp/ds-bot/ds-bot/node_modules/deep-view/src/react/ui.js
 var import_react12 = require("react");
 var FallbackMarkdown = ({ text }) => (0, import_react12.createElement)("span", null, String(text ?? ""));
 var ViewUi = (0, import_react12.createContext)({ t: (key) => key, Markdown: FallbackMarkdown });
@@ -6198,7 +6199,7 @@ function useOptionKeys2(count, onPick, ownRef) {
   return count > 0 && listening <= 1;
 }
 
-// node_modules/deep-view/src/core/formula.js
+// ../../../../../../../../../../../private/tmp/ds-bot/ds-bot/node_modules/deep-view/src/core/formula.js
 var FUNCTIONS = {
   min: { args: [1, Infinity], run: (...values) => Math.min(...values.map(num)) },
   max: { args: [1, Infinity], run: (...values) => Math.max(...values.map(num)) },
@@ -6479,7 +6480,7 @@ function evaluate(tree, lookup) {
   }
 }
 
-// node_modules/deep-view/src/core/views.js
+// ../../../../../../../../../../../private/tmp/ds-bot/ds-bot/node_modules/deep-view/src/core/views.js
 var LAYOUT = ["stack", "row"];
 var DISPLAY = ["text", "metric", "table", "chart", "progress", "callout", "sources", "html"];
 var INPUT_TYPES = ["slider", "choice", "toggle", "number"];
@@ -7111,7 +7112,7 @@ function validateForm(node, values) {
   return { fields };
 }
 
-// node_modules/deep-view/src/react/chart.js
+// ../../../../../../../../../../../private/tmp/ds-bot/ds-bot/node_modules/deep-view/src/react/chart.js
 var import_react13 = require("react");
 var PALETTE = ["var(--dv-accent)", "var(--dv-ink-tangerine)", "var(--dv-ink-green)", "var(--dv-ink-violet)", "var(--dv-ink-sky)", "var(--dv-ink-rose)", "var(--dv-ink-yellow)", "var(--dv-ink-cyan)", "var(--dv-ink-magenta)"];
 var colorAt = (index) => PALETTE[index % PALETTE.length];
@@ -7550,7 +7551,7 @@ var CHART_CSS = `
 @media (prefers-reduced-motion:reduce){.dv-chart-mark,.dv-chart-dot{transition:none}.dv-chart-tip{animation:none}}
 `;
 
-// node_modules/deep-view/src/react/frame.js
+// ../../../../../../../../../../../private/tmp/ds-bot/ds-bot/node_modules/deep-view/src/react/frame.js
 var import_react14 = require("react");
 var THEME_VARS = [
   ["--view-ink", "--bt-ink", "--dv-ink"],
@@ -7632,7 +7633,7 @@ var HTML_CSS = `
 .dv-view-frame-stopped{margin:0;font-size:13px;line-height:18px;color:var(--dv-ink-2)}
 `;
 
-// node_modules/deep-view/src/react/card.js
+// ../../../../../../../../../../../private/tmp/ds-bot/ds-bot/node_modules/deep-view/src/react/card.js
 var import_react15 = require("react");
 var mdLabels = (ui2) => ({ code: { copyLabel: ui2.t("Copy"), copiedLabel: ui2.t("Copied") }, footnotes: ui2.t("Footnotes") });
 var TONES2 = ["good", "warn", "bad"];
@@ -8374,7 +8375,7 @@ ${CHART_CSS}
 ${HTML_CSS}
 `;
 
-// node_modules/deep-view/src/react/styles.js
+// ../../../../../../../../../../../private/tmp/ds-bot/ds-bot/node_modules/deep-view/src/react/styles.js
 var THEME_CSS = `
 body{
 --dv-ink:var(--dsw-alias-label-primary);
@@ -8472,10 +8473,10 @@ button.dv-q-opt:active{background:var(--dv-active)}
 @media (prefers-reduced-motion:reduce){.dv-q,.dv-view-bare,.dv-q-submit,.dv-menu,.dv-q-check{animation:none}}
 `;
 
-// node_modules/deep-view/src/react/index.js
+// ../../../../../../../../../../../private/tmp/ds-bot/ds-bot/node_modules/deep-view/src/react/index.js
 var DEEP_VIEW_CSS = THEME_CSS + QUESTION_CSS + WIDGET_CSS;
 
-// node_modules/deep-view/src/core/reply.js
+// ../../../../../../../../../../../private/tmp/ds-bot/ds-bot/node_modules/deep-view/src/core/reply.js
 var REPLY_KIND = "user-question-reply";
 var REPLY_SOURCE_KIND = "deep-view-reply";
 function viewCardText(args) {
@@ -17763,21 +17764,39 @@ function CreateBot({ roster, actions, start, brief = "", onBack, canGoBack, onCr
   const [workerToken, setWorkerToken] = (0, import_react39.useState)("");
   const [busy, setBusy] = (0, import_react39.useState)(false);
   const [error, setError] = (0, import_react39.useState)("");
+  const [targetNodeId, setTargetNodeId] = (0, import_react39.useState)("");
+  const [remoteNodes, setRemoteNodes] = (0, import_react39.useState)([]);
   const fileRef = (0, import_react39.useRef)(null);
   const frame = (0, import_react39.useRef)(null);
   useEscape(onBack);
   (0, import_react39.useEffect)(() => {
     if (inline) frame.current?.scrollIntoView({ block: "start", behavior: "smooth" });
   }, []);
+  (0, import_react39.useEffect)(() => {
+    let cancelled = false;
+    actions.botCreateTargets?.().then((res) => {
+      if (!cancelled && Array.isArray(res?.value)) setRemoteNodes(res.value);
+    }).catch(() => {
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const fallbackName = freshBotName(roster, t("New Bot"));
   const finalName = name.trim() || fallbackName;
   const clash = roster.bots.some((bot) => bot.name.toLowerCase() === finalName.toLowerCase());
   const problem = nameProblem(finalName);
+  const isRemoteNode = targetNodeId !== "";
   const create = async () => {
     if (busy || clash || problem) return;
     setError("");
     setBusy(true);
     try {
+      if (isRemoteNode) {
+        const result = await actions.createBot({ nodeId: targetNodeId, name: finalName, role: "" });
+        onCreated(result?.value ?? result);
+        return;
+      }
       const extra = botType === "remote-worker" ? { type: "remote-worker", worker: { hubUrl: hubUrl.trim() || void 0, remotePort: remotePort ? Number(remotePort) : void 0, token: workerToken.trim() || void 0 } } : {};
       const bot = await actions.createBot({ ...createPayload({ name: finalName, look, image, model, effort, brief }), memoryConfig: { backend: memoryBackend }, ...extra });
       onCreated(bot);
@@ -17875,7 +17894,24 @@ function CreateBot({ roster, actions, start, brief = "", onBack, canGoBack, onCr
       }, onPickEffort: (picked) => setEffort(picked ?? null) }),
       (0, import_react39.createElement)("span", { className: "bt-note" }, model ? t("The Bot runs on this model. You can change it later in its details.") : (roster.models ?? []).length > 0 ? t("Pick a model here, or the Bot asks for one in its chat.") : t("Add a provider and a model in DeepSeek Harness first, or pick one in the Bot's chat later."))
     ),
-    (0, import_react39.createElement)(
+    remoteNodes.length > 0 ? (0, import_react39.createElement)(
+      "div",
+      { className: "bt-field" },
+      (0, import_react39.createElement)("span", { className: "bt-field-label" }, t("Machine")),
+      (0, import_react39.createElement)(
+        "select",
+        {
+          className: "bt-input",
+          value: targetNodeId,
+          onChange: (e) => setTargetNodeId(e.target.value),
+          "aria-label": t("Machine")
+        },
+        (0, import_react39.createElement)("option", { value: "" }, t("This machine")),
+        remoteNodes.map((n) => (0, import_react39.createElement)("option", { key: n.nodeId, value: n.nodeId }, n.hostname ?? n.nodeId))
+      ),
+      (0, import_react39.createElement)("span", { className: "bt-note" }, targetNodeId ? t("The Bot will be created on the selected remote machine.") : t("Create the Bot on this machine, or pick a connected remote machine."))
+    ) : null,
+    !isRemoteNode ? (0, import_react39.createElement)(
       "div",
       { className: "bt-field" },
       (0, import_react39.createElement)("span", { className: "bt-field-label" }, t("Type")),
@@ -17891,8 +17927,8 @@ function CreateBot({ roster, actions, start, brief = "", onBack, canGoBack, onCr
         (0, import_react39.createElement)("option", { value: "remote-worker" }, t("Worker Bot (Remote Machine)"))
       ),
       (0, import_react39.createElement)("span", { className: "bt-note" }, botType === "remote-worker" ? t("A Worker Bot runs tasks on a remote machine via dsh-remote-agent.") : t("A normal Bot runs in this DeepSeek Harness instance."))
-    ),
-    (0, import_react39.createElement)(
+    ) : null,
+    !isRemoteNode ? (0, import_react39.createElement)(
       "div",
       { className: "bt-field" },
       (0, import_react39.createElement)("span", { className: "bt-field-label" }, t("Memory Backend")),
@@ -17910,8 +17946,8 @@ function CreateBot({ roster, actions, start, brief = "", onBack, canGoBack, onCr
         (0, import_react39.createElement)("option", { value: "none" }, t("Disabled"))
       ),
       (0, import_react39.createElement)("span", { className: "bt-note" }, t("Where this Bot keeps its memory. Auto Detect uses dsh-mneme when it is installed."))
-    ),
-    botType === "remote-worker" ? (0, import_react39.createElement)(
+    ) : null,
+    !isRemoteNode && botType === "remote-worker" ? (0, import_react39.createElement)(
       "div",
       null,
       (0, import_react39.createElement)(
@@ -20297,7 +20333,7 @@ var CONNECTORS_PAGE_CSS = `
 @media (prefers-reduced-motion:reduce){.bt-app[data-fresh]::after,.bt-app[data-fresh] .bt-app-icon,.bt-app[data-fresh] .bt-app-btn-done{animation:none}}
 `;
 
-// node_modules/qrcode-generator/dist/qrcode.mjs
+// ../../../../../../../../../../../private/tmp/ds-bot/ds-bot/node_modules/qrcode-generator/dist/qrcode.mjs
 var qrcode = function(typeNumber, errorCorrectionLevel) {
   const PAD0 = 236;
   const PAD1 = 17;
