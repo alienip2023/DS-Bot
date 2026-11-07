@@ -5,15 +5,6 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { runInNewContext } from 'node:vm'
 import { build } from 'esbuild'
-import { registerHooks } from 'node:module'
-
-const stub = new URL('./roster-llm-stub.mjs', import.meta.url).href
-registerHooks({
-  resolve(specifier, context, nextResolve) {
-    if (specifier === '@deepseek-ai/dsh-llm') return { url: stub, shortCircuit: true }
-    return nextResolve(specifier, context)
-  },
-})
 
 const PLUGIN = dirname(dirname(fileURLToPath(import.meta.url)))
 

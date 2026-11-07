@@ -30,6 +30,21 @@ const findHarness = () => {
     return beside
   }
 }
+const remoteAgentRepo = () => {
+  const env = process.env.REMOTE_AGENT_REPO
+  if (typeof env === 'string' && env.trim() !== '') return resolve(env.trim())
+  const candidates = [
+    resolve(plugin, '../../dsh-remote-agent-roster-join'),
+    resolve(plugin, '../dsh-remote-agent'),
+    resolve(plugin, '../../dsh-remote-agent'),
+  ]
+  return candidates.find((dir) => existsSync(join(dir, 'lib/roster-report.js')))
+}
+const remoteAgent = remoteAgentRepo()
+if (remoteAgent && !(typeof process.env.REMOTE_AGENT_REPO === 'string' && process.env.REMOTE_AGENT_REPO.trim() !== '')) {
+  process.env.REMOTE_AGENT_REPO = remoteAgent
+}
+
 const harness = findHarness()
 // Tests that load other harness packages (jsdom) read the same checkout.
 process.env.DSH_HARNESS = harness
