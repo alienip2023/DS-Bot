@@ -1041,6 +1041,11 @@ export function install(rt) {
           const inRound = failure !== undefined && info === undefined && rt.failRoomTurn?.(id, failure) === true
           if (failure !== undefined) { if (!inRound) void rt.lateRoomFailure?.(id, info ?? {}, failure) }
           else if (reason?.kind !== 'aborted') void rt.lateRoomReply?.(id, info ?? {}, groupReply(), { shown })
+        } else if (!retry && info?.joinedTurn === true) {
+          const reply = failure !== undefined
+            ? `${name} could not answer your message: its model call failed (${failureLine(failure)}).`
+            : replyText()
+          if (typeof rt.settleJoinedTurn === 'function') rt.settleJoinedTurn(info.exchangeId, reply, failure)
         } else if (!retry && info !== undefined) {
           finish(info, replyText())
         }
@@ -1158,6 +1163,9 @@ export function install(rt) {
         if (role === 'request' && typeof toId === 'string' && toId !== '') {
           const bot = rt.botOf(toId)
           if (bot?.origin === 'joined' && bot?.worker?.home === 'remote') {
+            if (typeof rt.handleJoinedTurn === 'function') {
+              return rt.handleJoinedTurn({ fromId, toId, text: text ?? '', role, exchangeId, replyTo, work })
+            }
             return { ok: false, error: 'joined shadow cannot dispatch' }
           }
           if (bot?.type === 'remote-worker' && typeof rt.handleRemoteTurn === 'function') {

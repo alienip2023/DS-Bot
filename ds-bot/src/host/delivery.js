@@ -56,14 +56,21 @@ export function install(rt) {
   // length when it went as a file (attachLong). `work`: the work (handoffs.js) a
   // result that came back goes on with. `merged`: a request that takes in an earlier
   // one its recipient had not read, under that one's exchange.
-  async function deliver({ fromId, toId, sessionId, text, role, replyTo, roomId, audience, note, exchangeId = randomUUID(), steer = false, deferred = false, resumed = false, retried = false, resent = false, merged = false, askedBy, fromRoomId, images = [], files = [], length, work }) {
+  async function deliver({ fromId, toId, sessionId, text, role, replyTo, roomId, audience, note, exchangeId = randomUUID(), steer = false, deferred = false, resumed = false, retried = false, resent = false, merged = false, askedBy, fromRoomId, images = [], files = [], length, work, joinedTurn = false }) {
     const from = rt.botOf(fromId)
     const to = rt.botOf(toId)
     if (to === undefined) throw new Error(`Unknown Bot ${toId}`)
-    // A joined shadow is visible in the sidebar. Step 1 must not dispatch it
-    // and must not start a local model session either.
+    // A joined shadow is visible in the sidebar. Step 2 sends the turn to that
+    // remote Bot. If the handler is not installed, keep the step-1 refusal and
+    // do not fall through to a local session or handleRemoteTurn.
     const refused = refuseJoinedDispatch(to)
-    if (refused) return refused
+    if (refused) {
+      const skip = role === 'reply' || role === 'report' || role === 'kickoff' || role === 'continue' || role === 'update'
+      if (!skip && typeof rt.handleJoinedTurn === 'function') {
+        return rt.handleJoinedTurn({ fromId, toId, text, role, exchangeId, replyTo, work })
+      }
+      return refused
+    }
     // Worker Bot routing: dispatch to the remote hub instead of a local Session turn.
     // Reply, report, kickoff, and continue messages skip this path — they are either
     // results already coming back from the hub, or internal lifecycle messages.
@@ -92,6 +99,7 @@ export function install(rt) {
       ...(retried ? { retried: true } : {}),
       ...(askedBy ? { askedBy } : {}),
       ...(fromRoomId ? { senderRoomId: fromRoomId } : {}),
+      ...(joinedTurn ? { joinedTurn: true } : {}),
     }
     const targetSessionId = sessionId ?? rt.chatOf(toId)
     await rt.ensureCapabilities(targetSessionId)
