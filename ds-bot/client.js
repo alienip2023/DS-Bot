@@ -17807,7 +17807,7 @@ function CreateBot({ roster, actions, start, brief = "", onBack, canGoBack, onCr
     setBusy(true);
     try {
       if (isRemoteNode) {
-        const result = await actions.createBot({ nodeId: targetNodeId, name: finalName, role: "" });
+        const result = await actions.createBot({ nodeId: targetNodeId, name: finalName, role: "", model: model || void 0, effort: effort || void 0 });
         onCreated(result?.value ?? result);
         return;
       }

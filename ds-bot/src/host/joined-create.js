@@ -40,7 +40,7 @@ function listenBotCreateResult(registry, requestId, nodeId, timeoutMs) {
  * 在指定 node 上新建一个 Bot，成功后写入影子行。
  * 返回影子行 id（成功）或 { ok: false, error }（失败）。
  */
-export async function createBotOnNode(rt, { nodeId, name, role } = {}) {
+export async function createBotOnNode(rt, { nodeId, name, role, modelRef = null, effort = null, workDir = null, instructions = null } = {}) {
   const nid = trimmed(nodeId)
   if (nid === '') return { ok: false, error: 'bot-create-nodeId-missing' }
   if (!name || trimmed(name) === '') return { ok: false, error: 'bot-create-name-missing' }
@@ -65,6 +65,10 @@ export async function createBotOnNode(rt, { nodeId, name, role } = {}) {
     name: trimmed(name).slice(0, 40),
     role: typeof role === 'string' ? trimmed(role).slice(0, 24) : '',
     requestId,
+    modelRef: modelRef ?? null,
+    effort: effort ?? null,
+    workDir: workDir ?? null,
+    instructions: instructions ?? null,
   })
   if (sent !== true) {
     wait.cancel()
@@ -95,6 +99,8 @@ export async function createBotOnNode(rt, { nodeId, name, role } = {}) {
     role: (result.role || (typeof role === 'string' ? trimmed(role) : '')).slice(0, 24),
     type: 'remote-worker',
     origin: 'joined',
+    model: modelRef ?? null,
+    effort: effort ?? null,
     createdAt: existing?.createdAt ?? now,
     capabilities: existing?.capabilities ?? [],
     worker: {
@@ -120,14 +126,41 @@ export function createBotCreateReceiver(rt) {
     const name = trimmed(spec?.name)
     if (!name) return { ok: false, error: 'bot-create-name-missing' }
     const role = typeof spec?.role === 'string' ? trimmed(spec.role) : ''
+    const modelRef = spec?.modelRef ?? null
+    const effort = spec?.effort ?? null
+    const workDir = spec?.workDir ?? null
+    const instructions = spec?.instructions ?? null
 
     // roster.js install 把 createBot 挂到 rt 上（见 roster.js Object.assign(rt, {...createBot...})）
     const createBot = rt.createBot
     if (typeof createBot !== 'function') return { ok: false, error: 'bot-create-no-roster' }
 
+    // §4 校验顺序：modelRef → workDir → createBot
+    if (modelRef !== null) {
+      // provider/model 格式，节点侧验证 provider 存在且有 apiKey
+      const slash = modelRef.indexOf('/')
+      const providerId = slash >= 0 ? modelRef.slice(0, slash) : modelRef
+      const providers = typeof rt.ctx?.get === 'function' ? rt.ctx.get?.('settings')?.providers ?? rt.listProviders?.() : null
+      if (providers !== null && providers !== undefined) {
+        const providerList = Array.isArray(providers) ? providers : []
+        const found = providerList.find((p) => p.id === providerId)
+        if (!found) return { ok: false, error: 'bot-create-model-unknown' }
+        if (found.apiKey === undefined || found.apiKey === null || found.apiKey === '') {
+          return { ok: false, error: 'bot-create-model-no-key' }
+        }
+      }
+    }
+
+    if (workDir !== null) {
+      // workDir 必须在副机 roots 内
+      const roots = rt.roots ?? []
+      const inRoots = roots.length === 0 || roots.some((r) => workDir.startsWith(r))
+      if (!inRoots) return { ok: false, error: 'bot-create-workdir-denied' }
+    }
+
     try {
       // 不传 type:'remote-worker'，建出来是普通本地 Bot，reportableBots 才会上报
-      const id = await createBot({ name, role })
+      const id = await createBot({ name, role, model: modelRef, effort, workDir, instructions })
       const bot = rt.state?.bots?.[id]
       return {
         ok: true,

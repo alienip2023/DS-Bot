@@ -63,7 +63,7 @@ export function CreateBot({ roster, actions, start, brief = '', onBack, canGoBac
     setBusy(true)
     try {
       if (isRemoteNode) {
-        const result = await actions.createBot({ nodeId: targetNodeId, name: finalName, role: '' })
+        const result = await actions.createBot({ nodeId: targetNodeId, name: finalName, role: '', model: model || undefined, effort: effort || undefined })
         onCreated(result?.value ?? result)
         return
       }
