@@ -284,6 +284,7 @@ export function install(rt) {
         case 'create-bot': {
           if (body.nodeId) {
             await rt.load()
+            if (typeof rt.createBotOnNode !== 'function') return fail('bot-create-unavailable', 'bot/refused')
             const result = await rt.createBotOnNode({ nodeId: body.nodeId, name: body.name, role: body.role })
             if (!result.ok) return fail(result.error, 'bot/refused')
             return ok(result)

@@ -117,6 +117,12 @@ var ZH = {
   "dsh-mneme (Force)": "dsh-mneme（强制）",
   "File Memory (Force)": "文件记忆（强制）",
   "Where this Bot keeps its memory. Auto Detect uses dsh-mneme when it is installed.": "这个 Bot 把记忆存在哪里。已安装 dsh-mneme 时，自动检测会用它。",
+  // Fork: machine selector for creating a Bot on a remote node
+  Machine: "建在哪台机器",
+  "This machine": "本机",
+  "The Bot will be created on the selected remote machine.": "Bot 会建在所选的远程机器上。",
+  "Create the Bot on this machine, or pick a connected remote machine.": "建在本机，或选一台已连上的远程机器。",
+  "No connected remote machines yet.": "还没有连上的远程机器。",
   "More actions": "更多操作",
   // Sidebar and account menu
   "Bot list": "Bot 列表",
@@ -17894,7 +17900,7 @@ function CreateBot({ roster, actions, start, brief = "", onBack, canGoBack, onCr
       }, onPickEffort: (picked) => setEffort(picked ?? null) }),
       (0, import_react39.createElement)("span", { className: "bt-note" }, model ? t("The Bot runs on this model. You can change it later in its details.") : (roster.models ?? []).length > 0 ? t("Pick a model here, or the Bot asks for one in its chat.") : t("Add a provider and a model in DeepSeek Harness first, or pick one in the Bot's chat later."))
     ),
-    remoteNodes.length > 0 ? (0, import_react39.createElement)(
+    (0, import_react39.createElement)(
       "div",
       { className: "bt-field" },
       (0, import_react39.createElement)("span", { className: "bt-field-label" }, t("Machine")),
@@ -17909,8 +17915,8 @@ function CreateBot({ roster, actions, start, brief = "", onBack, canGoBack, onCr
         (0, import_react39.createElement)("option", { value: "" }, t("This machine")),
         remoteNodes.map((n) => (0, import_react39.createElement)("option", { key: n.nodeId, value: n.nodeId }, n.hostname ?? n.nodeId))
       ),
-      (0, import_react39.createElement)("span", { className: "bt-note" }, targetNodeId ? t("The Bot will be created on the selected remote machine.") : t("Create the Bot on this machine, or pick a connected remote machine."))
-    ) : null,
+      (0, import_react39.createElement)("span", { className: "bt-note" }, targetNodeId ? t("The Bot will be created on the selected remote machine.") : remoteNodes.length === 0 ? t("No connected remote machines yet.") : t("Create the Bot on this machine, or pick a connected remote machine."))
+    ),
     !isRemoteNode ? (0, import_react39.createElement)(
       "div",
       { className: "bt-field" },

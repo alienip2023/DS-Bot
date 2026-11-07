@@ -80,6 +80,12 @@ const ZH = {
   'dsh-mneme (Force)': 'dsh-mneme（强制）',
   'File Memory (Force)': '文件记忆（强制）',
   'Where this Bot keeps its memory. Auto Detect uses dsh-mneme when it is installed.': '这个 Bot 把记忆存在哪里。已安装 dsh-mneme 时，自动检测会用它。',
+  // Fork: machine selector for creating a Bot on a remote node
+  Machine: '建在哪台机器',
+  'This machine': '本机',
+  'The Bot will be created on the selected remote machine.': 'Bot 会建在所选的远程机器上。',
+  'Create the Bot on this machine, or pick a connected remote machine.': '建在本机，或选一台已连上的远程机器。',
+  'No connected remote machines yet.': '还没有连上的远程机器。',
   'More actions': '更多操作',
 
   // Sidebar and account menu

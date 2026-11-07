@@ -119,20 +119,20 @@ export function CreateBot({ roster, actions, start, brief = '', onBack, canGoBac
         : (roster.models ?? []).length > 0
           ? t('Pick a model here, or the Bot asks for one in its chat.')
           : t('Add a provider and a model in DeepSeek Harness first, or pick one in the Bot\'s chat later.'))),
-    remoteNodes.length > 0
-      ? h('div', { className: 'bt-field' },
-          h('span', { className: 'bt-field-label' }, t('Machine')),
-          h('select', {
-            className: 'bt-input', value: targetNodeId,
-            onChange: e => setTargetNodeId(e.target.value),
-            'aria-label': t('Machine'),
-          },
-            h('option', { value: '' }, t('This machine')),
-            remoteNodes.map(n => h('option', { key: n.nodeId, value: n.nodeId }, n.hostname ?? n.nodeId))),
-          h('span', { className: 'bt-note' }, targetNodeId
-            ? t('The Bot will be created on the selected remote machine.')
-            : t('Create the Bot on this machine, or pick a connected remote machine.')))
-      : null,
+    h('div', { className: 'bt-field' },
+      h('span', { className: 'bt-field-label' }, t('Machine')),
+      h('select', {
+        className: 'bt-input', value: targetNodeId,
+        onChange: e => setTargetNodeId(e.target.value),
+        'aria-label': t('Machine'),
+      },
+        h('option', { value: '' }, t('This machine')),
+        remoteNodes.map(n => h('option', { key: n.nodeId, value: n.nodeId }, n.hostname ?? n.nodeId))),
+      h('span', { className: 'bt-note' }, targetNodeId
+        ? t('The Bot will be created on the selected remote machine.')
+        : remoteNodes.length === 0
+          ? t('No connected remote machines yet.')
+          : t('Create the Bot on this machine, or pick a connected remote machine.'))),
     !isRemoteNode ? h('div', { className: 'bt-field' },
       h('span', { className: 'bt-field-label' }, t('Type')),
       h('select', {
