@@ -136,7 +136,11 @@ export function createBotCreateReceiver(rt) {
         role: bot?.role ?? role,
       }
     } catch (err) {
-      return { ok: false, error: typeof err?.message === 'string' ? err.message : 'bot-create-failed' }
+      // Log the full stack so journalctl -u dsh-worker captures it for diagnostics.
+      rt.warn?.('ds-bot: createBotCreateReceiver failed: %s\n%s', err?.message ?? err, err?.stack ?? '')
+      // Do not silently degrade — return a clear error so the main controller surfaces
+      // it to the user instead of creating a Bot in a broken state.
+      return { ok: false, error: 'bot-create-no-default-model' }
     }
   }
 }

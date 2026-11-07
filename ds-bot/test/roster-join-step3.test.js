@@ -156,6 +156,25 @@ test('createBotCreateReceiver returns error when no createBot on rt', async () =
   assert.equal(result.error, 'bot-create-no-roster')
 })
 
+// 刀：createBot throws → 返回 bot-create-no-default-model，不静默降级
+// 刀：删掉 catch 中 return { ok:false, error:'bot-create-no-default-model' } → 测试红
+test('createBotCreateReceiver returns bot-create-no-default-model on createBot throw', async () => {
+  const warnings = []
+  const rt = {
+    state: { bots: {} },
+    createBot: async () => {
+      throw new Error('Cannot read properties of undefined (reading \'parent\')')
+    },
+    warn(...args) { warnings.push(args) },
+  }
+  const accept = createBotCreateReceiver(rt)
+  const result = await accept({ nodeId: 'n', requestId: 'r', name: 'Probe' })
+  assert.equal(result.ok, false, 'should not succeed')
+  assert.equal(result.error, 'bot-create-no-default-model', `expected bot-create-no-default-model, got: ${result.error}`)
+  // rt.warn must have been called with the error stack
+  assert.ok(warnings.length > 0, 'rt.warn should have been called with the error')
+})
+
 // install 测试
 test('install wires createBotOnNode on rt and registers ctx receiver', () => {
   const provided = []
