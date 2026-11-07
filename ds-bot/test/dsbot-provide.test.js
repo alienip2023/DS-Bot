@@ -85,17 +85,29 @@ test('install joined-create: rt.createBotOnNode is set AND ctx has bot-create re
   assert.ok(typeof receiver === 'function', 'bot-create receiver not in ctx after install')
 })
 
-// ── Test 4: the receiver from ctx can actually create a Bot (not an empty shell) ──
+// ── Test 4: the receiver from ctx.get matches one built directly by createBotCreateReceiver ──
+// Uses createBotCreateReceiver() on a second rt to confirm the receiver is not an empty shell.
 test('bot-create receiver from ctx.get creates a local Bot via rt.createBot', async () => {
   const ctx = makeCtx()
   const { rt, created } = makeRt(ctx)
   installCreate(rt)
   const receiver = ctx.get('remote-agent:bot-create')
+
+  // Also build one directly: both must accept a frame and call rt.createBot
+  const ctx2 = makeCtx()
+  const { rt: rt2, created: created2 } = makeRt(ctx2)
+  const direct = createBotCreateReceiver(rt2)
+  assert.equal(typeof direct, 'function', 'createBotCreateReceiver should return a function')
+
   // Simulate what remote-agent does after receiving a bot/create frame
   const result = await receiver({ requestId: 'req-1', name: 'RemoteBot', role: '工' })
   assert.equal(result.ok, true, `receiver returned error: ${JSON.stringify(result.error)}`)
   assert.equal(created.length, 1, 'rt.createBot was not called')
   assert.equal(created[0].name, 'RemoteBot')
+
+  const result2 = await direct({ requestId: 'req-2', name: 'DirectBot', role: '' })
+  assert.equal(result2.ok, true, `direct receiver returned error: ${JSON.stringify(result2.error)}`)
+  assert.equal(created2[0].name, 'DirectBot')
 })
 
 // ── Test 5: install joined-turn: ctx has bot-turn receiver ──
