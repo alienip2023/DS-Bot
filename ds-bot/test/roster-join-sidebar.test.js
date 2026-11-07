@@ -1,16 +1,56 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { existsSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { runInNewContext } from 'node:vm'
 import { build } from 'esbuild'
-import { bindRosterReport } from '/tmp/dsh-remote-agent-roster-join/lib/roster-report.js'
-import { withIngest } from '/tmp/dsh-remote-agent-roster-join/lib/hub/registry-ingest.js'
-import { buildNodeHello } from '/tmp/dsh-remote-agent-roster-join/lib/node/index.js'
-import { install as installDelivery } from '../src/host/delivery.js'
-import { install, shadowId } from '../src/host/roster-join.js'
+import { registerHooks } from 'node:module'
+
+const stub = new URL('./roster-llm-stub.mjs', import.meta.url).href
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier === '@deepseek-ai/dsh-llm') return { url: stub, shortCircuit: true }
+    return nextResolve(specifier, context)
+  },
+})
 
 const PLUGIN = dirname(dirname(fileURLToPath(import.meta.url)))
+
+function remoteAgentRepo() {
+  const env = process.env.REMOTE_AGENT_REPO
+  if (typeof env === 'string' && env.trim() !== '') {
+    const dir = resolve(env.trim())
+    const file = join(dir, 'lib/roster-report.js')
+    if (!existsSync(file)) {
+      return { error: `REMOTE_AGENT_REPO=${dir} 没有 lib/roster-report.js，名单侧栏测试跳过` }
+    }
+    return { dir }
+  }
+  const candidates = [
+    resolve(PLUGIN, '../../dsh-remote-agent-roster-join'),
+    resolve(PLUGIN, '../dsh-remote-agent'),
+    resolve(PLUGIN, '../../dsh-remote-agent'),
+  ]
+  const dir = candidates.find((item) => existsSync(join(item, 'lib/roster-report.js')))
+  if (!dir) {
+    return { error: `未设置 REMOTE_AGENT_REPO，相对路径也没有 lib/roster-report.js：${candidates.join(', ')}` }
+  }
+  return { dir }
+}
+
+const remote = remoteAgentRepo()
+if (remote.error) console.error(remote.error)
+
+async function loadRemote() {
+  const base = pathToFileURL(join(remote.dir, 'lib/')).href
+  const [report, ingest, node] = await Promise.all([
+    import(new URL('roster-report.js', base).href),
+    import(new URL('hub/registry-ingest.js', base).href),
+    import(new URL('node/index.js', base).href),
+  ])
+  return { bindRosterReport: report.bindRosterReport, withIngest: ingest.withIngest, buildNodeHello: node.buildNodeHello }
+}
 
 async function loadSidebar() {
   const { outputFiles } = await build({
@@ -45,7 +85,7 @@ async function loadSidebar() {
   return module.exports
 }
 
-function makeRegistry(nodeId) {
+function makeRegistry(withIngest, nodeId) {
   const listeners = {}
   class Core {
     constructor() {
@@ -65,7 +105,7 @@ function makeRegistry(nodeId) {
   return new (withIngest(Core))()
 }
 
-function feed(report, registry, nodeId) {
+function feed(bindRosterReport, report, registry, nodeId) {
   const sent = []
   const bound = bindRosterReport({ set() {} }, {
     send: (type, data) => { sent.push({ type, data }); return true },
@@ -73,12 +113,12 @@ function feed(report, registry, nodeId) {
     hostname: 'desk-1',
   })
   const ok = bound(report)
-  if (ok && sent[0]) registry.handleFrameFor(nodeId, { t: sent[0].type, d: sent[0].data })
+  if (ok && sent[0]) registry.handleFrameFor(nodeId, { t: sent.at(-1).type, d: sent.at(-1).data })
   return sent
 }
 
-function controller(nodeId) {
-  const registry = makeRegistry(nodeId)
+function controller(install, withIngest, nodeId) {
+  const registry = makeRegistry(withIngest, nodeId)
   const state = {
     bots: {
       local: { id: 'local', name: 'Local', createdAt: 1 },
@@ -169,13 +209,15 @@ const TWO = {
   ],
 }
 
-test('disk source: a roster report becomes two sidebar rows and cannot dispatch', async () => {
+test('disk source: a roster report becomes two sidebar rows and cannot dispatch', { skip: remote.error || false }, async () => {
+  const { bindRosterReport, withIngest, buildNodeHello } = await loadRemote()
+  const { install, shadowId } = await import('../src/host/roster-join.js')
   const hello = buildNodeHello({ nodeId: 'node-a' }, { roots: ['/tmp'], nodeId: 'node-a' })
   assert.equal(hello.bots, undefined)
 
   const nodeId = 'node-a'
-  const { registry, state } = controller(nodeId)
-  feed(TWO, registry, nodeId)
+  const { registry, state } = controller(install, withIngest, nodeId)
+  feed(bindRosterReport, TWO, registry, nodeId)
 
   const { TeamSidebar } = await loadSidebar()
   const opened = []
@@ -193,7 +235,7 @@ test('disk source: a roster report becomes two sidebar rows and cannot dispatch'
   assert.equal(state.bots.worker.name, 'Old worker')
   assert.equal(Object.values(state.bots).filter(bot => bot.origin === 'joined').length, 2)
 
-  feed(TWO, registry, nodeId)
+  feed(bindRosterReport, TWO, registry, nodeId)
   assert.equal(Object.values(state.bots).filter(bot => bot.origin === 'joined').length, 2)
 
   registry.emit('nodeOffline', { nodeId })
@@ -204,14 +246,15 @@ test('disk source: a roster report becomes two sidebar rows and cannot dispatch'
   offline.props.onClick()
   assert.deepEqual(opened, [])
 
-  const empty = controller('node-b')
-  feed({ bots: [] }, empty.registry, 'node-b')
+  const empty = controller(install, withIngest, 'node-b')
+  feed(bindRosterReport, { bots: [] }, empty.registry, 'node-b')
   assert.equal(Object.values(empty.state.bots).some(bot => bot.origin === 'joined'), false)
   const emptyRows = rowsOf(TeamSidebar, rosterOf(empty.state), [])
   assert.equal(emptyRows.map(row => buttonOf(row, shadowId('node-b', 'alpha'))).find(Boolean), undefined)
 })
 
 test('a joined shadow does not call handleRemoteTurn', async () => {
+  const { install: installDelivery } = await import('../src/host/delivery.js')
   const calls = []
   const shadow = {
     id: 'joined:node-a:alpha',
@@ -230,5 +273,6 @@ test('a joined shadow does not call handleRemoteTurn', async () => {
   installDelivery(rt)
   const result = await rt.deliver({ fromId: 'local', toId: shadow.id, text: 'go', role: 'request' })
   assert.equal(result.ok, false)
+  assert.equal(result.error, 'joined shadow cannot dispatch')
   assert.deepEqual(calls, [])
 })
