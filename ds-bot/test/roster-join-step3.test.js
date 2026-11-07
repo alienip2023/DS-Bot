@@ -221,7 +221,14 @@ test('createBotCreateReceiver passes model/effort/workDir/instructions to create
   const created = []
   const rt = {
     state: { bots: {} },
-    roots: ['/root/work'],
+    ctx: {
+      get(name) {
+        if (name === 'remote-agent:node-policy') return { roots: ['/root/work'] }
+        if (name === 'llm') return { listProviders: () => [{ id: 'ccmax' }] }
+        return undefined
+      },
+    },
+    missingKeys: async () => new Set(),
     createBot: async (opts) => {
       created.push(opts)
       const id = `local-${opts.name}`
@@ -238,27 +245,66 @@ test('createBotCreateReceiver passes model/effort/workDir/instructions to create
   assert.equal(created[0].instructions, 'be concise')
 })
 
-test('createBotCreateReceiver rejects workDir outside roots', async () => {
+// knife: delete node-policy lookup → bot-create-workdir-denied (policy absent = fail closed)
+test('createBotCreateReceiver denies workDir when node-policy absent', async () => {
   const rt = {
     state: { bots: {} },
-    roots: ['/root/work'],
+    ctx: { get: () => undefined },
     createBot: async () => { throw new Error('should not reach') },
   }
   const accept = createBotCreateReceiver(rt)
-  const result = await accept({ name: 'Mx', role: '', workDir: '/etc/passwd' })
+  const result = await accept({ name: 'Mx', role: '', workDir: '/root/work' })
   assert.equal(result.ok, false)
   assert.equal(result.error, 'bot-create-workdir-denied')
 })
 
+// knife: keep policy but use path traversal sibling (/root/workevil) → rejected
+test('createBotCreateReceiver rejects workDir with prefix-attack path', async () => {
+  const rt = {
+    state: { bots: {} },
+    ctx: {
+      get(name) {
+        if (name === 'remote-agent:node-policy') return { roots: ['/root/work'] }
+        return undefined
+      },
+    },
+    createBot: async () => { throw new Error('should not reach') },
+  }
+  const accept = createBotCreateReceiver(rt)
+  const result = await accept({ name: 'Mx', role: '', workDir: '/root/workevil' })
+  assert.equal(result.ok, false)
+  assert.equal(result.error, 'bot-create-workdir-denied')
+})
+
+// knife: delete node-policy empty-roots branch → bot-create-workdir-denied (empty roots = fail closed)
+test('createBotCreateReceiver denies workDir when roots array is empty', async () => {
+  const rt = {
+    state: { bots: {} },
+    ctx: {
+      get(name) {
+        if (name === 'remote-agent:node-policy') return { roots: [] }
+        return undefined
+      },
+    },
+    createBot: async () => { throw new Error('should not reach') },
+  }
+  const accept = createBotCreateReceiver(rt)
+  const result = await accept({ name: 'Mx', role: '', workDir: '/root/work' })
+  assert.equal(result.ok, false)
+  assert.equal(result.error, 'bot-create-workdir-denied')
+})
+
+// knife: change providerIds.includes → returns wrong answer → bot-create-model-unknown
 test('createBotCreateReceiver returns bot-create-model-unknown for unknown provider', async () => {
   const rt = {
     state: { bots: {} },
     ctx: {
       get(name) {
-        if (name === 'settings') return { providers: [{ id: 'known', apiKey: 'k' }] }
+        if (name === 'llm') return { listProviders: () => [{ id: 'known' }] }
         return undefined
       },
     },
+    missingKeys: async () => new Set(),
     createBot: async () => { throw new Error('should not reach') },
   }
   const accept = createBotCreateReceiver(rt)
@@ -267,15 +313,17 @@ test('createBotCreateReceiver returns bot-create-model-unknown for unknown provi
   assert.equal(result.error, 'bot-create-model-unknown')
 })
 
-test('createBotCreateReceiver returns bot-create-model-no-key when apiKey missing', async () => {
+// knife: change missing.has → returns false → bot-create-model-no-key not returned
+test('createBotCreateReceiver returns bot-create-model-no-key when provider has no key', async () => {
   const rt = {
     state: { bots: {} },
     ctx: {
       get(name) {
-        if (name === 'settings') return { providers: [{ id: 'ccmax', apiKey: '' }] }
+        if (name === 'llm') return { listProviders: () => [{ id: 'ccmax' }] }
         return undefined
       },
     },
+    missingKeys: async (ids) => new Set(ids),
     createBot: async () => { throw new Error('should not reach') },
   }
   const accept = createBotCreateReceiver(rt)

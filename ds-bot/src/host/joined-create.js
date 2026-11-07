@@ -1,9 +1,11 @@
 // Step 3: create a Bot on a remote node from the main controller.
 // No local session is created. No handleRemoteTurn, no mode:'agent', no task/start.
 import { randomUUID } from 'node:crypto'
+import { resolve as pathResolve } from 'node:path'
 import { shadowId } from './roster-join.js'
 
 export const BOT_CREATE_TIMEOUT_MS = 30_000
+const MAX_INSTRUCTIONS_BYTES = 8000
 
 function trimmed(value) {
   return typeof value === 'string' ? value.trim() : ''
@@ -60,15 +62,33 @@ export async function createBotOnNode(rt, { nodeId, name, role, modelRef = null,
   const timeoutMs = rt.botCreateTimeoutMs ?? BOT_CREATE_TIMEOUT_MS
   const wait = listenBotCreateResult(registry, requestId, nid, timeoutMs)
 
+  // Hub-side: resolve modelRef to provider/model using rt.resolveModel if available.
+  // A bare model id that maps to exactly one provider is normalised; unknown id → error.
+  let resolvedModelRef = modelRef ?? null
+  if (modelRef !== null && typeof rt.resolveModel === 'function') {
+    try {
+      resolvedModelRef = await rt.resolveModel(modelRef)
+    } catch (err) {
+      return { ok: false, error: 'bot-create-model-unknown' }
+    }
+  }
+
+  // Enforce instructions byte limit (§1.1 contract: ≤8000 bytes).
+  let clampedInstructions = instructions ?? null
+  if (typeof clampedInstructions === 'string') {
+    const buf = Buffer.from(clampedInstructions, 'utf8')
+    if (buf.byteLength > MAX_INSTRUCTIONS_BYTES) clampedInstructions = buf.subarray(0, MAX_INSTRUCTIONS_BYTES).toString('utf8')
+  }
+
   const sent = registry.send(nid, 'bot/create', {
     nodeId: nid,
     name: trimmed(name).slice(0, 40),
     role: typeof role === 'string' ? trimmed(role).slice(0, 24) : '',
     requestId,
-    modelRef: modelRef ?? null,
+    modelRef: resolvedModelRef,
     effort: effort ?? null,
     workDir: workDir ?? null,
-    instructions: instructions ?? null,
+    instructions: clampedInstructions,
   })
   if (sent !== true) {
     wait.cancel()
@@ -99,7 +119,7 @@ export async function createBotOnNode(rt, { nodeId, name, role, modelRef = null,
     role: (result.role || (typeof role === 'string' ? trimmed(role) : '')).slice(0, 24),
     type: 'remote-worker',
     origin: 'joined',
-    model: modelRef ?? null,
+    model: resolvedModelRef ?? null,
     effort: effort ?? null,
     createdAt: existing?.createdAt ?? now,
     capabilities: existing?.capabilities ?? [],
@@ -137,22 +157,31 @@ export function createBotCreateReceiver(rt) {
 
     // §4 校验顺序：modelRef → workDir → createBot
     if (modelRef !== null) {
-      const slash = modelRef.indexOf('/')
-      const providerId = slash >= 0 ? modelRef.slice(0, slash) : modelRef
-      const providers = typeof rt.ctx?.get === 'function' ? rt.ctx.get?.('settings')?.providers ?? rt.listProviders?.() : null
-      if (providers !== null && providers !== undefined) {
-        const providerList = Array.isArray(providers) ? providers : []
-        const found = providerList.find((p) => p.id === providerId)
-        if (!found) return { ok: false, error: 'bot-create-model-unknown' }
-        if (found.apiKey === undefined || found.apiKey === null || found.apiKey === '') {
-          return { ok: false, error: 'bot-create-model-no-key' }
-        }
+      // Use ds-bot's real model catalog: ctx.llm.listProviders() tells us which providers exist;
+      // rt.missingKeys() uses the real credentials service (providers.js:190) to check keys.
+      const providerId = modelRef.includes('/') ? modelRef.split('/')[0] : modelRef
+      const llm = rt.ctx?.get?.('llm') ?? rt.ctx?.llm
+      const providerIds = typeof llm?.listProviders === 'function'
+        ? llm.listProviders().map(p => typeof p === 'string' ? p : p.id)
+        : null
+      if (providerIds !== null) {
+        if (!providerIds.includes(providerId)) return { ok: false, error: 'bot-create-model-unknown' }
+        const missing = typeof rt.missingKeys === 'function' ? await rt.missingKeys([providerId]) : new Set()
+        if (missing.has(providerId)) return { ok: false, error: 'bot-create-model-no-key' }
       }
     }
 
     if (workDir !== null) {
-      const roots = rt.roots ?? []
-      const inRoots = roots.length === 0 || roots.some((r) => workDir.startsWith(r))
+      // Fail-closed: if node-policy unavailable, reject workDir (never allow-all).
+      // Path boundary: compare resolved workDir against root+'/' to prevent prefix attacks
+      // (e.g. /root/workevil must not pass /root/work).
+      let policy
+      try { policy = rt.ctx?.get?.('remote-agent:node-policy') } catch { policy = undefined }
+      if (!policy) return { ok: false, error: 'bot-create-workdir-denied' }
+      const roots = Array.isArray(policy.roots) ? policy.roots : []
+      if (roots.length === 0) return { ok: false, error: 'bot-create-workdir-denied' }
+      const resolved = pathResolve(workDir)
+      const inRoots = roots.some((r) => resolved === pathResolve(r) || resolved.startsWith(pathResolve(r) + '/'))
       if (!inRoots) return { ok: false, error: 'bot-create-workdir-denied' }
     }
 
