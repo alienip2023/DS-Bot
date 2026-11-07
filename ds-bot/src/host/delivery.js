@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { HISTORY_TIMEOUT_MS, LONG_HEAD, MESSAGE_INLINE_MAX, READ_LINE_MAX, SOURCE_KIND, TEXT_KEPT, TEXT_SHOW_MAX } from './constants.js'
+import { refuseJoinedDispatch } from './roster-join.js'
 import { headOf, textOf } from './text.js'
 
 export function install(rt) {
@@ -59,6 +60,10 @@ export function install(rt) {
     const from = rt.botOf(fromId)
     const to = rt.botOf(toId)
     if (to === undefined) throw new Error(`Unknown Bot ${toId}`)
+    // A joined shadow is visible in the sidebar. Step 1 must not dispatch it
+    // and must not start a local model session either.
+    const refused = refuseJoinedDispatch(to)
+    if (refused) return refused
     // Worker Bot routing: dispatch to the remote hub instead of a local Session turn.
     // Reply, report, kickoff, and continue messages skip this path — they are either
     // results already coming back from the hub, or internal lifecycle messages.

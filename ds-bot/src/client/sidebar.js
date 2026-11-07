@@ -220,7 +220,11 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
     actions.openMenu({ kind: 'bot', id, x: rect.left, y: rect.bottom })
   }
   const pinned = bot.pinned === true && !tile
-  const label = [bot.name, main ? t('Main Bot') : '', pinned ? t('Pinned') : '', running || away ? t('Working') : '', waitsFor, approval ? t('Waiting for your approval') : alert ? t('Waiting for your answer') : '', unread ? t('Unread activity') : ''].filter(Boolean).join(', ')
+  const joined = bot.origin === 'joined' && bot.worker?.home === 'remote'
+  const machine = joined
+    ? [bot.worker.hostname || bot.worker.nodeId, bot.worker.online === false ? '离线' : ''].filter(Boolean).join(' · ')
+    : ''
+  const label = [bot.name, machine, main ? t('Main Bot') : '', pinned ? t('Pinned') : '', running || away ? t('Working') : '', waitsFor, approval ? t('Waiting for your approval') : alert ? t('Waiting for your answer') : '', unread ? t('Unread activity') : ''].filter(Boolean).join(', ')
   if (tile && wide) {
     return h('div', { className: 'bt-tile-wrap', ref: bindPointerMenu(actions.openMenu, () => ({ kind: 'bot', id })) }, h('button', {
       type: 'button', className: 'bt-tile', 'aria-label': label, 'aria-current': active ? 'page' : undefined,
@@ -241,13 +245,14 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
     'data-bot-id': id, title: wide ? undefined : bot.name,
     ref: bindPointerMenu(actions.openMenu, () => ({ kind: 'bot', id })),
     onMouseEnter: wide ? nameIfCut : undefined,
-    onClick: () => actions.openSession(id),
+    onClick: () => { if (joined) return; actions.openSession(id) },
   },
   h(BotAvatar, { bot, size: wide ? 36 : 44, state, main }),
   pinned && !wide ? h(PinMark) : null,
   wide ? h('span', { className: 'bt-row-body' },
     h('span', { className: 'bt-row-name' }, h('span', { className: 'bt-row-title' }, bot.name), bot.engine ? h(AgentBadge, { engine: bot.engine }) : null, pinned ? h(PinMark) : null),
-    runningLine ? h('span', { className: 'bt-row-preview' }, runningLine)
+    machine ? h('span', { className: 'bt-row-preview', 'data-machine': bot.worker.hostname || bot.worker.nodeId || '' }, machine)
+      : runningLine ? h('span', { className: 'bt-row-preview' }, runningLine)
       : awayLine ? h('span', { className: 'bt-row-preview' }, awayLine)
         : waitsFor ? h('span', { className: 'bt-row-preview' }, waitsFor)
           : preview ? h('span', { className: 'bt-row-preview' }, preview) : null) : null,

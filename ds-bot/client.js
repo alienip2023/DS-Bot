@@ -14935,7 +14935,9 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
     actions.openMenu({ kind: "bot", id, x: rect.left, y: rect.bottom });
   };
   const pinned = bot.pinned === true && !tile;
-  const label = [bot.name, main ? t("Main Bot") : "", pinned ? t("Pinned") : "", running || away ? t("Working") : "", waitsFor, approval ? t("Waiting for your approval") : alert ? t("Waiting for your answer") : "", unread ? t("Unread activity") : ""].filter(Boolean).join(", ");
+  const joined = bot.origin === "joined" && bot.worker?.home === "remote";
+  const machine = joined ? [bot.worker.hostname || bot.worker.nodeId, bot.worker.online === false ? "离线" : ""].filter(Boolean).join(" · ") : "";
+  const label = [bot.name, machine, main ? t("Main Bot") : "", pinned ? t("Pinned") : "", running || away ? t("Working") : "", waitsFor, approval ? t("Waiting for your approval") : alert ? t("Waiting for your answer") : "", unread ? t("Unread activity") : ""].filter(Boolean).join(", ");
   if (tile && wide) {
     return (0, import_react33.createElement)("div", { className: "bt-tile-wrap", ref: bindPointerMenu(actions.openMenu, () => ({ kind: "bot", id })) }, (0, import_react33.createElement)(
       "button",
@@ -14972,7 +14974,10 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
       title: wide ? void 0 : bot.name,
       ref: bindPointerMenu(actions.openMenu, () => ({ kind: "bot", id })),
       onMouseEnter: wide ? nameIfCut : void 0,
-      onClick: () => actions.openSession(id)
+      onClick: () => {
+        if (joined) return;
+        actions.openSession(id);
+      }
     },
     (0, import_react33.createElement)(BotAvatar, { bot, size: wide ? 36 : 44, state, main }),
     pinned && !wide ? (0, import_react33.createElement)(PinMark) : null,
@@ -14980,7 +14985,7 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
       "span",
       { className: "bt-row-body" },
       (0, import_react33.createElement)("span", { className: "bt-row-name" }, (0, import_react33.createElement)("span", { className: "bt-row-title" }, bot.name), bot.engine ? (0, import_react33.createElement)(AgentBadge, { engine: bot.engine }) : null, pinned ? (0, import_react33.createElement)(PinMark) : null),
-      runningLine ? (0, import_react33.createElement)("span", { className: "bt-row-preview" }, runningLine) : awayLine ? (0, import_react33.createElement)("span", { className: "bt-row-preview" }, awayLine) : waitsFor ? (0, import_react33.createElement)("span", { className: "bt-row-preview" }, waitsFor) : preview ? (0, import_react33.createElement)("span", { className: "bt-row-preview" }, preview) : null
+      machine ? (0, import_react33.createElement)("span", { className: "bt-row-preview", "data-machine": bot.worker.hostname || bot.worker.nodeId || "" }, machine) : runningLine ? (0, import_react33.createElement)("span", { className: "bt-row-preview" }, runningLine) : awayLine ? (0, import_react33.createElement)("span", { className: "bt-row-preview" }, awayLine) : waitsFor ? (0, import_react33.createElement)("span", { className: "bt-row-preview" }, waitsFor) : preview ? (0, import_react33.createElement)("span", { className: "bt-row-preview" }, preview) : null
     ) : null,
     wide && unread && !active ? (0, import_react33.createElement)("span", { className: "bt-unread", "aria-hidden": true }) : !wide && !active && (alert || unread) ? (0, import_react33.createElement)("span", { className: `bt-dot${alert ? " bt-dot-wait" : ""}`, "aria-hidden": true }) : null,
     wide ? (0, import_react33.createElement)("button", {

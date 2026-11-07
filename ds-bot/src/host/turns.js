@@ -1157,6 +1157,9 @@ export function install(rt) {
         const { toId, role, text, fromId, exchangeId, replyTo, work } = msg ?? {}
         if (role === 'request' && typeof toId === 'string' && toId !== '') {
           const bot = rt.botOf(toId)
+          if (bot?.origin === 'joined' && bot?.worker?.home === 'remote') {
+            return { ok: false, error: 'joined shadow cannot dispatch' }
+          }
           if (bot?.type === 'remote-worker' && typeof rt.handleRemoteTurn === 'function') {
             return rt.handleRemoteTurn({ fromId, toId, text: text ?? '', role, exchangeId, replyTo, work })
           }
