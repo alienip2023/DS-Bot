@@ -37,6 +37,38 @@ const nameIfCut = (event) => {
   else row.removeAttribute('title')
 }
 
+// DSH Desktop 0.13.2's main process pops a native menu on webContents
+// "context-menu" and ignores the event object. React onContextMenu is the
+// path fork.8 already lost: it runs too late, and the native menu covers it.
+// Electron 44.7.0 (the Desktop framework version) does not emit that main
+// process event if the page calls preventDefault on the DOM contextmenu
+// event. pointerdown button 2 is not that event, so it still reaches the row.
+// Both listeners are native and capturing, and they open the same menu as ⋮.
+export function openAtPointer(event, openMenu, menu) {
+  const right = event.button === 2 || event.type === 'contextmenu'
+  if (!right) return false
+  event.preventDefault()
+  event.stopPropagation()
+  const payload = typeof menu === 'function' ? menu() : menu
+  openMenu({ ...payload, x: event.clientX, y: event.clientY })
+  return true
+}
+
+function bindPointerMenu(openMenu, menu) {
+  return (node) => {
+    if (node == null) return
+    const previous = node.__btPointerMenu
+    if (previous) {
+      node.removeEventListener('pointerdown', previous, true)
+      node.removeEventListener('contextmenu', previous, true)
+    }
+    const run = (event) => { openAtPointer(event, openMenu, menu) }
+    node.__btPointerMenu = run
+    node.addEventListener('pointerdown', run, true)
+    node.addEventListener('contextmenu', run, true)
+  }
+}
+
 // Whether an approval waits for the user: for a Bot, in any of its Sessions; for a group,
 // from any of its members there.
 const useApproval = (useWork, match) => (useWork ? useWork(work => (work.approvals ?? []).some(match)) : false)
@@ -90,6 +122,7 @@ function GroupHeaderRow({ group, actions, wideContent }) {
   }
   return h('div', {
     className: 'bt-group-header',
+    ref: bindPointerMenu(actions.openMenu, () => ({ kind: 'group', id, name, onRename: () => setRenaming(true) })),
     style: { display: 'flex', alignItems: 'center', padding: '4px 12px', opacity: 0.7, fontSize: '0.78em', fontWeight: 600, letterSpacing: '0.04em', userSelect: 'none' },
     'aria-label': label,
   },
@@ -185,7 +218,7 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
   const pinned = bot.pinned === true && !tile
   const label = [bot.name, main ? t('Main Bot') : '', pinned ? t('Pinned') : '', running || away ? t('Working') : '', waitsFor, approval ? t('Waiting for your approval') : alert ? t('Waiting for your answer') : '', unread ? t('Unread activity') : ''].filter(Boolean).join(', ')
   if (tile && wide) {
-    return h('div', { className: 'bt-tile-wrap' }, h('button', {
+    return h('div', { className: 'bt-tile-wrap', ref: bindPointerMenu(actions.openMenu, () => ({ kind: 'bot', id })) }, h('button', {
       type: 'button', className: 'bt-tile', 'aria-label': label, 'aria-current': active ? 'page' : undefined,
       'data-bot-id': id, title: preview || bot.name, onClick: () => actions.openSession(id),
     },
@@ -202,6 +235,7 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
   return h('button', {
     type: 'button', className: 'bt-row', 'aria-label': label, 'aria-current': active ? 'page' : undefined,
     'data-bot-id': id, title: wide ? undefined : bot.name,
+    ref: bindPointerMenu(actions.openMenu, () => ({ kind: 'bot', id })),
     onMouseEnter: wide ? nameIfCut : undefined,
     onClick: () => actions.openSession(id),
   },

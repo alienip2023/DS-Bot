@@ -10056,6 +10056,31 @@ var nameIfCut = (event) => {
   if (name && name.scrollWidth > name.clientWidth) row.title = name.textContent;
   else row.removeAttribute("title");
 };
+function openAtPointer(event, openMenu, menu) {
+  const right = event.button === 2 || event.type === "contextmenu";
+  if (!right) return false;
+  event.preventDefault();
+  event.stopPropagation();
+  const payload = typeof menu === "function" ? menu() : menu;
+  openMenu({ ...payload, x: event.clientX, y: event.clientY });
+  return true;
+}
+function bindPointerMenu(openMenu, menu) {
+  return (node) => {
+    if (node == null) return;
+    const previous = node.__btPointerMenu;
+    if (previous) {
+      node.removeEventListener("pointerdown", previous, true);
+      node.removeEventListener("contextmenu", previous, true);
+    }
+    const run2 = (event) => {
+      openAtPointer(event, openMenu, menu);
+    };
+    node.__btPointerMenu = run2;
+    node.addEventListener("pointerdown", run2, true);
+    node.addEventListener("contextmenu", run2, true);
+  };
+}
 var useApproval = (useWork, match) => useWork ? useWork((work) => (work.approvals ?? []).some(match)) : false;
 var useGroupWork = (useWork, pick2) => useWork ? useWork((work) => JSON.stringify(pick2(work.rooms ?? {}))) : "[]";
 var workKeys = (text) => JSON.parse(text);
@@ -10111,6 +10136,7 @@ function GroupHeaderRow({ group, actions, wideContent }) {
     "div",
     {
       className: "bt-group-header",
+      ref: bindPointerMenu(actions.openMenu, () => ({ kind: "group", id, name, onRename: () => setRenaming(true) })),
       style: { display: "flex", alignItems: "center", padding: "4px 12px", opacity: 0.7, fontSize: "0.78em", fontWeight: 600, letterSpacing: "0.04em", userSelect: "none" },
       "aria-label": label
     },
@@ -10234,7 +10260,7 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
   const pinned = bot.pinned === true && !tile;
   const label = [bot.name, main ? t("Main Bot") : "", pinned ? t("Pinned") : "", running || away ? t("Working") : "", waitsFor, approval ? t("Waiting for your approval") : alert ? t("Waiting for your answer") : "", unread ? t("Unread activity") : ""].filter(Boolean).join(", ");
   if (tile && wide) {
-    return (0, import_react21.createElement)("div", { className: "bt-tile-wrap" }, (0, import_react21.createElement)(
+    return (0, import_react21.createElement)("div", { className: "bt-tile-wrap", ref: bindPointerMenu(actions.openMenu, () => ({ kind: "bot", id })) }, (0, import_react21.createElement)(
       "button",
       {
         type: "button",
@@ -10267,6 +10293,7 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
       "aria-current": active ? "page" : void 0,
       "data-bot-id": id,
       title: wide ? void 0 : bot.name,
+      ref: bindPointerMenu(actions.openMenu, () => ({ kind: "bot", id })),
       onMouseEnter: wide ? nameIfCut : void 0,
       onClick: () => actions.openSession(id)
     },
