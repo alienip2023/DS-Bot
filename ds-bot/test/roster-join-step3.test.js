@@ -156,21 +156,25 @@ test('createBotCreateReceiver returns error when no createBot on rt', async () =
   assert.equal(result.error, 'bot-create-no-roster')
 })
 
-// 刀：createBot throws → 返回 bot-create-no-default-model，不静默降级
-// 刀：删掉 catch 中 return { ok:false, error:'bot-create-no-default-model' } → 测试红
-test('createBotCreateReceiver returns bot-create-no-default-model on createBot throw', async () => {
+// 刀：createBot throws → 返回 bot-create-failed 含原始消息，不用 no-default-model 错误码
+// 刀：删掉 catch return 里 'bot-create-failed' 前缀 → 测试红
+test('createBotCreateReceiver returns bot-create-failed with message on createBot throw', async () => {
+  const errMsg = "Cannot read properties of undefined (reading 'parent')"
   const warnings = []
   const rt = {
     state: { bots: {} },
-    createBot: async () => {
-      throw new Error('Cannot read properties of undefined (reading \'parent\')')
-    },
+    createBot: async () => { throw new Error(errMsg) },
     warn(...args) { warnings.push(args) },
   }
   const accept = createBotCreateReceiver(rt)
   const result = await accept({ nodeId: 'n', requestId: 'r', name: 'Probe' })
   assert.equal(result.ok, false, 'should not succeed')
-  assert.equal(result.error, 'bot-create-no-default-model', `expected bot-create-no-default-model, got: ${result.error}`)
+  assert.ok(
+    typeof result.error === 'string' && result.error.startsWith('bot-create-failed:'),
+    `expected error starting with 'bot-create-failed:', got: ${result.error}`
+  )
+  assert.ok(result.error.includes(errMsg), `error should contain original message, got: ${result.error}`)
+  assert.notEqual(result.error, 'bot-create-no-default-model', 'must not use model error code for a generic crash')
   // rt.warn must have been called with the error stack
   assert.ok(warnings.length > 0, 'rt.warn should have been called with the error')
 })
