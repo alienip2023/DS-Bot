@@ -196,3 +196,90 @@ test('install wires createBotOnNode on rt and registers ctx receiver', () => {
   assert.ok(registered, 'remote-agent:bot-create not registered')
   assert.equal(typeof registered.fn, 'function')
 })
+
+// M1: modelRef/effort passthrough
+test('createBotOnNode sends modelRef and effort in bot/create frame', async () => {
+  const { rt, reg } = controller()
+  const result = await rt.createBotOnNode({ nodeId: 'node-a', name: 'Mx', role: '', modelRef: 'ccmax/qwen3', effort: 'high' })
+  assert.equal(result.ok, true, `failed: ${result.error}`)
+  const sent = reg.sent.find((s) => s.type === 'bot/create')
+  assert.ok(sent, 'no bot/create frame sent')
+  assert.equal(sent.data.modelRef, 'ccmax/qwen3')
+  assert.equal(sent.data.effort, 'high')
+})
+
+test('createBotOnNode writes model and effort into shadow row', async () => {
+  const { rt } = controller()
+  const result = await rt.createBotOnNode({ nodeId: 'node-a', name: 'Mx', role: '', modelRef: 'ccmax/qwen3', effort: 'high' })
+  assert.equal(result.ok, true)
+  const row = rt.state.bots[shadowId('node-a', 'bot-created')]
+  assert.equal(row.model, 'ccmax/qwen3', 'shadow row should store modelRef as model')
+  assert.equal(row.effort, 'high', 'shadow row should store effort')
+})
+
+test('createBotCreateReceiver passes model/effort/workDir/instructions to createBot', async () => {
+  const created = []
+  const rt = {
+    state: { bots: {} },
+    roots: ['/root/work'],
+    createBot: async (opts) => {
+      created.push(opts)
+      const id = `local-${opts.name}`
+      rt.state.bots[id] = { id, name: opts.name, role: opts.role ?? '' }
+      return id
+    },
+  }
+  const accept = createBotCreateReceiver(rt)
+  const result = await accept({ name: 'Mx', role: '', modelRef: 'ccmax/qwen3', effort: 'high', workDir: '/root/work', instructions: 'be concise' })
+  assert.equal(result.ok, true, `failed: ${result.error}`)
+  assert.equal(created[0].model, 'ccmax/qwen3')
+  assert.equal(created[0].effort, 'high')
+  assert.equal(created[0].workDir, '/root/work')
+  assert.equal(created[0].instructions, 'be concise')
+})
+
+test('createBotCreateReceiver rejects workDir outside roots', async () => {
+  const rt = {
+    state: { bots: {} },
+    roots: ['/root/work'],
+    createBot: async () => { throw new Error('should not reach') },
+  }
+  const accept = createBotCreateReceiver(rt)
+  const result = await accept({ name: 'Mx', role: '', workDir: '/etc/passwd' })
+  assert.equal(result.ok, false)
+  assert.equal(result.error, 'bot-create-workdir-denied')
+})
+
+test('createBotCreateReceiver returns bot-create-model-unknown for unknown provider', async () => {
+  const rt = {
+    state: { bots: {} },
+    ctx: {
+      get(name) {
+        if (name === 'settings') return { providers: [{ id: 'known', apiKey: 'k' }] }
+        return undefined
+      },
+    },
+    createBot: async () => { throw new Error('should not reach') },
+  }
+  const accept = createBotCreateReceiver(rt)
+  const result = await accept({ name: 'Mx', role: '', modelRef: 'unknown-provider/model' })
+  assert.equal(result.ok, false)
+  assert.equal(result.error, 'bot-create-model-unknown')
+})
+
+test('createBotCreateReceiver returns bot-create-model-no-key when apiKey missing', async () => {
+  const rt = {
+    state: { bots: {} },
+    ctx: {
+      get(name) {
+        if (name === 'settings') return { providers: [{ id: 'ccmax', apiKey: '' }] }
+        return undefined
+      },
+    },
+    createBot: async () => { throw new Error('should not reach') },
+  }
+  const accept = createBotCreateReceiver(rt)
+  const result = await accept({ name: 'Mx', role: '', modelRef: 'ccmax/qwen3' })
+  assert.equal(result.ok, false)
+  assert.equal(result.error, 'bot-create-model-no-key')
+})

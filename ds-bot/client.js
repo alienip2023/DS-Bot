@@ -17807,7 +17807,12 @@ function CreateBot({ roster, actions, start, brief = "", onBack, canGoBack, onCr
     setBusy(true);
     try {
       if (isRemoteNode) {
-        const result = await actions.createBot({ nodeId: targetNodeId, name: finalName, role: "" });
+        if (!model) {
+          setError(t("Please select a model"));
+          setBusy(false);
+          return;
+        }
+        const result = await actions.createBot({ nodeId: targetNodeId, name: finalName, role: "", model, effort: effort || void 0 });
         onCreated(result?.value ?? result);
         return;
       }

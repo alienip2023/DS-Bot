@@ -63,7 +63,8 @@ export function CreateBot({ roster, actions, start, brief = '', onBack, canGoBac
     setBusy(true)
     try {
       if (isRemoteNode) {
-        const result = await actions.createBot({ nodeId: targetNodeId, name: finalName, role: '' })
+        if (!model) { setError(t('Please select a model')); setBusy(false); return }
+        const result = await actions.createBot({ nodeId: targetNodeId, name: finalName, role: '', model, effort: effort || undefined })
         onCreated(result?.value ?? result)
         return
       }
