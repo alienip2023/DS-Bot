@@ -74,10 +74,17 @@ export async function createBotOnNode(rt, { nodeId, name, role, modelRef = null,
   }
 
   // Enforce instructions byte limit (§1.1 contract: ≤8000 bytes).
+  // Clamp at a UTF-8 character boundary to avoid splitting multi-byte sequences (U+FFFD).
   let clampedInstructions = instructions ?? null
   if (typeof clampedInstructions === 'string') {
     const buf = Buffer.from(clampedInstructions, 'utf8')
-    if (buf.byteLength > MAX_INSTRUCTIONS_BYTES) clampedInstructions = buf.subarray(0, MAX_INSTRUCTIONS_BYTES).toString('utf8')
+    if (buf.byteLength > MAX_INSTRUCTIONS_BYTES) {
+      // Find last valid UTF-8 boundary at or before 8000 bytes.
+      // Walk backwards from byte 8000 while we are inside a continuation byte (0x80-0xBF).
+      let cut = MAX_INSTRUCTIONS_BYTES
+      while (cut > 0 && (buf[cut] & 0xc0) === 0x80) cut--
+      clampedInstructions = buf.subarray(0, cut).toString('utf8')
+    }
   }
 
   const sent = registry.send(nid, 'bot/create', {
@@ -157,31 +164,37 @@ export function createBotCreateReceiver(rt) {
 
     // §4 校验顺序：modelRef → workDir → createBot
     if (modelRef !== null) {
-      // Use ds-bot's real model catalog: ctx.llm.listProviders() tells us which providers exist;
-      // rt.missingKeys() uses the real credentials service (providers.js:190) to check keys.
+      // Fail-closed: if llm service unavailable, cannot verify provider → reject.
       const providerId = modelRef.includes('/') ? modelRef.split('/')[0] : modelRef
       const llm = rt.ctx?.get?.('llm') ?? rt.ctx?.llm
-      const providerIds = typeof llm?.listProviders === 'function'
-        ? llm.listProviders().map(p => typeof p === 'string' ? p : p.id)
-        : null
-      if (providerIds !== null) {
-        if (!providerIds.includes(providerId)) return { ok: false, error: 'bot-create-model-unknown' }
-        const missing = typeof rt.missingKeys === 'function' ? await rt.missingKeys([providerId]) : new Set()
-        if (missing.has(providerId)) return { ok: false, error: 'bot-create-model-no-key' }
+      if (!llm || typeof llm.listProviders !== 'function') {
+        return { ok: false, error: 'bot-create-model-unknown' }
       }
+      const providerIds = llm.listProviders().map(p => typeof p === 'string' ? p : p.id)
+      if (!providerIds.includes(providerId)) return { ok: false, error: 'bot-create-model-unknown' }
+      const missing = typeof rt.missingKeys === 'function' ? await rt.missingKeys([providerId]) : new Set()
+      if (missing.has(providerId)) return { ok: false, error: 'bot-create-model-no-key' }
     }
 
     if (workDir !== null) {
       // Fail-closed: if node-policy unavailable, reject workDir (never allow-all).
-      // Path boundary: compare resolved workDir against root+'/' to prevent prefix attacks
-      // (e.g. /root/workevil must not pass /root/work).
       let policy
       try { policy = rt.ctx?.get?.('remote-agent:node-policy') } catch { policy = undefined }
       if (!policy) return { ok: false, error: 'bot-create-workdir-denied' }
       const roots = Array.isArray(policy.roots) ? policy.roots : []
       if (roots.length === 0) return { ok: false, error: 'bot-create-workdir-denied' }
+      const sep = pathResolve.sep ?? '/'
       const resolved = pathResolve(workDir)
-      const inRoots = roots.some((r) => resolved === pathResolve(r) || resolved.startsWith(pathResolve(r) + '/'))
+      const inRoots = roots.some((r) => {
+        const rootResolved = pathResolve(r)
+        if (resolved === rootResolved) return true
+        const prefix = rootResolved + sep
+        // On win32, drive letters are case-insensitive
+        if (process.platform === 'win32') {
+          return resolved.toLowerCase().startsWith(prefix.toLowerCase())
+        }
+        return resolved.startsWith(prefix)
+      })
       if (!inRoots) return { ok: false, error: 'bot-create-workdir-denied' }
     }
 
