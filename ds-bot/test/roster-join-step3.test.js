@@ -345,31 +345,19 @@ test('createBotCreateReceiver returns bot-create-model-unknown when llm service 
   assert.equal(result.error, 'bot-create-model-unknown')
 })
 
-// win32-style path: D:\work root, D:\work\a workDir (parameterized with path.win32)
+// win32-style path: D:\work root, D:\work\a workDir — tests the real isInsideRoot function
 test('createBotCreateReceiver allows workDir inside win32-style root', async () => {
   const { win32 } = await import('node:path')
-  const rt = {
-    state: { bots: {} },
-    ctx: {
-      get(name) {
-        if (name === 'remote-agent:node-policy') return { roots: ['D:\\work'] }
-        return undefined
-      },
-    },
-    createBot: async (opts) => {
-      const id = `local-${opts.name}`
-      rt.state.bots[id] = { id, name: opts.name, role: '' }
-      return id
-    },
-  }
-  // Override pathResolve in the module to use win32 for this test isn't feasible without
-  // mocking. Instead, verify the boundary logic directly using win32 path module.
-  const root = win32.resolve('D:\\work')
-  const wd = win32.resolve('D:\\work\\a')
-  const sep = win32.sep
-  const prefix = root + sep
-  const matches = wd.toLowerCase().startsWith(prefix.toLowerCase())
-  assert.ok(matches, `win32: '${wd}' should be inside '${root}${sep}'`)
+  const { isInsideRoot } = await import('../src/host/path-guard.js')
+  // Parameterized: use win32.resolve so paths mirror what Windows nodes produce
+  assert.ok(isInsideRoot(win32.resolve('D:\\work\\a'), win32.resolve('D:\\work'), { sep: win32.sep, ignoreCase: true }), 'D:\\work\\a inside D:\\work')
+  assert.ok(isInsideRoot(win32.resolve('D:\\work'), win32.resolve('D:\\work'), { sep: win32.sep, ignoreCase: true }), 'root itself allowed')
+  assert.ok(!isInsideRoot(win32.resolve('D:\\workevil'), win32.resolve('D:\\work'), { sep: win32.sep, ignoreCase: true }), 'D:\\workevil must NOT pass D:\\work')
+  assert.ok(isInsideRoot(win32.resolve('d:\\WORK\\a'), win32.resolve('D:\\work'), { sep: win32.sep, ignoreCase: true }), 'case-insensitive: d:\\WORK\\a inside D:\\work')
+  // posix boundary check via isInsideRoot
+  const { posix } = await import('node:path')
+  assert.ok(isInsideRoot(posix.resolve('/root/work/sub'), posix.resolve('/root/work'), { sep: posix.sep }), '/root/work/sub inside /root/work')
+  assert.ok(!isInsideRoot(posix.resolve('/root/workevil'), posix.resolve('/root/work'), { sep: posix.sep }), '/root/workevil must NOT pass /root/work')
 })
 
 // instructions: 3000 Chinese chars = 9000 bytes → clamped to ≤8000, no U+FFFD at end

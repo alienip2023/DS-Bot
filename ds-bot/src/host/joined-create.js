@@ -1,8 +1,9 @@
 // Step 3: create a Bot on a remote node from the main controller.
 // No local session is created. No handleRemoteTurn, no mode:'agent', no task/start.
 import { randomUUID } from 'node:crypto'
-import { resolve as pathResolve } from 'node:path'
+import { resolve as pathResolve, sep as pathSep } from 'node:path'
 import { shadowId } from './roster-join.js'
+import { isInsideRoot } from './path-guard.js'
 
 export const BOT_CREATE_TIMEOUT_MS = 30_000
 const MAX_INSTRUCTIONS_BYTES = 8000
@@ -183,18 +184,9 @@ export function createBotCreateReceiver(rt) {
       if (!policy) return { ok: false, error: 'bot-create-workdir-denied' }
       const roots = Array.isArray(policy.roots) ? policy.roots : []
       if (roots.length === 0) return { ok: false, error: 'bot-create-workdir-denied' }
-      const sep = pathResolve.sep ?? '/'
       const resolved = pathResolve(workDir)
-      const inRoots = roots.some((r) => {
-        const rootResolved = pathResolve(r)
-        if (resolved === rootResolved) return true
-        const prefix = rootResolved + sep
-        // On win32, drive letters are case-insensitive
-        if (process.platform === 'win32') {
-          return resolved.toLowerCase().startsWith(prefix.toLowerCase())
-        }
-        return resolved.startsWith(prefix)
-      })
+      const ignoreCase = process.platform === 'win32'
+      const inRoots = roots.some((r) => isInsideRoot(resolved, pathResolve(r), { sep: pathSep, ignoreCase }))
       if (!inRoots) return { ok: false, error: 'bot-create-workdir-denied' }
     }
 
