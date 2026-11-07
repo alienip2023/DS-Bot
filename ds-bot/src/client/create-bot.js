@@ -8,6 +8,7 @@ import { useEscape } from './overlay-hooks.js'
 import { createPayload, freshBotName, startModel } from './bot-draft.js'
 import { ModelMenu } from './model-menu.js'
 import { hostText, t } from './i18n.js'
+import { pickTargets } from './pick-targets.js'
 import { nameProblem } from '../shared/mentions.js'
 
 const pick = list => list[Math.floor(Math.random() * list.length)]
@@ -45,7 +46,8 @@ export function CreateBot({ roster, actions, start, brief = '', onBack, canGoBac
   useEffect(() => {
     let cancelled = false
     actions.botCreateTargets?.().then(res => {
-      if (!cancelled && Array.isArray(res?.value)) setRemoteNodes(res.value)
+      const list = pickTargets(res)
+      if (!cancelled) setRemoteNodes(list)
     }).catch(() => {})
     return () => { cancelled = true }
   }, [])

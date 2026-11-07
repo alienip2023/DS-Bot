@@ -17748,6 +17748,13 @@ function createPayload({ name, look, image, model, effort, brief }) {
   return payload;
 }
 
+// src/client/pick-targets.js
+function pickTargets(res) {
+  if (Array.isArray(res)) return res;
+  if (Array.isArray(res?.value)) return res.value;
+  return [];
+}
+
 // src/client/create-bot.js
 var import_react39 = require("react");
 var pick = (list) => list[Math.floor(Math.random() * list.length)];
@@ -17781,7 +17788,8 @@ function CreateBot({ roster, actions, start, brief = "", onBack, canGoBack, onCr
   (0, import_react39.useEffect)(() => {
     let cancelled = false;
     actions.botCreateTargets?.().then((res) => {
-      if (!cancelled && Array.isArray(res?.value)) setRemoteNodes(res.value);
+      const list = pickTargets(res);
+      if (!cancelled) setRemoteNodes(list);
     }).catch(() => {
     });
     return () => {
