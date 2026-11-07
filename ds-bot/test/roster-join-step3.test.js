@@ -158,18 +158,18 @@ test('createBotCreateReceiver returns error when no createBot on rt', async () =
 
 // install 测试
 test('install wires createBotOnNode on rt and registers ctx receiver', () => {
-  const set = []
+  const provided = []
   const rt = {
     ctx: {
       get(name) { return name === 'remote-agent:registry' ? { send() {}, onlineNodes() { return [] }, on() {}, off() {} } : undefined },
-      set(name, fn) { set.push({ name, fn }) },
+      provide(name, fn) { provided.push({ name, fn }) },
     },
     state: { bots: {} },
     save() {},
   }
   install(rt)
   assert.equal(typeof rt.createBotOnNode, 'function')
-  const registered = set.find((s) => s.name === 'remote-agent:bot-create')
+  const registered = provided.find((s) => s.name === 'remote-agent:bot-create')
   assert.ok(registered, 'remote-agent:bot-create not registered')
   assert.equal(typeof registered.fn, 'function')
 })

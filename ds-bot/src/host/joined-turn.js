@@ -197,9 +197,13 @@ function wrapSendUser(rt) {
   rt.sendUser = wrapped
 }
 
+export function exposeBotTurnReceiver(ctx, accept) {
+  try { ctx?.provide?.('remote-agent:bot-turn', accept) } catch { /* registry plugin may be absent */ }
+}
+
 export function install(rt) {
   rt.handleJoinedTurn = (msg) => handleJoinedTurn(rt, msg)
   const accept = createBotTurnReceiver(rt)
-  try { rt.ctx?.set?.('remote-agent:bot-turn', accept) } catch { /* registry plugin may be absent */ }
+  exposeBotTurnReceiver(rt.ctx, accept)
   wrapSendUser(rt)
 }

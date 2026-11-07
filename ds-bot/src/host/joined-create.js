@@ -141,8 +141,12 @@ export function createBotCreateReceiver(rt) {
   }
 }
 
+export function exposeBotCreateReceiver(ctx, accept) {
+  try { ctx?.provide?.('remote-agent:bot-create', accept) } catch { /* registry plugin may be absent */ }
+}
+
 export function install(rt) {
   rt.createBotOnNode = (opts) => createBotOnNode(rt, opts)
   const accept = createBotCreateReceiver(rt)
-  try { rt.ctx?.set?.('remote-agent:bot-create', accept) } catch { /* registry plugin may be absent */ }
+  exposeBotCreateReceiver(rt.ctx, accept)
 }
