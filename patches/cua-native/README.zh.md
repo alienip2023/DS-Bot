@@ -44,7 +44,7 @@ npm 上的同名包更旧，不能拿来顶。
 
 路径不写死某一台机器：app 路径从 `/Applications/DSH Desktop.app` 推导，可用 `--app` 或 `DSH_APP_ASAR` 覆盖。`DSH_HOME` 取环境变量，否则用 `~/Library/Application Support/dsh-desktop/harness`。`--profile` 可给 profile 名或绝对路径；省略时先看正在跑的进程命令行里有没有 `<DSH_HOME>/profiles/<name>/`，没有再在只剩一个带 `cordis.yml` 的 profile 时用它。`desktop-safe-mode` 不优先。
 
-幂等：副本已在，且二进制 sha256、源码指纹和包指纹都与这次 asar 提取一致，就打印 `action: skip`，不重新编译，也不覆盖副本。同一份源码已经编译过时，复用 `DSH_HOME/.cache/cua-native/` 里的产物，避免再跑 swift。
+幂等：副本已在，且这次记录的二进制 sha256、源码指纹和包指纹都与这次 asar 提取一致，就打印 `action: skip`，不重新编译，也不覆盖副本。这个 sha256 只用来认出同一份已装二进制，不是跨机器、跨编译批次的固定摘要。同一份源码已经编译过时，复用 `DSH_HOME/.cache/cua-native/` 里的产物，避免再跑 swift。
 
 失败时脚本会尽量把刚换上的目录改回去或删掉，并打印回滚提示。手动回滚：
 
@@ -53,6 +53,19 @@ rm -rf "$DSH_HOME/profiles/<profile>/node_modules/@deepseek-ai/dsh-experimental-
 ```
 
 删掉之后，解析重新落到 asar，现象回到 `missing`。
+
+## 怎么算通过
+
+通过不看某一份固定 sha256。同一次源码、不同编译批次，哈希可以不同。脚本这次编出来的和先前手放的那份不一样，是正常的，不能拿其中一份当标准答案，也不能因此覆盖正在用的二进制。
+
+同时满足下面四条才算通过：
+
+- 产物是 Mach-O arm64。
+- `access` 的 `X_OK` 通过。
+- `swift build` 退出码为 0。复用缓存时，那一次编译的退出码已经是 0。
+- `createRequire(<profile>/cordis.yml)` 解析到副本的 `lib/index.js`，不是 `app.asar`。
+
+打印出来的 sha256 只是这次二进制的记录，用来判断同一份副本要不要跳过重编译。它不是验收口令。
 
 ## 装完之后
 
