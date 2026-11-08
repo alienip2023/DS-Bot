@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { joinedShadow, shadowId } from './roster-join.js'
 
 export const BRIDGE_DOWN_TEXT = '副机仍在执行，桥已断'
-export const JOINED_TURN_TIMEOUT_MS = 60 * 60 * 1000
+export const JOINED_TURN_TIMEOUT_MS = 120_000
 const SKIP_ROLES = new Set(['reply', 'report', 'kickoff', 'continue', 'update'])
 
 export function joinedDispatchRole(role) {
@@ -177,7 +177,7 @@ function wrapSendUser(rt) {
   const orig = rt.sendUser
   if (typeof orig !== 'function' || orig.__joinedTurn === true) return
   const wrapped = async function sendUserJoined(args) {
-    const bot = rt.botOf?.(args?.sessionId)
+    const bot = rt.bySessionId?.(args?.sessionId) ?? rt.botOf?.(args?.sessionId)
     if (!joinedShadow(bot)) return orig(args)
     const result = await rt.handleJoinedTurn({
       fromId: undefined,

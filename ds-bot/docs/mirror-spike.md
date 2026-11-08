@@ -195,7 +195,7 @@ Guard boundaries: `resolveAgent` (delivery.js:11) + `sessionController.prompt` (
 | P4 | ⚠️ SESSION_ALLOWS_DUP | runtime | Primary + app (turn,step) dedup |
 | P5 | ✅ SESSION_ALLOWS | runtime | Primary (write turn/start first) |
 | P6 | ✅ SESSION_ALLOWS | runtime | Primary (safe) |
-| P7 | ✅ PASS | runtime | Primary + bySessionId reverse index |
+| P7 | 🔴 RED (fix required) | runtime | Primary + bySessionId guard |
 | P8 | ✅ PASS | runtime | Primary |
 
 **Overall: ✅ Primary route (session.append) is feasible. No fallback routes (A/B/C) needed.**
