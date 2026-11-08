@@ -8,9 +8,11 @@
 // line or an error message here: logs name provider ids and counts only.
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { env } from 'node:process'
 import { randomBytes } from 'node:crypto'
 import { createGatewayServer } from '../gateway/index.js'
 import { createTokenStore } from '../gateway/token-store.js'
+import { readUpstreamProviders } from '../gateway/upstream.js'
 
 const PI_AI = 'llm-pi-ai'
 const PROVIDER_ID = /^[A-Za-z0-9._-]+$/
@@ -131,22 +133,55 @@ export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRef
   return { providers, defaultModel: validatedDefault }
 }
 
+export function listGatewayProviders(rt) {
+  const ctx = rt.ctx
+  const settings = ctx?.get?.('settings')
+  const entries = typeof ctx?.llm?.listConfigurableProviders === 'function' ? ctx.llm.listConfigurableProviders() : []
+  if (!settings || entries.length === 0) return []
+  const sections = new Map(settings.describe({ redactSecrets: true }).map(sec => [sec.ns, sec]))
+  const refs = (() => {
+    try { return parseCredentialRefs(readFileSync(join(rt.dshHome, '.credentials.yaml'), 'utf8')) } catch { return new Map() }
+  })()
+  const CLI_PREFIX = /^(claude-code|codex-cli)(\/|$)/
+  const result = []
+  for (const entry of entries) {
+    if (CLI_PREFIX.test(entry.provider)) continue
+    const profile = entry.settingsPath.reduce((v, k) => v?.[k], sections.get(entry.settingsNs)?.value)
+    if (!profile || typeof profile !== 'object') continue
+    const apiKeyEnv = typeof profile.apiKeyEnv === 'string' ? profile.apiKeyEnv : ''
+    const apiKey = refs.get(apiKeyEnv)
+    if (!PROVIDER_ID.test(entry.provider) || typeof profile.baseURL !== 'string' || profile.baseURL === '' || typeof apiKey !== 'string' || apiKey === '') continue
+    const models = (Array.isArray(profile.models) ? profile.models : [])
+      .filter(m => m && typeof m.id === 'string' && m.id !== '')
+      .map(m => ({ id: m.id, name: typeof m.name === 'string' && m.name !== '' ? m.name : m.id }))
+    result.push({ id: entry.provider, baseURL: profile.baseURL, apiKey, models })
+  }
+  return result
+}
+
 export function install(rt) {
   const ctx = rt.ctx
 
   // ── Gateway startup ──────────────────────────────────────────────────────
+  // Priority: settings.describe 'ds-bot' ns → DS_BOT_GATEWAY_HOST/PORT env → defaults
   const readGatewaySettings = () => {
+    let host, port
     try {
       const settings = ctx?.get?.('settings')
-      if (!settings) return {}
-      const section = settings.describe({ redactSecrets: false })
-        .find(s => s.ns === 'ds-bot' || s.ns === 'ds-bot-main')
-      const cfg = section?.value ?? {}
-      return {
-        host: typeof cfg.gatewayHost === 'string' && cfg.gatewayHost !== '' ? cfg.gatewayHost : undefined,
-        port: typeof cfg.gatewayPort === 'number' ? cfg.gatewayPort : undefined,
+      if (settings) {
+        const section = settings.describe({ redactSecrets: false })
+          .find(s => s.ns === 'ds-bot' || s.ns === 'ds-bot-main')
+        const cfg = section?.value ?? {}
+        if (typeof cfg.gatewayHost === 'string' && cfg.gatewayHost !== '') host = cfg.gatewayHost
+        if (typeof cfg.gatewayPort === 'number') port = cfg.gatewayPort
       }
-    } catch { return {} }
+    } catch { /* ignore */ }
+    if (host === undefined && typeof env.DS_BOT_GATEWAY_HOST === 'string' && env.DS_BOT_GATEWAY_HOST !== '') host = env.DS_BOT_GATEWAY_HOST
+    if (port === undefined && typeof env.DS_BOT_GATEWAY_PORT === 'string' && env.DS_BOT_GATEWAY_PORT !== '') {
+      const p = Number(env.DS_BOT_GATEWAY_PORT)
+      if (Number.isInteger(p) && p >= 0 && p < 65536) port = p
+    }
+    return { host, port }
   }
 
   const secrets = new Map()
@@ -170,17 +205,21 @@ export function install(rt) {
     return { refName, value }
   }
 
-  ctx?.effect?.(async () => {
-    const { host, port } = readGatewaySettings()
-    gwHost = host ?? '127.0.0.1'
-    const gwPort = typeof port === 'number' ? port : 4387
-    gwServer = createGatewayServer({ gatewayHost: gwHost, gatewayPort: gwPort, secrets, store: tokenStore, providers: [], rt })
-    actualPort = await gwServer.start()
-    if (actualPort !== null) {
-      try { ctx.provide('ds-bot:gateway-port', actualPort) } catch {}
-    }
-    return async () => {
-      if (gwServer) await gwServer.stop()
+  ctx?.effect?.(() => {
+    void (async () => {
+      const { host, port } = readGatewaySettings()
+      gwHost = host ?? '127.0.0.1'
+      const gwPort = typeof port === 'number' ? port : 4387
+      const providersFn = () => {
+        const origin = `http://${gwHost}:${actualPort ?? gwPort}`
+        return readUpstreamProviders(listGatewayProviders(rt), origin)
+      }
+      gwServer = createGatewayServer({ gatewayHost: gwHost, gatewayPort: gwPort, secrets, store: tokenStore, providers: providersFn, rt })
+      actualPort = await gwServer.start()
+    })().catch(err => rt.warn?.('ds-bot: model gateway start failed: %s', err?.message ?? err))
+    return () => {
+      const s = gwServer; gwServer = null
+      void s?.stop?.()
     }
   }, 'ds-bot: model gateway')
 

@@ -26,6 +26,7 @@ function readBody(req, limit) {
  * providers: Array<{id, models}>
  */
 export function createRouter({ auth, providers = [], timeoutMs, bodyLimit }) {
+  const resolveProviders = () => typeof providers === 'function' ? providers() : (providers ?? [])
   return async function route(req, res) {
     const url = req.url ?? '/'
     const method = req.method ?? 'GET'
@@ -45,7 +46,7 @@ export function createRouter({ auth, providers = [], timeoutMs, bodyLimit }) {
     // GET /gw/:providerId/v1/models
     const modelsMatch = /^\/gw\/([^\/]+)\/v1\/models$/.exec(url)
     if (method === 'GET' && modelsMatch) {
-      handleModels(providers, modelsMatch[1], res)
+      handleModels(resolveProviders(), modelsMatch[1], res)
       return
     }
 
@@ -53,7 +54,7 @@ export function createRouter({ auth, providers = [], timeoutMs, bodyLimit }) {
     const chatMatch = /^\/gw\/([^\/]+)\/v1\/chat\/completions$/.exec(url)
     if (method === 'POST' && chatMatch) {
       const providerId = chatMatch[1]
-      const provider = providers.find(p => p.id === providerId)
+      const provider = resolveProviders().find(p => p.id === providerId)
       if (!provider) {
         res.writeHead(404, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ error: 'provider-not-found' }))
