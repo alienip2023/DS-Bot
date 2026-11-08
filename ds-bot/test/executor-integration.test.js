@@ -8,6 +8,7 @@ import { mock } from 'node:test'
 import EventEmitter from 'node:events'
 
 import { send, deliverTurn, ExecutorError } from '../src/host/executor.js'
+import { mirrorTurn } from '../src/host/mirror.js'
 import { createTurnTracker } from '../src/host/turn-tracker.js'
 import { historyEntry } from '../src/host/parts.js'
 
@@ -23,11 +24,13 @@ function makeJoinedBot(overrides = {}) {
 
 function makeRegistry({ online = true, replyText = 'Node reply' } = {}) {
   const emitter = new EventEmitter()
+  let seqCounter = 0
   return {
     send: (nodeId, type, payload) => {
       if (!online) return false
+      const seq = seqCounter++
       setImmediate(() => emitter.emit('botTurnResult', {
-        exchangeId: payload.exchangeId, ok: true, text: replyText,
+        exchangeId: payload.exchangeId, ok: true, text: replyText, seq,
       }))
       return true
     },
@@ -246,13 +249,23 @@ describe('turn-tracker: lifecycle', () => {
 })
 
 describe('executor.send: edge cases', () => {
-  it('joined shadow missing nodeId → E_NOT_FOUND', async () => {
-    // Knife: change to E_REJECTED → must red
-    const bot = { id: 'bot-no-node', origin: 'joined', worker: { home: 'remote', remoteBotId: 'r1' } }
+  it('joined shadow missing nodeId → E_NOT_FOUND (worker absent)', async () => {
+    // worker is falsy → E_NOT_FOUND (not worker shape mismatch)
+    const bot = { id: 'bot-no-node', origin: 'joined', worker: null }
     const rt = { botOf: (id) => id === bot.id ? bot : undefined, ctx: { get: () => ({}) } }
     await assert.rejects(
       () => send({ botId: bot.id, text: 'Hi', rt }),
       (err) => err instanceof ExecutorError && err.code === 'E_NOT_FOUND',
+    )
+  })
+
+  it('S21-E_INVALID: worker.nodeId wrong type → E_INVALID (not E_NOT_FOUND)', async () => {
+    // worker exists but nodeId is not a string → E_INVALID
+    const bot = { id: 'bot-bad-worker', origin: 'joined', worker: { home: 'remote', nodeId: 123, remoteBotId: 'r1' } }
+    const rt = { botOf: (id) => id === bot.id ? bot : undefined, ctx: { get: () => ({}) } }
+    await assert.rejects(
+      () => send({ botId: bot.id, text: 'Hi', rt }),
+      (err) => err instanceof ExecutorError && err.code === 'E_INVALID',
     )
   })
 
@@ -309,3 +322,141 @@ describe('deliverTurn: multi-turn + missing turn param', () => {
   })
 })
 
+// ---- S2-1 tests ----
+
+describe('S21: E_INVALID input validation', () => {
+  it('S21-E_INVALID: missing botId → E_INVALID (not E_NOT_FOUND)', async () => {
+    const rt = { botOf: (id) => undefined, ctx: { get: () => undefined } }
+    await assert.rejects(
+      () => send({ botId: '', text: 'Hi', rt }),
+      (err) => err instanceof ExecutorError && err.code === 'E_INVALID',
+    )
+  })
+
+  it('S21-E_INVALID: null botId → E_INVALID', async () => {
+    const rt = { botOf: () => undefined, ctx: { get: () => undefined } }
+    await assert.rejects(
+      () => send({ botId: null, text: 'Hi', rt }),
+      (err) => err instanceof ExecutorError && err.code === 'E_INVALID',
+    )
+  })
+
+  it('S21-E_INVALID: empty text → E_INVALID', async () => {
+    const bot = makeJoinedBot()
+    const rt = makeRt(bot, makeRegistry())
+    await assert.rejects(
+      () => send({ botId: bot.id, text: '', rt }),
+      (err) => err instanceof ExecutorError && err.code === 'E_INVALID',
+    )
+  })
+
+  it('S21-E_INVALID: non-string text → E_INVALID', async () => {
+    const bot = makeJoinedBot()
+    const rt = makeRt(bot, makeRegistry())
+    await assert.rejects(
+      () => send({ botId: bot.id, text: 42, rt }),
+      (err) => err instanceof ExecutorError && err.code === 'E_INVALID',
+    )
+  })
+})
+
+describe('S21: seq from bot/turn-result', () => {
+  function makeRegistryWithSeq({ online = true, replyText = 'Node reply', seq = 0 } = {}) {
+    const emitter = new EventEmitter()
+    return {
+      send: (nodeId, type, payload) => {
+        if (!online) return false
+        setImmediate(() => emitter.emit('botTurnResult', {
+          exchangeId: payload.exchangeId, ok: true, text: replyText, seq,
+        }))
+        return true
+      },
+      on: (ev, fn) => emitter.on(ev, fn),
+      off: (ev, fn) => emitter.off(ev, fn),
+    }
+  }
+
+  it('S21-seq-carried: send() returns seq from result frame', async () => {
+    const bot = makeJoinedBot()
+    const registry = makeRegistryWithSeq({ replyText: 'seq reply', seq: 7 })
+    const rt = makeRt(bot, registry)
+    const result = await send({ botId: bot.id, text: 'Hi', rt })
+    assert.equal(result.seq, 7, 'send() must return seq from bot/turn-result')
+  })
+
+  it('S21-seq-wiring: deliverTurn passes result.seq as nodeSeq into mirrorTurn', async () => {
+    const bot = makeJoinedBot()
+    const registry = makeRegistryWithSeq({ replyText: 'wiring test', seq: 7 })
+    const rt = makeRt(bot, registry)
+    const fakeSession = { append: (t, d, o) => { const ev = { type: t, data: d, opts: o }; return ev } }
+
+    const seenKeys = new Set()
+    await deliverTurn({
+      botId: bot.id, text: 'wiring input', rt, session: fakeSession,
+      turn: 1, seenKeys, closedKeys: new Set(), seenSteps: new Set(),
+    })
+
+    // Only true if deliverTurn passes result.seq (7) as nodeSeq to mirrorTurn,
+    // which then adds 'bot-joined-1:7' to seenKeys
+    assert.equal(seenKeys.has('bot-joined-1:7'), true, 'seenKeys must contain botId:seq — proves nodeSeq wiring')
+  })
+
+  it('S21-seq-dedup: mirrorTurn second call with same (botId, seq) skipped by seenKeys', async () => {
+    const bot = makeJoinedBot()
+    const fakeSession = { append: (t, d, o) => { const ev = { type: t, data: d, opts: o }; return ev } }
+
+    const seenKeys = new Set()
+    const seenSteps = new Set()
+
+    // First mirrorTurn call: writes events, adds 'bot-joined-1:3' to seenKeys
+    const r1 = await mirrorTurn(fakeSession, {
+      botId: bot.id, text: 'reply 1', nodeSeq: 3, turn: 1, step: 1,
+      seenKeys, closedKeys: new Set(), seenSteps,
+    })
+    assert.ok(r1.skipped !== true, 'first call should not be skipped')
+    assert.ok(seenKeys.has('bot-joined-1:3'), 'seenKeys must contain botId:seq key after first call')
+
+    // Second call with same (botId, nodeSeq), fresh closedKeys so only seenKeys can catch it
+    const r2 = await mirrorTurn(fakeSession, {
+      botId: bot.id, text: 'reply 2', nodeSeq: 3, turn: 2, step: 2,
+      seenKeys, closedKeys: new Set(), seenSteps: new Set(),
+    })
+    assert.equal(r2.skipped, true, 'second call with same (botId, seq) must be skipped')
+    assert.equal(r2.reason, 'already-written:nodeSeq', 'skipped reason must be already-written:nodeSeq')
+  })
+
+  it('S21-seq-missing-e2e: result frame missing seq → E_REJECTED, mirror no write', async () => {
+    const bot = makeJoinedBot()
+    const emitter = new EventEmitter()
+    const registry = {
+      send: (_, __, payload) => {
+        setImmediate(() => emitter.emit('botTurnResult', {
+          exchangeId: payload.exchangeId, ok: true, text: 'bad frame',
+          // seq intentionally missing
+        }))
+        return true
+      },
+      on: (ev, fn) => emitter.on(ev, fn),
+      off: (ev, fn) => emitter.off(ev, fn),
+    }
+    const rt = makeRt(bot, registry)
+    const events = []
+    const fakeSession = { append: (t, d, o) => { const ev = { type: t, data: d }; events.push(ev); return ev } }
+
+    let caughtErr
+    try {
+      await deliverTurn({
+        botId: bot.id, text: 'e2e test', rt, session: fakeSession,
+        turn: 1, seenKeys: new Set(), closedKeys: new Set(), seenSteps: new Set(),
+      })
+    } catch (err) { caughtErr = err }
+
+    assert.ok(caughtErr instanceof ExecutorError, 'must throw ExecutorError')
+    assert.equal(caughtErr.code, 'E_REJECTED', 'must be E_REJECTED not E_OFFLINE')
+    assert.ok(
+      String(caughtErr.message).includes('seq-missing') || String(caughtErr.detail ?? '').includes('seq-missing'),
+      'error must reference seq-missing, got: ' + caughtErr.message
+    )
+    assert.equal(events.length, 0, 'mirror must not write any events for frame with missing seq')
+  })
+})

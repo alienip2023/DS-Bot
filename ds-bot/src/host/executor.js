@@ -44,6 +44,12 @@ export class ExecutorError extends Error {
  * @throws {ExecutorError}
  */
 export async function send({ botId, text, rt, tracker, timeoutMs: timeoutOverride }) {
+  // E_INVALID: input validation (S2-1)
+  if (!botId || typeof botId !== 'string')
+    throw new ExecutorError('E_INVALID', 'botId is required and must be a non-empty string')
+  if (text == null || typeof text !== 'string' || text === '')
+    throw new ExecutorError('E_INVALID', 'text is required and must be a non-empty string')
+
   const bot = rt.botOf?.(botId)
   if (!bot) throw new ExecutorError('E_NOT_FOUND', `bot not found: ${botId}`)
 
@@ -54,10 +60,13 @@ export async function send({ botId, text, rt, tracker, timeoutMs: timeoutOverrid
 }
 
 async function sendRemote({ bot, text, rt, tracker, timeoutOverride }) {
-  const nodeId = bot.worker?.nodeId
-  const remoteBotId = bot.worker?.remoteBotId
-  if (!nodeId || !remoteBotId) {
-    throw new ExecutorError('E_NOT_FOUND', 'joined shadow missing nodeId/remoteBotId')
+  if (!bot.worker) {
+    throw new ExecutorError('E_NOT_FOUND', 'joined shadow missing worker config')
+  }
+  const nodeId = bot.worker.nodeId
+  const remoteBotId = bot.worker.remoteBotId
+  if (typeof nodeId !== 'string' || nodeId === '' || typeof remoteBotId !== 'string' || remoteBotId === '') {
+    throw new ExecutorError('E_INVALID', 'worker nodeId and remoteBotId must be non-empty strings')
   }
 
   let registry
@@ -112,9 +121,14 @@ async function sendRemote({ bot, text, rt, tracker, timeoutOverride }) {
     tracker?.finish(turnId, { status: 'failed', error: 'E_REJECTED' })
     throw new ExecutorError('E_REJECTED', result.error ?? 'bot-turn-rejected')
   }
+  // Validate seq field (S2-1 contract: seq must be a non-negative integer)
+  if (typeof result.seq !== 'number' || !Number.isInteger(result.seq) || result.seq < 0) {
+    tracker?.finish(turnId, { status: 'failed', error: 'E_REJECTED' })
+    throw new ExecutorError('E_REJECTED', result.error ?? 'bot-turn-result-seq-missing')
+  }
 
   tracker?.finish(turnId, { status: 'done' })
-  return { ok: true, turnId, text: result.text ?? '', nodeId, remoteBotId }
+  return { ok: true, turnId, text: result.text ?? '', nodeId, remoteBotId, seq: result.seq }
 }
 
 async function sendLocal({ bot, text, rt, tracker }) {
@@ -163,7 +177,7 @@ export async function deliverTurn({ botId, text, rt, session, turn, step = 1, se
     userText: text,
     botText: result.text,
     botId,
-    nodeSeq: null,   // S2 obligation: add seq to bot/turn-result frame
+    nodeSeq: result.seq,   // S2-1: seq from bot/turn-result frame
     seenKeys,
     closedKeys,
     seenSteps,
