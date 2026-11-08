@@ -1,0 +1,115 @@
+// Config source: builds the model-provider payload the main DSH pushes to remote nodes
+// (remote-agent's `remote-agent:config-sync` service calls the source synchronously).
+//
+// A provider goes out only when it is complete: a route in the llm-pi-ai settings with
+// a protocol and a credential ref, whose key the credentials file really holds. A
+// provider without a key is skipped, never pushed half-made. The key travels in the
+// payload (the node writes it to its own credentials file) and never goes into a log
+// line or an error message here: logs name provider ids and counts only.
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
+const PI_AI = 'llm-pi-ai'
+const PROVIDER_ID = /^[A-Za-z0-9._-]+$/
+const CRED_REF = /^[A-Za-z_][A-Za-z0-9_]*$/
+const RETRY_MS = 5_000
+
+// `refs:` section of $DSH_HOME/.credentials.yaml as a Map(name -> value). Text-level
+// on purpose (no yaml dependency); a value this cannot read as one line is skipped.
+export function parseCredentialRefs(text) {
+  const refs = new Map()
+  let inRefs = false
+  for (const line of String(text ?? '').split(/\r?\n/)) {
+    if (/^refs:\s*$/.test(line)) { inRefs = true; continue }
+    if (/^\S/.test(line)) { inRefs = false; continue }
+    if (!inRefs) continue
+    const match = /^\s+([A-Za-z_][A-Za-z0-9_]*):\s*(.*?)\s*$/.exec(line)
+    if (!match) continue
+    const [, name, raw] = match
+    let value
+    if (raw.startsWith('"')) {
+      try { value = JSON.parse(raw) } catch { continue }
+    } else if (raw.startsWith("'")) {
+      if (!raw.endsWith("'") || raw.length < 2) continue
+      value = raw.slice(1, -1).replace(/''/g, "'")
+    } else if (raw === '' || raw === '|' || raw === '>' || raw.startsWith('#')) {
+      continue
+    } else {
+      value = raw
+    }
+    if (typeof value === 'string' && value !== '') refs.set(name, value)
+  }
+  return refs
+}
+
+function readRefsFile(rt) {
+  try { return parseCredentialRefs(readFileSync(join(rt.dshHome, '.credentials.yaml'), 'utf8')) } catch { return new Map() }
+}
+
+/**
+ * The payload for remote nodes: `{ providers, defaultModel }` (no revision; the hub adds it).
+ * Synchronous. `defaultModel` is passed in because resolving it is async (see `install`).
+ */
+export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRefsFile } = {}) {
+  const ctx = rt.ctx
+  const settings = ctx.get?.('settings')
+  const entries = typeof ctx.llm?.listConfigurableProviders === 'function' ? ctx.llm.listConfigurableProviders() : []
+  const providers = []
+  let skipped = 0
+  if (settings && entries.length > 0) {
+    const sections = new Map(settings.describe({ redactSecrets: true }).map(section => [section.ns, section]))
+    const refs = readRefs(rt)
+    for (const entry of entries) {
+      if (entry.settingsNs !== PI_AI) continue
+      const profile = entry.settingsPath.reduce((value, key) => value?.[key], sections.get(entry.settingsNs)?.value)
+      if (!profile || typeof profile !== 'object') continue
+      const apiKeyEnv = typeof profile.apiKeyEnv === 'string' ? profile.apiKeyEnv : ''
+      const apiKey = refs.get(apiKeyEnv)
+      if (!PROVIDER_ID.test(entry.provider) || !CRED_REF.test(apiKeyEnv) || typeof profile.api !== 'string' || profile.api === '' || typeof apiKey !== 'string' || apiKey === '') {
+        skipped += 1
+        continue
+      }
+      const models = (Array.isArray(profile.models) ? profile.models : [])
+        .filter(model => model && typeof model.id === 'string' && model.id !== '')
+        .map(model => ({ id: model.id, name: typeof model.name === 'string' && model.name !== '' ? model.name : model.id }))
+      providers.push({
+        id: entry.provider,
+        api: profile.api,
+        ...(typeof profile.baseURL === 'string' && profile.baseURL !== '' ? { baseURL: profile.baseURL } : {}),
+        apiKeyEnv,
+        apiKey,
+        models,
+      })
+    }
+  }
+  if (skipped > 0) rt.warn?.('ds-bot: config-source skipped %d provider(s) without a protocol or key', skipped)
+  return { providers, defaultModel: typeof defaultModel === 'string' && defaultModel !== '' ? defaultModel : null }
+}
+
+export function install(rt) {
+  const ctx = rt.ctx
+  // The hub calls the source synchronously, but the default model is resolved through
+  // the (async) catalog, so it is refreshed here and read from the cache.
+  let defaultModel = null
+  const refreshDefault = async () => {
+    try { defaultModel = (await rt.defaultBotModel?.()) ?? null } catch { defaultModel = null }
+  }
+  let attached = false
+  const attach = () => {
+    if (attached) return
+    let service
+    try { service = ctx?.get?.('remote-agent:config-sync') } catch { service = undefined }
+    if (!service || typeof service.setSource !== 'function') return
+    attached = true
+    service.setSource(() => buildConfigPayload(rt, { defaultModel }))
+  }
+  const tick = () => {
+    attach()
+    if (attached) void refreshDefault()
+  }
+  tick()
+  // remote-agent may come up after ds-bot; look again until its service is there, then keep
+  // the default model fresh.
+  const timer = setInterval(tick, RETRY_MS)
+  timer.unref?.()
+}
