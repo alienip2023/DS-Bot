@@ -42,7 +42,7 @@ export function createSendUser(rt, { textOfContent, getMirrorState, ctx } = {}) 
   const _getMirrorState = getMirrorState ?? ((rt, botId) => {
     if (!rt._mirrorState) rt._mirrorState = new Map()
     let s = rt._mirrorState.get(botId)
-    if (!s) { s = { seenKeys: new Set(), closedKeys: new Set(), seenSteps: new Set(), turnCounter: 0 }; rt._mirrorState.set(botId, s) }
+    if (!s) { s = { seenKeys: new Set(), closedKeys: new Set(), seenSteps: new Set() }; rt._mirrorState.set(botId, s) }
     return s
   })
   return async function sendUser({ sessionId: ref, content, requestId = randomUUID() }) {
@@ -55,13 +55,11 @@ export function createSendUser(rt, { textOfContent, getMirrorState, ctx } = {}) 
       const text = _textOfContent(content)
       const session = await ensureMirrorSession(rt, joinedBot)
       const ms = _getMirrorState(rt, joinedBot.id)
-      ms.turnCounter = (ms.turnCounter ?? 0) + 1
       await deliverTurn({
         botId: joinedBot.id,
         text,
         rt,
         session,
-        turn: ms.turnCounter,
         seenKeys: ms.seenKeys,
         closedKeys: ms.closedKeys,
         seenSteps: ms.seenSteps,
@@ -855,7 +853,7 @@ export function install(rt) {
   function getMirrorState(rt, botId) {
     if (!rt._mirrorState) rt._mirrorState = new Map()
     let s = rt._mirrorState.get(botId)
-    if (!s) { s = { seenKeys: new Set(), closedKeys: new Set(), seenSteps: new Set(), turnCounter: 0 }; rt._mirrorState.set(botId, s) }
+    if (!s) { s = { seenKeys: new Set(), closedKeys: new Set(), seenSteps: new Set() }; rt._mirrorState.set(botId, s) }
     return s
   }
 

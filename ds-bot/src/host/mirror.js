@@ -6,8 +6,39 @@ import { createUserMessage, createAssistantMessage } from '@deepseek-ai/dsh-llm'
 const MIRROR_PROVIDER = 'mirror'
 const MIRROR_MODEL = 'mirror-proxy'
 
+/**
+ * Allocate the next turn number from session.log.
+ * Reads already-committed events, finds the last turn/end, and returns max+1.
+ * If there is an unclosed turn (turn/start without matching turn/end), closes
+ * it first with reason {kind:'aborted'} before returning the next number.
+ * Always returns an integer >= 1.
+ */
+export function allocateTurn(session) {
+  const log = Array.isArray(session?.log) ? session.log : []
+  let maxClosedTurn = 0
+  let openTurn = null
+
+  for (const ev of log) {
+    if (ev?.type === 'turn/start') {
+      openTurn = ev.data?.turn ?? null
+    } else if (ev?.type === 'turn/end') {
+      const t = ev.data?.turn
+      if (typeof t === 'number') maxClosedTurn = Math.max(maxClosedTurn, t)
+      openTurn = null
+    }
+  }
+
+  if (openTurn !== null) {
+    // Close the dangling turn before opening a new one
+    session.append('turn/end', { turn: openTurn, reason: { kind: 'aborted' } })
+    return openTurn + 1
+  }
+
+  return maxClosedTurn + 1
+}
+
 export async function mirrorTurn(session, opts = {}) {
-  const { turn, step = 1, userText, botText, botId, nodeSeq, seenKeys, closedKeys, seenSteps, usage } = opts
+  const { step = 1, userText, botText, botId, nodeSeq, seenKeys, closedKeys, seenSteps, usage } = opts
 
   const nodeKey = (botId != null && nodeSeq != null && seenKeys instanceof Set)
     ? String(botId) + ':' + String(nodeSeq) : null
@@ -19,12 +50,13 @@ export async function mirrorTurn(session, opts = {}) {
     return { skipped: true, reason: 'already-closed' }
   }
 
-  const stepKey = turn + ':' + step
+  // Allocate turn from session.log — never trust caller-supplied turn number.
+  const turnInt = allocateTurn(session)
+  const stepKey = turnInt + ':' + step
+
   if (seenSteps instanceof Set && seenSteps.has(stepKey)) {
     return { skipped: true, reason: 'already-written:step' }
   }
-
-  const turnInt = typeof turn === 'number' && Number.isInteger(turn) ? turn : 1
 
   session.append('turn/start', { turn: turnInt })
 
@@ -60,7 +92,6 @@ export async function mirrorTurn(session, opts = {}) {
     if (seenSteps instanceof Set) seenSteps.add(stepKey)
 
   } catch (err) {
-    // stepEnded guards against a double step/end if the error occurred on or after step/end
     try { if (!stepEnded) session.append('step/end', { turn: turnInt, step }) } catch {}
     try {
       session.append('turn/end', {

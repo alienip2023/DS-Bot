@@ -289,37 +289,40 @@ describe('executor.send: edge cases', () => {
   })
 })
 
-describe('deliverTurn: multi-turn + missing turn param', () => {
-  it('missing turn → throws E_NOT_FOUND', async () => {
+describe('deliverTurn: multi-turn + turn allocation from session.log', () => {
+  it('missing turn → allocates turn=1 (turn param is now optional)', async () => {
     const bot = makeJoinedBot()
     const registry = makeRegistry({ replyText: 'r' })
     const rt = makeRt(bot, registry)
-    const fakeSession = { append: () => ({}) }
-    await assert.rejects(
-      () => deliverTurn({ botId: bot.id, text: 'Hi', rt, session: fakeSession, seenKeys: new Set(), closedKeys: new Set(), seenSteps: new Set() }),
-      (err) => err instanceof ExecutorError && err.code === 'E_NOT_FOUND',
-    )
+    const log = []
+    const fakeSession = { log, append: (t, d, o) => { const ev = { type: t, data: d }; log.push(ev); return ev } }
+    const result = await deliverTurn({ botId: bot.id, text: 'Hi', rt, session: fakeSession, seenKeys: new Set(), closedKeys: new Set(), seenSteps: new Set() })
+    assert.equal(result.ok, true)
+    const ts = log.find(e => e.type === 'turn/start')
+    assert.equal(ts.data.turn, 1, 'first call must allocate turn=1')
   })
 
-  it('two consecutive turns → 12 events total, second turn not skipped', async () => {
-    // Knife: set turn:1 for both calls → seenSteps blocks second → skipped:true → assertion fails
+  it('two consecutive turns → 12 events total, turn numbers 1 and 2 from session.log', async () => {
     const bot = makeJoinedBot()
     const registry = makeRegistry({ replyText: 'turn reply' })
     const rt = makeRt(bot, registry)
 
     const events = []
-    const fakeSession = { append: (t, d, o) => { const ev = { type: t, data: d }; events.push(ev); return ev } }
+    const log = []
+    const fakeSession = { log, append: (t, d, o) => { const ev = { type: t, data: d }; log.push(ev); events.push(ev); return ev } }
 
     const seenKeys = new Set()
     const closedKeys = new Set()
     const seenSteps = new Set()
 
-    const r1 = await deliverTurn({ botId: bot.id, text: 'First', rt, session: fakeSession, turn: 1, seenKeys, closedKeys, seenSteps })
-    const r2 = await deliverTurn({ botId: bot.id, text: 'Second', rt, session: fakeSession, turn: 2, seenKeys, closedKeys, seenSteps })
+    const r1 = await deliverTurn({ botId: bot.id, text: 'First', rt, session: fakeSession, seenKeys, closedKeys, seenSteps })
+    const r2 = await deliverTurn({ botId: bot.id, text: 'Second', rt, session: fakeSession, seenKeys, closedKeys, seenSteps })
 
     assert.equal(r1.mirrorResult.skipped, false, 'first turn must not be skipped')
     assert.equal(r2.mirrorResult.skipped, false, 'second turn must not be skipped')
     assert.equal(events.length, 12, `expected 12 events (2 × 6), got ${events.length}`)
+    const turns = events.filter(e => e.type === 'turn/start').map(e => e.data.turn)
+    assert.deepEqual(turns, [1, 2], 'turn/start sequence must be 1,2 from session.log allocation')
   })
 })
 
@@ -459,5 +462,61 @@ describe('S21: seq from bot/turn-result', () => {
       'error must reference seq-missing, got: ' + caughtErr.message
     )
     assert.equal(events.length, 0, 'mirror must not write any events for frame with missing seq')
+  })
+})
+
+import { allocateTurn } from '../src/host/mirror.js'
+
+describe('allocateTurn: turn number allocation from session.log', () => {
+  function makeLog(events) {
+    const log = []
+    const session = {
+      log,
+      append: (type, data) => { const ev = { type, data }; log.push(ev); return ev },
+    }
+    for (const [type, data] of events) session.append(type, data)
+    return session
+  }
+
+  it('S22-turn-allocation: starts at 1, increments correctly from closed turns', () => {
+    // Build a session with 2 complete turns already committed
+    const session = makeLog([
+      ['turn/start', { turn: 1 }], ['turn/end', { turn: 1, reason: { kind: 'completed' } }],
+      ['turn/start', { turn: 2 }], ['turn/end', { turn: 2, reason: { kind: 'completed' } }],
+    ])
+    assert.equal(allocateTurn(session), 3, 'next turn must be 3 after 2 closed turns')
+  })
+
+  it('S22-turn-after-restart: two sequential deliverTurns on same session → turns 1 and 2', async () => {
+    // Knife: change allocateTurn to always return 1 → turns would be [1,1] → deepEqual fails
+    const bot = makeJoinedBot()
+    const registry = makeRegistry({ replyText: 'reply' })
+    const rt = makeRt(bot, registry)
+
+    const log = []
+    const session = {
+      log,
+      append: (type, data, opts) => { const ev = { type, data }; log.push(ev); return ev },
+    }
+
+    await deliverTurn({ botId: bot.id, text: 'msg1', rt, session, seenKeys: new Set(), closedKeys: new Set(), seenSteps: new Set() })
+    await deliverTurn({ botId: bot.id, text: 'msg2', rt, session, seenKeys: new Set(), closedKeys: new Set(), seenSteps: new Set() })
+
+    const turnStarts = log.filter(e => e.type === 'turn/start').map(e => e.data.turn)
+    assert.deepEqual(turnStarts, [1, 2], 'turn numbers must be 1,2 — not 1,1 (restart simulation)')
+  })
+
+  it('S22-turn-dangling: unclosed turn gets closed, new turn is openTurn+1', () => {
+    // Knife: delete dangling-close block → openTurn is not closed → allocateTurn returns wrong number
+    const session = makeLog([
+      ['turn/start', { turn: 1 }], ['turn/end', { turn: 1, reason: { kind: 'completed' } }],
+      ['turn/start', { turn: 2 }],  // NO turn/end — dangling
+    ])
+    const next = allocateTurn(session)
+    // allocateTurn must have appended turn/end for turn 2 (aborted), then returns 3
+    assert.equal(next, 3, 'must close dangling turn 2 and return 3')
+    const lastEvt = session.log[session.log.length - 1]
+    assert.equal(lastEvt.type, 'turn/end', 'dangling turn must be closed')
+    assert.equal(lastEvt.data.reason.kind, 'aborted', 'dangling turn must be closed with aborted')
   })
 })
