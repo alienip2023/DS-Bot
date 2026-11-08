@@ -292,7 +292,10 @@ export function install(rt) {
         const nodes = registry.onlineNodes()
         for (const node of nodes) {
           const nodeId = node.nodeId
-          if (nodeId) service.sendPush(nodeId).catch(err => rt.warn?.('ds-bot: initial push to %s failed: %s', nodeId, err?.message ?? err))
+          if (nodeId) {
+            try { service.sendPush(nodeId) }
+            catch (err) { rt.warn?.('ds-bot: initial push to %s failed: %s', nodeId, err?.message ?? err) }
+          }
         }
       }
     } catch { /* no registry */ }

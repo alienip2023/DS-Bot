@@ -413,32 +413,67 @@ test('1A5-initial-push: online nodes receive sendPush immediately after source i
     { ns: 'llm-pi-ai', value: { providers: { alpha: { api: 'openai-completions', baseURL: 'https://up.example.com/v1', apiKeyEnv: 'ALPHA_KEY', models: [{ id: 'a1' }], gateway: true } } } },
   ]
 
-  const pushedNodes = []
-  const mockService = {
-    setSource: cb => { mockService._cb = cb },
-    sendPush: async (nodeId) => { pushedNodes.push(nodeId); return true },
-  }
-  const mockRegistry = {
-    onlineNodes: () => [{ nodeId: 'node-online-1' }, { nodeId: 'node-online-2' }],
+  // Test 1: both online nodes get pushed; sendPush returns synchronous boolean (production semantics)
+  {
+    const pushedNodes = []
+    const mockService = {
+      setSource: cb => { mockService._cb = cb },
+      sendPush: (nodeId) => { pushedNodes.push(nodeId); return true },  // sync boolean like production
+    }
+    const mockRegistry = {
+      onlineNodes: () => [{ nodeId: 'node-online-1' }, { nodeId: 'node-online-2' }],
+    }
+
+    const { rt, dispose } = makeRt({ gatewayPort: 0 })
+    rt.ctx.get('settings').describe = () => settingsSections
+    rt.ctx.llm.listConfigurableProviders = () => cfgProviders
+    rt.dshHome = tmpHome
+    rt.ctx.get = (name) => {
+      if (name === 'settings') return { describe: () => settingsSections }
+      if (name === 'remote-agent:config-sync') return mockService
+      if (name === 'remote-agent:registry') return mockRegistry
+      return undefined
+    }
+
+    install(rt)
+    await new Promise(r => setTimeout(r, 200))
+    try {
+      assert.ok(pushedNodes.includes('node-online-1'), `node-online-1 should have been pushed immediately, got: ${JSON.stringify(pushedNodes)}`)
+      assert.ok(pushedNodes.includes('node-online-2'), `node-online-2 should have been pushed immediately, got: ${JSON.stringify(pushedNodes)}`)
+    } finally { await dispose() }
   }
 
-  const { rt, dispose } = makeRt({ gatewayPort: 0 })
-  rt.ctx.get('settings').describe = () => settingsSections
-  rt.ctx.llm.listConfigurableProviders = () => cfgProviders
-  rt.dshHome = tmpHome
-  // Override the store to include both the registry and the config-sync service
-  rt.ctx.get = (name) => {
-    if (name === 'settings') return { describe: () => settingsSections }
-    if (name === 'remote-agent:config-sync') return mockService
-    if (name === 'remote-agent:registry') return mockRegistry
-    return undefined
-  }
+  // Test 2: first node sendPush throws → second node still gets called (error isolation)
+  {
+    const pushedNodes = []
+    const mockService = {
+      setSource: cb => { mockService._cb = cb },
+      sendPush: (nodeId) => {
+        pushedNodes.push(nodeId)
+        if (nodeId === 'node-online-1') throw new Error('simulated send failure')
+        return true
+      },
+    }
+    const mockRegistry = {
+      onlineNodes: () => [{ nodeId: 'node-online-1' }, { nodeId: 'node-online-2' }],
+    }
 
-  install(rt)
-  await new Promise(r => setTimeout(r, 200))
-  try {
-    // Both online nodes should have received a push immediately after setSource
-    assert.ok(pushedNodes.includes('node-online-1'), `node-online-1 should have been pushed immediately, got: ${JSON.stringify(pushedNodes)}`)
-    assert.ok(pushedNodes.includes('node-online-2'), `node-online-2 should have been pushed immediately, got: ${JSON.stringify(pushedNodes)}`)
-  } finally { await dispose() }
+    const { rt, dispose } = makeRt({ gatewayPort: 0 })
+    rt.ctx.get('settings').describe = () => settingsSections
+    rt.ctx.llm.listConfigurableProviders = () => cfgProviders
+    rt.dshHome = tmpHome
+    rt.ctx.get = (name) => {
+      if (name === 'settings') return { describe: () => settingsSections }
+      if (name === 'remote-agent:config-sync') return mockService
+      if (name === 'remote-agent:registry') return mockRegistry
+      return undefined
+    }
+
+    install(rt)
+    await new Promise(r => setTimeout(r, 200))
+    try {
+      assert.ok(pushedNodes.includes('node-online-1'), `node-online-1 sendPush should have been attempted`)
+      assert.ok(pushedNodes.includes('node-online-2'), `node-online-2 should still be pushed even when node-online-1 throws, got: ${JSON.stringify(pushedNodes)}`)
+    } finally { await dispose() }
+  }
 })
