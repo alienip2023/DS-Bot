@@ -1,6 +1,6 @@
-# 模型网关 P1 分片计划 v11 (Model Gateway P1 Slice Plan)
+# 模型网关 P1 分片计划 v12 (Model Gateway P1 Slice Plan)
 
-**状态**: 修订稿 v11（2026-11-08，架构师，① source 签名 nodeId ② extraRefs 删除 ③ 1A-3 接线 ④ shouldRestart 指纹扩展 ⑤ currentRevision 限制）
+**状态**: 修订稿 v12（2026-11-08，架构师，1A-3 伪代码对齐真实 API：createGatewayServer/ctx.provide/setSource/tokenStore.register/secrets 持久化/测试编号）
 **分支**: feat/model-gateway-contract
 **依赖契约**: docs/model-gateway-contract.md v3 (2396338c) — 已冻结
 **代码基线**: dsh-remote-agent HEAD 14cb02f (0.10.1-fork.47) + ds-bot HEAD
@@ -185,40 +185,46 @@ Authorization: Bearer <gatewayToken>
 
 **Slice 1A-3：hub 启动接线（ds-bot install）**
 
-`install(rt)` 内必须完成以下接线，否则 `createGatewayServer` 全仓无生产调用方，网关为死代码：
+`install` 内必须完成以下接线，否则 `createGatewayServer`（`ds-bot/src/gateway/index.js:10-20`）全仓无生产调用方，网关为死代码：
 
 ```js
-// src/gateway/index.js — install 钩子
-export async function installGateway(rt) {
-  const { host: gatewayHost = '127.0.0.1', port: gatewayPort = 4387 } = rt.config.gateway ?? {}
-  const { server, actualPort } = await createGatewayServer({ gatewayHost, gatewayPort, tokenStore, upstream })
-  server.on('error', (e) => {
-    if (e.code === 'EADDRINUSE') { rt.log.warn('gateway EADDRINUSE, skipping'); return }
-    throw e
+// 真实 API（src/gateway/index.js:10-20）
+// createGatewayServer({ gatewayHost, gatewayPort, secrets, store: tokenStore, providers, rt })
+//   → { start, stop }；start() → Promise<port|null>；EADDRINUSE 内部已 rt.warn 并 resolve null
+
+const gateway = createGatewayServer({ gatewayHost, gatewayPort, secrets, store: tokenStore, providers, rt })
+const actualPort = await gateway.start()           // null on EADDRINUSE（已内部 warn，不需要再 server.on('error')）
+if (actualPort !== null) ctx.provide('ds-bot:gateway-port', actualPort)
+ctx.get('remote-agent:config-sync').setSource((nodeId) =>
+  buildConfigPayload(rt, {
+    defaultModel,
+    gateway: nodeId && actualPort !== null
+      ? { host: gatewayHost, port: actualPort, token: ensureToken(nodeId) }
+      : null,
   })
-  rt.provide('ds-bot:gateway-port', actualPort)     // tunnel-supervisor 读取
-  rt.setSource((nodeId) =>
-    buildConfigPayload(rt, {
-      defaultModel: rt.defaultModel,
-      gateway: nodeId && actualPort
-        ? { host: gatewayHost, port: actualPort, token: tokenStore.ensure(nodeId) }
-        : null
-    })
-  )
-}
+)
 ```
 
-- EADDRINUSE → warn 降级，不抛
-- `tokenStore.ensure(nodeId)` — 每节点一份 token（32B random + epoch refName）
-- `rt.provide('ds-bot:gateway-port', actualPort)` — port = 0 时填系统分配端口
-- `rt.setSource((nodeId) => ...)` — source 签名接受 nodeId；ra/lib/hub/config-sync.js:24 `readSource` 须改为 `sourceFn(nodeId)`（S2 必改）
+**注意**：`ctx.provide` / `ctx.get('remote-agent:config-sync').setSource` / 设置文档读取——不是 `rt.provide` / `rt.setSource` / `rt.config.gateway`。
 
-**补测试**（ds-bot `test/gateway/`，追加到 Slice 1A 测试表）：
+**token 值来源与持久化**（对应 `token-store.js` 真实 API：`register` / `rotate` / `resolve` / `get` / `remove` / `gc` / `size`，无 `ensure`）：
+
+- `tokenStore.register(nodeId)` → `{ refName }`（epoch 后缀，已落 token-store.js）
+- auth 需要的 token 值（32B random）存在 `secrets: Map<refName, tokenValue>`（`auth.js:21-38`）
+- token 值来源：先从 hub 的 `$DSH_HOME/.credentials.yaml refs:` 读（`config-source.js:46` `parseCredentialRefs`）；无则生成
+- 生成后 `ctx.get('credentials').set(refName, value)` **fire-and-forget** 落盘（旁路持久化）；内存 `secrets` Map 立刻可用
+- 重启复用 `.credentials.yaml` 里的值；崩溃窗口（推送成功但尚未落盘）在下次 config-push 自愈——见「已知限制」
+
+**`ensureToken(nodeId)` 必须同步**：`ra/lib/hub/config-sync.js:24-51` `readSource` 拒绝 Promise（typeof payload.then === 'function' → warn + skip）。token 预取必须同步读 credentials 文件；`credentials.set` 只做旁路异步持久化，不在 source 回调内 await。
+
+**测试**（ds-bot `test/gateway/`）：
 
 | 测试 | 断言 | 刀 |
 |---|---|---|
-| `1A3-install` install 后 rt.provide 有端口 | `ctx.get('ds-bot:gateway-port') > 0` | 删 rt.provide 调用 → undefined → 红 |
-| `1A3-source` setSource 回调按 nodeId 生成不同 token | `source('node-a').providers[0].apiKey !== source('node-b').providers[0].apiKey` | 删 nodeId 参数 → 两节点同 token → 红 |
+| `1A3-start` start() 成功后 ctx.provide 有端口 | `ctx.get('ds-bot:gateway-port') > 0` | 删 ctx.provide 调用 → undefined → 红 |
+| `1A3-node-token` 不同 nodeId 得到不同 token | `ensureToken('node-a') !== ensureToken('node-b')` | 删 nodeId 分流 → 两节点同值 → 红 |
+| `1A3-no-gateway` actualPort=null → source.gateway=null | `source('node-x').gateway === null` | 删 null 守卫 → 写错 gateway → 红 |
+| `1A3-stop` stop() 后端口不再监听 | `connect(actualPort)` → ECONNREFUSED | 删 stop → 端口仍开 → 红 |
 
 **Slice 1A 测试**（`test/gateway/`，node:test）：
 
