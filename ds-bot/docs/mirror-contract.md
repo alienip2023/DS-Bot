@@ -1,7 +1,7 @@
 # Mirror Session 运行时契约
 
 **任务**: T-20261108-bot-home-mirror  
-**状态**: 修订稿（2026-11-08，司令复核 4 处补全后放行）  
+**状态**: 修订稿 v2（2026-11-08，司令复核 spike 矛盾点 + resume 悬挂 turn + 幂等约束后放行）  
 **用途**: 为「给每个远程 Bot 建本地镜像 Session」方案钉死运行时事实，供工程师照此实现，无需再猜 API。
 
 ---
@@ -34,6 +34,26 @@ append(type: string, data: object, opts?: { sourceEventSeqs?: number[], surfaceO
 - **结论**：`createSession` 完成后，agent 已 live；`liveAgent(sessionId)` 立即可用，`resolveAgent(sessionId)` → `resolve()`（SC:209）先查 `liveAgent`，直接返回，无需额外 `resume`。
 - **镜像拿 Session 对象的路径**：`createSession` 返回 `sessionId` → `resolveAgent(sessionId)` 返回 live agent → `agent.session` 即 Session 实例 → `agent.session.append(...)` 即可写入。
 - **store-owned Session 的 append 前置条件**：`publicationEntry()`（dsh-session:1525,1535）做重入检查，不检查 Session 是否「entered」或「announcement 完成」。只要不在另一个 append 的 publication 边界内，append 就能执行。没有「未 entered 会抛」的前置条件。
+
+### resume 对悬挂 turn/start 的处理
+
+**文件**: `dsh-agent-loop/lib/index.js:1739–1740` + `dsh-session/lib/index.js` `openTurnClosers`
+
+- `resumeWith` 读取持久化事件后立即调用 `interruptedTurnClosers(persisted)`（dsh-agent-loop:1739）。
+- `interruptedTurnClosers` → `openTurnClosers(events, { kind: "interrupted" })`（dsh-session）：扫描日志，若发现有 `turn/start` 但无对应 `turn/end`，生成合成 `turn/end`（`reason: { kind: 'interrupted' }`），以及 `step/end`（若有悬挂 step）。
+- 这些 closer 事件被 `await handle.append(closers)` **写回持久化**（dsh-agent-loop:1740），并并入 Session seed。
+- **结论**：resume 会自动关闭悬挂 turn，不需要镜像层在 resume 前手动检查。但镜像写完一轮后应主动写 `turn/end`（避免 reason 被标 interrupted），`finally` 块保证写入是最佳实践。
+- **resume 不调模型**：`initializeAgent`（dsh-agent-loop:1759）只初始化 agent 对象（模型、工具、scope），不写 inbox、不触发 `nextTurn`/`nextStep`。模型仅在 `agent.followup()` 或 `agent.steer()` 被调用时才运行。
+
+### 冷启动探针（DEFER）
+
+**需量**：`createSession` → 丢弃 handle → `resolveAgent`，观察是否走 `resume` 路径及其开销。
+
+**代码级推断**（未实测，标 defer）：
+- `liveAgent`（SC:306）查 `ctx.agents.get(sessionId)` — 若 agent 已从 `ctx.agents` 移除（handle dispose），返回 undefined。
+- `resolveAgent` 落到 `resume()`（SC:216），调 `ctx.sessionQuery.observeSession(sessionId)` 从 persistence 读取，再 `ctx.agents.resume(...)` 重建 agent 对象。**不调模型。**
+- **风险**：若 mirror 层每次写入前都 `resolveAgent`（而非持有 session 句柄），冷启动会有一次 persistence 读取开销。建议：`createSession` 完成后持有 `agent.session` 引用，不在每次 append 前 resolveAgent。
+- **实验方法**：`createSession` → `agents.disposeOwned(sessionId)` → `resolveAgent(sessionId)` → 在 `observeSession` / `ctx.agents.resume` 处加断点，计时。标 S1 第一个实验。
 
 ---
 
@@ -172,7 +192,23 @@ system/message, developer/message, user/message, assistant/message, tool/result
 
 ---
 
-## Q5 用户输入到 `rt.sendUser` 的完整调用链
+## 幂等性约束（应用层必须实现）
+
+**文件证据**: `dsh-session/lib/index.js:1479` + mirror-spike P3/P4 实测
+
+Session 不提供任何去重保障：
+
+### (botId, nodeSeq) 去重
+Spike P3 实测（`dsh-session:1479`：`get seq() { return SessionLogOffset(this.log.length) }`）：Session 对 `(botId, nodeSeq)` 完全透明，重复写入只会产生更多事件，seq 继续递增。
+
+**约束**：ds-bot mirror 层必须在应用层维护 `(botId, nodeSeq) → 已写` 映射；重连重放前检查，已写的跳过不再 append，否则消息重复。
+
+### (turn, step) 去重
+Spike P4 实测：Session 允许重复 `(turn, step)` 对，不报错，不拦截，渲染器会产生两个相同 bot 气泡（`dupError: null`）。
+
+**约束**：mirror 层必须跟踪已写 `(turn, step)` 对，跳过重复写入。
+
+---
 
 **文件**: `ds-bot/src/host/channel.js` + `ds-bot/src/host/joined-turn.js:175–197`
 
@@ -198,6 +234,10 @@ async function sendUser({ sessionId, content, requestId = randomUUID() }) {
 - 检查目标 Bot 是否为 `joinedShadow`（`origin==='joined' && worker.home==='remote'`）。
 - 是 joined shadow：转发到 `rt.handleJoinedTurn` → 走 `registry.send(nodeId, 'bot/turn', ...)` 远程路径，不调本地模型。
 - 不是：走原始 `orig(args)` 本地路径。
+
+**已知缺陷**（mirror-spike P7 实测）：`wrapSendUser`（joined-turn.js:176–180）调 `rt.botOf?.(args?.sessionId)` 按 `bot.id` 反查 Bot。镜像 Session 的 `mirrorSessionId ≠ bot.id`，`rt.botOf(mirrorSessionId) = undefined`，`joinedShadow(undefined) = false`，**实际落到 `orig(args)` = `sessionController.prompt`，本地模型被触发**。这不是设计意图，是实现缺陷——S1 必须修。
+
+**第二拦截点**（mirror-spike P7 补出）：`channel.js:780` 有独立的 `sessionController.prompt` 包装，是唯一绕过 `agent.followup` 的直接 prompt 入口。除 `wrapSendUser` 外，所有 13 条本地模型写入路径都走 `agent.followup` 或 `deliver`，由 `resolveAgent` 守护。
 
 **「生成中」由什么收口**：
 - 本地路径：SessionController 的 `observeEvent` 流（L1997）推 `turn/end` 事件，前端收到后关闭生成 spinner。
@@ -271,5 +311,5 @@ async function sendUser({ sessionId, content, requestId = randomUUID() }) {
 - 远端消息到达后，ds-bot mirror 层调 `resolveAgent(mirrorSessionId).session.append(...)` 写入；`createSession` 完成即可获得 live agent，`resolveAgent` 直接返回，无需额外操作。
 
 **待验证项**：
-1. `resolveAgent(mirrorSessionId)` 在 Session 仅 create 未 resume（即无消息历史、冷启动）时，能否通过 `liveAgent` 路径直接返回——还是会走 `resume`（从 persistence 重建，有轻微开销）；实验方法：`create` 后立即 `resolveAgent`，观察是否走 resume 路径。
-2. 前端路由：`dsh web` 的会话路由是否按 sessionId 找对话页，镜像 Session（全新 Session，无 agent 历史）是否能直接点开；已知 fork.30/45 装机后 test5 能打开，需确认镜像 Session 路由行为一致。
+1. **（DEFER → S1 第一个实验）** resolveAgent 冷启动探针：`createSession` → 丢弃 handle → `resolveAgent`，观察是否走 `resume` 路径及开销。代码级推断：会走 resume（从 persistence 读取，不调模型），但未实测。建议生产路径持有 `agent.session` 引用，不每次 resolveAgent。
+2. **（DEFER → S2 真机）** 前端路由对纯 append 镜像 Session 的点开行为是否与 fork.30/45 test5 一致。S0 不展开。
