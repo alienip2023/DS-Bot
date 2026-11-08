@@ -1,6 +1,6 @@
-# 模型网关 P1 分片计划 v8 (Model Gateway P1 Slice Plan)
+# 模型网关 P1 分片计划 v9 (Model Gateway P1 Slice Plan)
 
-**状态**: 修订稿 v8（2026-11-08，架构师，/v1/models P1 实现 + 开工清单 tailnet 确认）
+**状态**: 修订稿 v9（2026-11-08，架构师，1B 测试编号去重 1P→1Q，S1 已过闸）
 **分支**: feat/model-gateway-contract
 **依赖契约**: docs/model-gateway-contract.md v3 (2396338c) — 已冻结
 **代码基线**: dsh-remote-agent HEAD 14cb02f (0.10.1-fork.47) + ds-bot HEAD
@@ -229,7 +229,7 @@ conn.on('tcp connection', (info, accept, reject) => {
 
 | 测试 | 断言 | 刀 |
 |---|---|---|
-| `1P` tcp connection 闭环 | accept() + pipe 双向工作 | 删 tcp connection handler → 红 |
+| `1Q` tcp connection 闭环 | accept() + pipe 双向工作 | 删 tcp connection handler → 红 |
 | `1Q` 节点上线 → 隧道建立 | forwardIn 调用，boundPort 返回 | 删 establishTunnel → 红 |
 | `1R` 节点离线 → 隧道关闭 | conn.end 调用 | 删 closeTunnel → 红 |
 | `1S` 断线重连 ≤5s | conn close 后 5s 内重新 forwardIn | 删 retry → 红 |
@@ -339,7 +339,7 @@ curl -s -N --max-time 0.5 -H "Authorization: Bearer $GATEWAY_TOKEN" \
 
 ## 开工前检查清单
 
-- [ ] S1 (feat/mirror-session) 门禁通过
+- [x] S1 (feat/mirror-session) 门禁已通过
 - [x] Slice 0 探针已通（`dda11ddd`，司令复跑全绿：tokens 200 / TTFT 0ms / abort 1ms / total 4190ms）
 - [x] tailnet 可达性确认（Slice 0 探针已通：TTFT 0ms，200 tokens，abort 1ms，dda11ddd）
 - [ ] 待验证项 G1 结论出
