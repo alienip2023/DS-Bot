@@ -1,6 +1,6 @@
-# 模型网关 P1 分片计划 v14 (Model Gateway P1 Slice Plan)
+# 模型网关 P1 分片计划 v15 (Model Gateway P1 Slice Plan)
 
-**状态**: 修订稿 v14（2026-11-08，架构师，新增 Slice 1A-4 ra 侧：readSource(nodeId)+extractProviderFingerprints，S2 欠账移入）
+**状态**: 修订稿 v15（2026-11-08，架构师，1A-4 测试路径修正：test/config-sync/ → 平铺文件）
 **分支**: feat/model-gateway-contract
 **依赖契约**: docs/model-gateway-contract.md v3 (2396338c) — 已冻结
 **代码基线**: dsh-remote-agent HEAD 14cb02f (0.10.1-fork.47) + ds-bot HEAD
@@ -289,7 +289,7 @@ ctx.effect(() => {
 
 3. `package.json`（dsh-remote-agent）：版本号改为 `0.10.1-fork.48`（提交信息与版本必须一致）
 
-**Slice 1A-4 测试**（dsh-remote-agent `test/config-sync/`，node:test）：
+**Slice 1A-4 测试**（dsh-remote-agent `test/config-sync.test.js` + `test/config-sync-request.test.js`，node:test）：
 
 | 测试 | 断言 | 刀 |
 |---|---|---|
