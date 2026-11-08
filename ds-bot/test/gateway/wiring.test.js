@@ -290,3 +290,155 @@ test('1A3-config: env var DS_BOT_GATEWAY_HOST controls gateway host in payload',
     assert.ok(alpha.baseURL.startsWith('http://localhost:'), `alpha baseURL should use localhost from env, got: ${alpha.baseURL}`)
   } finally { await dispose() }
 })
+
+// --- 1A5-yaml-fallback: settings.yaml ds-bot: section used when settings.describe has no ds-bot ns ---
+// Knife: delete YAML fallback -> host stays 127.0.0.1 -> baseURL has 127.0.0.1 -> RED
+test('1A5-yaml-fallback: settings.yaml ds-bot section used when settings.describe lacks ds-bot ns', async () => {
+  const { writeFileSync, mkdtempSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+  const tmpHome = mkdtempSync(join(tmpdir(), 'ds-bot-yaml-'))
+  writeFileSync(join(tmpHome, '.credentials.yaml'), 'refs:\n  ALPHA_KEY: sk-alpha\n', { mode: 0o600 })
+  // Write settings.yaml with ds-bot: section but use host=127.0.0.3 to distinguish from default
+  // NOTE: 127.0.0.3 may not be bindable on all macOS; use 127.0.0.1 as gwHost but port=0 for random
+  // The key thing we test: the host value is read from settings.yaml, not the default 127.0.0.1
+  // We use 'localhost' as the yaml host so it IS bindable and distinct from '127.0.0.1' string
+  writeFileSync(join(tmpHome, 'settings.yaml'), [
+    'schema: 2',
+    'ds-bot:',
+    '  gatewayHost: localhost',
+    '  gatewayPort: 0',
+  ].join('\n') + '\n')
+
+  const cfgProviders = [
+    { provider: 'alpha', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'alpha'] },
+  ]
+  const settingsSections = [
+    { ns: 'llm-pi-ai', value: { providers: { alpha: { api: 'openai-completions', baseURL: 'https://up.example.com/v1', apiKeyEnv: 'ALPHA_KEY', models: [{ id: 'a1' }], gateway: true } } } },
+    // Deliberately NO ds-bot section — fallback to settings.yaml must kick in
+  ]
+
+  const { rt, getSetSource, getProvidedPort, dispose } = makeRt({ gatewayPort: 0 })
+  rt.ctx.get('settings').describe = () => settingsSections
+  rt.ctx.llm.listConfigurableProviders = () => cfgProviders
+  rt.dshHome = tmpHome
+
+  install(rt)
+  await new Promise(r => setTimeout(r, 150))
+  try {
+    const port = getProvidedPort()
+    assert.ok(typeof port === 'number' && port > 0, `gateway should have started via yaml host=localhost, got ${port}`)
+    assert.ok(await canConnect(port, 'localhost'), `gateway should accept connections on localhost:${port}`)
+
+    const cb = getSetSource()
+    assert.ok(cb, 'setSource callback should be captured')
+    const payload = cb('node-x')
+    const alpha = payload.providers.find(p => p.id === 'alpha')
+    assert.ok(alpha, 'alpha provider should be in payload')
+    // baseURL should use the host read from settings.yaml (localhost), not default 127.0.0.1
+    assert.ok(alpha.baseURL.startsWith('http://localhost:'), `alpha baseURL should use localhost from yaml, got: ${alpha.baseURL}`)
+  } finally { await dispose() }
+})
+
+// --- 1A5-warn-logging: gateway logs on start + source attach + not-ready warn ---
+test('1A5-warn-logging: gateway listening warn, source attached warn, not-ready warn when port null', async () => {
+  const { writeFileSync, mkdtempSync } = await import('node:fs')
+  const { createServer } = await import('node:http')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+  const tmpHome = mkdtempSync(join(tmpdir(), 'ds-bot-warn-'))
+  writeFileSync(join(tmpHome, '.credentials.yaml'), 'refs:\n  ALPHA_KEY: sk-alpha\n', { mode: 0o600 })
+
+  const cfgProviders = [
+    { provider: 'alpha', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'alpha'] },
+  ]
+  const settingsSections = [
+    { ns: 'llm-pi-ai', value: { providers: { alpha: { api: 'openai-completions', baseURL: 'https://up.example.com/v1', apiKeyEnv: 'ALPHA_KEY', models: [{ id: 'a1' }], gateway: true } } } },
+  ]
+
+  // Test 1: happy path — gateway starts, listening warn emitted
+  {
+    const { rt, warns, dispose } = makeRt({ gatewayPort: 0 })
+    rt.ctx.get('settings').describe = () => settingsSections
+    rt.ctx.llm.listConfigurableProviders = () => cfgProviders
+    rt.dshHome = tmpHome
+    install(rt)
+    await new Promise(r => setTimeout(r, 150))
+    try {
+      const listeningWarn = warns.find(w => w[0].includes('gateway listening on'))
+      assert.ok(listeningWarn, `should log 'gateway listening on' warn, got: ${JSON.stringify(warns)}`)
+      const attachedWarn = warns.find(w => w[0].includes('config-sync source attached'))
+      assert.ok(attachedWarn, `should log 'config-sync source attached' warn`)
+    } finally { await dispose() }
+  }
+
+  // Test 2: port in use — 'providers pushed direct' warn emitted when setSource called
+  {
+    const blocker = createServer()
+    await new Promise(r => blocker.listen(0, '127.0.0.1', r))
+    const blockedPort = blocker.address().port
+    const blockerSections = [
+      ...settingsSections,
+      { ns: 'ds-bot', value: { gatewayPort: blockedPort, gatewayHost: '127.0.0.1' } },
+    ]
+    const { rt, warns, getSetSource, dispose } = makeRt({ gatewayPort: 0 })
+    rt.ctx.get('settings').describe = () => blockerSections
+    rt.ctx.llm.listConfigurableProviders = () => cfgProviders
+    rt.dshHome = tmpHome
+    install(rt)
+    await new Promise(r => setTimeout(r, 200))
+    try {
+      const cb = getSetSource()
+      if (cb) {
+        cb('node-x')  // trigger the not-ready warn
+        const notReadyWarn = warns.find(w => w[0].includes('providers pushed direct'))
+        assert.ok(notReadyWarn, `should log 'providers pushed direct' when gateway not ready, got: ${JSON.stringify(warns)}`)
+      }
+    } finally { await dispose(); await new Promise(r => blocker.close(r)) }
+  }
+})
+
+// --- 1A5-initial-push: after setSource, online nodes get an immediate sendPush ---
+test('1A5-initial-push: online nodes receive sendPush immediately after source is attached', async () => {
+  const { writeFileSync, mkdtempSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+  const tmpHome = mkdtempSync(join(tmpdir(), 'ds-bot-push-'))
+  writeFileSync(join(tmpHome, '.credentials.yaml'), 'refs:\n  ALPHA_KEY: sk-alpha\n', { mode: 0o600 })
+
+  const cfgProviders = [
+    { provider: 'alpha', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'alpha'] },
+  ]
+  const settingsSections = [
+    { ns: 'llm-pi-ai', value: { providers: { alpha: { api: 'openai-completions', baseURL: 'https://up.example.com/v1', apiKeyEnv: 'ALPHA_KEY', models: [{ id: 'a1' }], gateway: true } } } },
+  ]
+
+  const pushedNodes = []
+  const mockService = {
+    setSource: cb => { mockService._cb = cb },
+    sendPush: async (nodeId) => { pushedNodes.push(nodeId); return true },
+  }
+  const mockRegistry = {
+    onlineNodes: () => [{ nodeId: 'node-online-1' }, { nodeId: 'node-online-2' }],
+  }
+
+  const { rt, dispose } = makeRt({ gatewayPort: 0 })
+  rt.ctx.get('settings').describe = () => settingsSections
+  rt.ctx.llm.listConfigurableProviders = () => cfgProviders
+  rt.dshHome = tmpHome
+  // Override the store to include both the registry and the config-sync service
+  rt.ctx.get = (name) => {
+    if (name === 'settings') return { describe: () => settingsSections }
+    if (name === 'remote-agent:config-sync') return mockService
+    if (name === 'remote-agent:registry') return mockRegistry
+    return undefined
+  }
+
+  install(rt)
+  await new Promise(r => setTimeout(r, 200))
+  try {
+    // Both online nodes should have received a push immediately after setSource
+    assert.ok(pushedNodes.includes('node-online-1'), `node-online-1 should have been pushed immediately, got: ${JSON.stringify(pushedNodes)}`)
+    assert.ok(pushedNodes.includes('node-online-2'), `node-online-2 should have been pushed immediately, got: ${JSON.stringify(pushedNodes)}`)
+  } finally { await dispose() }
+})

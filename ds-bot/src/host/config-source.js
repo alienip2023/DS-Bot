@@ -164,8 +164,27 @@ export function install(rt) {
 
   // ── Gateway startup ──────────────────────────────────────────────────────
   // Priority: settings.describe 'ds-bot' ns → DS_BOT_GATEWAY_HOST/PORT env → defaults
+  // Parse top-level `ds-bot:` section from a settings.yaml text (line-by-line, no yaml dep).
+  // Reads gatewayHost (string) and gatewayPort (integer) only.
+  const parseSettingsYaml = (text) => {
+    const result = {}
+    let inDsBot = false
+    for (const raw of String(text ?? '').split(/\r?\n/)) {
+      const line = raw.trimEnd()
+      if (/^ds-bot:\s*$/.test(line)) { inDsBot = true; continue }
+      if (/^\S/.test(line)) { inDsBot = false; continue }
+      if (!inDsBot) continue
+      const hostM = line.match(/^\s+gatewayHost:\s*(.+)$/)
+      if (hostM) { const v = hostM[1].trim().replace(/^['"]|['"]$/g, ''); if (v) result.gatewayHost = v }
+      const portM = line.match(/^\s+gatewayPort:\s*(\d+)$/)
+      if (portM) { const n = Number(portM[1]); if (Number.isInteger(n)) result.gatewayPort = n }
+    }
+    return result
+  }
+
   const readGatewaySettings = () => {
     let host, port
+    // Priority 1: settings.describe() 'ds-bot' ns
     try {
       const settings = ctx?.get?.('settings')
       if (settings) {
@@ -176,6 +195,16 @@ export function install(rt) {
         if (typeof cfg.gatewayPort === 'number') port = cfg.gatewayPort
       }
     } catch { /* ignore */ }
+    // Priority 2: fall back to reading <dshHome>/settings.yaml ds-bot: section
+    if ((host === undefined || port === undefined) && rt.dshHome) {
+      try {
+        const raw = readFileSync(join(rt.dshHome, 'settings.yaml'), 'utf8')
+        const parsed = parseSettingsYaml(raw)
+        if (host === undefined && typeof parsed.gatewayHost === 'string' && parsed.gatewayHost !== '') host = parsed.gatewayHost
+        if (port === undefined && typeof parsed.gatewayPort === 'number') port = parsed.gatewayPort
+      } catch { /* no settings.yaml or unreadable */ }
+    }
+    // Priority 3: env vars
     if (host === undefined && typeof env.DS_BOT_GATEWAY_HOST === 'string' && env.DS_BOT_GATEWAY_HOST !== '') host = env.DS_BOT_GATEWAY_HOST
     if (port === undefined && typeof env.DS_BOT_GATEWAY_PORT === 'string' && env.DS_BOT_GATEWAY_PORT !== '') {
       const p = Number(env.DS_BOT_GATEWAY_PORT)
@@ -216,6 +245,9 @@ export function install(rt) {
       }
       gwServer = createGatewayServer({ gatewayHost: gwHost, gatewayPort: gwPort, secrets, store: tokenStore, providers: providersFn, rt })
       actualPort = await gwServer.start()
+      if (actualPort !== null) {
+        rt.warn?.('ds-bot: gateway listening on %s:%d', gwHost, actualPort)
+      }
     })().catch(err => rt.warn?.('ds-bot: model gateway start failed: %s', err?.message ?? err))
     return () => {
       const s = gwServer; gwServer = null
@@ -243,11 +275,27 @@ export function install(rt) {
     // setSource receives nodeId per-payload; use it to ensure the node has its own token.
     // MUST remain synchronous — ra rejects a Promise source.
     service.setSource((nodeId) => {
+      if (actualPort === null) {
+        rt.warn?.('ds-bot: gateway not ready, providers pushed direct')
+      }
       const gw = (nodeId && actualPort !== null)
         ? { host: gwHost, port: actualPort, token: ensureToken(nodeId) }
         : null
       return buildConfigPayload(rt, { defaultModel, gateway: gw })
     })
+    rt.warn?.('ds-bot: config-sync source attached')
+    // Immediately push to all currently-online nodes so they get gateway config
+    // without waiting for their next reconnect request.
+    try {
+      const registry = ctx?.get?.('remote-agent:registry')
+      if (registry && typeof registry.onlineNodes === 'function') {
+        const nodes = registry.onlineNodes()
+        for (const node of nodes) {
+          const nodeId = node.nodeId
+          if (nodeId) service.sendPush(nodeId).catch(err => rt.warn?.('ds-bot: initial push to %s failed: %s', nodeId, err?.message ?? err))
+        }
+      }
+    } catch { /* no registry */ }
   }
   const tick = () => {
     attach()
