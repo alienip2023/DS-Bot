@@ -158,3 +158,40 @@ test('413: oversized body on chat completions -> 413', async () => {
     assert.equal(r.status, 413)
   } finally { await stop() }
 })
+
+test('1F2: ctx.provide called with real port on success', async () => {
+  const provided = new Map()
+  const rt = { warn: () => {}, ctx: { provide: (k, v) => provided.set(k, v) } }
+  const store = createTokenStore()
+  const gw = createGatewayServer({ gatewayHost: '127.0.0.1', gatewayPort: 0, secrets: new Map(), store, providers: [], rt })
+  const port = await gw.start()
+  try {
+    assert.ok(port > 0)
+    assert.equal(provided.get('ds-bot:gateway-port'), port)
+  } finally { await gw.stop() }
+})
+
+test('1F2: ctx.provide NOT called on EADDRINUSE', async () => {
+  const blocker = createServer()
+  await new Promise(r => blocker.listen(0, '127.0.0.1', r))
+  const occupiedPort = blocker.address().port
+  const provided = new Map()
+  const rt = { warn: () => {}, ctx: { provide: (k, v) => provided.set(k, v) } }
+  const gw = createGatewayServer({ gatewayHost: '127.0.0.1', gatewayPort: occupiedPort, secrets: new Map(), store: createTokenStore(), providers: [], rt })
+  try {
+    await gw.start()
+  } finally {
+    await gw.stop()
+    await new Promise(r => blocker.close(r))
+  }
+  assert.ok(!provided.has('ds-bot:gateway-port'), 'provide must not be called on EADDRINUSE')
+})
+
+test('1K-collision: a-b and a_b get different refNames, resolve correctly', () => {
+  const store = createTokenStore()
+  const { refName: r1 } = store.register('a-b')
+  const { refName: r2 } = store.register('a_b')
+  assert.notEqual(r1, r2, 'collision: refNames must differ')
+  assert.equal(store.resolve(r1), 'a-b')
+  assert.equal(store.resolve(r2), 'a_b')
+})
