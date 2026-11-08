@@ -222,3 +222,39 @@ test('9. channel chat route: joined shadow → joinedChatPage, local bot → cha
   assert.equal(getJoinedChatPageCalls(), 1, 'joinedChatPage must NOT be called for local bot')
   assert.deepEqual(localRes.value.items, [{ kind: 'user', text: 'local page' }])
 })
+
+// ── Test 10: real NodeRegistry event path ─────────────────────────────────────
+// Knife: change the event name in listenBotHistoryResult → test red.
+// Uses real NodeRegistry from the sibling dsh-remote-agent checkout.
+import { NodeRegistry } from '/Users/kjclaw/Library/Application Support/dsh-desktop/harness/bot/workspace/roster-join-3/dsh-remote-agent/lib/hub/node-registry.js'
+import { HUB_TO_NODE, NODE_TO_HUB } from '/Users/kjclaw/Library/Application Support/dsh-desktop/harness/bot/workspace/roster-join-3/dsh-remote-agent/lib/protocol.js'
+
+test('10. joinedChatPage: real NodeRegistry.emit botHistoryResult → items returned correctly', async () => {
+  const relay = { ready: true, send: () => true }
+  const registry = new NodeRegistry({ log() {}, relay })
+  registry.nodes.set('n1', { nodeId: 'n1', online: true, lastSeen: 0, e2e: null })
+
+  const ITEMS = [{ kind: 'user', text: '2+2=4', seq: 1 }, { kind: 'bot', text: 'yes', seq: 2 }]
+  const ctx = { get: (name) => name === 'remote-agent:registry' ? registry : undefined }
+  const rt = {
+    ctx,
+    state: { bots: {} },
+    botOf(id) { return this.state.bots[id] },
+    joinedHistoryTimeoutMs: 2000,
+  }
+  const botId = 'joined:n1:session-real'
+  rt.state.bots[botId] = { id: botId, origin: 'joined', worker: { nodeId: 'n1', remoteBotId: 'session-real', home: 'remote' } }
+
+  // Intercept registry.send to capture requestId and auto-emit the result
+  const origSend = registry.send.bind(registry)
+  registry.send = (nid, type, data) => {
+    setImmediate(() => registry.emit('botHistoryResult', { requestId: data.requestId, ok: true, sessionId: 'session-real', items: ITEMS, cursor: null }))
+    return true
+  }
+
+  const page = await joinedChatPage(rt, botId, null)
+  assert.equal(page.sessionId, 'session-real')
+  assert.deepEqual(page.items, ITEMS, 'items must match what registry emitted')
+  assert.equal(page.cursor, null)
+  registry.send = origSend
+})
