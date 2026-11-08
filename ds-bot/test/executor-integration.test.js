@@ -175,6 +175,7 @@ describe('deliverTurn: full pipeline with mirror + historyEntry', () => {
       text: 'Pipeline input',
       rt,
       session: fakeSession,
+      turn: 1,
       seenKeys: new Set(),
       closedKeys: new Set(),
       seenSteps: new Set(),
@@ -206,6 +207,7 @@ describe('deliverTurn: full pipeline with mirror + historyEntry', () => {
       text: 'seq test input',
       rt,
       session: fakeSession,
+      turn: 1,
       seenKeys: new Set(),
       closedKeys: new Set(),
       seenSteps: new Set(),
@@ -242,3 +244,68 @@ describe('turn-tracker: lifecycle', () => {
     assert.ok(!timedOut.includes('t3'))
   })
 })
+
+describe('executor.send: edge cases', () => {
+  it('joined shadow missing nodeId → E_NOT_FOUND', async () => {
+    // Knife: change to E_REJECTED → must red
+    const bot = { id: 'bot-no-node', origin: 'joined', worker: { home: 'remote', remoteBotId: 'r1' } }
+    const rt = { botOf: (id) => id === bot.id ? bot : undefined, ctx: { get: () => ({}) } }
+    await assert.rejects(
+      () => send({ botId: bot.id, text: 'Hi', rt }),
+      (err) => err instanceof ExecutorError && err.code === 'E_NOT_FOUND',
+    )
+  })
+
+  it('registry.send throws → E_OFFLINE + listener released', async () => {
+    // Knife: remove cancel() in catch → listener count > 0 → must red
+    const bot = makeJoinedBot()
+    const emitter = new EventEmitter()
+    const registry = {
+      send: () => { throw new Error('send exploded') },
+      on: (ev, fn) => emitter.on(ev, fn),
+      off: (ev, fn) => emitter.off(ev, fn),
+    }
+    const rt = makeRt(bot, registry)
+    await assert.rejects(
+      () => send({ botId: bot.id, text: 'Hi', rt }),
+      (err) => err instanceof ExecutorError && err.code === 'E_OFFLINE',
+    )
+    // After throw, listener must be removed (cancel() called)
+    assert.equal(emitter.listenerCount('botTurnResult'), 0, 'botTurnResult listener must be released after send throw')
+  })
+})
+
+describe('deliverTurn: multi-turn + missing turn param', () => {
+  it('missing turn → throws E_NOT_FOUND', async () => {
+    const bot = makeJoinedBot()
+    const registry = makeRegistry({ replyText: 'r' })
+    const rt = makeRt(bot, registry)
+    const fakeSession = { append: () => ({}) }
+    await assert.rejects(
+      () => deliverTurn({ botId: bot.id, text: 'Hi', rt, session: fakeSession, seenKeys: new Set(), closedKeys: new Set(), seenSteps: new Set() }),
+      (err) => err instanceof ExecutorError && err.code === 'E_NOT_FOUND',
+    )
+  })
+
+  it('two consecutive turns → 12 events total, second turn not skipped', async () => {
+    // Knife: set turn:1 for both calls → seenSteps blocks second → skipped:true → assertion fails
+    const bot = makeJoinedBot()
+    const registry = makeRegistry({ replyText: 'turn reply' })
+    const rt = makeRt(bot, registry)
+
+    const events = []
+    const fakeSession = { append: (t, d, o) => { const ev = { type: t, data: d }; events.push(ev); return ev } }
+
+    const seenKeys = new Set()
+    const closedKeys = new Set()
+    const seenSteps = new Set()
+
+    const r1 = await deliverTurn({ botId: bot.id, text: 'First', rt, session: fakeSession, turn: 1, seenKeys, closedKeys, seenSteps })
+    const r2 = await deliverTurn({ botId: bot.id, text: 'Second', rt, session: fakeSession, turn: 2, seenKeys, closedKeys, seenSteps })
+
+    assert.equal(r1.mirrorResult.skipped, false, 'first turn must not be skipped')
+    assert.equal(r2.mirrorResult.skipped, false, 'second turn must not be skipped')
+    assert.equal(events.length, 12, `expected 12 events (2 × 6), got ${events.length}`)
+  })
+})
+

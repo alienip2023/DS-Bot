@@ -150,11 +150,16 @@ async function sendLocal({ bot, text, rt, tracker }) {
  * @param {number} [opts.timeoutMs]
  * @returns {{ ok: true, turnId: string, mirrorResult: object }}
  */
-export async function deliverTurn({ botId, text, rt, session, seenKeys, closedKeys, seenSteps, tracker, timeoutMs }) {
+export async function deliverTurn({ botId, text, rt, session, turn, step = 1, seenKeys, closedKeys, seenSteps, tracker, timeoutMs }) {
+  // S2 dual-path note: executor.send and handleJoinedTurn are two separate remote dispatch paths.
+  // In S2 these MUST converge into one path to prevent the same message being sent twice.
+  if (turn == null || !Number.isInteger(turn) || turn < 1) {
+    throw new ExecutorError('E_NOT_FOUND', 'deliverTurn: turn is required and must be a positive integer')
+  }
   const result = await send({ botId, text, rt, tracker, timeoutMs })
   const mirrorResult = await mirrorTurn(session, {
-    turn: 1,
-    step: 1,
+    turn,
+    step,
     userText: text,
     botText: result.text,
     botId,
