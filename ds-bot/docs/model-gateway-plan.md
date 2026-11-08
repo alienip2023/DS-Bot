@@ -1,6 +1,6 @@
-# 模型网关 P1 分片计划 v21 (Model Gateway P1 Slice Plan)
+# 模型网关 P1 分片计划 v22 (Model Gateway P1 Slice Plan)
 
-**状态**: 修订稿 v21（2026-11-09，架构师，T1/T2/T3 验收命令修正，T4 拆分+rotate 无入口注明）
+**状态**: 修订稿 v22（2026-11-09，架构师，T2/T3 jq 拼 body + T4b 确定列 P2）
 **分支**: feat/model-gateway-contract
 **依赖契约**: docs/model-gateway-contract.md v3 (2396338c) — 已冻结
 **代码基线**: dsh-remote-agent HEAD afb7007 (0.10.1-fork.50) + ds-bot HEAD
@@ -607,10 +607,9 @@ curl -s -H "Authorization: Bearer $GATEWAY_TOKEN" \
 MODEL_ID=$(curl -s -H "Authorization: Bearer $GATEWAY_TOKEN" \
   http://100.64.0.3:4387/gw/piion/v1/models | jq -r '.data[0].id')
 
-curl -s -N -H "Authorization: Bearer $GATEWAY_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d "{"model":"${MODEL_ID}","messages":[{"role":"user","content":"ping"}],"stream":true}" \
-  http://100.64.0.3:4387/gw/piion/v1/chat/completions
+BODY=$(jq -nc --arg m "$MODEL_ID" '{"model":$m,"messages":[{"role":"user","content":"ping"}],"stream":true}')
+curl -s -N -H "Authorization: Bearer $GATEWAY_TOKEN" -H "Content-Type: application/json" \
+  -d "$BODY" http://100.64.0.3:4387/gw/piion/v1/chat/completions
 # 断言：收到至少一行 data: {...}，最后收到 data: [DONE]
 # 注：body.model 原样透传给上游（完整路径实测成功，1424B + [DONE]，TTFB 0.77s）
 ```
@@ -622,10 +621,9 @@ curl -s -N -H "Authorization: Bearer $GATEWAY_TOKEN" \
 MODEL_ID=$(curl -s -H "Authorization: Bearer $GATEWAY_TOKEN" \
   http://100.64.0.3:4387/gw/piion/v1/models | jq -r '.data[0].id')
 
-curl -s -N --max-time 1.5 -H "Authorization: Bearer $GATEWAY_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d "{"model":"${MODEL_ID}","messages":[{"role":"user","content":"count to 1000"}],"stream":true}" \
-  http://100.64.0.3:4387/gw/piion/v1/chat/completions || true
+BODY=$(jq -nc --arg m "$MODEL_ID" '{"model":$m,"messages":[{"role":"user","content":"count from 1 to 1000"}],"stream":true}')
+curl -s -N --max-time 1.5 -H "Authorization: Bearer $GATEWAY_TOKEN" -H "Content-Type: application/json" \
+  -d "$BODY" http://100.64.0.3:4387/gw/piion/v1/chat/completions || true
 ```
 **断言（已真机验证）**：节点发起流式 → 0.5~1.5s 内 abort → 上游 MLX 日志
 （`~/.local/share/qwen36-heretic-mtp/logs/server.err.log`）在 ≤1s 内出现
@@ -650,9 +648,7 @@ curl -s -N --max-time 1.5 -H "Authorization: Bearer $GATEWAY_TOKEN" \
 > （仅 `test/gateway/config-source-gateway.test.js:52` 与 `gateway.test.js:97/:114` 调用）；
 > `router.js` 无 rotation 路由，无触发入口。
 
-**此验收命令当前跑不了。** 须先完成以下其中一项再列入验收：
-- P2：明确轮换触发接口（谁调用、从哪入口、如何触发 push + 节点重启）并开新 slice；
-- 或在 P1 范围内增补轮换 CLI/API 接口，文档更新后验收。
+**T4b 列入 P2，P1 内不验收**。轮换是运维加固，不是 P1 通路验收；P2 需先定义触发接口（谁调用、从哪入口、如何触发 push + 节点重启）并开新 slice，再列入验收。
 
 _保留口径供设计参考_：
 1. hub 侧通过轮换接口生成新 epoch refName，推新 config-push revision
