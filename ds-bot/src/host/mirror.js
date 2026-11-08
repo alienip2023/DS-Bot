@@ -46,6 +46,7 @@ export async function mirrorTurn(session, opts = {}) {
       turn: turnInt,
       step,
       message: botMsg,
+      stream: [],   // required by dsh-session assertAssistantSettlementShape
       ...(usage ?? {}),
     }, { surfaceOp: 'append' })
 

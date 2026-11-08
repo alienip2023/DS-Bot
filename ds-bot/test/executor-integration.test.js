@@ -189,6 +189,7 @@ describe('deliverTurn: full pipeline with mirror + historyEntry', () => {
 
     const botMsgEvent = appendedEvents.find(e => e.type === 'assistant/message')
     assert.ok(botMsgEvent, 'assistant/message event must exist')
+    assert.ok(Array.isArray(botMsgEvent?.data?.stream), 'assistant/message must have stream array (dsh-session settlement)')
 
     // Knife ②: remove result.text from send() return → deliverTurn passes empty string to mirrorTurn → botEntry.text empty
     const botEntry = historyEntry(botMsgEvent, false)
