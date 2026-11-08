@@ -280,7 +280,7 @@ export function install(rt) {
     void rt.save?.()
     if (!_migrated) {
       _migrated = true
-      void migrateLegacyJoined(rt).catch(err => rt.warn?.('ds-bot: auto-migrate failed: %s', err?.message ?? err))
+      setTimeout(() => void migrateLegacyJoined(rt).catch(err => rt.warn?.('ds-bot: auto-migrate failed: %s', err?.message ?? err)), 0)
     }
   }
   const onOffline = ({ nodeId } = {}) => {
