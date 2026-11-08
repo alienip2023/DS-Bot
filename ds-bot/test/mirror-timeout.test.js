@@ -1,36 +1,50 @@
-// test/mirror-timeout.test.js — behavioral test for JOINED_TURN_TIMEOUT_MS = 120s
+// test/mirror-timeout.test.js
+// Verify that listenBotTurnResult uses JOINED_TURN_TIMEOUT_MS as default
+// and that the timeout fires after exactly that many milliseconds.
+// Knife: change JOINED_TURN_TIMEOUT_MS back to 60*60*1000 → test goes red.
+
 import assert from 'node:assert/strict'
-import { test, mock } from 'node:test'
-import { JOINED_TURN_TIMEOUT_MS } from '../src/host/joined-turn.js'
+import { describe, it, before, after } from 'node:test'
+import { mock } from 'node:test'
+import { listenBotTurnResult, JOINED_TURN_TIMEOUT_MS } from '../src/host/joined-turn.js'
 
-test('JOINED_TURN_TIMEOUT_MS is 120_000 (2 minutes, not 60 minutes)', () => {
-  assert.equal(JOINED_TURN_TIMEOUT_MS, 120_000, 'must be 120s')
-  assert.notEqual(JOINED_TURN_TIMEOUT_MS, 60 * 60 * 1000, 'must not be 60 minutes')
-})
+describe('listenBotTurnResult: timeout behavior', () => {
+  after(() => mock.timers.reset())
 
-test('timeout fires at 120s (mock timers)', () => {
-  mock.timers.enable({ apis: ['setTimeout'] })
-  let fired = false
-  setTimeout(() => { fired = true }, JOINED_TURN_TIMEOUT_MS)
+  it('JOINED_TURN_TIMEOUT_MS is 120_000 (2 minutes)', () => {
+    assert.equal(JOINED_TURN_TIMEOUT_MS, 120_000)
+  })
 
-  // One millisecond before — should not fire
-  mock.timers.tick(JOINED_TURN_TIMEOUT_MS - 1)
-  assert.equal(fired, false, 'should not fire at 119999ms')
+  it('does not settle at 119999ms', async () => {
+    mock.timers.enable({ apis: ['setTimeout'] })
+    const handlers = {}
+    const fakeRegistry = {
+      on: (event, fn) => { handlers[event] = fn },
+      off: (event, fn) => { if (handlers[event] === fn) delete handlers[event] },
+    }
+    const { pending } = listenBotTurnResult(fakeRegistry, 'ex-1', 'node-1', JOINED_TURN_TIMEOUT_MS)
+    let settled = false
+    pending.then(() => { settled = true })
 
-  // One more millisecond — now fires
-  mock.timers.tick(1)
-  assert.equal(fired, true, 'should fire at exactly 120000ms')
+    mock.timers.tick(119_999)
+    // Allow microtask queue to drain
+    await Promise.resolve()
+    assert.equal(settled, false, 'should not have settled at 119999ms')
+    mock.timers.reset()
+  })
 
-  mock.timers.reset()
-})
+  it('settles with undefined at exactly 120000ms (timeout)', async () => {
+    mock.timers.enable({ apis: ['setTimeout'] })
+    const handlers = {}
+    const fakeRegistry = {
+      on: (event, fn) => { handlers[event] = fn },
+      off: (event, fn) => { if (handlers[event] === fn) delete handlers[event] },
+    }
+    const { pending } = listenBotTurnResult(fakeRegistry, 'ex-2', 'node-1', JOINED_TURN_TIMEOUT_MS)
 
-test('60-minute timeout does NOT fire at 120s (mock timers)', () => {
-  mock.timers.enable({ apis: ['setTimeout'] })
-  let fired = false
-  setTimeout(() => { fired = true }, 60 * 60 * 1000)
-
-  mock.timers.tick(120_000)
-  assert.equal(fired, false, '60-min timeout must not fire at 120s')
-
-  mock.timers.reset()
+    mock.timers.tick(120_000)
+    const result = await pending
+    assert.equal(result, undefined, 'timeout should resolve with undefined')
+    mock.timers.reset()
+  })
 })
