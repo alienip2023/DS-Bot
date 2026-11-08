@@ -230,7 +230,7 @@ describe('S22: channel sendUser routing (via createSendUser)', () => {
     const result = await route({ botId: bot.id, cursor: undefined })
     assert.ok(result.items.length > 0, 'local chatPage should return items')
     assert.equal(chatPageCalled.length, 1, 'chatPage should be called once')
-    assert.equal(chatPageCalled[0], 'local-sid-99', 'chatPage called with bot.sessionId not bot.id')
+    assert.equal(chatPageCalled[0], 'bot-j1', 'chatPage must be called with bot.id not sessionId')
     assert.equal(joinedChatPageCalled.length, 0, 'joinedChatPage must NOT be called')
   })
 
@@ -251,6 +251,20 @@ describe('S22: channel sendUser routing (via createSendUser)', () => {
     assert.equal(sent.filter(f => f.type === 'bot/turn').length, 0, 'bot/turn must NOT be sent when session creation fails')
   })
 
+
+  it('S22-chatpage-botid: createChatPageRoute calls rt.chatPage with bot.id, not sessionId', async () => {
+    // Knife: change rt.chatPage(chatBot.id) back to rt.chatPage(chatBot.sessionId) → wrong arg → red
+    const bot = makeJoinedBotFull({ sessionId: 'sess-xyz-99' })
+    const { rt } = makeChannelRt(bot)
+    const chatPageArgs = []
+    rt.chatPage = async (arg) => { chatPageArgs.push(arg); return { sessionId: arg, items: [{ kind: 'bot', text: 'x' }], cursor: null } }
+    rt.load = async () => {}
+    const route = createChatPageRoute(rt)
+    await route({ botId: bot.id })
+    assert.equal(chatPageArgs.length, 1)
+    assert.equal(chatPageArgs[0], 'bot-j1', 'rt.chatPage must receive bot.id, not sessionId')
+    assert.notEqual(chatPageArgs[0], 'sess-xyz-99', 'must NOT pass sessionId')
+  })
   it('S22-chat-page-empty: joined bot with null sessionId returns empty page, no chatPage call', async () => {
     // Knife: delete empty-session branch in createChatPageRoute → falls through to rt.chatPage(botId) → wrong
     const bot = makeJoinedBotFull({ sessionId: null })

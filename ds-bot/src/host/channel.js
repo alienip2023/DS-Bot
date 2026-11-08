@@ -102,7 +102,7 @@ export function createChatPageRoute(rt) {
       if (typeof chatBot.sessionId !== 'string' || chatBot.sessionId === '') {
         return { sessionId: chatBot.id, items: [], cursor: null }
       }
-      return await rt.chatPage(chatBot.sessionId, body.cursor ?? undefined)
+      return await rt.chatPage(chatBot.id, body.cursor ?? undefined)
     }
     return await rt.chatPage(String(body.botId ?? ''), body.cursor ?? undefined)
   }
