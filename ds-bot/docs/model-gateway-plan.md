@@ -230,7 +230,7 @@ conn.on('tcp connection', (info, accept, reject) => {
 | 测试 | 断言 | 刀 |
 |---|---|---|
 | `1Q` tcp connection 闭环 | accept() + pipe 双向工作 | 删 tcp connection handler → 红 |
-| `1Q` 节点上线 → 隧道建立 | forwardIn 调用，boundPort 返回 | 删 establishTunnel → 红 |
+| `1Q2` 节点上线 → 隧道建立 | forwardIn 调用，boundPort 返回 | 删 establishTunnel → 红 |
 | `1R` 节点离线 → 隧道关闭 | conn.end 调用 | 删 closeTunnel → 红 |
 | `1S` 断线重连 ≤5s | conn close 后 5s 内重新 forwardIn | 删 retry → 红 |
 | `1T` AllowTcpForwarding 禁 → 降级 | 日志含 tcp-forwarding-denied | 删 forwarding 检查 → 红 |
