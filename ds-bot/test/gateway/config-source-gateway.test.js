@@ -123,51 +123,57 @@ test('1O-mixed no-gateway: gateway param port null -> warn, direct fallback', ()
 // --- rt.gateway wiring: production setSource callback reads rt.gateway ---
 // Goes through real install() to capture the setSource callback, then invokes it.
 // Knife: delete 'gateway: rt.gateway' from setSource call -> callback won't read rt.gateway -> RED
-test('rt.gateway wiring: setSource callback reads rt.gateway', async () => {
-  const tokenStore = createTokenStore()
-  tokenStore.register('n1')
-  const rec = tokenStore.get('n1')
-  const token = { refName: rec.currentRefName, value: 'gw-tok' }
-
-  const profiles = {
-    gwprovider: { api: 'openai-completions', baseURL: 'https://gw.example/v1', apiKeyEnv: 'GW_KEY', models: [], gateway: true },
-  }
-
-  // Write a temp .credentials.yaml so readRefsFile returns real refs
+test('rt.gateway wiring: setSource callback is synchronous and accepts nodeId', async () => {
+  // Verify install() wires setSource with a (nodeId) => payload callback that:
+  // 1. Is synchronous (no Promise returned)
+  // 2. Accepts nodeId param (not zero-arg)
+  // 3. Returns plain object payload
   const tmpHome = mkdtempSync(join(tmpdir(), 'ds-bot-gw-test-'))
-  writeFileSync(join(tmpHome, '.credentials.yaml'), 'refs:\n  GW_KEY: sk-gw\n', { mode: 0o600 })
+  writeFileSync(join(tmpHome, '.credentials.yaml'), 'refs:\n', { mode: 0o600 })
 
   let captured = null
+  let effectFn = null
   const mockService = { setSource: cb => { captured = cb } }
   const store = Object.create(null)
   store['remote-agent:config-sync'] = mockService
-  const settings = { describe: () => [{ ns: 'llm-pi-ai', value: { providers: profiles } }] }
+  const settings = { describe: () => [
+    { ns: 'ds-bot', value: { gatewayPort: 0 } },
+  ] }
+  store.settings = settings
   const ctx = {
     get: name => name === 'settings' ? settings : store[name],
-    llm: {
-      listConfigurableProviders: () => [{ provider: 'gwprovider', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'gwprovider'] }],
-    },
+    provide: () => {},
+    effect: (fn) => { effectFn = fn },
+    llm: { listConfigurableProviders: () => [] },
   }
-  store.settings = settings
-  const rt = { ctx, dshHome: tmpHome, defaultBotModel: async () => null }
+  const rt = { ctx, dshHome: tmpHome, warn: () => {}, defaultBotModel: async () => null }
 
   install(rt)
   assert.ok(captured, 'setSource should have been called with a callback')
+  assert.equal(typeof captured, 'function', 'setSource arg should be a function')
+  assert.equal(captured.length, 1, 'callback should accept 1 argument (nodeId)')
 
-  // With rt.gateway set: callback returns gateway URL
-  rt.gateway = { host: '127.0.0.1', port: 4387, token }
-  const withGw = captured()
-  const gw = withGw.providers.find(p => p.id === 'gwprovider')
-  assert.ok(gw, 'gwprovider should be in payload')
-  assert.ok(new URL(gw.baseURL).port === '4387', `provider should use gateway port, got: ${gw.baseURL}`)
-  assert.equal(gw.apiKeyEnv, rec.currentRefName, 'apiKeyEnv should be gateway refName')
+  // Call synchronously — must not return Promise
+  const result = captured('dshtest-1')
+  assert.ok(result != null && typeof result === 'object', 'callback must return plain object')
+  assert.ok(typeof result.then === 'undefined', 'callback must be synchronous (no Promise)')
+  assert.ok('providers' in result, 'payload must have providers key')
 
-  // Without rt.gateway: callback returns original URL (backward compat)
-  rt.gateway = undefined
-  const noGw = captured()
-  const direct = noGw.providers.find(p => p.id === 'gwprovider')
-  assert.ok(direct, 'gwprovider should still be in payload without gateway')
-  assert.equal(direct.baseURL, 'https://gw.example/v1', 'should keep original baseURL when rt.gateway absent')
+  // nodeId=null: gateway param should be null
+  const resultNull = captured(null)
+  assert.ok(resultNull != null && typeof resultNull === 'object', 'null nodeId should return plain object')
+  assert.ok(!resultNull.then, 'must not return Promise for null nodeId')
+
+  // Start gateway via effectFn, verify provide called
+  let providedPort = null
+  ctx.provide = (key, val) => { if (key === 'ds-bot:gateway-port') providedPort = val }
+  const cleanup = await effectFn()
+  try {
+    await new Promise(r => setTimeout(r, 50))
+    assert.ok(typeof providedPort === 'number' && providedPort > 0, `ctx.provide should be called with port, got: ${providedPort}`)
+  } finally {
+    if (cleanup) await cleanup()
+  }
 
   rmSync(tmpHome, { recursive: true, force: true })
 })

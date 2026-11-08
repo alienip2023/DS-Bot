@@ -8,6 +8,9 @@
 // line or an error message here: logs name provider ids and counts only.
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { randomBytes } from 'node:crypto'
+import { createGatewayServer } from '../gateway/index.js'
+import { createTokenStore } from '../gateway/token-store.js'
 
 const PI_AI = 'llm-pi-ai'
 const PROVIDER_ID = /^[A-Za-z0-9._-]+$/
@@ -130,13 +133,62 @@ export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRef
 
 export function install(rt) {
   const ctx = rt.ctx
-  // The hub calls the source synchronously, but the default model is resolved through
-  // the (async) catalog, so it is refreshed here and read from the cache.
+
+  // ── Gateway startup ──────────────────────────────────────────────────────
+  const readGatewaySettings = () => {
+    try {
+      const settings = ctx?.get?.('settings')
+      if (!settings) return {}
+      const section = settings.describe({ redactSecrets: false })
+        .find(s => s.ns === 'ds-bot' || s.ns === 'ds-bot-main')
+      const cfg = section?.value ?? {}
+      return {
+        host: typeof cfg.gatewayHost === 'string' && cfg.gatewayHost !== '' ? cfg.gatewayHost : undefined,
+        port: typeof cfg.gatewayPort === 'number' ? cfg.gatewayPort : undefined,
+      }
+    } catch { return {} }
+  }
+
+  const secrets = new Map()
+  const tokenStore = createTokenStore()
+  let actualPort = null
+  let gwHost = '127.0.0.1'
+  let gwServer = null
+
+  // ensureToken(nodeId): synchronous — register + read creds + generate if missing + persist async
+  const ensureToken = (nodeId) => {
+    const { refName } = tokenStore.register(nodeId)     // idempotent
+    if (secrets.has(refName)) return { refName, value: secrets.get(refName) }
+    const refs = readRefsFile(rt)
+    const existing = refs.get(refName)
+    const value = (typeof existing === 'string' && existing !== '') ? existing : randomBytes(32).toString('base64url')
+    secrets.set(refName, value)
+    try {
+      const credSvc = ctx?.get?.('credentials')
+      if (credSvc?.set) credSvc.set(refName, value).catch(err => rt.warn?.('ds-bot: gateway token persist: %s', err?.message ?? err))
+    } catch { /* no credentials service */ }
+    return { refName, value }
+  }
+
+  ctx?.effect?.(async () => {
+    const { host, port } = readGatewaySettings()
+    gwHost = host ?? '127.0.0.1'
+    const gwPort = typeof port === 'number' ? port : 4387
+    gwServer = createGatewayServer({ gatewayHost: gwHost, gatewayPort: gwPort, secrets, store: tokenStore, providers: [], rt })
+    actualPort = await gwServer.start()
+    if (actualPort !== null) {
+      try { ctx.provide('ds-bot:gateway-port', actualPort) } catch {}
+    }
+    return async () => {
+      if (gwServer) await gwServer.stop()
+    }
+  }, 'ds-bot: model gateway')
+
+  // ── Config-sync source ───────────────────────────────────────────────────
   let defaultModel = null
   const refreshDefault = async () => {
     try {
       const ref = (await rt.defaultBotModel?.()) ?? null
-      // Exclude embedding models and ensure the provider is in the payload
       if (typeof ref === 'string' && ref !== '' && !/embedding/i.test(ref)) {
         defaultModel = ref
       } else { defaultModel = null }
@@ -149,15 +201,20 @@ export function install(rt) {
     try { service = ctx?.get?.('remote-agent:config-sync') } catch { service = undefined }
     if (!service || typeof service.setSource !== 'function') return
     attached = true
-    service.setSource(() => buildConfigPayload(rt, { defaultModel, gateway: rt.gateway }))
+    // setSource receives nodeId per-payload; use it to ensure the node has its own token.
+    // MUST remain synchronous — ra rejects a Promise source.
+    service.setSource((nodeId) => {
+      const gw = (nodeId && actualPort !== null)
+        ? { host: gwHost, port: actualPort, token: ensureToken(nodeId) }
+        : null
+      return buildConfigPayload(rt, { defaultModel, gateway: gw })
+    })
   }
   const tick = () => {
     attach()
     if (attached) void refreshDefault()
   }
   tick()
-  // remote-agent may come up after ds-bot; look again until its service is there, then keep
-  // the default model fresh.
   const timer = setInterval(tick, RETRY_MS)
   timer.unref?.()
 }
