@@ -1,6 +1,6 @@
-# 模型网关 P1 分片计划 v6 (Model Gateway P1 Slice Plan)
+# 模型网关 P1 分片计划 v7 (Model Gateway P1 Slice Plan)
 
-**状态**: 修订稿 v5（2026-11-08，架构师，tailnet 通道补充，df704ae1 三条实施备注维持）
+**状态**: 修订稿 v7（2026-11-08，架构师，tailnet 通道 v2 + gatewayHost 配置值修正）
 **分支**: feat/model-gateway-contract
 **依赖契约**: docs/model-gateway-contract.md v3 (2396338c) — 已冻结
 **代码基线**: dsh-remote-agent HEAD 14cb02f (0.10.1-fork.47) + ds-bot HEAD
@@ -76,7 +76,7 @@ const refName = 'GATEWAY_TOKEN_' + nodeId.replace(/[^A-Za-z0-9]/g, '_')
 
 ```js
 // src/gateway/upstream.js readUpstreamProviders()
-const gatewayOrigin = `http://127.0.0.1:${gatewayPort}`
+const gatewayOrigin = `http://${gatewayHost}:${gatewayPort}`
 return providers.filter(p => {
   if (!p.baseURL) return true
   try {
@@ -101,7 +101,7 @@ return providers.filter(p => {
 conn.on('tcp connection', (info, accept, reject) => {
   let channel
   try { channel = accept() } catch { try { reject() } catch {}; return }
-  const upstream = net.connect(gatewayPort, '127.0.0.1')
+  const upstream = net.connect(gatewayPort, gatewayHost)
   channel.pipe(upstream).pipe(channel)
   upstream.on('error', (e) => channel.destroy(e))
   channel.on('error', () => upstream.destroy())
@@ -117,7 +117,7 @@ conn.on('tcp connection', (info, accept, reject) => {
 
 节点不一定有 `curl`，探针命令改为：
 ```
-curl http://127.0.0.1:4387/probe 2>/dev/null || node -e "fetch('http://127.0.0.1:4387/probe').then(r=>r.text()).then(console.log)"
+curl http://${GATEWAY_HOST:-127.0.0.1}:4387/probe 2>/dev/null || node -e "fetch('http://'+process.env.GATEWAY_HOST+':4387/probe').then(r=>r.text()).then(console.log)"
 ```
 两者都失败才判探针失败。
 
@@ -192,7 +192,7 @@ Authorization: Bearer <gatewayToken>
 | `1E` abort() 传播 ≤1s | 假上游 1s 内收到 abort | 删 cancelPropagation → 红 |
 | `1F` 端口冲突降级 | 日志含 EADDRINUSE，host 正常启动 | 删 eaddrinuseGuard → 抛 → 红 |
 | `1G` baseURL /v1 路径 | 实际请求路径含 `/v1/chat/completions` | 删 /v1 → 路径变 → 红 |
-| `1H` 上游 URL ≠ 网关 origin | `p.baseURL ≠ http://127.0.0.1:${port}` | 改为 `includes('127.0.0.1')` → 上游被删 → 红 |
+| `1H` 上游 URL ≠ 网关 origin | `new URL(p.baseURL).origin !== gatewayOrigin`（gatewayHost:port 精确比较） | 改为 `includes('127.0.0.1')` → tailnet 环境假红 → 红 |
 | `1H-ollama` ollama 不被误删 | `127.0.0.1:11434` provider 仍在 upstream | 同上刀，11434 消失 → 红 |
 | `1I` body > 8MB → 413 | `status === 413` | 删 body limit → 红 |
 | `1J` 旧 token 并存窗口内可用 | `oldToken → 200` | 删 previous 检查 → `oldToken → 401` → 红 |
@@ -200,7 +200,7 @@ Authorization: Bearer <gatewayToken>
 | `1L-expire` 窗口后旧 token → 401 | `previousExpiresAt` 到期后 oldToken 被拒 | 删 previousExpiresAt 检查 → 旧 token 永久有效 → 红 |
 | `1M` 429 透传 | `status === 429` + Retry-After | 删 → 红 |
 | `1N` 402 透传 | `status === 402` | 删 → 红 |
-| `1O` mixed: 一走网关一直连 | 网关 provider baseURL 含 127.0.0.1，直连含原值 | 删 per-provider 分支 → 红 |
+| `1O` mixed: 一走网关一直连 | 网关 provider baseURL origin = `http://${gatewayHost}:${gatewayPort}`，直连含原值 | 删 per-provider 分支 → 红 |
 
 #### 1B. 反向隧道 Supervisor（dsh-remote-agent 仓库）
 
@@ -211,7 +211,7 @@ Authorization: Bearer <gatewayToken>
 conn.on('tcp connection', (info, accept, reject) => {
   let channel
   try { channel = accept() } catch { try { reject() } catch {}; return }
-  const upstream = net.connect(gatewayPort, '127.0.0.1')
+  const upstream = net.connect(gatewayPort, gatewayHost)
   channel.pipe(upstream).pipe(channel)
   upstream.on('error', (e) => channel.destroy(e))
   channel.on('error', () => upstream.destroy())
@@ -255,7 +255,7 @@ conn.on('tcp connection', (info, accept, reject) => {
 | `2G` apiKeyEnv 合法 ref 名 | `/^[A-Za-z_][A-Za-z0-9_]*$/.test(p.apiKeyEnv)` | 用含连字符 nodeId → 红 |
 | `2H` baseURL/apiKeyEnv 变化触发重启 | 改 baseURL，`shouldRestart === true` | 删 fingerprint 扩展 → false → 红 |
 
-**待验证项 G1（Slice 2 门禁前）**：dshtest-1 节点上验证 `GATEWAY_TOKEN_*` ref 重启后可解析，pi-ai 发 Bearer token 到 `http://127.0.0.1:4387/...`，hub auth.js 校验通过。
+**待验证项 G1（Slice 2 门禁前）**：dshtest-1 节点上验证 `GATEWAY_TOKEN_*` ref 重启后可解析，pi-ai 发 Bearer token 到 `http://{gatewayHost}:4387/...`（tailnet 模式下为 `100.64.0.3:4387`），hub auth.js 校验通过。
 
 ---
 
