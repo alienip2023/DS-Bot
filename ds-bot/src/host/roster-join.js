@@ -274,9 +274,14 @@ export async function migrateLegacyJoined(rt, opts = {}) {
 
 export function install(rt) {
   const ctx = rt.ctx
+  let _migrated = false
   const onRoster = (report) => {
     applyRosterReport(rt.state, report)
     void rt.save?.()
+    if (!_migrated) {
+      _migrated = true
+      void migrateLegacyJoined(rt).catch(err => rt.warn?.('ds-bot: auto-migrate failed: %s', err?.message ?? err))
+    }
   }
   const onOffline = ({ nodeId } = {}) => {
     if (typeof nodeId !== 'string' || nodeId === '') return
