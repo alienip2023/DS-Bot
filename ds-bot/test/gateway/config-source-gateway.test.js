@@ -171,3 +171,21 @@ test('rt.gateway wiring: setSource callback reads rt.gateway', async () => {
 
   rmSync(tmpHome, { recursive: true, force: true })
 })
+
+// --- 1O-token-missing: gateway running but token undefined -> warn + fallback to direct ---
+// Knife: delete gwTokenMissingCount += 1 -> warn absent -> RED
+test('1O-token-missing: port set but token undefined -> warn + direct fallback', () => {
+  const profiles = {
+    alpha: { api: 'openai-completions', baseURL: 'https://a.example/v1', apiKeyEnv: 'ALPHA_KEY', models: [], gateway: true },
+  }
+  const { rt, warns, readRefs } = makeRt({ profiles, refs: { ALPHA_KEY: KEY_A } })
+
+  // gateway is started (port valid) but token is undefined (not yet registered)
+  const payload = buildConfigPayload(rt, { readRefs, gateway: { host: '127.0.0.1', port: 4387, token: undefined } })
+
+  const p = payload.providers[0]
+  assert.equal(p.baseURL, 'https://a.example/v1', 'should keep original baseURL when token missing')
+  assert.equal(p.apiKeyEnv, 'ALPHA_KEY', 'should keep original apiKeyEnv when token missing')
+  assert.equal(warns.length, 1, `should have exactly one token-missing warn, got: ${JSON.stringify(warns)}`)
+  assert.ok(warns[0].includes('token') || warns[0].includes('missing'), `warn should mention token/missing, got: ${warns[0]}`)
+})

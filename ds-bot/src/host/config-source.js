@@ -66,6 +66,7 @@ export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRef
     const refs = readRefs(rt)
     const LOCAL_CLI_PREFIX = /^(claude-code|codex-cli)(\/|$)/
     let gwFallbackCount = 0
+    let gwTokenMissingCount = 0
     for (const entry of entries) {
       // Skip local CLI providers (process-based, not API-key based)
       if (LOCAL_CLI_PREFIX.test(entry.provider)) { skipped += 1; continue }
@@ -96,6 +97,9 @@ export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRef
         } else if (gwPort == null) {
           // Aggregate count; warn once after loop
           gwFallbackCount += 1
+        } else {
+          // Gateway running but token not yet registered — count for aggregated warn
+          gwTokenMissingCount += 1
         }
       }
 
@@ -109,6 +113,7 @@ export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRef
       })
     }
     if (gwFallbackCount > 0) rt.warn?.('ds-bot: config-source gateway not started, %d provider(s) fall back to direct', gwFallbackCount)
+    if (gwTokenMissingCount > 0) rt.warn?.('ds-bot: config-source gateway token missing, %d provider(s) fall back to direct', gwTokenMissingCount)
   }
   if (skipped > 0) rt.warn?.('ds-bot: config-source skipped %d provider(s) without a protocol or key', skipped)
   // Ensure defaultModel's provider is among the pushed providers
