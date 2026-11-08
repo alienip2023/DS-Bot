@@ -80,3 +80,49 @@ export function mirrorTurnEnd(session, turn, errorMessage) {
     : { kind: 'aborted' }
   session.append('turn/end', { turn, reason })
 }
+
+/**
+ * Ensure a mirror Session exists for a joined Bot.
+ * If bot.sessionId is already set, resolves and returns the existing Session.
+ * If not, creates a new Session, updates bot.sessionId + bySessionId index, saves, then returns.
+ *
+ * @param {object} rt
+ * @param {object} bot  - raw state.bots entry (mutable)
+ * @returns {Promise<object>}  store-owned Session
+ * @throws {Error} with code 'no-session' on any failure
+ */
+export async function ensureMirrorSession(rt, bot) {
+  if (typeof bot?.sessionId === 'string' && bot.sessionId !== '') {
+    try {
+      const agent = await rt.resolveAgent(bot.sessionId)
+      return agent.session
+    } catch (err) {
+      throw Object.assign(new Error('mirror session resume failed: ' + (err?.message ?? err)), { code: 'no-session' })
+    }
+  }
+
+  let sessionId
+  try {
+    sessionId = await rt.createSession(bot.id + ' (mirror)')
+  } catch (err) {
+    throw Object.assign(new Error('mirror session creation failed: ' + (err?.message ?? err)), { code: 'no-session' })
+  }
+
+  if (typeof sessionId !== 'string' || sessionId === '') {
+    throw Object.assign(new Error('mirror session creation returned no id'), { code: 'no-session' })
+  }
+
+  const oldSessionId = typeof bot.sessionId === 'string' ? bot.sessionId : null
+  bot.sessionId = sessionId
+  rt.updateBySessionId?.(bot.id, oldSessionId, sessionId)
+  await rt.save?.()
+
+  // S2-3 will implement importHistory(session, items, opts) to pull node history.
+
+  try {
+    const agent = await rt.resolveAgent(sessionId)
+    return agent.session
+  } catch (err) {
+    throw Object.assign(new Error('mirror session resolve failed: ' + (err?.message ?? err)), { code: 'no-session' })
+  }
+}

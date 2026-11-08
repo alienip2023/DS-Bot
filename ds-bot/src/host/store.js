@@ -8,6 +8,7 @@ import { LEGACY_THEMES, MAX_EXCHANGES, ROOM_MODES, TEXT_KEPT } from './constants
 import { replaceFile } from './files.js'
 import { homeLock } from './home-lock.js'
 import { currentColor, headOf, normalize, unquote } from './text.js'
+import { updateBySessionId } from './bot-store.js'
 
 // A table read that sees only the keys the table holds itself. Ids that come from
 // outside (a request body, a tool argument, a name a model gives) go through this, so
@@ -566,5 +567,6 @@ export function install(rt) {
     chatOwners, groupOwners, roomOwners, pastOwners,
     groupSessionsOf, dropGroupSession, retireGroupSession, findBot, findRooms, isAdminOf,
     bySessionId: sid => bySessionIdMap.get(sid),
+    updateBySessionId: (botId, oldSessionId, newSessionId) => updateBySessionId(bySessionIdMap, botId, oldSessionId, newSessionId),
   })
 }

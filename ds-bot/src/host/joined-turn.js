@@ -173,6 +173,7 @@ function textOfContent(content) {
   return content.map((block) => typeof block?.text === 'string' ? block.text : '').join('')
 }
 
+/** @deprecated S2-2: joined shadow now routes through channel.js sendUser → ensureMirrorSession → executor.deliverTurn. This wrapper is retained for backward compatibility but should not be activated for joined bots. */
 function wrapSendUser(rt) {
   const orig = rt.sendUser
   if (typeof orig !== 'function' || orig.__joinedTurn === true) return

@@ -6,6 +6,10 @@ import { install as installSide } from './side.js'
 import { handoffReply, questionReply, viewReply } from './parts.js'
 import { validateViewAnswer } from 'deep-view/core'
 import { COLORS, EXTRA_COLORS, ROUTE } from './constants.js'
+import { joinedShadow } from './roster-join.js'
+import { ensureMirrorSession } from './mirror.js'
+import { deliverTurn } from './executor.js'
+import { createTurnTracker } from './turn-tracker.js'
 
 // Pure helper: map a registry defaultModel (string or {provider,model} object) to a ref string.
 export function mapDefaultModel(dm) {
@@ -25,6 +29,83 @@ const isInternal = error => error instanceof TypeError || error instanceof Refer
 export function errorCode(error) {
   if (typeof error?.code === 'string' && error.code.startsWith('bot/')) return error.code
   return isInternal(error) ? 'bot/internal' : 'bot/refused'
+}
+
+/**
+ * Create the sendUser function for a given rt.
+ * Exported for testing; install() consumes it via Object.assign(rt, { sendUser }).
+ * @param {object} rt
+ * @param {{ textOfContent: Function, getMirrorState: Function, ctx: object }} deps
+ */
+export function createSendUser(rt, { textOfContent, getMirrorState, ctx } = {}) {
+  const _textOfContent = textOfContent ?? ((c) => (typeof c === 'string' ? c : Array.isArray(c) ? c.map(b => typeof b?.text === 'string' ? b.text : '').join('') : ''))
+  const _getMirrorState = getMirrorState ?? ((rt, botId) => {
+    if (!rt._mirrorState) rt._mirrorState = new Map()
+    let s = rt._mirrorState.get(botId)
+    if (!s) { s = { seenKeys: new Set(), closedKeys: new Set(), seenSteps: new Set(), turnCounter: 0 }; rt._mirrorState.set(botId, s) }
+    return s
+  })
+  return async function sendUser({ sessionId: ref, content, requestId = randomUUID() }) {
+    // Joined shadow: route through ensureMirrorSession + executor.deliverTurn
+    const directBot = rt.botOf(ref)
+    const joinedBot = joinedShadow(directBot) ? directBot
+      : joinedShadow(rt.bySessionId(ref)) ? rt.bySessionId(ref)
+      : null
+    if (joinedBot) {
+      const text = _textOfContent(content)
+      const session = await ensureMirrorSession(rt, joinedBot)
+      const ms = _getMirrorState(rt, joinedBot.id)
+      ms.turnCounter = (ms.turnCounter ?? 0) + 1
+      await deliverTurn({
+        botId: joinedBot.id,
+        text,
+        rt,
+        session,
+        turn: ms.turnCounter,
+        seenKeys: ms.seenKeys,
+        closedKeys: ms.closedKeys,
+        seenSteps: ms.seenSteps,
+        tracker: rt.turnTracker,
+        timeoutMs: 120_000,
+      })
+      return
+    }
+    // Original path for non-joined
+    const _ctx = ctx ?? rt.ctx
+    const past = rt.pastOwners.get(ref)
+    const room = rt.roomOf(ref)
+    const sessionId = rt.botOf(ref) ? rt.chatOf(ref)
+      : room !== undefined ? rt.sessionOfRoom(room)
+        : past?.roomId === undefined && past !== undefined ? rt.chatOf(past.botId)
+          : past !== undefined ? rt.sessionOfRoom(rt.roomOf(past.roomId)) : ref
+    await rt.ensureCapabilities(sessionId)
+    await _ctx.sessionController.prompt({
+      requestId,
+      sessionId,
+      mode: 'queue',
+      content,
+    }, AbortSignal.timeout(30_000))
+  }
+}
+
+/**
+ * Create the chatPage route handler for a given rt.
+ * Exported for testing; install() uses it inside the 'chat' case.
+ * @param {object} rt
+ */
+export function createChatPageRoute(rt) {
+  return async function chatPageRoute(body) {
+    await rt.load()
+    const chatBot = rt.botOf?.(String(body.botId ?? ''))
+    if (chatBot && joinedShadow(chatBot)) {
+      // S2-2: read local mirror session; if sessionId not yet set, return empty page
+      if (typeof chatBot.sessionId !== 'string' || chatBot.sessionId === '') {
+        return { sessionId: chatBot.id, items: [], cursor: null }
+      }
+      return await rt.chatPage(chatBot.sessionId, body.cursor ?? undefined)
+    }
+    return await rt.chatPage(String(body.botId ?? ''), body.cursor ?? undefined)
+  }
 }
 
 export function install(rt) {
@@ -267,12 +348,8 @@ export function install(rt) {
           await rt.load()
           return ok(await rt.earlierPage(String(body.sessionId ?? ''), body.cursor ?? undefined))
         case 'chat': {
-          await rt.load()
-          const chatBot = rt.botOf?.(String(body.botId ?? ''))
-          if (chatBot && typeof rt.joinedChatPage === 'function' && chatBot.origin === 'joined' && chatBot.worker?.home === 'remote') {
-            return ok(await rt.joinedChatPage(chatBot.id, body.cursor ?? undefined))
-          }
-          return ok(await rt.chatPage(String(body.botId ?? ''), body.cursor ?? undefined))
+          const chatPageRoute = createChatPageRoute(rt)
+          return ok(await chatPageRoute(body))
         }
         // DSH's own whole-log figures for the current part of a Bot's chat, the ones its
         // status bar shows; a window without that bar shows them in the Bot's details.
@@ -769,21 +846,24 @@ export function install(rt) {
   // How a user message reaches a Session: a Bot id, a group chat's id, or an earlier
   // part of either resolves to its current part. `content` is the prompt blocks DSH
   // takes (text, image, file receipts); `requestId` lands on the message's source.
-  async function sendUser({ sessionId: ref, content, requestId = randomUUID() }) {
-    const past = rt.pastOwners.get(ref)
-    const room = rt.roomOf(ref)
-    const sessionId = rt.botOf(ref) ? rt.chatOf(ref)
-      : room !== undefined ? rt.sessionOfRoom(room)
-        : past?.roomId === undefined && past !== undefined ? rt.chatOf(past.botId)
-          : past !== undefined ? rt.sessionOfRoom(rt.roomOf(past.roomId)) : ref
-    await rt.ensureCapabilities(sessionId)
-    await ctx.sessionController.prompt({
-      requestId,
-      sessionId,
-      mode: 'queue',
-      content,
-    }, AbortSignal.timeout(30_000))
+  function textOfContent(content) {
+    if (typeof content === 'string') return content
+    if (!Array.isArray(content)) return ''
+    return content.map((block) => typeof block?.text === 'string' ? block.text : '').join('')
   }
+
+  function getMirrorState(rt, botId) {
+    if (!rt._mirrorState) rt._mirrorState = new Map()
+    let s = rt._mirrorState.get(botId)
+    if (!s) { s = { seenKeys: new Set(), closedKeys: new Set(), seenSteps: new Set(), turnCounter: 0 }; rt._mirrorState.set(botId, s) }
+    return s
+  }
+
+  // Removed turnTracker start/finish from channel — executor.send handles tracker lifecycle.
+  // Channel only creates and owns the tracker instance + sweep interval.
+
+  // Exported via createSendUser for testing — install() consumes it via rt.sendUser.
+  const sendUser = createSendUser(rt, { textOfContent, getMirrorState, ctx })
 
   // The user's answer to an ask_user card, from the web or an IM chat. A Bot id or an
   // earlier part of its own chat means the current one.
@@ -810,6 +890,11 @@ export function install(rt) {
   }
 
   Object.assign(rt, { sendUser, answerQuestion })
+
+  // Wire turn-tracker for joined shadow timeout sweep (120s)
+  rt.turnTracker = createTurnTracker()
+  const sweepTimer = setInterval(() => rt.turnTracker.sweep(Date.now(), 120_000), 30_000)
+  sweepTimer.unref?.()
 
   // An exact Fetch route on the shared /api channel; the browser authenticates with its session cookie.
   ctx.effect(() => ctx.connection.fetch.register({
