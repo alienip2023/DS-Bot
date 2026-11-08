@@ -1,17 +1,18 @@
 // router.js — HTTP router for model gateway
 import { handleModels } from './models.js'
+import { proxyChat } from './proxy.js'
 
-const MAX_BODY = 8 * 1024 * 1024 // 8MB
+const DEFAULT_BODY_LIMIT = 8 * 1024 * 1024 // 8MB
 
-function readBody(req) {
+function readBody(req, limit) {
   return new Promise((resolve, reject) => {
     const chunks = []
     let size = 0
     let tooLarge = false
     req.on('data', chunk => {
-      if (tooLarge) return // drain remaining data without storing
+      if (tooLarge) return
       size += chunk.length
-      if (size > MAX_BODY) { tooLarge = true; chunks.length = 0; reject(Object.assign(new Error('body too large'), { code: 'E_TOO_LARGE' })) }
+      if (size > limit) { tooLarge = true; chunks.length = 0; reject(Object.assign(new Error('body too large'), { code: 'E_TOO_LARGE' })) }
       else chunks.push(chunk)
     })
     req.on('end', () => { if (!tooLarge) resolve(Buffer.concat(chunks)) })
@@ -24,7 +25,7 @@ function readBody(req) {
  * auth: authMiddleware(secrets, store) — (req, res, next) -> void
  * providers: Array<{id, models}>
  */
-export function createRouter({ auth, providers = [] }) {
+export function createRouter({ auth, providers = [], timeoutMs, bodyLimit }) {
   return async function route(req, res) {
     const url = req.url ?? '/'
     const method = req.method ?? 'GET'
@@ -59,8 +60,9 @@ export function createRouter({ auth, providers = [] }) {
         return
       }
       // Body size check
+      let body
       try {
-        await readBody(req)
+        body = await readBody(req, bodyLimit ?? DEFAULT_BODY_LIMIT)
       } catch (e) {
         if (e.code === 'E_TOO_LARGE') {
           res.writeHead(413, { 'content-type': 'application/json' })
@@ -71,9 +73,9 @@ export function createRouter({ auth, providers = [] }) {
         res.end(JSON.stringify({ error: 'read-error' }))
         return
       }
-      // 1A-2: SSE proxy not implemented in Slice 1A
-      res.writeHead(501, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ error: 'not-implemented' }))
+      // 1A-2: SSE proxy
+      const ac = new AbortController()
+      await proxyChat({ provider, body, clientReq: req, res, timeoutMs, signal: ac.signal })
       return
     }
 

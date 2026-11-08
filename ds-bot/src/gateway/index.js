@@ -13,13 +13,13 @@ const DEFAULT_PORT = 4387
  *
  * On EADDRINUSE: logs rt.warn and resolves with null (1F: host starts normally).
  */
-export function createGatewayServer({ gatewayHost, gatewayPort, secrets, store, providers, rt }) {
+export function createGatewayServer({ gatewayHost, gatewayPort, secrets, store, providers, rt, timeoutMs, bodyLimit }) {
   const host = gatewayHost ?? DEFAULT_HOST
   const port = gatewayPort ?? DEFAULT_PORT
   let server = null
 
   const auth = authMiddleware(secrets, store)
-  const route = createRouter({ auth, providers })
+  const route = createRouter({ auth, providers, timeoutMs, bodyLimit })
 
   return {
     async start() {
@@ -53,7 +53,10 @@ export function createGatewayServer({ gatewayHost, gatewayPort, secrets, store, 
     async stop() {
       const s = server
       server = null
-      if (s) await new Promise(resolve => s.close(resolve))
+      if (s) {
+        s.closeAllConnections?.()
+        await new Promise(resolve => s.close(resolve))
+      }
     },
   }
 }
