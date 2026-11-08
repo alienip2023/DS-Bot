@@ -280,7 +280,7 @@ export async function ensureMirrorSession(rt, bot) {
 | `ds-bot/src/host/mirror.js` | ds-bot | 新增 `importHistory(session, items, opts)` |
 | `ds-bot/src/host/roster-join.js` | ds-bot | 新增 `migrateLegacyJoined(rt, opts)` |
 | `ds-bot/src/client/overlays.js:72` | ds-bot | 删除 `JoinedChatDialog` portal（仅在灰度开关置 true 后执行） |
-| `ds-bot/src/client/team-actions.js:172` | ds-bot | `openJoinedChat: (botId) => actions.openAgent(botId)`（灰度开关 true 后） |
+| `ds-bot/src/client/cells.js:384`、`row-actions.js:5` | ds-bot | 调用点分流：`if (botHomeEnabled) actions.openAgent(bot.id)` else `actions.openJoinedChat(bot.id)`；`team-actions.js:172` 保持原样不动 |
 | `ds-bot/src/host/channel.js` | ds-bot | 灰度开关 `rt.botHomeEnabled`（boolean，设置来源 `rt.cfg?.features?.botHome`） |
 | `ds-bot/test/mirror-import.test.js`（新） | ds-bot | 导入测试 |
 | `ds-bot/test/migration.test.js`（新） | ds-bot | 迁移测试 |
@@ -517,5 +517,11 @@ export async function migrateLegacyJoined(rt, opts = {}) {
 ```
 
 **回滚**：将 `bot.sessionId = bot.legacyMirrorSessionId`，删除新建会话目录。
+
+**离线边界**：节点离线或 `joinedChatPage` 翻页失败时，**不许建会话、不许拿离线占位 item 当历史**。正确行为：该 Bot 记 `failed`、warn、继续下一个，`sessionId` 保持原值不变。否则会留下「sessionId 指向空会话、watermark=0」的半截状态，下次又要重建。
+
+**空历史定义**：新 join 且节点确实没有历史的 Bot：建会话、导入 0 轮、`mirrorWatermark = 0`、`legacyMirrorSessionId = null`，不算失败。
+
+**seq 字段实证**（2026-11-09 真机核实）：`seq` 在事件顶层（`{type, data, seq, time}`），不是 `data.seq`。`parts.js:1413-1415` 的 `stamp()` 把 `event.seq` 写到 chatPage item 上，迁移水位用 `item.seq` 可行。节点 `test5` 会话 212 事件、顶层 seq 0..211、turn 1..18；主机镜像 26 行、seq 0..24。
 
 **注**：此处「重建」指重建镜像 Session，不重写 DSH 事件格式（与此前「改而不重写」不冲突）。工程师已按重建口径追单。
