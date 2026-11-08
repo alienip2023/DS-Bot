@@ -1043,15 +1043,11 @@ export function install(rt) {
           else if (reason?.kind !== 'aborted') void rt.lateRoomReply?.(id, info ?? {}, groupReply(), { shown })
         } else if (!retry && info !== undefined) {
           // Try to settle a joined-turn waiter (bot/turn from a remote hub).
-          // info.exchangeId was set by deliver({exchangeId}); info.requestId is set by sendUser({requestId}).
-          // settleJoinedTurn returns false when no waiter matches → fall through to finish().
-          const joinedExchangeId = info?.exchangeId ?? info?.requestId
+          // sendUser({requestId}) lands as source.rpcId; deliver({exchangeId}) lands as source.exchangeId.
           const reply = failure !== undefined
             ? `${name} could not answer your message: its model call failed (${failureLine(failure)}).`
             : replyText()
-          const settled = typeof rt.settleJoinedTurn === 'function'
-            && typeof joinedExchangeId === 'string' && joinedExchangeId !== ''
-            && rt.settleJoinedTurn(joinedExchangeId, reply, failure)
+          const settled = settleJoinForTurn(rt, info, reply, failure)
           if (!settled) finish(info, replyText())
         }
         for (const request of joined) {
@@ -1183,4 +1179,15 @@ export function install(rt) {
       return _origDeliver.call(this, msg, ...rest)
     }
   }
+}
+
+// ── Testable settle helper ────────────────────────────────────────────────────
+// sendUser({requestId}) lands on source as rpcId (dsh-api-session-controller:749).
+// deliver({exchangeId}) lands as exchangeId. requestId is kept as a fallback.
+// Returns true when a pending waiter was found and settled, false otherwise.
+export function settleJoinForTurn(rt, info, reply, failure) {
+  if (typeof rt?.settleJoinedTurn !== 'function') return false
+  const id = info?.rpcId ?? info?.requestId ?? info?.exchangeId
+  if (typeof id !== 'string' || id === '') return false
+  return rt.settleJoinedTurn(id, reply, failure) === true
 }

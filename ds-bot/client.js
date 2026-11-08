@@ -11328,7 +11328,23 @@ function BotSettingsForm({ bot, roster, actions, run: run2 }) {
   const [editing, setEditing] = (0, import_react25.useState)(false);
   const [editorShown, editorLeaving] = useLinger(editing, 120);
   const [confirming, setConfirming] = (0, import_react25.useState)(false);
+  const [nodeModels, setNodeModels] = (0, import_react25.useState)(null);
   const closeEditor = (0, import_react25.useCallback)(() => setEditing(false), []);
+  (0, import_react25.useEffect)(() => {
+    if (!(bot.origin === "joined" && bot.worker?.home === "remote")) return void 0;
+    const nodeId = bot.worker?.nodeId;
+    if (!nodeId) return void 0;
+    let cancelled = false;
+    actions.botCreateTargets?.().then((res) => {
+      if (cancelled) return;
+      const targets = Array.isArray(res) ? res : res?.value ?? [];
+      const node = targets.find((n) => n.nodeId === nodeId);
+      setNodeModels(Array.isArray(node?.models) ? node.models : []);
+    }).catch(() => setNodeModels([]));
+    return () => {
+      cancelled = true;
+    };
+  }, [bot.id, bot.origin, bot.worker?.nodeId]);
   (0, import_react25.useEffect)(() => {
     if (!confirming) return void 0;
     const timer = setTimeout(() => setConfirming(false), 4e3);
@@ -11386,7 +11402,7 @@ function BotSettingsForm({ bot, roster, actions, run: run2 }) {
         "div",
         { className: "bt-set-row bt-bs-row" },
         (0, import_react25.createElement)("span", { className: "bt-set-copy" }, (0, import_react25.createElement)("span", { className: "bt-bs-label" }, t("Model")), (0, import_react25.createElement)("span", { className: "bt-set-hint" }, modelHint(bot, roster))),
-        (0, import_react25.createElement)(ModelMenu, { bot, roster: bot.origin === "joined" && bot.worker?.home === "remote" && Array.isArray(bot.worker.models) ? { ...roster, models: bot.worker.models.map((m) => ({ ref: m.ref, provider: m.provider, name: m.name, providerName: m.provider })) } : roster, actions, run: run2 })
+        (0, import_react25.createElement)(ModelMenu, { bot, roster: bot.origin === "joined" && bot.worker?.home === "remote" && nodeModels !== null && nodeModels.length > 0 ? { ...roster, models: nodeModels.map((m) => ({ ref: m.ref, provider: m.provider, name: m.name, providerName: m.provider })) } : roster, actions, run: run2 })
       )
     ),
     (0, import_react25.createElement)(

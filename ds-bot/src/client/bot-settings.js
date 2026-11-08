@@ -180,7 +180,22 @@ export function BotSettingsForm({ bot, roster, actions, run }) {
   const [editing, setEditing] = useState(false)
   const [editorShown, editorLeaving] = useLinger(editing, 120)
   const [confirming, setConfirming] = useState(false)
+  const [nodeModels, setNodeModels] = useState(null)
   const closeEditor = useCallback(() => setEditing(false), [])
+  // For joined (remote) bots: fetch the node's model catalog so ModelMenu shows the right options.
+  useEffect(() => {
+    if (!(bot.origin === 'joined' && bot.worker?.home === 'remote')) return undefined
+    const nodeId = bot.worker?.nodeId
+    if (!nodeId) return undefined
+    let cancelled = false
+    actions.botCreateTargets?.().then(res => {
+      if (cancelled) return
+      const targets = Array.isArray(res) ? res : (res?.value ?? [])
+      const node = targets.find(n => n.nodeId === nodeId)
+      setNodeModels(Array.isArray(node?.models) ? node.models : [])
+    }).catch(() => setNodeModels([]))
+    return () => { cancelled = true }
+  }, [bot.id, bot.origin, bot.worker?.nodeId])
   useEffect(() => {
     if (!confirming) return undefined
     const timer = setTimeout(() => setConfirming(false), 4000)
@@ -213,8 +228,8 @@ export function BotSettingsForm({ bot, roster, actions, run }) {
     h(Card, { title: t('Model') },
       h('div', { className: 'bt-set-row bt-bs-row' },
         h('span', { className: 'bt-set-copy' }, h('span', { className: 'bt-bs-label' }, t('Model')), h('span', { className: 'bt-set-hint' }, modelHint(bot, roster))),
-        h(ModelMenu, { bot, roster: (bot.origin === 'joined' && bot.worker?.home === 'remote' && Array.isArray(bot.worker.models))
-          ? { ...roster, models: bot.worker.models.map(m => ({ ref: m.ref, provider: m.provider, name: m.name, providerName: m.provider })) }
+        h(ModelMenu, { bot, roster: (bot.origin === 'joined' && bot.worker?.home === 'remote' && nodeModels !== null && nodeModels.length > 0)
+          ? { ...roster, models: nodeModels.map(m => ({ ref: m.ref, provider: m.provider, name: m.name, providerName: m.provider })) }
           : roster, actions, run }))),
     h(Card, { title: t('Working folder') },
       h('div', { className: 'bt-set-row bt-bs-row' },

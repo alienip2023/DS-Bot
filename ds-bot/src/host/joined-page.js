@@ -11,6 +11,7 @@
  *   On node offline or timeout returns { sessionId: botId, items: [offline-item], cursor: null }.
  */
 import { randomUUID } from 'node:crypto'
+import { checkWorkDirRoots } from './joined-create.js'
 import { joinedShadow } from './roster-join.js'
 
 const JOINED_HISTORY_TIMEOUT_MS = 15_000
@@ -192,19 +193,10 @@ export function createBotUpdateReceiver(rt) {
     const workDir = spec.workDir ?? null
     const modelRef = typeof spec.model === 'string' ? spec.model : null
 
-    // workDir boundary check — same fail-closed logic as createBotCreateReceiver
+    // workDir boundary check — reuse shared checkWorkDirRoots (fail-closed, same as createBotCreateReceiver)
     if (workDir !== null) {
-      let policy
-      try { policy = rt.ctx?.get?.('remote-agent:node-policy') } catch { policy = undefined }
-      if (!policy) return { ok: false, error: 'bot-update-workdir-denied' }
-      const roots = Array.isArray(policy.roots) ? policy.roots : []
-      if (roots.length === 0) return { ok: false, error: 'bot-update-workdir-denied' }
-      const { resolve: pathResolve, sep: pathSep } = await import('node:path')
-      const { isInsideRoot } = await import('./joined-create.js')
-      const resolved = pathResolve(workDir)
-      const ignoreCase = process.platform === 'win32'
-      const inRoots = roots.some((r) => isInsideRoot(resolved, pathResolve(r), { sep: pathSep, ignoreCase }))
-      if (!inRoots) return { ok: false, error: 'bot-update-workdir-denied' }
+      const wdErr = checkWorkDirRoots(rt, workDir)
+      if (wdErr) return { ok: false, error: 'bot-update-workdir-denied' }
     }
 
     // model validation against node catalog (if llm available)
