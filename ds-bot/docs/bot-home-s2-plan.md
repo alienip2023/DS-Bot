@@ -292,8 +292,8 @@ export async function ensureMirrorSession(rt, bot) {
    → 旧弹窗仍在；新路径不激活；观察 session 创建和 mirror 是否正常
 2. 真机三项（T1/T2/T3）通过
    → 将 rt.botHomeEnabled = true（更新 cordis.patch.yml 插件 config 的 features.botHome: true）
-3. 弹窗退场：删 overlays.js:72 portal，更新 team-actions.js:172
-4. 回滚一步：将 rt.botHomeEnabled = false + 还原 overlays.js:72 + team-actions.js:172
+3. 弹窗退场：删 overlays.js:72 portal，清除 cells.js:384 / row-actions.js:5 的调用点分流（或 botHomeEnabled 恒 true）；team-actions.js:172 保持原样
+4. 回滚一步：将 rt.botHomeEnabled = false + 设 botHomeEnabled=false（调用点自然回弹窗，无需还原 team-actions.js:172）
 ```
 
 **`importHistory` 签名**：
