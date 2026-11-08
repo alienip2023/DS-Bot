@@ -108,6 +108,101 @@ export function exposeBotPageReceiver(ctx, accept) {
 
 export function install(rt) {
   rt.joinedChatPage = (botId, cursor) => joinedChatPage(rt, botId, cursor)
-  const accept = createBotPageReceiver(rt)
-  exposeBotPageReceiver(rt.ctx, accept)
+  rt.joinedUpdateBot = (botId, patch) => joinedUpdateBot(rt, botId, patch)
+  const pageAccept = createBotPageReceiver(rt)
+  exposeBotPageReceiver(rt.ctx, pageAccept)
+  const updateAccept = createBotUpdateReceiver(rt)
+  exposeBotUpdateReceiver(rt.ctx, updateAccept)
 }
+// ── bot/update hub side ───────────────────────────────────────────────────────
+const BOT_UPDATE_TIMEOUT_MS = 30000
+
+function listenBotUpdateResult(registry, requestId, nodeId, timeoutMs) {
+  let finish
+  const pending = new Promise((resolve, reject) => { finish = { resolve, reject } })
+  const onResult = (r) => {
+    if (r?.requestId !== requestId) return
+    registry.off?.('botUpdateResult', onResult)
+    clearTimeout(timer)
+    finish.resolve(r)
+  }
+  registry.on?.('botUpdateResult', onResult)
+  const timer = setTimeout(() => {
+    registry.off?.('botUpdateResult', onResult)
+    finish.resolve({ requestId, ok: false, error: 'bot-update-timeout' })
+  }, timeoutMs)
+  if (timer.unref) timer.unref()
+  return { pending, cancel: () => { clearTimeout(timer); registry.off?.('botUpdateResult', onResult); finish.resolve({ requestId, ok: false, error: 'bridge-down' }) } }
+}
+
+/**
+ * Hub side: send bot/update to the node and await the result.
+ * Updates the shadow row on success.
+ */
+export async function joinedUpdateBot(rt, botId, patch) {
+  const bot = rt.botOf?.(botId)
+  if (!bot || bot.origin !== 'joined' || bot.worker?.home !== 'remote') return { ok: false, error: 'bot-not-joined' }
+  const { nodeId, remoteBotId } = bot.worker ?? {}
+  if (!nodeId || !remoteBotId) return { ok: false, error: 'bot-update-missing-worker' }
+
+  let registry
+  try { registry = rt.ctx?.get?.('remote-agent:registry') } catch { registry = undefined }
+  if (!registry || typeof registry.send !== 'function') return { ok: false, error: 'bridge-down' }
+
+  const online = typeof registry.onlineNodes === 'function' ? registry.onlineNodes() : []
+  if (!online.some(n => n.nodeId === nodeId)) return { ok: false, error: 'node-offline' }
+
+  const requestId = crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)
+  const timeoutMs = rt.botUpdateTimeoutMs ?? BOT_UPDATE_TIMEOUT_MS
+  const waiter = listenBotUpdateResult(registry, requestId, nodeId, timeoutMs)
+
+  const sent = registry.send(nodeId, 'bot/update', {
+    nodeId, requestId, remoteBotId,
+    model: patch.model ?? null,
+    effort: patch.effort ?? null,
+    instructions: patch.instructions ?? null,
+    workDir: patch.workDir ?? null,
+  })
+  if (sent !== true) {
+    waiter.cancel()
+    return { ok: false, error: 'bridge-down' }
+  }
+
+  const result = await waiter.pending
+  if (!result?.ok) return { ok: false, error: result?.error ?? 'bot-update-failed' }
+
+  // Sync shadow row
+  if (result.model !== undefined && result.model !== null) {
+    if (!bot.worker) bot.worker = {}
+    bot.worker.model = result.model
+  }
+  if (result.effort !== undefined) bot.effort = result.effort
+  await rt.save?.()
+  return { ok: true, model: result.model, effort: result.effort, instructions: result.instructions, workDir: result.workDir }
+}
+
+// ── bot/update node side ──────────────────────────────────────────────────────
+export function createBotUpdateReceiver(rt) {
+  return async function acceptBotUpdate(spec) {
+    const remoteBotId = typeof spec?.remoteBotId === 'string' ? spec.remoteBotId.trim() : ''
+    if (!remoteBotId) return { ok: false, error: 'bot-update-remoteBotId-missing' }
+    if (typeof rt.updateBot !== 'function') return { ok: false, error: 'bot-update-no-roster' }
+    try {
+      const patch = {}
+      if (spec.model !== null) patch.model = spec.model
+      if (spec.effort !== null) patch.effort = spec.effort
+      if (spec.instructions !== null) patch.instructions = spec.instructions
+      if (spec.workDir !== null) patch.workDir = spec.workDir
+      const bot = await rt.updateBot(remoteBotId, patch)
+      if (!bot) return { ok: false, error: 'bot-update-not-found' }
+      return { ok: true, model: bot.model ?? null, effort: bot.effort ?? null, instructions: bot.instructions ?? null, workDir: bot.workDir ?? null }
+    } catch (err) {
+      return { ok: false, error: 'bot-update-failed: ' + (err?.message ?? String(err)) }
+    }
+  }
+}
+
+export function exposeBotUpdateReceiver(ctx, accept) {
+  try { ctx?.provide?.('remote-agent:bot-update', accept) } catch { /* registry plugin may be absent */ }
+}
+

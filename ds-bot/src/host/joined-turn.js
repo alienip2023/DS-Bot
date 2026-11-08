@@ -141,13 +141,15 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS }
       pending.set(exchangeId, { resolve, reject, timer })
     })
     try {
-      await rt.deliver({
-        toId: bot.id,
+      // Use rt.sendUser (the real user-message path) so chatPage shows a user bubble
+      // and the bot's reply lands as a bot bubble. On the node, this Bot is local so
+      // sendUser routes through the normal chat pipeline without any joined-shadow
+      // wrapper interference.
+      if (typeof rt.sendUser !== 'function') throw new Error('sendUser unavailable')
+      await rt.sendUser({
         sessionId: rt.chatOf?.(bot.id),
-        text: turn.text ?? '',
-        role: 'request',
-        exchangeId,
-        joinedTurn: true,
+        content: [{ type: 'text', text: turn.text ?? '' }],
+        requestId: exchangeId,
       })
     } catch {
       const waiter = pending.get(exchangeId)

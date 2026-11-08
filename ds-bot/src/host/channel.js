@@ -304,14 +304,27 @@ export function install(rt) {
           try {
             const registry = rt.ctx?.get?.('remote-agent:registry')
             if (registry && typeof registry.onlineNodes === 'function') {
-              nodes = registry.onlineNodes().map(n => ({ nodeId: n.nodeId, hostname: n.hostname ?? n.nodeId, online: true }))
+              nodes = registry.onlineNodes().map(n => ({
+                nodeId: n.nodeId,
+                hostname: n.hostname ?? n.nodeId,
+                online: true,
+                models: Array.isArray(n.models) ? n.models.map(m => ({ ref: m.ref ?? `${m.provider ?? ''}/${m.id ?? ''}`, provider: m.provider, id: m.id, name: m.name })) : [],
+                defaultModel: typeof n.defaultModel === 'string' ? n.defaultModel : null,
+              }))
             }
           } catch { /* registry plugin absent */ }
           return ok(nodes)
         }
-        case 'update-bot':
+        case 'update-bot': {
           await rt.load()
+          const updateTarget = rt.botOf?.(body.id)
+          if (updateTarget && updateTarget.origin === 'joined' && updateTarget.worker?.home === 'remote' && typeof rt.joinedUpdateBot === 'function') {
+            const updateResult = await rt.joinedUpdateBot(body.id, body)
+            if (!updateResult.ok) return fail(updateResult.error, 'bot/refused')
+            return ok(updateResult)
+          }
           return ok(await rt.updateBot(body.id, body))
+        }
         // The repair card's Retry, once the user fixed what failed the Bot's turn.
         case 'resume': {
           await rt.load()

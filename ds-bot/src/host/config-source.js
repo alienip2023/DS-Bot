@@ -59,8 +59,10 @@ export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRef
   if (settings && entries.length > 0) {
     const sections = new Map(settings.describe({ redactSecrets: true }).map(section => [section.ns, section]))
     const refs = readRefs(rt)
+    const LOCAL_CLI_PREFIX = /^(claude-code|codex-cli)(\/|$)/
     for (const entry of entries) {
-      if (entry.settingsNs !== PI_AI) continue
+      // Skip local CLI providers (process-based, not API-key based)
+      if (LOCAL_CLI_PREFIX.test(entry.provider)) { skipped += 1; continue }
       const profile = entry.settingsPath.reduce((value, key) => value?.[key], sections.get(entry.settingsNs)?.value)
       if (!profile || typeof profile !== 'object') continue
       const apiKeyEnv = typeof profile.apiKeyEnv === 'string' ? profile.apiKeyEnv : ''
@@ -92,7 +94,13 @@ export function install(rt) {
   // the (async) catalog, so it is refreshed here and read from the cache.
   let defaultModel = null
   const refreshDefault = async () => {
-    try { defaultModel = (await rt.defaultBotModel?.()) ?? null } catch { defaultModel = null }
+    try {
+      const ref = (await rt.defaultBotModel?.()) ?? null
+      // Exclude embedding models and ensure the provider is in the payload
+      if (typeof ref === 'string' && ref !== '' && !/embedding/i.test(ref)) {
+        defaultModel = ref
+      } else { defaultModel = null }
+    } catch { defaultModel = null }
   }
   let attached = false
   const attach = () => {

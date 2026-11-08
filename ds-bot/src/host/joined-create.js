@@ -56,8 +56,20 @@ export async function createBotOnNode(rt, { nodeId, name, role, modelRef = null,
 
   // node 必须在在线注册表里
   const online = typeof registry.onlineNodes === 'function' ? registry.onlineNodes() : []
-  const found = online.some((n) => n.nodeId === nid)
-  if (!found) return { ok: false, error: 'node-unknown' }
+  const nodeRec = online.find((n) => n.nodeId === nid)
+  if (!nodeRec) return { ok: false, error: 'node-unknown' }
+
+  // §4.1 校验 modelRef 按**节点 catalog**：节点有 catalog 且不含该 ref → 拒绝，不派发。
+  // 节点 catalog 为空/null → 不拦（让节点自己判）。
+  if (modelRef !== null) {
+    const nodeModels = Array.isArray(nodeRec.models) ? nodeRec.models : null
+    if (nodeModels !== null && nodeModels.length > 0) {
+      const refs = nodeModels.map(m => m.ref ?? `${m.provider ?? ''}/${m.id ?? ''}`)
+      if (!refs.includes(modelRef)) {
+        return { ok: false, error: 'bot-create-model-unknown' }
+      }
+    }
+  }
 
   const requestId = randomUUID()
   const timeoutMs = rt.botCreateTimeoutMs ?? BOT_CREATE_TIMEOUT_MS
@@ -163,19 +175,10 @@ export function createBotCreateReceiver(rt) {
     const createBot = rt.createBot
     if (typeof createBot !== 'function') return { ok: false, error: 'bot-create-no-roster' }
 
-    // §4 校验顺序：modelRef → workDir → createBot
-    if (modelRef !== null) {
-      // Fail-closed: if llm service unavailable, cannot verify provider → reject.
-      const providerId = modelRef.includes('/') ? modelRef.split('/')[0] : modelRef
-      const llm = rt.ctx?.get?.('llm') ?? rt.ctx?.llm
-      if (!llm || typeof llm.listProviders !== 'function') {
-        return { ok: false, error: 'bot-create-model-unknown' }
-      }
-      const providerIds = llm.listProviders().map(p => typeof p === 'string' ? p : p.id)
-      if (!providerIds.includes(providerId)) return { ok: false, error: 'bot-create-model-unknown' }
-      const missing = typeof rt.missingKeys === 'function' ? await rt.missingKeys([providerId]) : new Set()
-      if (missing.has(providerId)) return { ok: false, error: 'bot-create-model-no-key' }
-    }
+    // §4 校验顺序：modelRef (hub-side, against node catalog) → workDir → createBot
+    // NOTE: The old main-side llm.listProviders() check was removed — it validated
+    // against the HUB's providers, not the node's, so main-only providers would pass
+    // here and then fail on the node. Real validation is now in createBotOnNode.
 
     if (workDir !== null) {
       // Fail-closed: if node-policy unavailable, reject workDir (never allow-all).
