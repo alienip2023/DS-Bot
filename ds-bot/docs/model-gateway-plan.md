@@ -1,6 +1,6 @@
-# 模型网关 P1 分片计划 v18 (Model Gateway P1 Slice Plan)
+# 模型网关 P1 分片计划 v19 (Model Gateway P1 Slice Plan)
 
-**状态**: 修订稿 v18（2026-11-08，架构师，新增 Slice 1A-7 E2E 触发补推）
+**状态**: 修订稿 v19（2026-11-09，架构师，Slice 1A-8 node 侧 <= 修正，契约 revision 硬规则）
 **分支**: feat/model-gateway-contract
 **依赖契约**: docs/model-gateway-contract.md v3 (2396338c) — 已冻结
 **代码基线**: dsh-remote-agent HEAD 14cb02f (0.10.1-fork.47) + ds-bot HEAD
@@ -434,6 +434,38 @@ ctx.effect(() => {
 **真机验收顺序**（更新）：1A-7 装机 → 用户 ⌘Q 重启 → 先核「E2E established 日志 + 节点 `.credentials.yaml` 出现 `GATEWAY_TOKEN_`」→ 再跑 T1/T2/T3；T4（token 轮换重启）依赖 1A-4 fingerprint，仍排在 T1–T3 之后。1B 隧道继续暂缓。
 
 
+---
+
+#### 1A-8. 节点侧 revision 比较修正（dsh-remote-agent，0.10.1-fork.51）
+
+**真机根因（2026-11-08 23:59:49Z，第二轮实测）**：
+
+- 1A-7 生效：日志 `e2e session established {"nodeId":"dshtest-1"}` 紧跟 `config-sync: node requested sync`；
+- 节点仍未落盘：`.credentials.yaml` / `config-sync.json` mtime 均 12:39，`appliedRevision: 1181119400`，无 `GATEWAY_TOKEN_`；Mac 侧 `GATEWAY_TOKEN_dshtest_1` 于 23:59:46 已生成；
+- 根因：`lib/node/config-sync.js:365` 的比较是 `if (revision <= appliedRevision)`；`revision` 是 `computeRevision` 的内容哈希数值，不可比大小；旧哈希 1181119400 > 新 payload 哈希 → 静默丢弃、无 ack；hub 侧 1A-5 已修为 `===`，节点侧漏改。
+
+**修法（ra，0.10.1-fork.51）**：
+
+- `lib/node/config-sync.js:365`：`revision <= appliedRevision` → `revision === appliedRevision`；
+- stale 日志级别 `info` → `warn`，补 `{revision, appliedRevision}` 便于排查。
+
+**修改文件**（dsh-remote-agent）：
+- `lib/node/config-sync.js` — stale 判定改为相等性比较；日志级别提升
+
+**Slice 1A-8 测试**（dsh-remote-agent `test/config-sync.test.js`，node:test）：
+
+| 测试 | 断言 | 刀 |
+|---|---|---|
+| `1A8-old-larger` | 旧哈希 > 新哈希但内容不同时，节点仍写盘（shouldApply=true） | 改回 `<=` → 旧哈希偏大时静默丢弃 → 红 |
+| `1A8-equal` | revision 完全相等时，stale=true 且不写盘（幂等） | 删 stale 检查 → 重复写盘 → 红 |
+
+**版本**：ra `0.10.1-fork.51`（package.json 同步，commit 信息一致）。
+
+**1A-5 口径补充**：1A-5 只修了 hub 侧 `handleSyncRequest`（`>=` → `===`）；1A-8 补齐节点侧（`<=` → `===`）；两处均修完才算 revision 语义完全修复。不将 1A-5 改写为「已完全修复」。
+
+**T1–T4 真机验收**：排在 1A-8 装机之后。
+
+
 #### 1B. 反向隧道 Supervisor（dsh-remote-agent 仓库）
 
 **新建文件**：`lib/hub/tunnel-supervisor.js`
@@ -503,7 +535,9 @@ conn.on('tcp connection', (info, accept, reject) => {
 
 ## 已知限制
 
-0. **E2E 护栏 + 补推缺一不可**：带密钥的下行不得在无 E2E 时发送，也不得因时序丢失永远不重试（1A-7）。
+0. **revision 是不透明内容哈希，任何一侧只允许相等性比较**：禁止 `>`/`>=`/`<`/`<=`；比较方向错误导致「永不推送」（hub 侧，1A-5）或「静默丢弃」（节点侧，1A-8）均属 P1 阻塞缺陷。
+
+0b. **E2E 护栏 + 补推缺一不可**：带密钥的下行不得在无 E2E 时发送，也不得因时序丢失永远不重试（1A-7）。
 
 1. **`currentRevision` 为单值**：改成 per-node source 后，`currentRevision` 只表示「最近一次计算」的版本，不反映各节点实际 appliedRevision。`handleSyncRequest` 每次 `readSource(nodeId)` + `computeRevision` 实时对比，正确性不受影响；per-node revision map 状态展示留 P2。
 
