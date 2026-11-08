@@ -55,7 +55,9 @@ export function proxyChat({ provider, body, clientReq, res, timeoutMs = 120000, 
     res.on('close', doAbort)
 
     const timer = setTimeout(() => {
-      doAbort()
+      if (aborted) return
+      aborted = true
+      upstreamReq?.destroy()
       if (!res.headersSent) {
         res.writeHead(503, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ error: 'gateway-timeout' }))
@@ -125,6 +127,8 @@ export function proxyChat({ provider, body, clientReq, res, timeoutMs = 120000, 
       if (!res.headersSent) {
         res.writeHead(502, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ error: 'upstream-error' }))
+      } else if (!res.writableEnded) {
+        res.destroy()
       }
       done()
     })

@@ -246,3 +246,62 @@ test('1O: no token -> 401 (auth before provider lookup)', async () => {
     assert.equal(r.status, 401)
   } finally { await stop() }
 })
+
+
+// --- 1U: timeout -> 503 gateway-timeout ---
+test('1U-timeout: upstream stalls before response -> 503 gateway-timeout < 1s', async () => {
+  const fake = await startFakeUpstream((req, res) => {
+    // stall: never send any response
+  })
+  const store = createTokenStore()
+  const { refName } = store.register('n1')
+  const secrets = new Map([[refName, 'tok1']])
+  const { port, stop } = await startTestGateway({
+    secrets, store, timeoutMs: 120,
+    providers: [{ id: 'p1', baseURL: `http://127.0.0.1:${fake.port}/v1`, apiKey: 'sk-test', models: [] }]
+  })
+  try {
+    const t0 = Date.now()
+    const r = await gFetch(port, '/gw/p1/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer tok1', 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    const elapsed = Date.now() - t0
+    assert.equal(r.status, 503)
+    const body = await r.text()
+    assert.ok(body.includes('gateway-timeout'), `body should contain gateway-timeout, got: ${body}`)
+    assert.ok(elapsed < 1000, `elapsed ${elapsed}ms should be < 1000ms`)
+  } finally {
+    await stop()
+    await fake.stop()
+  }
+})
+
+// --- 1D2: connection refused -> 502 upstream-error ---
+test('1D2: connection refused -> 502 upstream-error', async () => {
+  // Get a free port by briefly opening a server then closing it
+  const deadPort = await new Promise((resolve) => {
+    const srv = createServer()
+    srv.listen(0, '127.0.0.1', () => { const p = srv.address().port; srv.close(() => resolve(p)) })
+  })
+  const store = createTokenStore()
+  const { refName } = store.register('n1')
+  const secrets = new Map([[refName, 'tok1']])
+  const { port, stop } = await startTestGateway({
+    secrets, store, timeoutMs: 5000,
+    providers: [{ id: 'p1', baseURL: `http://127.0.0.1:${deadPort}/v1`, apiKey: 'sk-test', models: [] }]
+  })
+  try {
+    const r = await gFetch(port, '/gw/p1/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer tok1', 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    assert.equal(r.status, 502)
+    const body = await r.text()
+    assert.ok(body.includes('upstream-error'), `body should contain upstream-error, got: ${body}`)
+  } finally {
+    await stop()
+  }
+})
