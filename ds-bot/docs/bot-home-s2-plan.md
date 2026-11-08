@@ -436,3 +436,39 @@ export async function migrateLegacyJoined(rt, opts = {}) {
 | S2-4 | — | — |
 
 > 版本号为建议值，工程师开干前对齐 package.json 确认。
+
+
+---
+
+## 附录：切片拆分记录（S2-3a/b/c）
+
+**拆分原因**：冻结计划 §4 S2-3 把「importHistory + 迁移 + 灰度开关 + 删弹窗 portal」放在一片里。但 §4 灰度顺序本身写的是「全部装机(flag=false) → 真机三项 → 才删 portal」，删 portal 本来就不是跟 import 同一批上线。另外 `team-actions.js:172` 的 `openJoinedChat` 是用户**唯一**能聊天的入口（`cells.js:384`、`row-actions.js:5` 都走它），一旦切到 `openAgent` 又恰好有 bug，用户就完全没有可用的对话入口了。因此客户端和 host 不同批动。
+
+### S2-3a（进行中）：host only
+
+- **范围**：只改 host。`importHistory` + `migrateLegacyJoined` + 持久化 `bot.mirrorWatermark` + 备份/回滚快照 + 测试与 4 把刀。
+- **客户端改动**：零。装上去对现有交互没有任何行为变化，可以安全观察。
+- **出口**：`importHistory` 幂等测试通过；`migrateLegacyJoined` 单条失败不中断；备份快照生成。
+
+### S2-3b（S2-3a 装完验过再派）：灰度开关
+
+- **范围**：`apply(ctx, config)` 里读 `config.features?.botHome === true` 落到 `rt.botHomeEnabled`（默认 false），并把该值下发到团队视图。
+- **客户端分流**：在**调用点**分流，不修改 `team-actions.js:172` 的 `openJoinedChat` 本身：
+  - `cells.js:384`：`bot.origin === 'joined' && bot.worker?.home === 'remote'` → `if (botHomeEnabled) actions.openAgent(bot.id)` else `actions.openJoinedChat(bot.id)`
+  - `row-actions.js:5`：`if (joined) { if (botHomeEnabled) actions.openAgent(id); else actions.openJoinedChat(id); return }`
+- **安全接法说明**：`openAgent` 定义在 `client/index.js:495`，在 `actions` 对象上；`cells.js` 和 `row-actions.js` 的调用点已持有 `actions` 引用，可直接调 `actions.openAgent(bot.id)`。不修改 `team-actions.js:172` 的 `openJoinedChat`，保留为回滚路径（flag=false 时行为不变）。
+- **portal**：先不删，留作回滚路径。
+- **出口**：flag=false 时行为与 S2-3a 完全一致；flag=true 时打开原生 Bot 页。
+
+### S2-3c（真机 T1/T2/T3 通过后）：删 portal + 死代码清理
+
+- **范围**：删 `overlays.js:72` 的 `JoinedChatDialog` portal 与 `joined-chat-dialog` 相关死代码。
+- **出口**：`document.querySelector('[aria-modal="true"]')` 不再出现；flag 永久置 true。
+
+### 与 §1 出口判据 6 的关系
+
+出口判据 6 要求「弹窗退场」。S2-3a 不退场（安全观察），S2-3b 不退场（portal 保留为回滚），S2-3c 退场（真机通过后）。拆分不与出口判据冲突，而是**严格执行**灰度顺序：先安全 → 再切换 → 最后清理。
+
+### 与 §4 灰度顺序的关系
+
+§4 灰度顺序：「S2-3 装机后先 false 观察，真机三项过了再 true 并删弹窗」。拆分后 S2-3a = 装机（false），S2-3b = 切 true（portal 保留），S2-3c = 删弹窗。完全一致，无冲突。
