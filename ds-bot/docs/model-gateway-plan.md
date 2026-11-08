@@ -1,6 +1,6 @@
-# 模型网关 P1 分片计划 v7 (Model Gateway P1 Slice Plan)
+# 模型网关 P1 分片计划 v8 (Model Gateway P1 Slice Plan)
 
-**状态**: 修订稿 v7（2026-11-08，架构师，tailnet 通道 v2 + gatewayHost 配置值修正）
+**状态**: 修订稿 v8（2026-11-08，架构师，/v1/models P1 实现 + 开工清单 tailnet 确认）
 **分支**: feat/model-gateway-contract
 **依赖契约**: docs/model-gateway-contract.md v3 (2396338c) — 已冻结
 **代码基线**: dsh-remote-agent HEAD 14cb02f (0.10.1-fork.47) + ds-bot HEAD
@@ -158,6 +158,7 @@ curl http://${GATEWAY_HOST:-127.0.0.1}:4387/probe 2>/dev/null || node -e "fetch(
 src/gateway/
   index.js         — 生命周期；ctx.provide('ds-bot:gateway-port', port)
   router.js        — 路由：token 校验 → provider 查找 → 上游代理；透传 429/402
+  models.js        — GET /gw/:providerId/v1/models，读 profile.models 返回静态列表
   auth.js          — verifyToken（current + previous 并存，到首次新 token 成功或 10min）
   proxy.js         — SSE 代理；取消传播；body 8MB 可配；超时 120s 可配
   upstream.js      — readUpstreamProviders()（精确排除网关 origin，保留 ollama）
@@ -200,6 +201,7 @@ Authorization: Bearer <gatewayToken>
 | `1L-expire` 窗口后旧 token → 401 | `previousExpiresAt` 到期后 oldToken 被拒 | 删 previousExpiresAt 检查 → 旧 token 永久有效 → 红 |
 | `1M` 429 透传 | `status === 429` + Retry-After | 删 → 红 |
 | `1N` 402 透传 | `status === 402` | 删 → 红 |
+| `1P` GET /v1/models 返回 profile.models | `data[0].id === profile.models[0].id`，HTTP 200 | 删 models.js handler → 404 → 红 |
 | `1O` mixed: 一走网关一直连 | 网关 provider baseURL origin = `http://${gatewayHost}:${gatewayPort}`，直连含原值 | 删 per-provider 分支 → 红 |
 
 #### 1B. 反向隧道 Supervisor（dsh-remote-agent 仓库）
@@ -276,6 +278,7 @@ conn.on('tcp connection', (info, accept, reject) => {
 |---|---|---|---|
 | `src/gateway/index.js` | ds-bot | 新建 | S1A |
 | `src/gateway/router.js` | ds-bot | 新建 | S1A |
+| `src/gateway/models.js` | ds-bot | 新建 | S1A |
 | `src/gateway/auth.js` | ds-bot | 新建 | S1A |
 | `src/gateway/proxy.js` | ds-bot | 新建 | S1A |
 | `src/gateway/upstream.js` | ds-bot | 新建 | S1A |
@@ -337,7 +340,7 @@ curl -s -N --max-time 0.5 -H "Authorization: Bearer $GATEWAY_TOKEN" \
 ## 开工前检查清单
 
 - [ ] S1 (feat/mirror-session) 门禁通过
-- [ ] Slice 0 探针跑完，数字达标（全链路节点侧 curl 或 node fetch 测量）
-- [ ] tailnet 可达性确认（hub ping 100.64.x.x ≤ 30ms）；sshd `AllowTcpForwarding yes|remote` 兜底时确认
+- [x] Slice 0 探针已通（`dda11ddd`，司令复跑全绿：tokens 200 / TTFT 0ms / abort 1ms / total 4190ms）
+- [x] tailnet 可达性确认（Slice 0 探针已通：TTFT 0ms，200 tokens，abort 1ms，dda11ddd）
 - [ ] 待验证项 G1 结论出
-- [ ] hub config `gatewayHost = 100.64.0.3` 已配置（tailnet 模式）；兜底时 `gatewayTunnels = { "dshtest-1": "remote" }` 已配
+- [ ] hub config `gatewayHost = 100.64.0.3`（**P1 验收默认 tailnet，硬要求**）；反向 SSH 隧道仅在同机调试时启用（`gatewayHost = 127.0.0.1`）

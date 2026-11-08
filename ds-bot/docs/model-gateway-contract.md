@@ -126,7 +126,9 @@ OpenAI 协议发现（L2270-2271, L2509）:
 - 认证: `Authorization: Bearer {apiKey}` (L2509)
 - 响应: 标准 `{ data: [...] }` 数组或 `{ models: {...} }` map（L2263）
 
-**P1 可以不实现**：如果 hub 下发 `profile.models` 手动声明完整模型列表，节点不调用 `/v1/models`。P2 建议实现。
+**P1 实现（只读）**：`GET /gw/{providerId}/v1/models` 返回 `profile.models` 列表映射（`{data:[{id,object:"model"}]}`），不做动态发现。实现成本：一次数组映射，用于 T1 验收与用户模型选择 UI。
+
+**P2 扩展**：动态发现（调用上游 `/v1/models` 或 `/v1/models`）留 P2。
 
 ### 2.3 对话补全面 — POST /v1/chat/completions
 
@@ -463,4 +465,4 @@ Hub 侧的 API key 通过 DSH CredentialsController 管理：
 
 1. **（DEFER → S1 实测）** hub 网关最小请求字段集：本文档基于 `COMPLETIONS_COMPAT_GATE` 推导。pi-ai 实际发送的 HTTP 请求体需在 S1 中用网络抓包确认，特别是 `reasoning_effort`、`stream_options`、`tools` 的确切格式。
 2. **（DEFER → S1 实测）** 节点配置 hub gateway provider 后，主控 `modelCatalog` API 是否正确返回 hub provider 的模型列表（供建 Bot 时选型用）。
-3. **（DEFER → P2）** hub 网关是否需要实现 `/v1/models` 端点用于动态发现。P1 用手动声明 models，P2 建议实现以支持运行时更新。
+3. **（P1 实现，P2 扩展）** hub 网关 `/v1/models` 端点：P1 实现只读版本（读 `profile.models` 返回静态列表），动态发现（调上游 `/v1/models`）留 P2。
