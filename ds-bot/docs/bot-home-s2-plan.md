@@ -472,3 +472,50 @@ export async function migrateLegacyJoined(rt, opts = {}) {
 ### 与 §4 灰度顺序的关系
 
 §4 灰度顺序：「S2-3 装机后先 false 观察，真机三项过了再 true 并删弹窗」。拆分后 S2-3a = 装机（false），S2-3b = 切 true（portal 保留），S2-3c = 删弹窗。完全一致，无冲突。
+
+
+---
+
+## S2-3 契约修正：migrateLegacyJoined 重建语义
+
+**真机事实（2026-11-09）**：
+- 节点本地 `test5`：session-79e4fae7-b624-4407-a4b4-d447693ec7b3，213 行，turn 1–18。
+- 主机侧镜像：session-a880bdcb-...，26 行，turn 1–3（最近三轮）。
+- 两者命名空间不同：节点 `state.json` 是节点本地 Bot；主机 `bot/state.json` 才是 joined Bot 的 `sessionId`。
+
+**冻结 §4 的问题**：§4 `migrateLegacyJoined` 只覆盖 `origin==='joined' && !bot.sessionId`。但 `test5`/`123`/`Chief` 已有 sessionId，且镜像只有最近几轮；节点还有 15 轮更早历史。会话是 append-only，把更早轮次追加到后面会顺序错乱；用 `seq <= watermark` 跳过则把更早历史整段丢掉。
+
+**修正：重建语义**
+
+对已有镜像的 Bot，迁移策略改为**重建**：
+
+1. 翻完节点历史（`joinedChatPage` 全量）
+2. `rt.createSession` 建新会话
+3. 按时间顺序全量 `importHistory`（turn 由 `allocateTurn` 从 1 起）
+4. 换 `bot.sessionId` 为新会话 id；旧 id 存 `bot.legacyMirrorSessionId` 留回滚
+5. `mirrorWatermark = maxSeq`
+
+**适用条件修正**：
+
+| 旧条件 | 新条件 |
+|--------|--------|
+| `origin==='joined' && !bot.sessionId` | `origin==='joined' && (!bot.sessionId \|\| bot.mirrorWatermark < nodeMaxSeq)` |
+
+**`migrateLegacyJoined` 签名更新（覆盖 §4 S2-3 原文）**：
+
+```js
+export async function migrateLegacyJoined(rt, opts = {}) {
+  // 适用：origin==='joined' && (!bot.sessionId || bot.mirrorWatermark < nodeMaxSeq)
+  // 1. 翻节点历史（joinedChatPage 全量）
+  // 2. createSession 建新会话
+  // 3. importHistory 全量（turn 从 1 起）
+  // 4. bot.sessionId = newSessionId; bot.legacyMirrorSessionId = oldSessionId; bot.mirrorWatermark = maxSeq
+  // 5. save(); 单条失败 → warn + skip，继续下一条
+  // opts: { dryRun?: boolean }
+  // 返回: { migrated, skipped, failed, errors }
+}
+```
+
+**回滚**：将 `bot.sessionId = bot.legacyMirrorSessionId`，删除新建会话目录。
+
+**注**：此处「重建」指重建镜像 Session，不重写 DSH 事件格式（与此前「改而不重写」不冲突）。工程师已按重建口径追单。
