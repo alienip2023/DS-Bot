@@ -167,6 +167,11 @@ export function teamActions({ call, after, partFor, roster, ui, live, cards, hel
     connectorSet: (id, patch) => after(call('connector-set', { id, ...patch })),
     connectorAdd: spec => after(call('connector-add', spec)),
     connectorRemove: id => after(call('connector-remove', { id })),
+    // Joined (remote) bot chat: open, close, send a message to remote session.
+    openJoinedChat: (botId) => { if (botId) ui.set(state => ({ ...state, joinedChat: botId, menu: null, palette: null })) },
+    closeJoinedChat: () => { ui.set(state => (state.joinedChat ? { ...state, joinedChat: null } : state)) },
+    joinedChatView: (botId) => call('chat', { botId }),
+    sendJoined: (sessionId, text) => call('send', { sessionId, text }),
     connectorImportScan: () => call('connector-import-scan', {}),
     connectorImport: items => after(call('connector-import', { items })),
     connectorRequestCancel: requestId => after(call('connector-request-cancel', { requestId })),

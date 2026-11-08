@@ -45,7 +45,12 @@ export function Bubbles({ texts, roster, selfId, actions, streaming, sessionId, 
     if (target === null) return
     event.preventDefault()
     event.stopPropagation()
-    actions.openSession(target)
+    const mentionedBot = roster.byId?.[target]
+    if (mentionedBot?.origin === 'joined' && mentionedBot?.worker?.home === 'remote') {
+      actions.openJoinedChat(target)
+    } else {
+      actions.openSession(target)
+    }
   }
   const reactions = useUi ? useUi(state => (msgKey ? state.reactions?.[msgKey] ?? null : null)) : null
   return h('div', { className: 'bt-astack', 'data-lead': lead ? '' : undefined, onClickCapture: onClick },
@@ -376,7 +381,7 @@ function GroupMessage({ bot, text, texts = [text], room, roster, actions, msgKey
     scheduleGroupChains(flow)
     return () => scheduleGroupChains(flow)
   }, [bot.id])
-  const lead = h('button', { type: 'button', className: 'bt-lead', 'aria-label': t("Open {name}'s chat", { name: bot.name }), onClick: () => actions.openSession(bot.id) },
+  const lead = h('button', { type: 'button', className: 'bt-lead', 'aria-label': t("Open {name}'s chat", { name: bot.name }), onClick: () => { if (bot.origin === 'joined' && bot.worker?.home === 'remote') { actions.openJoinedChat(bot.id) } else { actions.openSession(bot.id) } } },
     h(BotMark, { bot, size: 22 }))
   const flat = layoutOf(roster.prefs) === 'flat'
   const took = Number.isFinite(duration) && duration >= 1000 ? elapsedLabel(duration) : undefined

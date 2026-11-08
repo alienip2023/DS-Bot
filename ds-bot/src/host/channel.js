@@ -7,6 +7,13 @@ import { handoffReply, questionReply, viewReply } from './parts.js'
 import { validateViewAnswer } from 'deep-view/core'
 import { COLORS, EXTRA_COLORS, ROUTE } from './constants.js'
 
+// Pure helper: map a registry defaultModel (string or {provider,model} object) to a ref string.
+export function mapDefaultModel(dm) {
+  if (typeof dm === 'string') return dm
+  if (dm && typeof dm === 'object' && dm.provider && dm.model) return `${dm.provider}/${dm.model}`
+  return null
+}
+
 const LANGUAGES = { zh: 'Chinese (简体中文)', en: 'English' }
 const RUN_STATS = ['sessionStats', 'tokenUsage', 'contextPressure']
 
@@ -309,7 +316,7 @@ export function install(rt) {
                 hostname: n.hostname ?? n.nodeId,
                 online: true,
                 models: Array.isArray(n.models) ? n.models.map(m => ({ ref: m.ref ?? `${m.provider ?? ''}/${m.id ?? ''}`, provider: m.provider, id: m.id, name: m.name })) : [],
-                defaultModel: typeof n.defaultModel === 'string' ? n.defaultModel : null,
+                defaultModel: mapDefaultModel(n.defaultModel),
               }))
             }
           } catch { /* registry plugin absent */ }

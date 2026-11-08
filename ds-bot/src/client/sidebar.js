@@ -16,6 +16,7 @@ import { showsDshRow } from './dsh-offer.js'
 import { quietly } from './diagnostics.js'
 import { frameLayout, dragColumn, RAIL_WIDTH, FALLBACK_SIDEBAR_WIDTH, userSidebarToggle } from './frame-layout.js'
 import { chatRoom, dshCollapsed } from './frame-watch.js'
+import { botRowClick } from './row-actions.js'
 
 // -------------------------------------------------------------------------
 // Sidebar
@@ -245,7 +246,7 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
     'data-bot-id': id, title: wide ? undefined : bot.name,
     ref: bindPointerMenu(actions.openMenu, () => ({ kind: 'bot', id })),
     onMouseEnter: wide ? nameIfCut : undefined,
-    onClick: () => { if (joined) return; actions.openSession(id) },
+    onClick: () => botRowClick(joined, id, actions),
   },
   h(BotAvatar, { bot, size: wide ? 36 : 44, state, main }),
   pinned && !wide ? h(PinMark) : null,
