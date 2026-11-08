@@ -1,6 +1,6 @@
-# 模型网关 P1 分片计划 v12 (Model Gateway P1 Slice Plan)
+# 模型网关 P1 分片计划 v13 (Model Gateway P1 Slice Plan)
 
-**状态**: 修订稿 v12（2026-11-08，架构师，1A-3 伪代码对齐真实 API：createGatewayServer/ctx.provide/setSource/tokenStore.register/secrets 持久化/测试编号）
+**状态**: 修订稿 v13（2026-11-08，架构师，1A-3 补全：provider 来源/effect 形状/host-port 配置优先级/已知限制 2 条）
 **分支**: feat/model-gateway-contract
 **依赖契约**: docs/model-gateway-contract.md v3 (2396338c) — 已冻结
 **代码基线**: dsh-remote-agent HEAD 14cb02f (0.10.1-fork.47) + ds-bot HEAD
@@ -185,46 +185,66 @@ Authorization: Bearer <gatewayToken>
 
 **Slice 1A-3：hub 启动接线（ds-bot install）**
 
-`install` 内必须完成以下接线，否则 `createGatewayServer`（`ds-bot/src/gateway/index.js:10-20`）全仓无生产调用方，网关为死代码：
+`install` 内必须完成以下接线，否则 `createGatewayServer`（`ds-bot/src/gateway/index.js:10-20`）全仓无生产调用方，网关为死代码。
+
+**① 配置来源优先级**（`config-source.js:138-150` `settings.describe()` 找 `ns:'ds-bot'`；当前 `~/.dsh/settings.yaml` 无 `ds-bot` 段，恒默认 — tailnet 节点连不上）：
+
+优先级：`settings ds-bot.gateway.host/port`（存在才算）→ `DS_BOT_GATEWAY_HOST`/`DS_BOT_GATEWAY_PORT` 环境变量 → 默认 `127.0.0.1:4387`。**P1 验收用环境变量绑 `100.64.0.3`。**
+
+**② 实时 provider 来源**
+
+`config-source.js` 新增同步函数 `listGatewayProviders(rt)` 复用 `settings` + `ctx.llm.listConfigurableProviders()` 派生直连上游形状 `{id, baseURL, apiKey, models}`（不做 gateway 改写）；`readUpstreamProviders(list, gatewayOrigin)` 滤自环（已存在于 upstream.js）。`createRouter` / `createProxy` 接受「数组或函数」，每请求解析最新列表。
+
+**注意**：`listGatewayProviders` 每请求派生（固定 settings 解析开销），P1 不做缓存，P2 视调用量再加（已知限制 §3）。
+
+**③ effect 形状（Cordis 语义）**
+
+`config-source.js:173` 用 `ctx.effect(async () => ...)`。Cordis 只按 `typeof result === 'function'` 登记 disposer（app.asar 已核），async 回调的 Promise 不算 → `stop()` 永不被调用 → 重载即 EADDRINUSE。正确写法：
 
 ```js
-// 真实 API（src/gateway/index.js:10-20）
-// createGatewayServer({ gatewayHost, gatewayPort, secrets, store: tokenStore, providers, rt })
-//   → { start, stop }；start() → Promise<port|null>；EADDRINUSE 内部已 rt.warn 并 resolve null
-
-const gateway = createGatewayServer({ gatewayHost, gatewayPort, secrets, store: tokenStore, providers, rt })
-const actualPort = await gateway.start()           // null on EADDRINUSE（已内部 warn，不需要再 server.on('error')）
-if (actualPort !== null) ctx.provide('ds-bot:gateway-port', actualPort)
-ctx.get('remote-agent:config-sync').setSource((nodeId) =>
-  buildConfigPayload(rt, {
-    defaultModel,
-    gateway: nodeId && actualPort !== null
-      ? { host: gatewayHost, port: actualPort, token: ensureToken(nodeId) }
-      : null,
-  })
-)
+// effect 回调必须同步返回 disposer；异步启动放旁路
+ctx.effect(() => {
+  let gateway = null
+  void (async () => {
+    const providers = () => listGatewayProviders(rt)
+    gateway = createGatewayServer({ gatewayHost, gatewayPort, secrets, store: tokenStore, providers, rt })
+    const actualPort = await gateway.start()        // null on EADDRINUSE（内部已 warn，resolve null）
+    if (actualPort !== null) ctx.provide('ds-bot:gateway-port', actualPort)
+    ctx.get('remote-agent:config-sync').setSource((nodeId) =>
+      buildConfigPayload(rt, {
+        defaultModel,
+        gateway: nodeId && actualPort !== null
+          ? { host: gatewayHost, port: actualPort, token: ensureToken(nodeId) }
+          : null,
+      })
+    )
+  })().catch(err => rt.logger.error('gateway install failed', err))
+  return () => gateway?.stop()        // 同步返回 disposer，stop() 才会被 Cordis 调用
+})
 ```
 
-**注意**：`ctx.provide` / `ctx.get('remote-agent:config-sync').setSource` / 设置文档读取——不是 `rt.provide` / `rt.setSource` / `rt.config.gateway`。
+测试 mock 必须模拟真实语义（不 await async 回调 Promise），否则 `1A3-stop` 是假绿。
 
-**token 值来源与持久化**（对应 `token-store.js` 真实 API：`register` / `rotate` / `resolve` / `get` / `remove` / `gc` / `size`，无 `ensure`）：
+**④ token 值来源与持久化**（`token-store.js` 真实 API：`register` / `rotate` / `resolve` / `get` / `remove` / `gc` / `size`，无 `ensure`）：
 
-- `tokenStore.register(nodeId)` → `{ refName }`（epoch 后缀，已落 token-store.js）
+- `tokenStore.register(nodeId)` → `{ refName }`（epoch 后缀）
 - auth 需要的 token 值（32B random）存在 `secrets: Map<refName, tokenValue>`（`auth.js:21-38`）
-- token 值来源：先从 hub 的 `$DSH_HOME/.credentials.yaml refs:` 读（`config-source.js:46` `parseCredentialRefs`）；无则生成
-- 生成后 `ctx.get('credentials').set(refName, value)` **fire-and-forget** 落盘（旁路持久化）；内存 `secrets` Map 立刻可用
-- 重启复用 `.credentials.yaml` 里的值；崩溃窗口（推送成功但尚未落盘）在下次 config-push 自愈——见「已知限制」
+- 值来源：先从 `$DSH_HOME/.credentials.yaml refs:` 读（`config-source.js:46` `parseCredentialRefs`）；无则生成
+- 生成后 `ctx.get('credentials').set(refName, value)` **fire-and-forget** 落盘；内存 `secrets` Map 立刻可用
+- 重启复用 `.credentials.yaml` 里的值；崩溃窗口见「已知限制」§2
 
-**`ensureToken(nodeId)` 必须同步**：`ra/lib/hub/config-sync.js:24-51` `readSource` 拒绝 Promise（typeof payload.then === 'function' → warn + skip）。token 预取必须同步读 credentials 文件；`credentials.set` 只做旁路异步持久化，不在 source 回调内 await。
+**`ensureToken(nodeId)` 必须同步**：`ra/lib/hub/config-sync.js:24-51` `readSource` 拒绝 Promise。token 预取同步读 credentials；`credentials.set` 只做旁路异步持久化。
 
-**测试**（ds-bot `test/gateway/`）：
+**测试**（ds-bot `test/gateway/`，共 6 条）：
 
 | 测试 | 断言 | 刀 |
 |---|---|---|
-| `1A3-start` start() 成功后 ctx.provide 有端口 | `ctx.get('ds-bot:gateway-port') > 0` | 删 ctx.provide 调用 → undefined → 红 |
+| `1A3-start` start() 成功后 ctx.provide 有端口 | `ctx.get('ds-bot:gateway-port') > 0` | 删 ctx.provide → undefined → 红 |
 | `1A3-node-token` 不同 nodeId 得到不同 token | `ensureToken('node-a') !== ensureToken('node-b')` | 删 nodeId 分流 → 两节点同值 → 红 |
-| `1A3-no-gateway` actualPort=null → source.gateway=null | `source('node-x').gateway === null` | 删 null 守卫 → 写错 gateway → 红 |
-| `1A3-stop` stop() 后端口不再监听 | `connect(actualPort)` → ECONNREFUSED | 删 stop → 端口仍开 → 红 |
+| `1A3-no-gateway` actualPort=null → source.gateway=null | `source('node-x').gateway === null` | 删 null 守卫 → 红 |
+| `1A3-stop` stop() 后端口不再监听（mock 需同步模拟） | `connect(actualPort)` → ECONNREFUSED | 删 disposer return → stop 不调用 → 红 |
+| `1A3-providers` install 后 2 models provider → /v1/models 200 length 2；未知 → 404 | `data.length === 2`；`status === 404` | `providers: []` → 404 → 红 |
+| `1A3-config` 环境变量 `DS_BOT_GATEWAY_HOST=127.0.0.2` 绑定正确 | 绑定 host 与 payload.gateway.host 一致 | 恒 127.0.0.1 → 断言失败 → 红 |
 
 **Slice 1A 测试**（`test/gateway/`，node:test）：
 
@@ -318,6 +338,10 @@ conn.on('tcp connection', (info, accept, reject) => {
 ## 已知限制
 
 1. **`currentRevision` 为单值**：改成 per-node source 后，`currentRevision` 只表示「最近一次计算」的版本，不反映各节点实际 appliedRevision。`handleSyncRequest` 每次 `readSource(nodeId)` + `computeRevision` 实时对比，正确性不受影响；per-node revision map 状态展示留 P2。
+
+2. **token 旁路持久化窗口**：`credentials.set` 为 fire-and-forget 异步持久化。推送成功但进程在落盘前崩溃时，重启后 `parseCredentialRefs` 找不到旧 refName → 生成新 token，下次 config-push（revision 递增）自动推送新 token 自愈。节点短暂 401（最多一个推送周期）不影响后续使用。
+
+3. **`listGatewayProviders` 每请求派生**：固定 settings 解析开销，P1 不做缓存。P2 视调用量决定是否加内存缓存 + settings 变更订阅刷新。
 
 
 ---
