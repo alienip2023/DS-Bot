@@ -6,7 +6,7 @@
 // provider without a key is skipped, never pushed half-made. The key travels in the
 // payload (the node writes it to its own credentials file) and never goes into a log
 // line or an error message here: logs name provider ids and counts only.
-import { readFileSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { env } from 'node:process'
 import { homedir } from 'node:os'
@@ -20,12 +20,19 @@ const PROVIDER_ID = /^[A-Za-z0-9._-]+$/
 const CRED_REF = /^[A-Za-z_][A-Za-z0-9_]*$/
 const RETRY_MS = 5_000
 
-// Resolve the DSH home directory: rt.dshHome (non-empty) → DSH_HOME env → ~/.dsh.
-function resolveDshHome(rt) {
-  if (typeof rt?.dshHome === 'string' && rt.dshHome !== '') return rt.dshHome
-  const fromEnv = env.DSH_HOME
-  if (typeof fromEnv === 'string' && fromEnv !== '') return fromEnv
-  return join(homedir(), '.dsh')
+// Find the directory that actually contains settings.yaml.
+// Order: rt.dshHome → ~/.dsh → DSH_HOME env — first with settings.yaml wins.
+function findSettingsDir(rt) {
+  const candidates = []
+  if (typeof rt?.dshHome === 'string' && rt.dshHome !== '') candidates.push(rt.dshHome)
+  const homeCandidate = join(homedir(), '.dsh')
+  if (!candidates.includes(homeCandidate)) candidates.push(homeCandidate)
+  const envHome = env.DSH_HOME
+  if (typeof envHome === 'string' && envHome !== '' && !candidates.includes(envHome)) candidates.push(envHome)
+  for (const dir of candidates) {
+    try { if (existsSync(join(dir, 'settings.yaml'))) return dir } catch { /* skip */ }
+  }
+  return candidates[candidates.length - 1] ?? homeCandidate
 }
 
 // `refs:` section of $DSH_HOME/.credentials.yaml as a Map(name -> value). Text-level
@@ -57,7 +64,20 @@ export function parseCredentialRefs(text) {
 }
 
 function readRefsFile(rt) {
-  try { return parseCredentialRefs(readFileSync(join(resolveDshHome(rt), '.credentials.yaml'), 'utf8')) } catch { return new Map() }
+  const candidates = []
+  if (typeof rt?.dshHome === 'string' && rt.dshHome !== '') candidates.push(rt.dshHome)
+  const homeCandidate = join(homedir(), '.dsh')
+  if (!candidates.includes(homeCandidate)) candidates.push(homeCandidate)
+  const envHome = env.DSH_HOME
+  if (typeof envHome === 'string' && envHome !== '' && !candidates.includes(envHome)) candidates.push(envHome)
+  const merged = new Map()
+  for (const dir of [...candidates].reverse()) {
+    try {
+      const refs = parseCredentialRefs(readFileSync(join(dir, '.credentials.yaml'), 'utf8'))
+      for (const [k, v] of refs) merged.set(k, v)
+    } catch { /* skip */ }
+  }
+  return merged
 }
 
 /**
@@ -149,7 +169,7 @@ export function listGatewayProviders(rt) {
   if (!settings || entries.length === 0) return []
   const sections = new Map(settings.describe({ redactSecrets: true }).map(sec => [sec.ns, sec]))
   const refs = (() => {
-    try { return parseCredentialRefs(readFileSync(join(resolveDshHome(rt), '.credentials.yaml'), 'utf8')) } catch { return new Map() }
+    return readRefsFile(rt)
   })()
   const CLI_PREFIX = /^(claude-code|codex-cli)(\/|$)/
   const result = []
@@ -191,8 +211,8 @@ export function install(rt) {
     return result
   }
 
-  const dshHome = resolveDshHome(rt)
-  rt.warn?.('ds-bot: dshHome=%s', dshHome)
+  const settingsDir = findSettingsDir(rt)
+  rt.warn?.('ds-bot: settingsDir=%s credsDir=%s', settingsDir, (() => { const e = env.DSH_HOME; return (e && e !== '') ? e : join(homedir(), '.dsh') })())
 
   const pushOnline = (service, reason) => {
     try {
@@ -224,9 +244,9 @@ export function install(rt) {
         if (host !== undefined || port !== undefined) from = 'settings.describe'
       }
     } catch { /* ignore */ }
-    if ((host === undefined || port === undefined) && dshHome) {
+    if ((host === undefined || port === undefined) && settingsDir) {
       try {
-        const settingsPath = join(dshHome, 'settings.yaml')
+        const settingsPath = join(settingsDir, 'settings.yaml')
         const raw = readFileSync(settingsPath, 'utf8')
         const parsed = parseSettingsYaml(raw)
         if (host === undefined && typeof parsed.gatewayHost === 'string' && parsed.gatewayHost !== '') host = parsed.gatewayHost
@@ -252,9 +272,20 @@ export function install(rt) {
   const ensureToken = (nodeId) => {
     const { refName } = tokenStore.register(nodeId)     // idempotent
     if (secrets.has(refName)) return { refName, value: secrets.get(refName) }
-    const refs = readRefsFile(rt)
-    const existing = refs.get(refName)
-    const value = (typeof existing === 'string' && existing !== '') ? existing : randomBytes(32).toString('base64url')
+    let value = undefined
+    try {
+      const credSvc = ctx?.get?.('credentials')
+      if (credSvc?.get && typeof credSvc.get === 'function') {
+        const v = credSvc.get(refName)
+        if (typeof v === 'string' && v !== '') value = v
+      }
+    } catch { /* no credentials service */ }
+    if (value === undefined) {
+      const refs = readRefsFile(rt)
+      const existing = refs.get(refName)
+      if (typeof existing === 'string' && existing !== '') value = existing
+    }
+    if (value === undefined) value = randomBytes(32).toString('base64url')
     secrets.set(refName, value)
     try {
       const credSvc = ctx?.get?.('credentials')
