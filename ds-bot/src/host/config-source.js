@@ -49,8 +49,13 @@ function readRefsFile(rt) {
 /**
  * The payload for remote nodes: `{ providers, defaultModel }` (no revision; the hub adds it).
  * Synchronous. `defaultModel` is passed in because resolving it is async (see `install`).
+ *
+ * @param {object} gateway - optional { host, port, tokens } for per-provider gateway rewriting.
+ *   tokens is a Map(providerId -> { refName, value }) from the gateway token store.
+ *   Only providers whose profile.gateway === true are rewritten; others pass through unchanged.
+ *   If gateway is not provided, or a provider has no gateway flag, behavior is unchanged.
  */
-export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRefsFile } = {}) {
+export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRefsFile, gateway } = {}) {
   const ctx = rt.ctx
   const settings = ctx.get?.('settings')
   const entries = typeof ctx.llm?.listConfigurableProviders === 'function' ? ctx.llm.listConfigurableProviders() : []
@@ -74,12 +79,36 @@ export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRef
       const models = (Array.isArray(profile.models) ? profile.models : [])
         .filter(model => model && typeof model.id === 'string' && model.id !== '')
         .map(model => ({ id: model.id, name: typeof model.name === 'string' && model.name !== '' ? model.name : model.id }))
+
+      // Per-provider gateway rewriting: only when profile.gateway === true and gateway param is set
+      let finalBaseURL = typeof profile.baseURL === 'string' && profile.baseURL !== '' ? profile.baseURL : undefined
+      let finalApiKeyEnv = apiKeyEnv
+      let finalApiKey = apiKey
+      if (profile.gateway === true && gateway != null) {
+        const { host, port, tokens } = gateway
+        const gwPort = typeof port === 'number' ? port : null
+        if (gwPort != null) {
+          const tok = tokens?.get(entry.provider)
+          if (tok?.refName && tok?.value) {
+            finalBaseURL = `http://${host ?? '127.0.0.1'}:${gwPort}/gw/${entry.provider}/v1`
+            finalApiKeyEnv = tok.refName
+            finalApiKey = tok.value
+          } else {
+            // Gateway token missing for this provider — fall back to direct connect
+            rt.warn?.('ds-bot: config-source gateway token missing for %s, falling back to direct', entry.provider)
+          }
+        } else {
+          // Gateway not started (no port) — fall back to direct connect
+          rt.warn?.('ds-bot: config-source gateway not started for %s, falling back to direct', entry.provider)
+        }
+      }
+
       providers.push({
         id: entry.provider,
         api: profile.api,
-        ...(typeof profile.baseURL === 'string' && profile.baseURL !== '' ? { baseURL: profile.baseURL } : {}),
-        apiKeyEnv,
-        apiKey,
+        ...(finalBaseURL !== undefined ? { baseURL: finalBaseURL } : {}),
+        apiKeyEnv: finalApiKeyEnv,
+        apiKey: finalApiKey,
         models,
       })
     }

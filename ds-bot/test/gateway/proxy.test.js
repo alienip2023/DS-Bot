@@ -305,3 +305,69 @@ test('1D2: connection refused -> 502 upstream-error', async () => {
     await stop()
   }
 })
+
+
+// --- 1D3: upstream destroys socket mid-stream -> client ends within 1s ---
+// Knife: delay res.destroy() by 2s -> stream won't end within 500ms -> RED
+test('1D3: upstream socket destroy -> client stream ends within 1s', async () => {
+  const fake = await startFakeUpstream((req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' })
+    res.write('data: chunk1\n\n')
+    // destroy the underlying socket after first chunk
+    setTimeout(() => { req.socket.destroy() }, 50)
+  })
+  const store = createTokenStore()
+  const { refName } = store.register('n1')
+  const secrets = new Map([[refName, 'tok1']])
+  const { port, stop } = await startTestGateway({
+    secrets, store, timeoutMs: 800,
+    providers: [{ id: 'p1', baseURL: `http://127.0.0.1:${fake.port}/v1`, apiKey: 'sk-test', models: [] }]
+  })
+  try {
+    const r = await gFetch(port, '/gw/p1/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer tok1', 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    const reader = r.body.getReader()
+    const t0 = Date.now()
+    let received = ''
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        received += new TextDecoder().decode(value)
+      }
+    } catch (err) {
+      // stream error is acceptable — the key assertion is that it ended quickly
+    }
+    const elapsed = Date.now() - t0
+    assert.ok(elapsed < 1000, `stream should end within 1s, took ${elapsed}ms`)
+  } finally {
+    await stop()
+    await fake.stop()
+  }
+})
+
+// --- 1D4: invalid baseURL -> 502 upstream-error ---
+test('1D4: invalid baseURL -> 502 upstream-error', async () => {
+  const store = createTokenStore()
+  const { refName } = store.register('n1')
+  const secrets = new Map([[refName, 'tok1']])
+  const { port, stop } = await startTestGateway({
+    secrets, store, timeoutMs: 5000,
+    providers: [{ id: 'p1', baseURL: 'not a url', apiKey: 'sk-test', models: [] }]
+  })
+  try {
+    const r = await gFetch(port, '/gw/p1/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer tok1', 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    assert.equal(r.status, 502)
+    const body = await r.text()
+    assert.ok(body.includes('upstream-error'), `body should contain upstream-error, got: ${body}`)
+  } finally {
+    await stop()
+  }
+})
