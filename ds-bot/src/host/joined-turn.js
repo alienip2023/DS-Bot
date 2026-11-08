@@ -207,5 +207,7 @@ export function install(rt) {
   rt.handleJoinedTurn = (msg) => handleJoinedTurn(rt, msg)
   const accept = createBotTurnReceiver(rt)
   exposeBotTurnReceiver(rt.ctx, accept)
-  wrapSendUser(rt)
+  // wrapSendUser(rt) — removed in S2-2: channel.install already routes joined bots
+  // through ensureMirrorSession + executor.deliverTurn. Calling wrapSendUser here
+  // would overwrite rt.sendUser and bypass the mirror session path entirely.
 }
