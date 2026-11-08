@@ -420,6 +420,12 @@ Hub 侧的 API key 通过 DSH CredentialsController 管理：
 
 ---
 
+## 行号基线声明
+
+> **本契约所有行号均基于安装版 `DSH Desktop 0.13.2` 的 `app.asar/node_modules/@deepseek-ai/*`。**  
+> 工作区 `dev/harness/node_modules` 为 0.2.2-rc.1，行号与行为与安装版存在漂移，**不得用作契约证据**。  
+> 下次核对时须先确认读的是 `DSH Desktop.app/Contents/Resources/app.asar`，而非工作区副本。
+
 ## 附: 文件证据索引
 
 | 主题 | 文件（app.asar/node_modules/@deepseek-ai/） | 行号 |
