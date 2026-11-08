@@ -1,442 +1,295 @@
-# 模型网关 P1 分片计划 v2 (Model Gateway P1 Slice Plan)
+# 模型网关 P1 分片计划 v3 (Model Gateway P1 Slice Plan)
 
-**状态**: 修订稿 v2（2026-11-08，架构师，回应司令六条问题后待终审）
+**状态**: 修订稿 v3（2026-11-08，架构师，基于 HEAD 14cb02f 真实代码重写）
 **分支**: feat/model-gateway-contract
 **依赖契约**: docs/model-gateway-contract.md v3 (2396338c) — 已冻结
-**前置门禁**: S1 (feat/mirror-session) 验收通过后 P1 编码才开工
-
-> 本文档是 v1 的全量修订，逐条回应司令六条硬问题，以代码行号证据为支撑。
+**代码基线**: dsh-remote-agent HEAD 14cb02f (0.10.1-fork.47) + ds-bot HEAD
 
 ---
 
-## 行号基线声明
+## 基准说明
 
-> **所有行号均基于安装版 `DSH Desktop 0.13.2` 的 `app.asar/node_modules/@deepseek-ai/*`
-> 及 ra-fork40 的 `/tmp/ra-fork40/package/lib/`。**
-> 工作区 `dev/harness/node_modules` 为 0.2.2-rc.1，行号漂移，不得用作证据。
+v2 使用 ra-fork40 旧快照为证据，CONFIG_PUSH 帧和节点接收器均标为"不存在"。**该前提错误。**
 
----
+HEAD 14cb02f 真实现状（文件:行号均已验证）：
 
-## 六条硬问题的代码证据与设计回应
+| 已有能力 | 文件:行号 |
+|---|---|
+| `HUB_TO_NODE.CONFIG_PUSH = 'hub/config-push'` | lib/protocol.js:73 |
+| E2E_REQUIRED_TYPES 含 CONFIG_PUSH | lib/node/transport.js:81 |
+| 节点 dispatch case CONFIG_PUSH | lib/node/index.js:981 |
+| `mergePatch` 写 llm-pi-ai.providers → cordis.patch.yml | lib/node/config-sync.js:186–207 |
+| apiKey → `.credentials.yaml` | lib/node/config-sync.js:370–380 |
+| revision 落盘 config-sync.json | lib/node/config-sync.js:341 |
+| provider 集合变化时 `systemctl restart dsh-worker` | lib/node/config-sync.js:295–302 |
+| hub 侧 `sendPush` / `handleSyncRequest` | lib/hub/config-sync.js:55–92 |
+| hub E2E gate：无 session 拒绝推送 | lib/hub/config-sync.js:52 |
+| ds-bot `buildConfigPayload` 推 {id, api, baseURL, apiKeyEnv, apiKey, models} | src/host/config-source.js:53–97 |
+| MAX_CONTROL_FRAME_BYTES = 4 MB | lib/protocol.js:240 |
+| RELAY_QUEUE_BUDGET = 16 MB | lib/relay.js:78 |
 
-### Q1: 远程可达性
-
-**代码证据**:
-- ra-fork40 `instance-config.js` PERSISTED_KEYS 含 `hubUrl`、`relayUrl`（L76-93）
-- ra-fork40 `node/index.js` 只有 relay/transport 通道，无直连 HTTP 端口
-- `127.0.0.1:${port}/v1` 在节点侧指向节点自身，不是 hub（L1 注释确认"只用 node: 内置模块"）
-
-**设计决策**: 网关不建独立 HTTP 端点，而是在 relay 帧上增加 `hub/llm-proxy` 帧类型，把模型请求通过现有 E2E 加密通道路由到 hub 侧代理再转发上游。
-- 优点：零额外 TLS/NAT/证书；复用现有 E2E（X25519+AES-256-GCM, ra-fork40 e2e.js）
-- 约束：Slice 1 需在 `protocol.js` 新增 `LLM_PROXY_REQ/RES` 帧；`E2E_REQUIRED_TYPES` 加入这两个帧
-
-**待确认项**：RTT 开销是否可接受（relay 增加一跳）；流式响应是否需要分片帧。
-
-### Q2: 多 provider 消歧
-
-**代码证据**:
-- config-source.js L77-85: 当前 providers 含 `id`（provider 路由名）字段
-- dsh-llm-pi-ai PROTOCOLS（app.asar L835-838）: 每个 provider 独立 id
-- 模型请求 `body.model` 可能同名（如两个 provider 都有 `gpt-4o`）
-
-**设计决策**: 模型请求的 `body.model` 携带 provider 前缀，格式为 `{providerId}/{modelId}`：
-- hub 侧代理按 `model.split('/')[0]` 路由到对应上游 provider
-- 节点 dsh-llm-pi-ai profile 的 `models[].id` 用 `{providerId}/{modelId}` 格式
-- 契约 §3.2 的模型引用 `{ provider, model }` 保持不变，拼接在发起请求时
-
-**测试覆盖**: 新增同名消歧测试——两个 provider 各有 `gpt-4o`，验证路由到正确上游。
-
-### Q3: 节点 Token 安全
-
-**代码证据**:
-- ra-fork40 instance-config.js PERSISTED_KEYS 含 `nodeToken`（L85）
-- ra-fork40 node/index.js L336-342 `resolveToken()`: 优先 `config.token`，其次 `config.nodeToken`，再次 `<stateDir>/token` 文件
-- 当前 `nodeToken` 已有存储位置，但用于 hub 认证节点，不用于网关认证
-
-**设计决策**: 网关 token 独立于节点 token，按节点签发：
-- hub 在节点入网（pairing）时生成 `gatewayToken`，含字段: `{ nodeId, scope: [providerId, ...], issuedAt, expiresAt }`
-- 存储: 节点侧存 `<stateDir>/gateway-token`（文件权限 0600），不进 instance.json 明文；hub 侧存 credentials store
-- 吊销: hub 侧持有 token 注册表，`issuedAt + expiresAt` 有效期检查；节点离网时 hub 侧吊销
-- 校验: hub 侧 HMAC-SHA256（共享密钥由 pairing 时 E2E 通道协商）
-
-**待确认项**: `scope` 字段的粒度（provider 级还是模型级？P1 先做 provider 级）。
-
-### Q4: 渐进迁移，不删 apiKey 推送
-
-**代码证据**:
-- config-source.js L68-83: 当前 providers 含 apiKey 明文（L82）
-- config-source.js L121: `service.setSource(...)` 注册 hub 侧 config-sync source
-
-**设计决策**: 新增 `gatewayMode` 字段（`"direct" | "hub"`，默认 `"direct"`）:
-- `"direct"` 模式（当前行为）: providers 含 apiKey，节点直连上游
-- `"hub"` 模式（P1 新增）: providers 含 gatewayURL/gatewayToken，不含 apiKey；节点通过 relay 帧访问 hub 代理
-- 切换: 节点级 canary 开关；hub 推送含 `mode: "hub"` 的 providers 时，节点侧新建 hub gateway provider，保留旧 direct providers 直到 P1 验收通过
-- 回滚: hub 侧切回 `"direct"` 模式，节点下次 config-sync 重置为 direct providers
-
-### Q5: 真正的刀（node:test）
-
-v1 的 curl 烟测不算刀（"红期=connection refused"不是断言失败）。修订后的测试要求:
-- 框架: node:test + assert，随机端口，假上游（内存 HTTP 服务器）
-- 刀的定义: 删除目标函数体（或注释掉单行判断）→ 具体断言 `assert.strictEqual(res.status, 401)` 等必须失败
-- 见各 Slice 测试节
-
-### Q6: 节点 config-sync 接收器现状（核心）
-
-**代码证据**（最关键）:
-- ra-fork40 node/index.js L1003-1072 `dispatch()` 函数：处理的帧枚举 = TASK_START、TASK_CANCEL、TASK_QUERY、ARTIFACT_LIST、ARTIFACT_PULL、ARTIFACT_CANCEL、PING、FS_REQ、SHARE_REQ、ERROR、BOT_TURN、BOT_CREATE
-- **无任何 CONFIG_PUSH、HUB_CONFIG、config-sync 帧处理**；default 分支（L1069-1070）只打 debug 日志
-- ra-fork40 protocol.js HUB_TO_NODE 表（L14-66）：无 CONFIG_PUSH 帧常量
-
-**结论**：
-- 节点侧 config-sync 接收器**未实现**，是新工作
-- hub/config-push 帧**不存在于协议**，需新增
-- config-source.js 的 `setSource()` 只服务 hub 侧的 `remote-agent:config-sync` 服务（一个 hub 侧服务），不经过 relay 帧推送到节点
-
-**对 Slice 2 的影响**（重写）:
-- 必须在 protocol.js 新增 `HUB_TO_NODE.CONFIG_PUSH` 帧常量
-- 必须在 node/index.js dispatch 函数新增 `CONFIG_PUSH` 的 case
-- 节点侧接收后，通过 `ctx.get('settings')` 写入 `llm-pi-ai.providers` （节点 settings API 待验证）
-- 节点 dsh 0.2.2-alpha.2 是否支持 apiKeyEnv credential-ref：**待实测**（DEFER → S1 前确认）
+**v3 不新增帧，不新建 settings API，在现有 config-sync 上扩展。**
 
 ---
 
-## 现状分析
+## P1 目标重述
 
-### 现有基础设施
+让节点使用 hub 网关代理上游模型调用：节点不持有上游 apiKey，只持有按节点签发的 gateway token；hub 对外提供 OpenAI 兼容端点，对节点鉴权后用本地 apiKey 代理请求。
 
-| 组件 | 文件 | 状态 |
-|------|------|------|
-| config-source hub 侧 | `src/host/config-source.js` | 已有，推送 apiKey（需改为 hub 模式时不推） |
-| config-sync service（hub 侧） | `remote-agent:config-sync` service | 已有 `setSource()` 机制，但仅 hub 侧 |
-| config-push 帧（protocol） | `ra-fork40/lib/protocol.js` | **不存在**，需新增 |
-| config-push 节点接收器 | `ra-fork40/lib/node/index.js` | **不存在**，需新增 |
-| E2E 传输 | `ra-fork40/lib/node/transport.js` | 已有 X25519+AES-256-GCM，可复用 |
-| nodeToken 存储 | `ra-fork40/lib/instance-config.js:85` | 已有，存 `<stateDir>/instance.json` |
-
-### 差距矩阵
-
-| 契约要求 | 当前状态 | 新工作 |
-|----------|---------|--------|
-| hub 网关代理 | 无 | Slice 1：hub 侧 llm-proxy 处理器 |
-| config-push 帧 | 无 | Slice 2：protocol.js + node dispatch |
-| 节点加载 hub config | 无 | Slice 2：节点 settings 写入 |
-| gateway token 安全 | nodeToken 存在但不适用 | Slice 1：gateway-token 机制 |
-| 渐进迁移 | 无 | Slice 1/2：gatewayMode 开关 |
+P1 编码前置条件：S1 (feat/mirror-session) 门禁通过。
 
 ---
 
-## Slice 1: Hub 侧 LLM 代理处理器
+## 问题修正对照
 
-### 目标
-在 hub 侧新建帧处理器，接收节点经 relay E2E 通道发来的 `node/llm-proxy-req` 帧，验证 gateway token，路由到上游 provider，将响应以 `hub/llm-proxy-res` 帧流回节点。此片无节点代码改动，可用 hub 侧单测验证。
+### 修正 1：远程可达性
 
-### 文件清单
+**v2 错误**：`gatewayURL: http://127.0.0.1:${port}/v1` 在节点侧指向节点自身。
 
-| 操作 | 文件 | 说明 |
-|------|------|------|
-| 新建 | `src/gateway/llm-proxy.js` | hub 侧帧处理器：验证 token + 路由上游 + 流式响应 |
-| 新建 | `src/gateway/gateway-token.js` | token 签发/验证/吊销（HMAC-SHA256，含 nodeId+scope+exp） |
-| 修改 | `src/host/config-source.js` | 新增 `gatewayMode: "hub"` 分支：providers 含 gatewayToken 而非 apiKey；`"direct"` 分支保留原行为 |
-| 修改 | ra-fork40 `lib/protocol.js` | 新增 `NODE_TO_HUB.LLM_PROXY_REQ` 和 `HUB_TO_NODE.LLM_PROXY_RES` 帧常量；加入 E2E_REQUIRED_TYPES |
+**v3 方案**：hub 网关作为独立 HTTP 端点，绑定 hub 机器的可路由地址（Tailscale IP / 私网 IP，与 listen-server.js 同策略，不绑 loopback）。gatewayURL 在 config-push payload 里按 nodeId 下发，值为 hub 机器的外部可达地址。
 
-### 接口 / 数据结构
+但 relay 路径传 SSE 的开销未经测量，**必须先跑 Slice 0 探针**，数字达标才定通道方案；不达标的退路见 Slice 0。
 
-**帧定义**（新增至 protocol.js）:
+### 修正 2：多 provider 区分
 
-```js
-// NODE_TO_HUB（节点请求 hub 代理）
-LLM_PROXY_REQ: 'node/llm-proxy-req'
-// 载荷: { reqId, nodeId, gatewayToken, providerId, body: {...openai-request} }
+**v2 错误**：所有 provider 同一 gatewayURL，网关无法路由。
 
-// HUB_TO_NODE（hub 返回代理结果）
-LLM_PROXY_RES: 'hub/llm-proxy-res'
-// 载荷: { reqId, chunk?, done?: true, error?: {code, message} }
-// chunk: OpenAI SSE 数据行（string）
-// done: true 时为最后一帧
+**v3 方案**：config-push payload 中每个 provider 的 `baseURL` 写为 `{gatewayBase}/{providerId}`（如 `http://hub:4387/gw/openai`）。节点 config-sync.js:196 直接把 `p.baseURL` 写进 cordis.patch.yml。网关按 URL path 分流，`/gw/{providerId}/*` → 对应上游。节点模型引用仍是 `provider/model`，不破坏现有目录格式。
+
+### 修正 3：token 安全
+
+**v2 错误**：`HUB_NODE_TOKEN` 单值，任一节点可冒充其他节点。
+
+**真实现状**：`cfg.nodeToken`（hub/index.js:534）是 hub 健康检查的共享口令，**不用于网关鉴权**。
+
+**v3 方案**：入网（pairing）时 hub 按 nodeId 生成独立 gateway token，HMAC-SHA256 签名，payload = `{ nodeId, scope: [providerId,...], issuedAt, expiresAt }`。随 config-push 第一帧以 credential ref 形式下发（写进 `.credentials.yaml`，ref name = `GATEWAY_TOKEN_{NODEID}`）。hub 侧维护 nodeId → token 吊销表；重签/吊销通过再次 config-push 触发。
+
+**待验证项 G1**：节点重启后 dsh-worker 能从 `.credentials.yaml` 解析 `GATEWAY_TOKEN_*` ref，pi-ai adapter 用它作 Bearer token 发出请求。验证路径：节点 dsh 实例加载后用 `GATEWAY_TOKEN_xxx` ref 发一次真实请求，检查 hub 侧收到 Bearer 头。
+
+### 修正 4：灰度切换（保留 direct 模式）
+
+**v2 错误**：直接删 apiKey 推送会让在线节点断模型。
+
+**v3 方案**：config-push payload 新增字段 `gatewayMode: "direct" | "hub"`（默认 "direct"）。`direct` 模式保持现有行为（推 apiKey）；`hub` 模式将 provider.baseURL 替换为 `{gatewayBase}/{providerId}`，apiKey 字段留空，gateway token 作为 GATEWAY_TOKEN_* ref 写进 credentials。`buildConfigPayload` 按 `gatewayMode` 分支构建。P1 验收时节点切 "hub"，不删 "direct" 分支。
+
+### 修正 5：测试改为真刀
+
+`node:test` + 内存假上游（每个测试起真实 HTTP server，随机端口），全部 assert 确定性（不允许 "connection refused = red"）。每把刀的刀口定义见各 Slice 测试节。
+
+### 修正 6：credential ref 已支持，换阻塞项
+
+**v2 阻塞项 B 已有答案**：node/config-sync.js:193 `apiKeyEnv` 写法 + config-sync.js:228 `buildPatchEntry` 已写进 cordis.patch.yml，节点 dsh-llm-pi-ai 读 ref 跑模型——在线节点已验证支持。从阻塞项删除。
+
+**新待验证项 G1** 见修正 3（gateway token ref 重启后解析）。
+
+---
+
+## 分片计划
+
+### Slice 0：relay 传 SSE 性能探针（门禁：Slice 1 前必须通过）
+
+**目的**：量化 relay E2E 通道传 SSE 帧的开销；数字不达标则切 loopback+SSH 隧道方案，不进 Slice 1。
+
+**测试节点**：hub macOS dshtest-local ↔ 节点 Linux dshtest-1（公网 relay）。
+
+**指标门禁**：
+- TTFT ≤ 直连 + 300ms（同 model，n=10 次中位数）
+- 200 tokens 总耗时 ≤ 直连 × 1.5
+- 取消传播：abort() 后 ≤ 1s 节点停止发帧
+- 帧开销：每 token 帧大小 ≤ MAX_CONTROL_FRAME_BYTES / 100（即单帧携带 ≥ 40KB 内容仍不分帧）
+
+**探针文件**（新建，不合入主线）：
+- `test/perf/relay-sse-probe.mjs` — 在 hub 侧起假上游 + 截获 relay 通道，模拟节点发 LLM_PROXY_REQ，测量每帧时间戳
+
+**退路（探针不达标时）**：
+- 方案 B：节点 loopback HTTP（127.0.0.1 自用）+ SSH 端口转发到 hub（`hub_gateway_port`），配对时写 SSH 隧道配置
+- 方案 C：relay 帧批量（每 30ms 攒一批 token），牺牲 TTFT 换吞吐，需重测
+
+**Slice 0 刀**：
+- `S0-red-a`：删 relay 连接建立代码 → TTFT assert fails（not connection refused）
+- `S0-red-b`：删取消传播 → abort() 后 2s 仍收到帧 → assert 必红
+
+---
+
+### Slice 1：Hub 网关 HTTP 端点
+
+**目标**：hub 启一个 OpenAI 兼容 HTTP 服务，节点持 gateway token 可请求任意 provider。
+
+**平台**：hub macOS only（P1 范围）。
+
+**新建文件**（ds-bot/ds-bot）：
+```
+src/gateway/
+  index.js         — 网关服务器生命周期（随 host 启停）
+  router.js        — 路由：token 校验 → provider 查找 → 上游代理
+  auth.js          — 每节点 gateway token 签发/校验/吊销
+  proxy.js         — SSE 流式代理（透传 + 取消传播 + 29/402 透传）
+  upstream.js      — 上游 provider 连接（复用 dsh-llm-pi-ai 的 baseURL/apiKey）
+  token-store.js   — nodeId → token 吊销表（内存 + 落盘 <stateDir>/gateway-tokens.json）
 ```
 
-**gateway token 结构**:
+**修改文件**：
+- `src/host/config-source.js` — `buildConfigPayload` 新增 `gatewayMode` 分支：`hub` 模式下 provider.baseURL = `{gatewayBase}/{providerId}`，apiKey = `''`，gateway token 作为 `GATEWAY_TOKEN_{nodeId.slice(0,8)}` ref
 
+**接口契约（src/gateway/router.js）**：
+```
+POST /gw/{providerId}/v1/chat/completions
+Authorization: Bearer <gatewayToken>
+body: OpenAI chat completions request
+
+→ 200 text/event-stream  SSE pass-through
+→ 401  { error: "gateway-token-invalid" }
+→ 404  { error: "provider-not-found", providerId }
+→ 429  透传上游 429（含 Retry-After）
+→ 502  { error: "upstream-error", upstream: {status, code} }
+```
+
+**网关生命周期**：
+- 随 host.install() 启动（ctx.hook('ready')），随 ctx dispose 关闭
+- 端口：读 cfg.gatewayPort（默认 4387）；0 = 系统分配随机端口（测试用）
+- 端口冲突：EADDRINUSE → 降级日志，不抛，host 仍可用（不封锁主流程）
+- body 大小限制：128KB（防大文件上传误入网关）
+- 超时：30s 无响应 → 503；取消传播：request.signal abort → 上游 fetch abort
+- 日志脱敏：baseURL 保留，apiKey/token 只记 `***`
+
+**Slice 1 测试**（`test/gateway/`，node:test）：
+
+| 测试 | 断言 | 刀 |
+|---|---|---|
+| `1A` 无 token → 401 | `status === 401 && body.error === "gateway-token-invalid"` | 删 `auth.js:verifyToken` → `1A` 红 |
+| `1B` 错误 provider → 404 | `status === 404 && body.error === "provider-not-found"` | 删 `router.js:providerLookup` → `1B` 红 |
+| `1C` 有效请求 → SSE 流 | 收到 `data: {"choices":[...]}` 行，最后 `data: [DONE]` | 删 `proxy.js:pipeSSE` → `1C` 红 |
+| `1D` 上游 502 → 透传 | `status === 502 && body.upstream.status === 500` | 删 `proxy.js:upstreamErrorMap` → `1D` 红 |
+| `1E` abort() 传播 | 上游 fake server 在 1s 内收到 abort，不再推帧 | 删 `proxy.js:cancelPropagation` → `1E` 红 |
+| `1F` 端口冲突降级 | host 正常启动，`listenRuntime.ok === false`，日志有 `EADDRINUSE` | 删 `index.js:eaddrinuseGuard` → 抛异常 → 1F 红 |
+
+**Slice 1 门禁**：全部测试绿；node --check src/gateway/*.js exit 0；不合入 main。
+
+**Slice 1 回滚**：删 `src/gateway/`，revert `src/host/config-source.js`，节点回 direct 模式（config-sync 重推）。
+
+---
+
+### Slice 2：Config-Push Payload 扩展（hub 模式）
+
+**目标**：在现有 config-push 机制上，hub 模式下推 `gatewayURL + gateway token ref`，不推上游 apiKey。
+
+**不新增任何帧，不新建 settings API**（已有 CONFIG_PUSH + config-sync.js 全套）。
+
+**现有写路径**（已验证 HEAD 14cb02f）：
+```
+hub/config-sync.js:57   sendPush → registry.send(nodeId, 'hub/config-push', payload)
+node/index.js:981       case HUB_TO_NODE.CONFIG_PUSH → handleConfigPushFrame
+node/config-sync.js:186 mergePatch → cordis.patch.yml (llm-pi-ai.providers)
+node/config-sync.js:374 apiKey → .credentials.yaml (ref 写法)
+node/config-sync.js:341 revision 落盘
+node/config-sync.js:302 provider 集合变化 → systemctl restart dsh-worker
+```
+
+**修改文件**：
+- `src/host/config-source.js` — `buildConfigPayload` 新增 hub 模式分支（provider.apiKey = `''`，provider.baseURL = `{gatewayBase}/{providerId}`，extra credential entry `GATEWAY_TOKEN_{nodeId.slice(0,8)}: <gatewayToken>`）
+- 注：node/config-sync.js 无需改动，它已按 payload.providers[].apiKey 写 credentials.yaml（apiKey = '' → 跳过写，apiKeyEnv 仍写进 patch）；gateway token 以独立 extra ref 写入
+
+**payload 扩展结构**（hub 模式）**：
 ```json
 {
-  "nodeId": "node-abc123",
-  "scope": ["openai", "deepseek"],
-  "issuedAt": 1731059999,
-  "expiresAt": 1731146399
-}
-```
-
-token = `base64(payload) + "." + base64(hmac-sha256(sharedSecret, payload))`，`sharedSecret` 在 pairing 时经 E2E 通道协商，不经过 relay 明文。
-
-**hub 侧代理请求路由**（llm-proxy.js）:
-
-```
-收到 LLM_PROXY_REQ 帧
-→ verifyToken(gatewayToken, nodeId) → 验证签名 + 未过期 + scope 包含 providerId
-→ lookupProvider(providerId) → 从 hub ctx.llm 取 baseURL + apiKey
-→ fetch(baseURL + '/v1/chat/completions', body) → SSE stream
-→ 逐行发 LLM_PROXY_RES { reqId, chunk } 帧
-→ 最后发 LLM_PROXY_RES { reqId, done: true }
-```
-
-### 测试（node:test，真实帧 + 假上游）
-
-**刀 1A: 无 token 帧被拒** 🔴
-```js
-// 删除 verifyToken() 中的签名校验行 → 断言失败
-const res = await handleProxyReq({ gatewayToken: null, ... })
-assert.strictEqual(res.error.code, 'gateway-auth-failed')
-// 刀：注释掉 if (!verifyToken(...)) throw → 上面断言不再触发 → 测试红
-```
-
-**刀 1B: 有效 token + 假上游 → SSE 帧序列正确** 🟢
-```js
-// 假上游返回 3 个 SSE 帧 + [DONE]
-const chunks = []
-for await (const frame of proxyStream({ validToken, body })) chunks.push(frame)
-assert.ok(chunks.length >= 3)
-assert.ok(chunks.at(-1).done === true)
-// 刀：注释掉 chunk 发送循环 → chunks.length < 3 → 红
-```
-
-**刀 1C: 假上游 500 → error 帧，不挂起** 🔴
-```js
-// 假上游返回 HTTP 500
-const res = await handleProxyReq({ validToken, body: { model: 'openai/gpt-4o', ... } })
-assert.strictEqual(res.error.code, 'SERVER')
-// 刀：删除 5xx catch 分支 → error 帧不发 → 断言失败或超时
-```
-
-**刀 1D: scope 不含 providerId → 拒绝** 🔴
-```js
-// token.scope = ['deepseek']，请求 provider = 'openai'
-const res = await handleProxyReq({ tokenWithWrongScope, body: { model: 'openai/gpt-4o' } })
-assert.strictEqual(res.error.code, 'gateway-scope-denied')
-// 刀：删除 scope 校验 → 断言失败
-```
-
-### 门禁
-- 1A/1B/1C/1D 全绿
-- `config-source.js` 在 `gatewayMode: "direct"` 时行为不变（apiKey 推送保留）
-- protocol.js 新帧加入 E2E_REQUIRED_TYPES，裸文传输被拒
-
-### 回滚
-- 删除 `src/gateway/` 目录
-- revert protocol.js（帧常量）
-- revert config-source.js（gatewayMode 分支）
-- 节点恢复 direct 模式直接上游连接
-
----
-
-## Slice 2: Config-push 帧与节点配置加载
-
-### 目标
-在 ra-fork40 protocol.js 新增 CONFIG_PUSH 帧；在节点 dispatch 函数新增处理器，将 hub 下发的 providers 写入节点 dsh-llm-pi-ai settings。此片独立于 Slice 1，可单独测试节点 settings 写入。
-
-### 关键前置验证（编码前必须完成）
-
-**验证 A**: 节点 dsh 0.2.2-alpha.2 的 `ctx.get('settings')` 能否写入 `llm-pi-ai.providers`？
-- 检查路径: app.asar `dsh-api-settings-controller/lib/index.js:90-208 CredentialsController`
-- 检查路径: dsh-llm-pi-ai/lib/index.js:1084 `Config = z.object({ providers: z.dict(profile).volatile() })`
-- 证据: volatile() 字段不被 Cordis 持久化框架存储（dsh-llm-pi-ai:1050-1082 全字段 volatile）
-- **风险**: volatile 字段表示不持久化，但可以被 `settings.set()` 运行时写入并生效；需实测确认写入后 pi-ai adapter 是否重新加载
-
-**验证 B**: credential-ref 在节点 dsh 0.2.2-alpha.2 是否支持？
-- 检查路径: dsh-api-settings-controller/lib/index.js:4 `import { credentialRef } from "@deepseek-ai/dsh-credentials"`
-- dsh-llm-pi-ai:1051 `apiKeyEnv: z.string().role("credential-ref")`（可选字段，无 .required()）
-- 节点 DSH 0.2.2-alpha.2 需确认 `@deepseek-ai/dsh-credentials` 包已安装且 `ctx.credentials` 已注册
-- **如不支持**: 改为节点侧不用 credential-ref，而是直接把 gateway token 值写入 profile.headers 或自定义认证字段（绕过 credential-ref 机制）
-
-### 文件清单
-
-| 操作 | 文件 | 说明 |
-|------|------|------|
-| 修改 | ra-fork40 `lib/protocol.js` | 新增 `HUB_TO_NODE.CONFIG_PUSH` 帧常量（与 Slice 1 同批次） |
-| 修改 | ra-fork40 `lib/node/index.js` | dispatch 函数新增 `case HUB_TO_NODE.CONFIG_PUSH: handleConfigPush(frame, d)` |
-| 新建 | ra-fork40 `lib/node/config-apply.js` | 将收到的 providers 转换为 pi-ai profile 格式，调用 settings API 写入 |
-| 修改 | `src/host/config-source.js` | `gatewayMode: "hub"` 时 buildConfigPayload 返回 `gatewayURL`（relay 帧路径）而非 apiKey |
-
-### 接口 / 数据结构
-
-**CONFIG_PUSH 帧载荷**:
-
-```json
-{
-  "revision": 3,
+  "revision": 12,
   "providers": [
     {
       "id": "openai",
       "api": "openai-completions",
-      "models": [
-        { "id": "openai/gpt-4o", "name": "GPT-4o" }
-      ]
+      "baseURL": "http://192.168.1.10:4387/gw/openai",
+      "apiKeyEnv": "OPENAI_API_KEY",
+      "apiKey": "",
+      "models": [{"id": "gpt-4o", "name": "GPT-4o"}]
     }
   ],
   "defaultModel": "openai/gpt-4o",
-  "gatewayToken": "base64payload.hmac",
-  "mode": "hub"
+  "gatewayToken": "<per-node-hmac-token>",
+  "gatewayTokenRef": "GATEWAY_TOKEN_abc12345"
 }
 ```
 
-> **注意**: `baseURL` 不在此帧 — 节点侧 baseURL 由节点构造（relay 帧路径），不依赖 hub IP
+**节点侧处理**（config-sync.js 现有逻辑）：
+- `apiKey = ''` → `mergeCredentials` 跳过写该 ref（config-sync.js:376 `if (p.apiKey && typeof p.apiKey === 'string')`）
+- `baseURL = "http://hub:4387/gw/openai"` → 写进 cordis.patch.yml（config-sync.js:196）
+- `gatewayToken` → config-source 将其包装为 extra ref `GATEWAY_TOKEN_abc12345: <token>`，写进 credentials（需 config-sync.js 小改：支持 payload.extraRefs 字段）
+- pi-ai adapter 用 `apiKeyEnv: "GATEWAY_TOKEN_abc12345"` 作 Bearer header 访问 hub
 
-**节点侧 profile 转换**（config-apply.js）:
+**需要对 config-sync.js 的最小改动**：
+- node/config-sync.js `mergeCredentials`：增加 `payload.extraRefs`（dict）支持，将额外 ref 写进 `.credentials.yaml`
+- node/config-sync.js `mergePatch`：无改动（apiKeyEnv 字段已支持任意 ref 名）
 
-```js
-// 收到的 provider → dsh-llm-pi-ai profile（hub 模式）
-{
-  api: "openai-completions",    // 透传
-  baseURL: HUB_RELAY_BASE,     // 特殊占位，实际请求走 LLM_PROXY_REQ 帧，不走 HTTP fetch
-  models: [{ id: "openai/gpt-4o", name: "GPT-4o" }],
-  // apiKeyEnv 用 gatewayToken 写入 credential-ref（或直接写入 headers）
-}
-```
+**Slice 2 测试**（`test/config-source/`，node:test）：
 
-### 测试（node:test，isolate 节点 settings）
+| 测试 | 断言 | 刀 |
+|---|---|---|
+| `2A` hub 模式 provider.apiKey 不出现在 payload | `payload.providers.every(p => p.apiKey === '')` | 删 hub 模式分支 → `2A` 红（apiKey 非空） |
+| `2B` hub 模式 baseURL = gatewayBase/providerId | `p.baseURL === 'http://gw:4387/gw/' + p.id` | 删 baseURL 替换逻辑 → `2B` 红 |
+| `2C` gateway token 写进 extraRefs | `payload.extraRefs['GATEWAY_TOKEN_...']` 非空 | 删 token 写入 → `2C` 红 |
+| `2D` node config-sync extraRefs 写进 credentials | credentials.yaml 含 `GATEWAY_TOKEN_xxx:` 行 | 删 `mergeCredentials` extraRefs 支持 → `2D` 红 |
+| `2E` direct 模式 payload 不变 | 与现有 buildConfigPayload 输出完全一致 | 改 direct 分支 → `2E` 红 |
+| `2F` stale revision 静默丢弃 | `result.stale === true`，文件未变 | 删 revision 检查 → `2F` 红 |
 
-**刀 2A: 收到 CONFIG_PUSH 帧前，节点无 hub provider** 🔴
-```js
-// 初始化 fake ctx，不发 CONFIG_PUSH 帧
-const settings = fakeCtx.get('settings')
-assert.ok(!settings.get('llm-pi-ai')?.providers?.openai)
-// 刀：发一个 CONFIG_PUSH → 上面断言失败（因为 provider 已写入）→ 确认刀有效
-```
+**待验证项 G1（Slice 2 门禁前）**：在 dshtest-1 节点上验证：config-push 后，节点重启，`GATEWAY_TOKEN_*` ref 仍可解析，pi-ai adapter 用该 ref 发出 Bearer token 请求到 hub 网关（不需要上游真实响应，hub 侧 auth.js 校验通过即可）。不通过则改为直写 `profile.headers["Authorization"]` 绕过 credential ref。
 
-**刀 2B: 收到 CONFIG_PUSH 帧后，settings 含 hub provider** 🟢
-```js
-await handleConfigPush(fakCtx, { providers: [{id:'openai',api:'openai-completions',models:[...]}], ... })
-const p = fakeCtx.get('settings').get('llm-pi-ai').providers['openai']
-assert.strictEqual(p.api, 'openai-completions')
-assert.ok(Array.isArray(p.models) && p.models.length > 0)
-// 刀：注释掉 settings.set() 调用 → p 为 undefined → 断言失败 → 红
-```
+**Slice 2 门禁**：G1 验证通过 + 全部测试绿；`node --check` 通过；不合入 main。
 
-**刀 2C: payload 含 apiKey 时被拒绝（hub 模式保护）** 🔴
-```js
-// hub 模式下 CONFIG_PUSH 绝不含 apiKey
-const payload = buildConfigPayload(rt, { gatewayMode: 'hub', defaultModel: null })
-assert.ok(!JSON.stringify(payload).includes('"apiKey"'))
-// 刀：删除 gatewayMode 判断 → payload 含 apiKey → 断言失败 → 红
-```
-
-**刀 2D: 同名 provider 消歧 — 两个 provider 的 gpt-4o 不互相覆盖** 🔴
-```js
-// providers: [{id:'openai',models:[{id:'openai/gpt-4o'}]}, {id:'hub',models:[{id:'hub/gpt-4o'}]}]
-await handleConfigPush(fakeCtx, { providers: [...] })
-assert.ok(fakeCtx.get('settings').get('llm-pi-ai').providers['openai'])
-assert.ok(fakeCtx.get('settings').get('llm-pi-ai').providers['hub'])
-// 刀：改为 providers 数组只保留最后一个 → 第一个 assert 失败 → 红
-```
-
-### 门禁
-- 验证 A/B 先完成（代码证据 + 结论写入待验证项）
-- 2A/2B/2C/2D 全绿
-- 节点 settings 写入后 `ctx.llm.listProviders()` 返回 hub providers
-- 旧 direct providers 保持不变（gatewayMode: "direct" 时不调用 handleConfigPush）
-
-### 回滚
-- revert ra-fork40 protocol.js（删 CONFIG_PUSH 帧）
-- revert ra-fork40 node/index.js（删 dispatch case）
-- 删 ra-fork40 lib/node/config-apply.js
-- 节点侧无 hub provider，仍用本地 direct providers（如有）
+**Slice 2 回滚**：revert `config-source.js` hub 模式分支 + revert `node/config-sync.js` extraRefs；hub 切回 `gatewayMode: "direct"` 重推一次 config-push，节点收到后回直连模式（revision 递增触发重启）。
 
 ---
 
-## Slice 3: 端到端验证 + 错误可见
+### Slice 3：端到端验证（P1 出口）
 
-### 目标
-验证 Slice 1+2 集成：节点经 relay 帧调用模型，成功时流到对话页，失败时错误可见。对应契约 §6 的三条 P1 出口判据。
+**目标**：Slice 1 + 2 集成，验证 3 条 P1 出口标准。
 
-### 文件清单
+**测试环境**：hub macOS dshtest-local + 节点 Linux dshtest-1（公网 relay）。
 
-无新增代码文件。此片是集成测试，依赖 Slice 1+2 完成。
+**P1 出口标准（来自 model-gateway-contract.md §6）**：
 
-### 接口 / 数据结构
+| 标准 | 具体断言 | 必红刀 |
+|---|---|---|
+| Test 1：无凭据 → AUTH 错误可见 | 节点 gateway token 置空，发模型请求，对话页出现 `turn/end.reason.kind === "error"` 且 `reason.error.code === "AUTH"` | 删 auth.js:verifyToken → hub 返 401 → 节点 turn/end.error.code 变为其他值 → 必红 |
+| Test 2：任意配置模型可跑 | hub 模式下 node 能用 `openai/gpt-4o` 完成一次推理，对话页收到 `assistant/message` | 删 router.js:providerLookup → 404 → 无 assistant/message → 必红 |
+| Test 3：网关不可达 → TRANSPORT 错误可见 | hub 网关停止监听，节点发请求，turn/end.reason.kind === "error" && reason.error.code === "TRANSPORT" | 删 proxy.js:upstreamErrorMap TRANSPORT 分支 → code 变为默认值 → 必红 |
 
-节点侧请求链路（Slice 2 完成后）:
+**补充测试**（relay 帧路径）：
+- `3D` relay SSE 中断测试：hub 在推流中途关闭 relay 连接，节点侧 turn/end 在 3s 内出现 reason.kind === "error"（不挂起）
 
-```
-agent-loop → dsh-llm LlmRuntime.streamWithRegistration()
-  → pi-ai openAICompletionsApi → baseURL = HUB_RELAY_BASE
-  → 发现 baseURL 是 relay 占位 → 改为发 NODE_TO_HUB.LLM_PROXY_REQ 帧
-  → hub 侧 llm-proxy.js 收帧 → 代理上游 → 发 HUB_TO_NODE.LLM_PROXY_RES 帧序列
-  → 节点侧把 RES 帧拼成 SSE stream → pi-ai toStreamChunks(L1557-1680) 解析
-```
-
-> **注意**: pi-ai 原生发 HTTP fetch；需在节点侧适配层将 baseURL=HUB_RELAY_BASE 的请求
-> 拦截并改走帧通道。这是 Slice 2 config-apply.js 中 `baseURL` 值选择的关键。
-> 待确认: 是注入一个自定义 `transport` adapter 还是 mock fetch（前者更干净）。
-
-错误收口链路（契约 §5.3 已定义）:
-
-```
-帧通道 TRANSPORT 错误 / token 过期
-  → classifyPiAiError(L1457-1468) → AUTH / TRANSPORT / TIMEOUT
-  → adapterFailureChunk(dsh-llm:2409-2420)
-  → agent-loop(L923-938) → assistant/attempt + turn/end{kind:"error", error:{code}}
-  → 对话页错误气泡
-```
-
-### 测试（对应契约 §6 三条判据）
-
-**刀 3A: gateway token 失效 → AUTH 错误可见** 🔴 (P1 判据 1)
-- 环境: fake relay + fake hub 代理（返回 401）
-- 操作: 发消息 "hello"，gateway token 指向空值
-- 断言: `turn/end.reason.kind === "error"` 且 `reason.error.code === "AUTH"`
-- 对话页: 显示认证错误（非静默失败）
-- 刀: 注释掉 gateway-token 校验 → hub 代理不返回 401 → turn/end.kind 变为 stop → 断言失败 → 红
-
-**刀 3B: 任意已配置模型可跑** 🟢 (P1 判据 2)
-- 环境: fake relay + fake hub 代理（返回正常 SSE stream）
-- 操作: 分别用 models 列表中的 2 个模型发 "hello"
-- 断言: 流式 text-delta 到达; `usage.inputTokens > 0 && usage.outputTokens > 0`; `finish.kind === "stop"`
-- 刀: mock hub 代理不发流式帧 → text-delta 不到达 → 断言失败 → 红
-
-**刀 3C: relay 帧通道断开 → TRANSPORT 错误可见** 🔴 (P1 判据 3)
-- 环境: 断开 fake relay（节点发帧后无回应）
-- 操作: 发消息触发 LLM_PROXY_REQ，fake relay 不回 LLM_PROXY_RES
-- 断言: 超时后 `turn/end.reason.kind === "error"` 且 `reason.error.code === "TRANSPORT"` 或 `"TIMEOUT"`（dsh-agent-loop:809-822）
-- 对话页: 显示错误信息（非挂起）
-- 刀: 注释掉超时检测 → turn/end 不写 → 断言超时 → 红
-
-### 门禁
-- 3A/3B/3C 全绿
-- allowLocalFallback 默认 false；3A/3C 验证不触发本地 fallback
-- 对话页错误显示与 agent-loop error 收口一致
-
-### 回滚
-- Slice 3 无代码改动；回滚即停用节点 hub gateway provider（config-push mode 改回 direct）
-
----
-
-## 依赖关系与执行顺序
-
-```
-前置: 验证 A/B（settings.set + credential-ref 可用性）
-      ↓
-Slice 1 (hub llm-proxy)  ────┐
-         ↓                   │
-Slice 2 (config-push + 节点)─┘→ Slice 3 (端到端)
-```
-
-- **前置验证 A/B 必须先完成**（可以是 S1 期间的代码探测）
-- Slice 1 和 Slice 2 可并行开发（不同文件集）
-- Slice 3 依赖 Slice 1+2 完成，需集成环境
+**Slice 3 门禁**：Test 1/2/3 + 3D 全绿；Slice 0 指标在真机上重测仍达标；最终 P1 验收报告提交 task-board/。
 
 ---
 
 ## 平台范围
 
-**P1 范围**: hub 仅限 macOS（DSH Desktop 0.13.2 app.asar）；节点支持 macOS、Linux、Windows（ra-fork40 零外部依赖，node: 内置模块跨平台）。
-- relay 帧路径跨平台（不依赖 OS 网络配置）
-- gateway-token 文件权限 0600 在 Windows 上退化为 ACL，需测试
+| 平台 | 角色 | P1 验收 |
+|---|---|---|
+| macOS (hub) | hub 网关运行平台 | ✅ 纳入 P1 |
+| Linux (dshtest-1) | 节点 | ✅ 纳入 P1 |
+| Windows | 节点（兼容性） | ❌ P1 不验收；config-sync.js scheduleRestart 用 systemctl，Windows 需改为 sc.exe，P2 处理 |
 
 ---
 
-## 待验证项（按优先级）
+## 变更文件总表
 
-1. **【P0，Slice 2 编码前必须完成】** 节点 dsh 0.2.2-alpha.2 的 `ctx.get('settings').set(ns, path, value)` 是否能将 hub 下发的 providers 写入 `llm-pi-ai.providers` 并让 pi-ai adapter 实时生效（volatile 字段不持久化但运行时可写）。检查 dsh-api-settings-controller/lib/index.js:294-377（settings ns 注册）+ dsh-llm-pi-ai:50（apply/config 注入路径）。
-2. **【P0，Slice 2 编码前必须完成】** 节点 DSH 0.2.2-alpha.2 是否已注册 `ctx.credentials`（`@deepseek-ai/dsh-credentials` 包）；若未注册，Slice 2 改为直接写 `profile.headers["Authorization"]` 而非 credential-ref。
-3. **【P1，Slice 1】** relay 帧流式响应的 RTT 开销评估；是否需要批量帧（多行 SSE 合一帧）降低帧频。
-4. **【P2，Slice 3】** 对话页 error turn 的 UI 渲染路径（ds-bot 前端如何显示 `turn/end.reason.kind === "error"`）。
-5. **【P3，上线前】** gateway token 的 scope 粒度（provider 级 → 模型级的迁移）和 token 轮换机制（当前依赖 expiry，无主动轮换）。
+| 文件 | 改动类型 | Slice |
+|---|---|---|
+| `src/gateway/index.js` | 新建 | S1 |
+| `src/gateway/router.js` | 新建 | S1 |
+| `src/gateway/auth.js` | 新建 | S1 |
+| `src/gateway/proxy.js` | 新建 | S1 |
+| `src/gateway/upstream.js` | 新建 | S1 |
+| `src/gateway/token-store.js` | 新建 | S1 |
+| `src/host/config-source.js` | 修改（hub 模式分支） | S1+S2 |
+| `lib/node/config-sync.js` (dsh-remote-agent) | 修改（extraRefs 支持） | S2 |
+| `test/gateway/*.test.mjs` | 新建 | S1 |
+| `test/config-source/*.test.mjs` | 修改 | S2 |
+| `test/perf/relay-sse-probe.mjs` | 新建 | S0 |
+
+---
+
+## 开工前检查清单
+
+- [ ] S1 (feat/mirror-session) 门禁通过
+- [ ] Slice 0 探针跑完，数字达标（或退路已选定）
+- [ ] 待验证项 G1 结论出（节点重启后 gateway token ref 可解析）
+- [ ] P1 平台 hub macOS + 节点 Linux 环境就绪（dshtest-1 可 systemctl restart dsh-worker）
