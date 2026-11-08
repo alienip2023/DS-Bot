@@ -685,27 +685,30 @@ test('1A6-dsh-home-default: rt.dshHome empty and no DSH_HOME env, uses HOME/.dsh
   }
 })
 
-// --- 1A6-token-stable: credSvc.get is tried first; second install gets same token from credSvc ---
-// Knife: skip credSvc.get (always readRefsFile) → second install generates new token → RED
-test('1A6-token-stable: credentials service get() is tried first; second install reuses token', async () => {
+// --- 1A6-token-stable: second install reads token from file (credSvc.set wrote it); stable ---
+// Knife: delete readRefsFile file read (return empty Map) → randomBytes each install → different → RED
+test('1A6-token-stable: second install reads existing token from file via readRefsFile', async () => {
   const { writeFileSync, mkdtempSync } = await import('node:fs')
   const { join } = await import('node:path')
   const { tmpdir } = await import('node:os')
   const tmpHome = mkdtempSync(join(tmpdir(), 'ds-bot-1a6-tok-'))
   writeFileSync(join(tmpHome, '.credentials.yaml'), 'refs:\n  ALPHA_KEY: sk-alpha\n', { mode: 0o600 })
 
-  const cfgProviders = [
-    { provider: 'alpha', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'alpha'] },
-  ]
+  const cfgProviders = [{ provider: 'alpha', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'alpha'] }]
   const settingsSections = [
     { ns: 'llm-pi-ai', value: { providers: { alpha: { api: 'openai-completions', baseURL: 'https://up.example.com/v1', apiKeyEnv: 'ALPHA_KEY', models: [{ id: 'a1' }], gateway: true } } } },
   ]
 
-  // Shared mock credentials service — persists across two installs
-  const credStore = new Map()
+  // credSvc.set writes the token to tmpHome/.credentials.yaml so the second install can read it back
   const credSvc = {
-    get: (refName) => credStore.get(refName),
-    set: async (refName, value) => { credStore.set(refName, value) },
+    set: async (refName, value) => {
+      const { readFileSync, writeFileSync } = await import('node:fs')
+      let current = 'refs:\n'
+      try { current = readFileSync(join(tmpHome, '.credentials.yaml'), 'utf8') } catch {}
+      if (!current.includes(refName)) {
+        writeFileSync(join(tmpHome, '.credentials.yaml'), current + '  ' + refName + ': ' + value + '\n', { mode: 0o600 })
+      }
+    },
   }
 
   function makeTrackedRt() {
@@ -718,37 +721,35 @@ test('1A6-token-stable: credentials service get() is tried first; second install
     return { rt, getSetSource, getProvidedPort, dispose }
   }
 
-  // First install: generates a token, stores it in credStore via credSvc.set
+  // First install: token generated (not in file yet), credSvc.set writes it to file
   const first = makeTrackedRt()
   install(first.rt)
-  await new Promise(r => setTimeout(r, 150))
+  await new Promise(r => setTimeout(r, 200))  // allow async credSvc.set to complete
   let refName1, token1
   try {
     assert.ok(typeof first.getProvidedPort() === 'number' && first.getProvidedPort() > 0, 'first gateway should start')
     const cb1 = first.getSetSource()
-    assert.ok(cb1, 'first setSource should be attached')
+    assert.ok(cb1, 'first setSource attached')
     const p1 = cb1('node-stable')
     const alpha1 = p1.providers.find(p => p.id === 'alpha')
-    assert.ok(alpha1, 'alpha should be in first payload')
+    assert.ok(alpha1, 'alpha in first payload')
     refName1 = alpha1.apiKeyEnv
     token1 = alpha1.apiKey
-    assert.ok(refName1.startsWith('GATEWAY_TOKEN_'), `refName should start with GATEWAY_TOKEN_, got: ${refName1}`)
-    assert.ok(typeof token1 === 'string' && token1 !== '', 'token should be non-empty')
-    // Verify token is stored in credStore
-    assert.equal(credStore.get(refName1), token1, 'credSvc.set should have been called with refName and token')
+    assert.ok(refName1.startsWith('GATEWAY_TOKEN_'), `refName should start GATEWAY_TOKEN_, got ${refName1}`)
+    assert.ok(typeof token1 === 'string' && token1 !== '', 'first token non-empty')
   } finally { await first.dispose() }
 
-  // Second install (fresh secrets Map): credSvc.get returns stored token → same value
+  // Second install: reads token from file (credSvc.set wrote it) → stable value
   const second = makeTrackedRt()
   install(second.rt)
   await new Promise(r => setTimeout(r, 150))
   try {
     const cb2 = second.getSetSource()
-    assert.ok(cb2, 'second setSource should be attached')
+    assert.ok(cb2, 'second setSource attached')
     const p2 = cb2('node-stable')
     const alpha2 = p2.providers.find(p => p.id === 'alpha')
-    assert.ok(alpha2, 'alpha should be in second payload')
-    assert.equal(alpha2.apiKeyEnv, refName1, 'refName should be stable across installs')
-    assert.equal(alpha2.apiKey, token1, 'token value should be stable across installs (credSvc.get)')
+    assert.ok(alpha2, 'alpha in second payload')
+    assert.equal(alpha2.apiKeyEnv, refName1, 'refName stable across installs')
+    assert.equal(alpha2.apiKey, token1, 'token value stable across installs (read from file)')
   } finally { await second.dispose() }
 })

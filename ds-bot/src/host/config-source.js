@@ -64,6 +64,7 @@ export function parseCredentialRefs(text) {
 }
 
 function readRefsFile(rt) {
+  // Merge from all candidates. Reversed loop → last wins: env.DSH_HOME < ~/.dsh < rt.dshHome.
   const candidates = []
   if (typeof rt?.dshHome === 'string' && rt.dshHome !== '') candidates.push(rt.dshHome)
   const homeCandidate = join(homedir(), '.dsh')
