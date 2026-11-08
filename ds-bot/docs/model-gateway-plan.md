@@ -1,9 +1,9 @@
-# 模型网关 P1 分片计划 v19 (Model Gateway P1 Slice Plan)
+# 模型网关 P1 分片计划 v20 (Model Gateway P1 Slice Plan)
 
-**状态**: 修订稿 v19（2026-11-09，架构师，Slice 1A-8 node 侧 <= 修正，契约 revision 硬规则）
+**状态**: 修订稿 v20（2026-11-09，架构师，T3 断言修正+provider 来源事实+基线行修正）
 **分支**: feat/model-gateway-contract
 **依赖契约**: docs/model-gateway-contract.md v3 (2396338c) — 已冻结
-**代码基线**: dsh-remote-agent HEAD 14cb02f (0.10.1-fork.47) + ds-bot HEAD
+**代码基线**: dsh-remote-agent HEAD afb7007 (0.10.1-fork.50) + ds-bot HEAD
 
 ---
 
@@ -574,6 +574,23 @@ conn.on('tcp connection', (info, accept, reject) => {
 
 以下命令在 dshtest-1 节点上执行，经 `100.64.0.3:4387` 验证网关通路。
 
+### 通道 v2 验收前置条件
+
+**Provider 来源**：
+- Desktop 运行配置读 `~/Library/Application Support/dsh-desktop/harness/profiles/web/cordis.patch.yml`，
+  不是 `~/.dsh/settings.yaml`；后者只被 ds-bot 的 `parseSettingsYaml` 文本解析 `ds-bot:` 段的 host/port
+  （日志 `from=yaml:~/.dsh/settings.yaml` 即此）。
+- `~/.dsh/settings.yaml` 里的 piion 原本不在网关 provider 列表 → `/gw/piion` 404。
+- 已在 profile `cordis.patch.yml` 补 piion（`api: openai-completions`、`baseURL: http://127.0.0.1:8000/v1`、
+  `apiKeyEnv: PIION_API_KEY`、`gateway: true`），热加载已生效，`/gw/piion/v1/models` 200。
+- **T2/T3 上游定 piion**；siliconflow 余额不足（`code:30001`）、ccmax 是 `anthropic-messages`
+  （契约 §2.3 P1 只要求 `openai-completions`，属已知范围）。
+
+**T1/T2 hub 侧已实测（证据）**：
+- 用节点 token `GATEWAY_TOKEN_dshtest_1`：`/gw/{jina,siliconflow,ccmax}/v1/models` 全 200；
+- `/gw/piion/v1/models` 200；`/gw/piion/v1/chat/completions` 流式 1424B、含 `data: [DONE]`、TTFB 0.77s。
+- 节点侧仍待 1A-8 装完（节点此刻无 token）。
+
 ### T1：/v1/models 可达
 ```bash
 # 在 dshtest-1 上执行
@@ -595,10 +612,18 @@ curl -s -N -H "Authorization: Bearer $GATEWAY_TOKEN" \
 ```bash
 # 在 dshtest-1 上执行（--max-time 0.5 触发客户端 abort）
 curl -s -N --max-time 0.5 -H "Authorization: Bearer $GATEWAY_TOKEN" \
-  -d '{"model":"openai/gpt-4o","messages":[{"role":"user","content":"count to 1000"}],"stream":true}' \
-  http://100.64.0.3:4387/gw/openai/v1/chat/completions || true
-# 断言：hub 网关日志出现 upstream aborted，1s 内上游 fetch 终止
+  -d '{"model":"piion/qwen36-heretic","messages":[{"role":"user","content":"count to 1000"}],"stream":true}' \
+  http://100.64.0.3:4387/gw/piion/v1/chat/completions || true
 ```
+**断言（已真机验证）**：节点发起流式 → 0.5~1.5s 内 abort → 上游 MLX 日志
+（`~/.local/share/qwen36-heretic-mtp/logs/server.err.log`）在 ≤1s 内出现
+该 request 的 `Generation cancelled: request=<id> generated_tokens=N`
+紧跟 `Request failed: ... error=stream_closed_before_completion`。
+机器时钟已对时。
+
+> **注**：`src/gateway/proxy.js:41-51` 的 `doAbort()` 只做 `upstreamReq.destroy()` + `res.end()`，
+> 无 abort warn 日志；`router.js:78` 的 `AbortController` 创建后未 abort（靠 `clientReq.on('close')`）。
+> 「网关补一行 abort warn 日志」记为 **可选欠账（1A-9，候选）**，不阻塞 P1。
 
 ### T4：token 轮换后重启验证
 ```bash
