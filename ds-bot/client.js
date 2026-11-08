@@ -3578,7 +3578,7 @@ body[data-ds-dark-theme] .jcd-scrim{background:rgba(0,0,0,.5)}
 .jcd-head h2{flex:1;margin:0;font-size:16px;line-height:24px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .jcd-body{flex:1;overflow-y:auto;scrollbar-width:thin;padding:8px 0}
 .jcd-messages{display:flex;flex-direction:column;gap:4px;padding:8px 16px}
-.jcd-bubble{max-width:72%;padding:8px 12px;border-radius:14px;font-size:14px;line-height:20px;box-sizing:border-box;word-break:break-word}
+.jcd-bubble{max-width:72%;padding:8px 12px;border-radius:12px;font-size:14px;line-height:20px;box-sizing:border-box;word-break:break-word}
 .jcd-mine{align-self:flex-end;background:var(--bt-accent);color:var(--bt-accent-ink,#fff);border-bottom-right-radius:4px}
 .jcd-theirs{align-self:flex-start;background:var(--bt-card);border:.5px solid var(--bt-line);border-bottom-left-radius:4px}
 .jcd-event{font-size:12px;line-height:16px;color:var(--bt-ink-2);text-align:center;padding:4px 16px;user-select:none}

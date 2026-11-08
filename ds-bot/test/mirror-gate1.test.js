@@ -1,131 +1,125 @@
-// test/mirror-gate1.test.js — S1 gate 1: store-owned session via ctx.sessions.create + mirror writes
-// Verifies: ctx.sessions.create (real SessionStore) → mirrorTurn 4 steps →
-// events persist in store-owned session → event shapes match parts.js displayItems expectations.
-import assert from 'node:assert/strict'
-import { test } from 'node:test'
-import { Context } from '@deepseek-ai/cordis'
-import { SessionId } from '@deepseek-ai/dsh-session'
-import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
-import { mirrorTurn } from '../src/host/mirror.js'
+// test/mirror-gate1.test.js — S1 gate 1: store-owned session + mirror writes + real disk persistence
+// Approach:
+// 1. Mount dsh-session-persistence-jsonl with a mkdtemp root
+// 2. Create persistence handle (registers writer in tracker) + in-memory session
+// 3. mirrorTurn writes 6 events; flush drains them to disk via session/event + session/flush
+// 4. Read back from a NEW ctx with the same root — assert parts.js historyEntry maps user+bot bubbles
+//
+// Knife: change user/message data to {turn, message: um} (wrong shape) → user historyEntry goes red.
+import assert from "node:assert/strict"
+import { test } from "node:test"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { Context } from "@deepseek-ai/cordis"
+import { SessionId } from "@deepseek-ai/dsh-session"
+import { apply as applyJsonl } from "@deepseek-ai/dsh-session-persistence-jsonl"
+import { mountAgentLoopTestDependencies } from "@deepseek-ai/dsh-agent-loop-testkit"
+import { mirrorTurn } from "../src/host/mirror.js"
+import { historyEntry } from "../src/host/parts.js"
 
-/**
- * Verify event shapes that parts.js displayItems can render.
- * parts.js:1421: turn/start → data.turn number
- * parts.js:1427: assistant/message → data.message.content array with text block
- * parts.js:1480: user/message → data.content array + data.source.kind==='user'
- */
-function assertRenderable(events) {
-  const turnStart = events.find(e => e.type === 'turn/start')
-  assert.ok(turnStart, 'must have turn/start')
-  assert.ok(typeof turnStart.data.turn === 'number', 'turn/start data.turn must be number (parts.js:1421)')
+test("gate1: real jsonl persistence — write 6 events, flush, reload, historyEntry maps user+bot bubbles", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mirror-gate1-"))
+  try {
+    const BOT_TEXT = "Hi, mirror reply"
+    const USER_TEXT = "Hello mirror"
+    let writtenEvents = 0
 
-  const userEv = events.find(e => e.type === 'user/message')
-  assert.ok(userEv, 'must have user/message')
-  assert.ok(Array.isArray(userEv.data.content), 'user/message data.content must be array (parts.js:1480)')
-  assert.ok(userEv.data.content.some(b => b?.type === 'text' && typeof b.text === 'string'), 'must have text block')
-  assert.equal(userEv.data.source?.kind, 'user', 'source.kind must be user (parts.js:1488)')
+    // --- WRITE PHASE ---
+    {
+      const ctx = new Context()
+      await mountAgentLoopTestDependencies(ctx)
+      await ctx.plugin(applyJsonl, { root, compression: "none" })
+      const persistence = ctx.get("sessionPersistence")
+      assert.ok(persistence, "sessionPersistence service must be available")
 
-  const botEv = events.find(e => e.type === 'assistant/message')
-  assert.ok(botEv, 'must have assistant/message')
-  assert.ok(Array.isArray(botEv.data.message?.content), 'assistant/message data.message.content must be array (parts.js:1427)')
-  assert.ok(botEv.data.message.content.some(b => b?.type === 'text' && typeof b.text === 'string'), 'must have text block in bot message')
+      const id = SessionId("gate1-mirror")
+      const header = { version: 4, id, createdAt: Date.now(), isSeeded: false }
+      // Create persistence handle FIRST — registers writer so session/event routes to disk
+      const handle = await persistence.create(header)
 
-  const turnEnd = events.find(e => e.type === 'turn/end')
-  assert.ok(turnEnd, 'must have turn/end')
-  assert.ok(typeof turnEnd.data.turn === 'number', 'turn/end data.turn must be number')
-}
+      const session = ctx.sessions.create(id, { meta: { title: "gate1-mirror" } })
+      await new Promise(r => setImmediate(r))
 
-// session.log is an array of event objects (the full log, all event types)
-function logEvents(session) {
-  return Array.from(session.log)
-}
+      const seenKeys = new Set()
+      const closedKeys = new Set()
+      const seenSteps = new Set()
+      const result = await mirrorTurn(session, {
+        turn: 1, userText: USER_TEXT, botText: BOT_TEXT,
+        botId: "bot-test", nodeSeq: 42, seenKeys, closedKeys, seenSteps,
+      })
+      assert.equal(result.skipped, false, "first write must not be skipped")
+      writtenEvents = session.log.length
+      assert.ok(writtenEvents >= 4, "must have at least 4 events")
 
-async function makeStoreSession(ctx, id) {
-  // ctx.sessions.create: prepare + effect(enter + announce) atomically
-  const session = ctx.sessions.create(SessionId(id), { meta: { title: id } })
-  // Wait for the ctx.effect (enter + announce) to complete before appending
+      const flushed = await ctx.sessions.flush(session)
+      assert.equal(flushed, true, "flush must return true (jsonl durability listener participated)")
+
+      await new Promise(r => setTimeout(r, 200))
+      await handle.close()
+      await ctx[Symbol.asyncDispose]?.() ?? ctx.dispose?.()
+    }
+
+    // --- READ PHASE: new ctx, same root ---
+    {
+      const ctx2 = new Context()
+      await mountAgentLoopTestDependencies(ctx2)
+      await ctx2.plugin(applyJsonl, { root, compression: "none" })
+      const p2 = ctx2.get("sessionPersistence")
+
+      const handle2 = await p2.open(SessionId("gate1-mirror"))
+      const r2 = await handle2.read(0, 100)
+      const events = r2.events ?? []
+      assert.equal(events.length, writtenEvents, "reloaded event count must match written count")
+
+      // Use real parts.js historyEntry to map reloaded events — this is what the UI does
+      const entries = events.map(ev => historyEntry(ev, false)).filter(Boolean)
+      const userEntry = entries.find(e => e.who === "user")
+      const botEntry = entries.find(e => e.answer === true)
+
+      assert.ok(userEntry, "must have a user historyEntry (who: 'user')")
+      assert.ok(userEntry.text?.includes(USER_TEXT), `user text must include '${USER_TEXT}'`)
+      assert.ok(botEntry, "must have a bot historyEntry (answer: true)")
+      assert.equal(botEntry.text, BOT_TEXT, `bot text must be '${BOT_TEXT}'`)
+
+      await handle2.close()
+      await ctx2[Symbol.asyncDispose]?.() ?? ctx2.dispose?.()
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("gate1: (botId, nodeSeq) idempotency — duplicate nodeSeq skipped", async () => {
+  const ctx = new Context()
+  await mountAgentLoopTestDependencies(ctx)
+  const session = ctx.sessions.create(SessionId("gate1-dedup-nodeseq"), {})
   await new Promise(r => setImmediate(r))
-  return session
-}
-
-test('gate1: store-owned session + mirror 4 steps → events persist → renderable', async () => {
-  const ctx = new Context()
-  await mountAgentLoopTestDependencies(ctx)
-
-  // 1. Create a store-owned session via ctx.sessions.create (real SessionStore)
-  const session = await makeStoreSession(ctx, 'gate1-persist')
-  assert.ok(session, 'session must exist')
-  assert.equal(typeof session.append, 'function', 'session.append must be available')
-  assert.equal(ctx.sessions.get(session.id), session, 'session must be live in store (store-owned)')
-
-  // 2. Mirror 4 steps
   const seenKeys = new Set()
+  const closedKeys = new Set()
   const seenSteps = new Set()
-  const result = await mirrorTurn(session, {
-    turn: 1,
-    userText: 'Hello from mirror',
-    botText: 'Hi, mirror reply',
-    botId: 'bot-test',
-    nodeSeq: 42,
-    seenKeys,
-    seenSteps,
-  })
-  assert.equal(result.skipped, false, 'first write not skipped')
 
-  // 3. Verify 4 events in session log
-  const events = logEvents(session)
-  const types = events.map(e => e.type)
-  assert.ok(types.includes('turn/start'), `must have turn/start; got: ${types}`)
-  assert.ok(types.includes('user/message'), 'must have user/message')
-  assert.ok(types.includes('assistant/message'), 'must have assistant/message')
-  assert.ok(types.includes('turn/end'), 'must have turn/end')
-
-  // 4. Verify event shapes match parts.js displayItems expectations
-  assertRenderable(events)
-
-  // 5. Persistence: session still retrievable after flush
-  await ctx.sessions.flush(session)
-  const reloaded = ctx.sessions.get(session.id)
-  assert.ok(reloaded, 'session must still be in store after flush')
-  const eventsAfter = logEvents(reloaded)
-  assert.equal(eventsAfter.length, events.length, 'event count must match after flush+reload')
-  assertRenderable(eventsAfter)
-
+  const r1 = await mirrorTurn(session, { turn: 1, userText: "A", botText: "B", botId: "b1", nodeSeq: 1, seenKeys, closedKeys, seenSteps })
+  const r2 = await mirrorTurn(session, { turn: 2, userText: "C", botText: "D", botId: "b1", nodeSeq: 1, seenKeys, closedKeys, seenSteps })
+  assert.equal(r1.skipped, false)
+  assert.equal(r2.skipped, true, "same (botId, nodeSeq) must be skipped")
+  assert.equal(r2.reason, "already-written:nodeSeq")
   await ctx[Symbol.asyncDispose]?.() ?? ctx.dispose?.()
 })
 
-test('gate1: (botId, nodeSeq) idempotency — duplicate skipped', async () => {
+test("gate1: (turn, step) idempotency — duplicate step skipped", async () => {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx)
-  const session = await makeStoreSession(ctx, 'gate1-dedup-nodeseq')
-
+  const session = ctx.sessions.create(SessionId("gate1-dedup-step"), {})
+  await new Promise(r => setImmediate(r))
   const seenKeys = new Set()
+  const closedKeys = new Set()
   const seenSteps = new Set()
 
-  const r1 = await mirrorTurn(session, { turn: 1, userText: 'A', botText: 'B', botId: 'b1', nodeSeq: 1, seenKeys, seenSteps })
-  const r2 = await mirrorTurn(session, { turn: 2, userText: 'C', botText: 'D', botId: 'b1', nodeSeq: 1, seenKeys, seenSteps })
-
+  const r1 = await mirrorTurn(session, { turn: 1, userText: "A", botText: "B", botId: "b1", nodeSeq: 1, seenKeys, closedKeys, seenSteps })
+  const r2 = await mirrorTurn(session, { turn: 1, step: 1, userText: "C", botText: "D", botId: "b1", nodeSeq: 2, seenKeys, closedKeys, seenSteps })
   assert.equal(r1.skipped, false)
-  assert.equal(r2.skipped, true, 'same (botId, nodeSeq) must be skipped')
-  assert.equal(r2.reason, 'already-written:nodeSeq')
-
-  await ctx[Symbol.asyncDispose]?.() ?? ctx.dispose?.()
-})
-
-test('gate1: (turn, step) idempotency — duplicate step skipped', async () => {
-  const ctx = new Context()
-  await mountAgentLoopTestDependencies(ctx)
-  const session = await makeStoreSession(ctx, 'gate1-dedup-step')
-
-  const seenKeys = new Set()
-  const seenSteps = new Set()
-
-  const r1 = await mirrorTurn(session, { turn: 1, userText: 'A', botText: 'B', botId: 'b1', nodeSeq: 1, seenKeys, seenSteps })
-  const r2 = await mirrorTurn(session, { turn: 1, userText: 'C', botText: 'D', botId: 'b1', nodeSeq: 2, seenKeys, seenSteps })
-
-  assert.equal(r1.skipped, false)
-  assert.equal(r2.skipped, true, 'same (turn, step) must be skipped')
-  assert.equal(r2.reason, 'already-written:step')
-
+  assert.equal(r2.skipped, true, "same (turn, step=1) must be skipped")
+  assert.equal(r2.reason, "already-written:step")
   await ctx[Symbol.asyncDispose]?.() ?? ctx.dispose?.()
 })

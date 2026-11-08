@@ -16,7 +16,7 @@ function trimmed(value) {
   return typeof value === 'string' ? value.trim() : ''
 }
 
-function listenBotTurnResult(registry, exchangeId, nodeId, timeoutMs) {
+export function listenBotTurnResult(registry, exchangeId, nodeId, timeoutMs) {
   let settled = false
   let resolve
   const pending = new Promise((res) => { resolve = res })
