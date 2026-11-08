@@ -3,7 +3,7 @@
 **文档路径**: `ds-bot/docs/bot-home-s2-plan.md`
 **分支**: `feat/bot-home-s2`
 **基线**: `389fb9cf`（ds-bot `0.3.1-fork.40` + ra `0.10.1-fork.52`）
-**状态**: 草稿 v2（2026-11-09，架构师）
+**状态**: 草稿 v3（2026-11-09，架构师）
 
 ---
 
@@ -59,8 +59,8 @@ S2 的终点是**「远程 Bot 的对话长在 Bot 页面里」**。
 | 类型 | 非负整数（`number`，整数，≥ 0） |
 | 单调性 | per (nodeId, remoteBotId)，单调递增；跨重启不回退，不复用 |
 | 帧字段名 | `seq`（`bot/turn-result` 帧） |
-| 缺失处理 | `validateBotTurnResult` 若 `seq` 缺失或非整数 → 返回 `{ ok: false, error: 'bot-turn-result-seq-missing' }` |
-| 非法值处理 | `seq < 0` 或非整数 → `{ ok: false, error: 'bot-turn-result-seq-invalid' }` |
+| 缺失处理 | `seq` 不存在 / 不是 number / 非整数 → `{ ok: false, error: 'bot-turn-result-seq-missing' }` |
+| 非法值处理 | `seq` 是整数但 `< 0` → `{ ok: false, error: 'bot-turn-result-seq-invalid' }` |
 | hub 幂等键 | `seenKeys` Set 存 `botId + ':' + String(seq)` |
 | Cursor / watermark | `seq <= watermark`：静默 skipped，不写盘，不 warn；`seq > watermark+1`：warn「gap」（仅历史导入场景）；`seq === watermark+1`：正常写入 |
 
@@ -77,12 +77,26 @@ S2 的终点是**「远程 Bot 的对话长在 Bot 页面里」**。
 
 ### 2.3 校验规则（伪代码，与 ra/lib/protocol.js 现有形状一致）
 
+**测试用例（随 2.3 冻结）**：
+
+| 输入 | 预期错误 |
+|------|----------|
+| `seq` 字段缺失 | `bot-turn-result-seq-missing` |
+| `seq: "7"` （字符串） | `bot-turn-result-seq-missing` |
+| `seq: 3.5` （非整数） | `bot-turn-result-seq-missing` |
+| `seq: -1` （负整数） | `bot-turn-result-seq-invalid` |
+| `seq: 0` （合法） | 通过（不报错） |
+
+
+
 ```js
 // ra/lib/protocol.js（扩展现有 validateBotTurnResult:562）
 export function validateBotTurnResult(d) {
   // ... 现有校验 ...
-  if (typeof d.seq !== 'number' || !Number.isInteger(d.seq) || d.seq < 0)
+  if (d.seq === undefined || typeof d.seq !== 'number' || !Number.isInteger(d.seq))
     return { ok: false, error: 'bot-turn-result-seq-missing' }
+  if (d.seq < 0)
+    return { ok: false, error: 'bot-turn-result-seq-invalid' }
   return {
     ok: true,
     result: {
@@ -146,7 +160,8 @@ export function validateBotTurnResult(d) {
 | `ra/lib/bot-turn.js:22` | ra | `reply()` 的 `bot/turn-result` payload 增 `seq` 字段（从 `turn-seq.js` 取单调递增值） |
 | `ra/lib/node/turn-seq.js`（新） | ra | per (remoteBotId) 单调 seq 生成器；持久化 `<stateDir>/turn-seq.json`（0600） |
 | `ds-bot/src/host/executor.js:166` | ds-bot | `nodeSeq: null` → `nodeSeq: result.seq`（`result` 来自 `validateBotTurnResult` 的 `.result`） |
-| `ds-bot/test/executor-integration.test.js` | ds-bot | 三把刀（补充 seq 相关断言） |
+| `ds-bot/src/host/executor.js` | ds-bot | `send()` 新增 `E_INVALID` 入参校验（缺 `botId`、`text` 非字符串/空、`worker` 配置形状错） |
+| `ds-bot/test/executor-integration.test.js` | ds-bot | 四把刀（补充 seq + E_INVALID 断言） |
 | `ra/test/turn-seq.test.js`（新） | ra | 单调递增 + 跨重启不回退 |
 
 > **注**：`mirror.js` 的 `seenKeys`/`seenSteps` 去重已在 `mirror.js:10-57` 实现；S2-1 只需**把 `seq` 接进来**（`nodeSeq: result.seq`），不新增去重逻辑。
@@ -154,7 +169,8 @@ export function validateBotTurnResult(d) {
 **executor.js 中的错误码区分**：
 
 ```
-E_NOT_FOUND  — send() 入参错误：bot 未注册，或 worker 配置缺失（executor.js 已有）
+E_INVALID    — send() 入参非法：缺 botId、text 非字符串/为空、worker 配置形状错（S2-1 新增）；与 E_NOT_FOUND 严格区分
+E_NOT_FOUND  — bot 未注册或 worker 配置缺失（executor.js 已有）
 E_OFFLINE    — 节点不可达（executor.js 已有）
 E_TIMEOUT    — 120s 无结果（executor.js 已有）
 E_REJECTED   — 节点显式返回 ok:false（executor.js 已有）
@@ -177,11 +193,13 @@ export function createTurnSeq(stateDir)
 
 | 刀 ID | 切哪行 | 断言 |
 |--------|--------|------|
-| S21-seq-missing | `validateBotTurnResult` seq 类型检查删掉 | `executor.deliverTurn` 收到帧后抛出含 `bot-turn-result-seq-missing` 的错误 |
+| S21-seq-missing-unit | `protocol.js:562` seq 检查行删掉（单元测试）| `validateBotTurnResult({...无seq...})` 直接返回 `{ok:false,error:'bot-turn-result-seq-missing'}`（红：不再返回 ok） |
+| S21-seq-missing-e2e | `protocol.js:562` seq 检查行删掉（集成测试）| 坏帧到达 listener 后 mirror session 无新写入，错误对 UI 可见（E_REJECTED 或 bot-turn-result-seq-missing） |
+| S21-E_INVALID | `executor.js` 入参校验逻辑 → 删掉 | 空 `botId` 的 `send()` 调用穿透到 `registry.send`，而非抛 `E_INVALID`（红） |
 | S21-seq-dedup | `mirrorTurn` 中 `seenKeys.has(nodeKey)` → 删掉（`mirror.js:14`） | 同一 `(botId,seq)` 第二次调用 `mirrorTurn` 不返回 `skipped:true` |
 | S21-seq-monotone | `turn-seq.next` 递增逻辑 → 改返回常数 0 | 第二轮 seq=0，与第一轮重复，`seenKeys` 检出 skipped |
 
-**验收**：`node:test ds-bot/test/executor-integration.test.js ra/test/turn-seq.test.js` 全绿。
+**验收**：`node:test ds-bot/test/executor-integration.test.js ra/test/turn-seq.test.js` 全绿（含 S21-E_INVALID、S21-seq-missing-unit、S21-seq-missing-e2e、S21-seq-dedup、S21-seq-monotone）。
 
 ---
 
