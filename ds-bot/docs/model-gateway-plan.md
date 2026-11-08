@@ -1,6 +1,6 @@
-# 模型网关 P1 分片计划 v9 (Model Gateway P1 Slice Plan)
+# 模型网关 P1 分片计划 v11 (Model Gateway P1 Slice Plan)
 
-**状态**: 修订稿 v9（2026-11-08，架构师，1B 测试编号去重 1P→1Q，S1 已过闸）
+**状态**: 修订稿 v11（2026-11-08，架构师，① source 签名 nodeId ② extraRefs 删除 ③ 1A-3 接线 ④ shouldRestart 指纹扩展 ⑤ currentRevision 限制）
 **分支**: feat/model-gateway-contract
 **依赖契约**: docs/model-gateway-contract.md v3 (2396338c) — 已冻结
 **代码基线**: dsh-remote-agent HEAD 14cb02f (0.10.1-fork.47) + ds-bot HEAD
@@ -166,7 +166,7 @@ src/gateway/
 ```
 
 **修改文件**：
-- `src/host/config-source.js` — per-provider `gateway: true` 分支；baseURL = `.../gw/{id}/v1`；refName 含 epoch 后缀；extraRefs；mixed 支持
+- `src/host/config-source.js` — per-provider `gateway: true` 分支；source 签名改为 `(nodeId) => buildConfigPayload(rt, { gateway: nodeId && port ? { host, port, token: tokenStore.ensure(nodeId) } : null })`；baseURL = `.../gw/{id}/v1`；refName 含 epoch 后缀；mixed 支持（zero-arg source 向后兼容）
 
 **接口契约**：
 ```
@@ -181,6 +181,44 @@ Authorization: Bearer <gatewayToken>
 → 502  { error: "upstream-error" }
 → 503  超时（默认 120s）
 ```
+
+
+**Slice 1A-3：hub 启动接线（ds-bot install）**
+
+`install(rt)` 内必须完成以下接线，否则 `createGatewayServer` 全仓无生产调用方，网关为死代码：
+
+```js
+// src/gateway/index.js — install 钩子
+export async function installGateway(rt) {
+  const { host: gatewayHost = '127.0.0.1', port: gatewayPort = 4387 } = rt.config.gateway ?? {}
+  const { server, actualPort } = await createGatewayServer({ gatewayHost, gatewayPort, tokenStore, upstream })
+  server.on('error', (e) => {
+    if (e.code === 'EADDRINUSE') { rt.log.warn('gateway EADDRINUSE, skipping'); return }
+    throw e
+  })
+  rt.provide('ds-bot:gateway-port', actualPort)     // tunnel-supervisor 读取
+  rt.setSource((nodeId) =>
+    buildConfigPayload(rt, {
+      defaultModel: rt.defaultModel,
+      gateway: nodeId && actualPort
+        ? { host: gatewayHost, port: actualPort, token: tokenStore.ensure(nodeId) }
+        : null
+    })
+  )
+}
+```
+
+- EADDRINUSE → warn 降级，不抛
+- `tokenStore.ensure(nodeId)` — 每节点一份 token（32B random + epoch refName）
+- `rt.provide('ds-bot:gateway-port', actualPort)` — port = 0 时填系统分配端口
+- `rt.setSource((nodeId) => ...)` — source 签名接受 nodeId；ra/lib/hub/config-sync.js:24 `readSource` 须改为 `sourceFn(nodeId)`（S2 必改）
+
+**补测试**（ds-bot `test/gateway/`，追加到 Slice 1A 测试表）：
+
+| 测试 | 断言 | 刀 |
+|---|---|---|
+| `1A3-install` install 后 rt.provide 有端口 | `ctx.get('ds-bot:gateway-port') > 0` | 删 rt.provide 调用 → undefined → 红 |
+| `1A3-source` setSource 回调按 nodeId 生成不同 token | `source('node-a').providers[0].apiKey !== source('node-b').providers[0].apiKey` | 删 nodeId 参数 → 两节点同 token → 红 |
 
 **Slice 1A 测试**（`test/gateway/`，node:test）：
 
@@ -240,9 +278,8 @@ conn.on('tcp connection', (info, accept, reject) => {
 ### Slice 2：Config-Push Payload 扩展
 
 **修改文件**：
-- `src/host/config-source.js`（ds-bot）— per-provider gateway 开关 + epoch refName
-- `lib/node/config-sync.js`（dsh-remote-agent）— extraRefs 支持
-- `lib/node/config-sync.js`（dsh-remote-agent）— `extractProviderFingerprints`（id + baseURL + apiKeyEnv）替代 `extractProviderIds`
+- `src/host/config-source.js`（ds-bot）— per-provider gateway 开关 + epoch refName；source 签名 `(nodeId) => payload`（ra/lib/hub/config-sync.js:24 `readSource(nodeId)` 须改为 `sourceFn(nodeId)`）
+- `lib/node/config-sync.js`（dsh-remote-agent）— **S2 必改**：`extractProviderFingerprints`（id + baseURL + apiKeyEnv）替代 `extractProviderIds`（现在 ra/lib/node/config-sync.js:422-424 只比 id 集合；token 轮换只改 apiKeyEnv，集合不变 → shouldRestart=false → 节点持旧 token → G1 必踩）
 
 **Slice 2 测试**（dsh-remote-agent `test/config-sync/` + ds-bot `test/`，node:test）：
 
@@ -251,7 +288,7 @@ conn.on('tcp connection', (info, accept, reject) => {
 | `2A` hub provider apiKey = '' | `p.apiKey === ''` | 删 hub 分支 → 红 |
 | `2B` baseURL 含 /v1 | `p.baseURL.endsWith('/v1')` | 删 /v1 → 红 |
 | `2C` apiKeyEnv = GATEWAY_TOKEN_* | `p.apiKeyEnv.startsWith('GATEWAY_TOKEN_')` | 删 → 红 |
-| `2D` extraRefs 写进 credentials | credentials.yaml 含 `GATEWAY_TOKEN_*:` | 删 extraRefs 支持 → 红 |
+| `2D` gateway token 写进 credentials | credentials.yaml 含 `GATEWAY_TOKEN_*:`（随 provider apiKey/apiKeyEnv 写入，无需 extraRefs 字段） | 删 apiKey 写入 → credentials 无 token → 红 |
 | `2E` direct provider 不变 | 与原 buildConfigPayload 一致 | 破坏 direct 分支 → 红 |
 | `2F` stale revision 静默丢弃 | `result.stale === true` | 删 revision 检查 → 红 |
 | `2G` apiKeyEnv 合法 ref 名 | `/^[A-Za-z_][A-Za-z0-9_]*$/.test(p.apiKeyEnv)` | 用含连字符 nodeId → 红 |
@@ -269,6 +306,13 @@ conn.on('tcp connection', (info, accept, reject) => {
 | Test 2：任意模型可跑 | 对话页收到 `assistant/message` | 删 providerLookup → 404 → 无 assistant/message → 红 |
 | Test 3：停网关/断隧道 → TRANSPORT | `turn/end.reason.kind === "error"` && `reason.error.code === "TRANSPORT"` | 吞掉 tcp error / 不写 turn/end → 红 |
 | `3D` 隧道断线 3s 内 error | `turn/end.reason.kind === "error"` 在 3s 内可见 | 吞掉 tcp connection error / 不写 turn/end → 请求挂起 → 红 |
+
+---
+
+## 已知限制
+
+1. **`currentRevision` 为单值**：改成 per-node source 后，`currentRevision` 只表示「最近一次计算」的版本，不反映各节点实际 appliedRevision。`handleSyncRequest` 每次 `readSource(nodeId)` + `computeRevision` 实时对比，正确性不受影响；per-node revision map 状态展示留 P2。
+
 
 ---
 
