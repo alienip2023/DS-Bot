@@ -65,6 +65,7 @@ export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRef
     const sections = new Map(settings.describe({ redactSecrets: true }).map(section => [section.ns, section]))
     const refs = readRefs(rt)
     const LOCAL_CLI_PREFIX = /^(claude-code|codex-cli)(\/|$)/
+    let gwFallbackCount = 0
     for (const entry of entries) {
       // Skip local CLI providers (process-based, not API-key based)
       if (LOCAL_CLI_PREFIX.test(entry.provider)) { skipped += 1; continue }
@@ -81,25 +82,20 @@ export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRef
         .map(model => ({ id: model.id, name: typeof model.name === 'string' && model.name !== '' ? model.name : model.id }))
 
       // Per-provider gateway rewriting: only when profile.gateway === true and gateway param is set
+      // gateway = { host, port, token: { refName, value } } — one token shared by all gateway providers
       let finalBaseURL = typeof profile.baseURL === 'string' && profile.baseURL !== '' ? profile.baseURL : undefined
       let finalApiKeyEnv = apiKeyEnv
       let finalApiKey = apiKey
       if (profile.gateway === true && gateway != null) {
-        const { host, port, tokens } = gateway
+        const { host, port, token } = gateway
         const gwPort = typeof port === 'number' ? port : null
-        if (gwPort != null) {
-          const tok = tokens?.get(entry.provider)
-          if (tok?.refName && tok?.value) {
-            finalBaseURL = `http://${host ?? '127.0.0.1'}:${gwPort}/gw/${entry.provider}/v1`
-            finalApiKeyEnv = tok.refName
-            finalApiKey = tok.value
-          } else {
-            // Gateway token missing for this provider — fall back to direct connect
-            rt.warn?.('ds-bot: config-source gateway token missing for %s, falling back to direct', entry.provider)
-          }
-        } else {
-          // Gateway not started (no port) — fall back to direct connect
-          rt.warn?.('ds-bot: config-source gateway not started for %s, falling back to direct', entry.provider)
+        if (gwPort != null && token?.refName && token?.value) {
+          finalBaseURL = `http://${host ?? '127.0.0.1'}:${gwPort}/gw/${entry.provider}/v1`
+          finalApiKeyEnv = token.refName
+          finalApiKey = token.value
+        } else if (gwPort == null) {
+          // Aggregate count; warn once after loop
+          gwFallbackCount += 1
         }
       }
 
@@ -112,6 +108,7 @@ export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRef
         models,
       })
     }
+    if (gwFallbackCount > 0) rt.warn?.('ds-bot: config-source gateway not started, %d provider(s) fall back to direct', gwFallbackCount)
   }
   if (skipped > 0) rt.warn?.('ds-bot: config-source skipped %d provider(s) without a protocol or key', skipped)
   // Ensure defaultModel's provider is among the pushed providers
@@ -147,7 +144,7 @@ export function install(rt) {
     try { service = ctx?.get?.('remote-agent:config-sync') } catch { service = undefined }
     if (!service || typeof service.setSource !== 'function') return
     attached = true
-    service.setSource(() => buildConfigPayload(rt, { defaultModel }))
+    service.setSource(() => buildConfigPayload(rt, { defaultModel, gateway: rt.gateway }))
   }
   const tick = () => {
     attach()
