@@ -281,7 +281,7 @@ export async function ensureMirrorSession(rt, bot) {
 | `ds-bot/src/host/roster-join.js` | ds-bot | 新增 `migrateLegacyJoined(rt, opts)` |
 | `ds-bot/src/client/overlays.js:72` | ds-bot | 删除 `JoinedChatDialog` portal（仅在灰度开关置 true 后执行） |
 | `ds-bot/src/client/cells.js:384`、`row-actions.js:5` | ds-bot | 调用点分流：`if (botHomeEnabled) actions.openAgent(bot.id)` else `actions.openJoinedChat(bot.id)`；`team-actions.js:172` 保持原样不动 |
-| `ds-bot/src/host/channel.js` | ds-bot | 灰度开关 `rt.botHomeEnabled`（boolean，设置来源 `rt.cfg?.features?.botHome`） |
+| `ds-bot/src/host/channel.js` | ds-bot | 灰度开关 `rt.botHomeEnabled`（boolean，由 `apply(ctx, config)` 读 `config.features?.botHome === true` 挂到 `rt`，在 `channel.install(rt)` 之前赋值；配置写 `cordis.patch.yml` 插件 config） |
 | `ds-bot/test/mirror-import.test.js`（新） | ds-bot | 导入测试 |
 | `ds-bot/test/migration.test.js`（新） | ds-bot | 迁移测试 |
 
@@ -291,7 +291,7 @@ export async function ensureMirrorSession(rt, bot) {
 1. S2-1 + S2-2 + S2-3 装机（rt.botHomeEnabled = false）
    → 旧弹窗仍在；新路径不激活；观察 session 创建和 mirror 是否正常
 2. 真机三项（T1/T2/T3）通过
-   → 将 rt.botHomeEnabled = true（更新 cordis.patch.yml 或 rt.cfg）
+   → 将 rt.botHomeEnabled = true（更新 cordis.patch.yml 插件 config 的 features.botHome: true）
 3. 弹窗退场：删 overlays.js:72 portal，更新 team-actions.js:172
 4. 回滚一步：将 rt.botHomeEnabled = false + 还原 overlays.js:72 + team-actions.js:172
 ```
