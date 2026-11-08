@@ -9,6 +9,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { env } from 'node:process'
+import { homedir } from 'node:os'
 import { randomBytes } from 'node:crypto'
 import { createGatewayServer } from '../gateway/index.js'
 import { createTokenStore } from '../gateway/token-store.js'
@@ -18,6 +19,14 @@ const PI_AI = 'llm-pi-ai'
 const PROVIDER_ID = /^[A-Za-z0-9._-]+$/
 const CRED_REF = /^[A-Za-z_][A-Za-z0-9_]*$/
 const RETRY_MS = 5_000
+
+// Resolve the DSH home directory: rt.dshHome (non-empty) → DSH_HOME env → ~/.dsh.
+function resolveDshHome(rt) {
+  if (typeof rt?.dshHome === 'string' && rt.dshHome !== '') return rt.dshHome
+  const fromEnv = env.DSH_HOME
+  if (typeof fromEnv === 'string' && fromEnv !== '') return fromEnv
+  return join(homedir(), '.dsh')
+}
 
 // `refs:` section of $DSH_HOME/.credentials.yaml as a Map(name -> value). Text-level
 // on purpose (no yaml dependency); a value this cannot read as one line is skipped.
@@ -48,7 +57,7 @@ export function parseCredentialRefs(text) {
 }
 
 function readRefsFile(rt) {
-  try { return parseCredentialRefs(readFileSync(join(rt.dshHome, '.credentials.yaml'), 'utf8')) } catch { return new Map() }
+  try { return parseCredentialRefs(readFileSync(join(resolveDshHome(rt), '.credentials.yaml'), 'utf8')) } catch { return new Map() }
 }
 
 /**
@@ -140,7 +149,7 @@ export function listGatewayProviders(rt) {
   if (!settings || entries.length === 0) return []
   const sections = new Map(settings.describe({ redactSecrets: true }).map(sec => [sec.ns, sec]))
   const refs = (() => {
-    try { return parseCredentialRefs(readFileSync(join(rt.dshHome, '.credentials.yaml'), 'utf8')) } catch { return new Map() }
+    try { return parseCredentialRefs(readFileSync(join(resolveDshHome(rt), '.credentials.yaml'), 'utf8')) } catch { return new Map() }
   })()
   const CLI_PREFIX = /^(claude-code|codex-cli)(\/|$)/
   const result = []
@@ -182,8 +191,27 @@ export function install(rt) {
     return result
   }
 
+  const dshHome = resolveDshHome(rt)
+  rt.warn?.('ds-bot: dshHome=%s', dshHome)
+
+  const pushOnline = (service, reason) => {
+    try {
+      const registry = ctx?.get?.('remote-agent:registry')
+      if (registry && typeof registry.onlineNodes === 'function') {
+        const nodes = registry.onlineNodes()
+        for (const node of nodes) {
+          const nodeId = node.nodeId
+          if (nodeId) {
+            try { service.sendPush(nodeId) }
+            catch (err) { rt.warn?.('ds-bot: push (%s) to %s failed: %s', reason, nodeId, err?.message ?? err) }
+          }
+        }
+      }
+    } catch { /* no registry */ }
+  }
+
   const readGatewaySettings = () => {
-    let host, port
+    let host, port, from = 'default'
     // Priority 1: settings.describe() 'ds-bot' ns
     try {
       const settings = ctx?.get?.('settings')
@@ -193,24 +221,25 @@ export function install(rt) {
         const cfg = section?.value ?? {}
         if (typeof cfg.gatewayHost === 'string' && cfg.gatewayHost !== '') host = cfg.gatewayHost
         if (typeof cfg.gatewayPort === 'number') port = cfg.gatewayPort
+        if (host !== undefined || port !== undefined) from = 'settings.describe'
       }
     } catch { /* ignore */ }
-    // Priority 2: fall back to reading <dshHome>/settings.yaml ds-bot: section
-    if ((host === undefined || port === undefined) && rt.dshHome) {
+    if ((host === undefined || port === undefined) && dshHome) {
       try {
-        const raw = readFileSync(join(rt.dshHome, 'settings.yaml'), 'utf8')
+        const settingsPath = join(dshHome, 'settings.yaml')
+        const raw = readFileSync(settingsPath, 'utf8')
         const parsed = parseSettingsYaml(raw)
         if (host === undefined && typeof parsed.gatewayHost === 'string' && parsed.gatewayHost !== '') host = parsed.gatewayHost
         if (port === undefined && typeof parsed.gatewayPort === 'number') port = parsed.gatewayPort
+        if (host !== undefined || port !== undefined) from = 'yaml:' + settingsPath
       } catch { /* no settings.yaml or unreadable */ }
     }
-    // Priority 3: env vars
-    if (host === undefined && typeof env.DS_BOT_GATEWAY_HOST === 'string' && env.DS_BOT_GATEWAY_HOST !== '') host = env.DS_BOT_GATEWAY_HOST
+    if (host === undefined && typeof env.DS_BOT_GATEWAY_HOST === 'string' && env.DS_BOT_GATEWAY_HOST !== '') { host = env.DS_BOT_GATEWAY_HOST; from = 'env' }
     if (port === undefined && typeof env.DS_BOT_GATEWAY_PORT === 'string' && env.DS_BOT_GATEWAY_PORT !== '') {
       const p = Number(env.DS_BOT_GATEWAY_PORT)
-      if (Number.isInteger(p) && p >= 0 && p < 65536) port = p
+      if (Number.isInteger(p) && p >= 0 && p < 65536) { port = p; from = 'env' }
     }
-    return { host, port }
+    return { host, port, from }
   }
 
   const secrets = new Map()
@@ -236,9 +265,10 @@ export function install(rt) {
 
   ctx?.effect?.(() => {
     void (async () => {
-      const { host, port } = readGatewaySettings()
+      const { host, port, from } = readGatewaySettings()
       gwHost = host ?? '127.0.0.1'
       const gwPort = typeof port === 'number' ? port : 4387
+      rt.warn?.('ds-bot: gateway config host=%s port=%s from=%s', host ?? '(default)', port ?? '(default)', from)
       const providersFn = () => {
         const origin = `http://${gwHost}:${actualPort ?? gwPort}`
         return readUpstreamProviders(listGatewayProviders(rt), origin)
@@ -247,6 +277,11 @@ export function install(rt) {
       actualPort = await gwServer.start()
       if (actualPort !== null) {
         rt.warn?.('ds-bot: gateway listening on %s:%d', gwHost, actualPort)
+        let svc
+        try { svc = ctx?.get?.('remote-agent:config-sync') } catch { svc = undefined }
+        if (attached && svc && typeof svc.setSource === 'function') {
+          pushOnline(svc, 'gateway-ready')
+        }
       }
     })().catch(err => rt.warn?.('ds-bot: model gateway start failed: %s', err?.message ?? err))
     return () => {
@@ -284,21 +319,7 @@ export function install(rt) {
       return buildConfigPayload(rt, { defaultModel, gateway: gw })
     })
     rt.warn?.('ds-bot: config-sync source attached')
-    // Immediately push to all currently-online nodes so they get gateway config
-    // without waiting for their next reconnect request.
-    try {
-      const registry = ctx?.get?.('remote-agent:registry')
-      if (registry && typeof registry.onlineNodes === 'function') {
-        const nodes = registry.onlineNodes()
-        for (const node of nodes) {
-          const nodeId = node.nodeId
-          if (nodeId) {
-            try { service.sendPush(nodeId) }
-            catch (err) { rt.warn?.('ds-bot: initial push to %s failed: %s', nodeId, err?.message ?? err) }
-          }
-        }
-      }
-    } catch { /* no registry */ }
+    pushOnline(service, 'attach')
   }
   const tick = () => {
     attach()

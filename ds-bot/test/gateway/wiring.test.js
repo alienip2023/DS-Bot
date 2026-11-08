@@ -477,3 +477,148 @@ test('1A5-initial-push: online nodes receive sendPush immediately after source i
     } finally { await dispose() }
   }
 })
+
+
+// --- 1A6-dsh-home: rt.dshHome missing → DSH_HOME env fallback → credentials.yaml written ---
+// Knife: resolveDshHome returns rt.dshHome only (no env fallback) → RED
+test('1A6-dsh-home: rt.dshHome missing falls back to DSH_HOME env, credentials.yaml gets GATEWAY_TOKEN_', async () => {
+  const { writeFileSync, mkdtempSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+  const tmpHome = mkdtempSync(join(tmpdir(), 'ds-bot-1a6-'))
+  writeFileSync(join(tmpHome, '.credentials.yaml'), 'refs:\n  ALPHA_KEY: sk-alpha\n', { mode: 0o600 })
+  writeFileSync(join(tmpHome, 'settings.yaml'), [
+    'schema: 2',
+    'ds-bot:',
+    '  gatewayHost: 127.0.0.1',
+    '  gatewayPort: 0',
+  ].join('\n') + '\n')
+
+  const cfgProviders = [
+    { provider: 'alpha', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'alpha'] },
+  ]
+  const settingsSections = [
+    { ns: 'llm-pi-ai', value: { providers: { alpha: { api: 'openai-completions', baseURL: 'https://up.example.com/v1', apiKeyEnv: 'ALPHA_KEY', models: [{ id: 'a1' }], gateway: true } } } },
+  ]
+
+  // rt.dshHome is NOT set (undefined) — resolveDshHome must fall back to DSH_HOME env
+  const { rt, getSetSource, getProvidedPort, dispose } = makeRt({
+    gatewayPort: 0,
+    env: { DSH_HOME: tmpHome, DS_BOT_GATEWAY_PORT: '0' },
+  })
+  rt.ctx.get('settings').describe = () => settingsSections
+  rt.ctx.llm.listConfigurableProviders = () => cfgProviders
+  rt.dshHome = undefined  // force fallback to DSH_HOME env
+
+  install(rt)
+  await new Promise(r => setTimeout(r, 150))
+  try {
+    const port = getProvidedPort()
+    assert.ok(typeof port === 'number' && port > 0, `gateway should have started, got ${port}`)
+    const cb = getSetSource()
+    assert.ok(cb, 'setSource callback should be captured')
+    // Trigger ensureToken by calling source with a nodeId
+    const payload = cb('node-test')
+    const alpha = payload.providers.find(p => p.id === 'alpha')
+    assert.ok(alpha, 'alpha provider should be in payload')
+    // apiKeyEnv should be a GATEWAY_TOKEN_ ref (gateway was active) — proves resolveDshHome
+    // found the credentials.yaml from DSH_HOME env and read ALPHA_KEY successfully
+    assert.ok(alpha.apiKeyEnv.startsWith('GATEWAY_TOKEN_'), `apiKeyEnv should be GATEWAY_TOKEN_*, got: ${alpha.apiKeyEnv}`)
+    // apiKey should be non-empty (token generated because DSH_HOME env was used to read creds)
+    assert.ok(typeof alpha.apiKey === 'string' && alpha.apiKey !== '', `apiKey should be non-empty token, got: ${alpha.apiKey}`)
+  } finally { await dispose() }
+})
+
+// --- 1A6-yaml-source: settings.yaml fallback logs 'from=yaml:<path>' ---
+// Knife: delete 'from' from log → RED
+test('1A6-yaml-source: yaml fallback logs from=yaml:<path> in warn', async () => {
+  const { writeFileSync, mkdtempSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+  const tmpHome = mkdtempSync(join(tmpdir(), 'ds-bot-1a6-yaml-'))
+  writeFileSync(join(tmpHome, '.credentials.yaml'), 'refs:\n  ALPHA_KEY: sk-alpha\n', { mode: 0o600 })
+  writeFileSync(join(tmpHome, 'settings.yaml'), [
+    'schema: 2',
+    'ds-bot:',
+    '  gatewayHost: 127.0.0.1',
+    '  gatewayPort: 0',
+  ].join('\n') + '\n')
+
+  const cfgProviders = [
+    { provider: 'alpha', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'alpha'] },
+  ]
+  const settingsSections = [
+    { ns: 'llm-pi-ai', value: { providers: { alpha: { api: 'openai-completions', baseURL: 'https://up.example.com/v1', apiKeyEnv: 'ALPHA_KEY', models: [{ id: 'a1' }], gateway: true } } } },
+  ]
+
+  const { rt, warns, dispose } = makeRt({ gatewayPort: 0 })
+  rt.ctx.get('settings').describe = () => settingsSections
+  rt.ctx.llm.listConfigurableProviders = () => cfgProviders
+  rt.dshHome = tmpHome
+
+  install(rt)
+  await new Promise(r => setTimeout(r, 150))
+  try {
+    // Look for the gateway config warn with from=yaml:
+    // warns entries are arrays: [formatString, ...args]. from= is at arg index 3.
+    const configWarn = warns.find(w => typeof w[0] === 'string' && w[0].includes('gateway config host='))
+    assert.ok(configWarn, `should log 'gateway config ...' warn, got: ${JSON.stringify(warns)}`)
+    const fromValue = configWarn[3] || ''
+    assert.ok(String(fromValue).includes('yaml:'), `from should contain 'yaml:' indicating yaml fallback, got: ${fromValue}`)
+    assert.ok(String(fromValue).includes(tmpHome), `from should contain the settings.yaml path, got: ${fromValue}`)
+  } finally { await dispose() }
+})
+
+// --- 1A6-repush: gateway-ready triggers second push with gateway non-null ---
+// Knife: delete gateway-ready repush → RED
+test('1A6-repush: gateway ready after attach → repush sends gateway baseURL to nodes', async () => {
+  const { writeFileSync, mkdtempSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+  const tmpHome = mkdtempSync(join(tmpdir(), 'ds-bot-1a6-repush-'))
+  writeFileSync(join(tmpHome, '.credentials.yaml'), 'refs:\n  ALPHA_KEY: sk-alpha\n', { mode: 0o600 })
+
+  const cfgProviders = [
+    { provider: 'alpha', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'alpha'] },
+  ]
+  const settingsSections = [
+    { ns: 'llm-pi-ai', value: { providers: { alpha: { api: 'openai-completions', baseURL: 'https://up.example.com/v1', apiKeyEnv: 'ALPHA_KEY', models: [{ id: 'a1' }], gateway: true } } } },
+    { ns: 'ds-bot', value: { gatewayPort: 0, gatewayHost: '127.0.0.1' } },
+  ]
+
+  const pushCalls = []
+  const mockService = {
+    setSource: cb => { mockService._cb = cb },
+    sendPush: (nodeId) => { pushCalls.push(nodeId); return true },
+  }
+  const mockRegistry = {
+    onlineNodes: () => [{ nodeId: 'node-repush-1' }],
+  }
+
+  const { rt, dispose } = makeRt({ gatewayPort: 0 })
+  rt.ctx.get('settings').describe = () => settingsSections
+  rt.ctx.llm.listConfigurableProviders = () => cfgProviders
+  rt.dshHome = tmpHome
+  rt.ctx.get = (name) => {
+    if (name === 'settings') return { describe: () => settingsSections }
+    if (name === 'remote-agent:config-sync') return mockService
+    if (name === 'remote-agent:registry') return mockRegistry
+    return undefined
+  }
+
+  install(rt)
+  // Wait long enough for both attach and gateway-ready to fire
+  await new Promise(r => setTimeout(r, 250))
+  try {
+    // sendPush should have been called at least twice: once for 'attach', once for 'gateway-ready'
+    assert.ok(pushCalls.length >= 2, `sendPush should be called at least twice (attach + gateway-ready), got: ${pushCalls.length}`)
+    // The source callback should now return gateway non-null (actualPort is set)
+    const cb = mockService._cb
+    assert.ok(cb, 'setSource callback should be captured')
+    const payload = cb('node-repush-1')
+    const alpha = payload.providers.find(p => p.id === 'alpha')
+    assert.ok(alpha, 'alpha provider should be in payload')
+    assert.ok(alpha.baseURL && alpha.baseURL.includes('/gw/alpha/v1'), `baseURL should be gateway-rewritten, got: ${alpha.baseURL}`)
+    assert.ok(alpha.apiKeyEnv && alpha.apiKeyEnv.startsWith('GATEWAY_TOKEN_'), `apiKeyEnv should be GATEWAY_TOKEN_*, got: ${alpha.apiKeyEnv}`)
+  } finally { await dispose() }
+})
