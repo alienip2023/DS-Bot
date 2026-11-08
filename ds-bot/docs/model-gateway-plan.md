@@ -1,6 +1,6 @@
-# 模型网关 P1 分片计划 v20 (Model Gateway P1 Slice Plan)
+# 模型网关 P1 分片计划 v21 (Model Gateway P1 Slice Plan)
 
-**状态**: 修订稿 v20（2026-11-09，架构师，T3 断言修正+provider 来源事实+基线行修正）
+**状态**: 修订稿 v21（2026-11-09，架构师，T1/T2/T3 验收命令修正，T4 拆分+rotate 无入口注明）
 **分支**: feat/model-gateway-contract
 **依赖契约**: docs/model-gateway-contract.md v3 (2396338c) — 已冻结
 **代码基线**: dsh-remote-agent HEAD afb7007 (0.10.1-fork.50) + ds-bot HEAD
@@ -225,7 +225,8 @@ ctx.effect(() => {
 
 测试 mock 必须模拟真实语义（不 await async 回调 Promise），否则 `1A3-stop` 是假绿。
 
-**④ token 值来源与持久化**（`token-store.js` 真实 API：`register` / `rotate` / `resolve` / `get` / `remove` / `gc` / `size`，无 `ensure`）：
+**④ token 值来源与持久化**（`token-store.js` 真实 API：`register` / `rotate` / `resolve` / `get` / `remove` / `gc` / `size`，无 `ensure`；
+**注：`rotate()` 是存储层 API，`src/` 全仓无任何生产调用者，T4b 暂无触发入口**）：
 
 - `tokenStore.register(nodeId)` → `{ refName }`（epoch 后缀）
 - auth 需要的 token 值（32B random）存在 `secrets: Map<refName, tokenValue>`（`auth.js:21-38`）
@@ -595,24 +596,35 @@ conn.on('tcp connection', (info, accept, reject) => {
 ```bash
 # 在 dshtest-1 上执行
 curl -s -H "Authorization: Bearer $GATEWAY_TOKEN" \
-  http://100.64.0.3:4387/gw/openai/v1/models | jq '.data[].id'
-# 断言：返回 JSON，包含至少一个 model id，HTTP 200
+  http://100.64.0.3:4387/gw/piion/v1/models | jq '.data[].id'
+# 断言：返回 JSON（HTTP 200），data 数组非空，至少一个 model id
 ```
 
 ### T2：流式请求（一次推理）
 ```bash
+# 先跑 T1，取 data[0].id 作为完整 model id（上游 MLX 路径，如
+# /Users/kjclaw/.lmstudio/models/froggeric/Qwen3.6-35B-A3B-Uncensored-Heretic-MLX-4bit）
+MODEL_ID=$(curl -s -H "Authorization: Bearer $GATEWAY_TOKEN" \
+  http://100.64.0.3:4387/gw/piion/v1/models | jq -r '.data[0].id')
+
 curl -s -N -H "Authorization: Bearer $GATEWAY_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"model":"openai/gpt-4o","messages":[{"role":"user","content":"ping"}],"stream":true}' \
-  http://100.64.0.3:4387/gw/openai/v1/chat/completions
+  -d "{"model":"${MODEL_ID}","messages":[{"role":"user","content":"ping"}],"stream":true}" \
+  http://100.64.0.3:4387/gw/piion/v1/chat/completions
 # 断言：收到至少一行 data: {...}，最后收到 data: [DONE]
+# 注：body.model 原样透传给上游（完整路径实测成功，1424B + [DONE]，TTFB 0.77s）
 ```
 
 ### T3：abort 传播（≤1s）
 ```bash
-# 在 dshtest-1 上执行（--max-time 0.5 触发客户端 abort）
-curl -s -N --max-time 0.5 -H "Authorization: Bearer $GATEWAY_TOKEN" \
-  -d '{"model":"piion/qwen36-heretic","messages":[{"role":"user","content":"count to 1000"}],"stream":true}' \
+# 在 dshtest-1 上执行（--max-time 1.5 触发客户端 abort；TTFB 0.77s，0.5s 早于首 token）
+# 先取 model id（同 T2）
+MODEL_ID=$(curl -s -H "Authorization: Bearer $GATEWAY_TOKEN" \
+  http://100.64.0.3:4387/gw/piion/v1/models | jq -r '.data[0].id')
+
+curl -s -N --max-time 1.5 -H "Authorization: Bearer $GATEWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{"model":"${MODEL_ID}","messages":[{"role":"user","content":"count to 1000"}],"stream":true}" \
   http://100.64.0.3:4387/gw/piion/v1/chat/completions || true
 ```
 **断言（已真机验证）**：节点发起流式 → 0.5~1.5s 内 abort → 上游 MLX 日志
@@ -625,13 +637,28 @@ curl -s -N --max-time 0.5 -H "Authorization: Bearer $GATEWAY_TOKEN" \
 > 无 abort warn 日志；`router.js:78` 的 `AbortController` 创建后未 abort（靠 `clientReq.on('close')`）。
 > 「网关补一行 abort warn 日志」记为 **可选欠账（1A-9，候选）**，不阻塞 P1。
 
-### T4：token 轮换后重启验证
+### T4a：重启后 token 仍有效（P1 内可跑）
 ```bash
-# 1. hub 侧触发 token 轮换（新 epoch refName），推新 config-push revision
-# 2. 观察 dshtest-1 上 dsh-worker 重启（systemctl status dsh-worker 出现 restart）
-# 3. 重启后用新 token 发 T2，断言成功
-# 4. 旧 token 在窗口内仍通，窗口（首次成功或 10min）后返回 401
+# ⌘Q 重启 ds-bot 后，节点持有的 token 仍应有效
+# 重跑 T2，断言 200 + data: [DONE]
+# 断言：token 落盘（resolveDshHome → .credentials.yaml），重启后值不变
 ```
+
+### T4b：token 轮换后节点自动重启（待 P2 或先定义入口）
+
+> **当前状态**：`token-store.js` 的 `rotate()` 只是存储层 API，`src/` 全仓无任何生产调用者
+> （仅 `test/gateway/config-source-gateway.test.js:52` 与 `gateway.test.js:97/:114` 调用）；
+> `router.js` 无 rotation 路由，无触发入口。
+
+**此验收命令当前跑不了。** 须先完成以下其中一项再列入验收：
+- P2：明确轮换触发接口（谁调用、从哪入口、如何触发 push + 节点重启）并开新 slice；
+- 或在 P1 范围内增补轮换 CLI/API 接口，文档更新后验收。
+
+_保留口径供设计参考_：
+1. hub 侧通过轮换接口生成新 epoch refName，推新 config-push revision
+2. 观察 dshtest-1 dsh-worker 重启（systemctl status 出现 restart）
+3. 重启后用新 token 发 T2，断言成功
+4. 旧 token 在窗口内仍通，窗口（首次成功或 10min）后返回 401
 
 > 以上命令同样适用于回归测试 SSH 兜底通道（替换 IP 为 127.0.0.1，确保 forwardIn 隧道已建立）。
 
