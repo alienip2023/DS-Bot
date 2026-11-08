@@ -295,7 +295,7 @@ async function sendUser({ sessionId, content, requestId = randomUUID() }) {
 | Q3 inbox 触发 | `followup`/`steer` 才进 inbox；`session.append` 不进 inbox | ✅ 关键：只能用 `session.append`，绝不调 followup/steer |
 | Q4 渲染器 | 仅 5 种 Surface type 有对话气泡；未知 type 需 `ignorable` | ✅ 镜像写 `user/message` + `assistant/message` 带 `surfaceOp:'append'` |
 | Q4 失败提示 | 无专用 error type；用 `assistant/message` 写错误文本 | ✅ 可行 |
-| Q5 `wrapSendUser` | 拦截发往 joined shadow 的 sendUser，转走远端路由 | ✅ 已实现；镜像 Session 不在此路径里 |
+| Q5 `wrapSendUser` | `rt.botOf(mirrorSessionId)` 按 bot.id 反查，镜像后 sessionId≠bot.id 必失效 | ❌ 镜像路径必失效，S1 修 |
 | Q6 删除 | 不可逆；归档允许只读、禁止 agent 运行 | ✅ 镜像 Session 只 append，不跑 agent，归档 gate 不拦 |
 | Q7 独立 Session | 每个远程 Bot 建独立本地 Session，不复用远端 id；远端 id 放 `bot.worker` | ✅ seq 不交错；turn 边界由镜像层自维护 |
 
@@ -306,9 +306,9 @@ async function sendUser({ sessionId, content, requestId = randomUUID() }) {
 **镜像方案可行，须走「独立镜像 Session」路径**：
 
 - 每个远程 Bot 对应一个独立新建的本地 Session（`SessionController.create`），Session ID 由本地生成，不复用远端 Bot ID；远端 Bot ID 记录在 `bot.worker`。
-- 镜像 Session 不用于 agent 运行（不调 followup/steer/resume），只追加 `user/message` 和 `assistant/message` 事件，均带 `surfaceOp: 'append'`。
+- 镜像 Session 不用于 agent 运行（不调 followup/steer），只追加 `user/message` 和 `assistant/message` 事件，均带 `surfaceOp: 'append'`。
 - `user/message` data 是消息本体（`createUserMessage` 返回值），`assistant/message` data 是 `{ turn, step, message, usage?, stream? }`——turn/step 由镜像层自维护，从 0 起单调递增。
-- 远端消息到达后，ds-bot mirror 层调 `resolveAgent(mirrorSessionId).session.append(...)` 写入；`createSession` 完成即可获得 live agent，`resolveAgent` 直接返回，无需额外操作。
+- 远端消息到达后，ds-bot mirror 层正常持有 `agent.session` 引用，直接调 `session.append(...)` 写入，不主动 resume；冷启动 `resolveAgent` 可能走 resume 路径（从 persistence 读取，不调模型），接受此开销，S1 实测。
 
 **待验证项**：
 1. **（DEFER → S1 第一个实验）** resolveAgent 冷启动探针：`createSession` → 丢弃 handle → `resolveAgent`，观察是否走 `resume` 路径及开销。代码级推断：会走 resume（从 persistence 读取，不调模型），但未实测。建议生产路径持有 `agent.session` 引用，不每次 resolveAgent。
