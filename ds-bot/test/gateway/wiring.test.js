@@ -753,3 +753,49 @@ test('1A6-token-stable: second install reads existing token from file via readRe
     assert.equal(alpha2.apiKey, token1, 'token value stable across installs (read from file)')
   } finally { await second.dispose() }
 })
+
+// --- 1A6-no-sync-get: credentials service get() is never called (it's async); only file read ---
+// Knife: add credSvc.get call back → getCalls.length > 0 → RED
+test('1A6-no-sync-get: credentials service get is never called in ensureToken', async () => {
+  const { writeFileSync, mkdtempSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+  const tmpHome = mkdtempSync(join(tmpdir(), 'ds-bot-no-get-'))
+  writeFileSync(join(tmpHome, '.credentials.yaml'), 'refs:\n  ALPHA_KEY: sk-alpha\n', { mode: 0o600 })
+
+  const cfgProviders = [{ provider: 'alpha', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'alpha'] }]
+  const settingsSections = [
+    { ns: 'llm-pi-ai', value: { providers: { alpha: { api: 'openai-completions', baseURL: 'https://up.example.com/v1', apiKeyEnv: 'ALPHA_KEY', models: [{ id: 'a1' }], gateway: true } } } },
+  ]
+
+  const getCalls = []
+  const credSvc = {
+    get: (refName) => { getCalls.push(refName); return undefined },
+    set: async () => {},
+  }
+
+  const { rt, getSetSource, getProvidedPort, dispose } = makeRt({ gatewayPort: 0 })
+  rt.ctx.get('settings').describe = () => [{ ns: 'ds-bot', value: { gatewayPort: 0, gatewayHost: '127.0.0.1' } }, ...settingsSections]
+  rt.ctx.llm.listConfigurableProviders = () => cfgProviders
+  rt.dshHome = tmpHome
+  const origGet = rt.ctx.get.bind(rt.ctx)
+  rt.ctx.get = (name) => name === 'credentials' ? credSvc : origGet(name)
+
+  install(rt)
+  await new Promise(r => setTimeout(r, 150))
+  try {
+    const port = getProvidedPort()
+    assert.ok(typeof port === 'number' && port > 0, 'gateway should start')
+    const cb = getSetSource()
+    assert.ok(cb, 'setSource attached')
+    const payload = cb('node-x')
+    const alpha = payload.providers.find(p => p.id === 'alpha')
+    assert.ok(alpha, 'alpha in payload')
+    // credSvc.get must never be called
+    assert.equal(getCalls.length, 0, `credSvc.get should not be called, got calls for: ${getCalls.join(', ')}`)
+    // token is read from file (ALPHA_KEY → sk-alpha... but that's the api key, not the token)
+    // Actually ensureToken reads GATEWAY_TOKEN_node_x from file (not present → randomBytes)
+    // Point is: no getCalls
+    assert.ok(alpha.apiKeyEnv.startsWith('GATEWAY_TOKEN_'), `apiKeyEnv should be GATEWAY_TOKEN_*, got ${alpha.apiKeyEnv}`)
+  } finally { await dispose() }
+})

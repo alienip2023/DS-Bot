@@ -273,20 +273,10 @@ export function install(rt) {
   const ensureToken = (nodeId) => {
     const { refName } = tokenStore.register(nodeId)     // idempotent
     if (secrets.has(refName)) return { refName, value: secrets.get(refName) }
-    let value = undefined
-    try {
-      const credSvc = ctx?.get?.('credentials')
-      if (credSvc?.get && typeof credSvc.get === 'function') {
-        const v = credSvc.get(refName)
-        if (typeof v === 'string' && v !== '') value = v
-      }
-    } catch { /* no credentials service */ }
-    if (value === undefined) {
-      const refs = readRefsFile(rt)
-      const existing = refs.get(refName)
-      if (typeof existing === 'string' && existing !== '') value = existing
-    }
-    if (value === undefined) value = randomBytes(32).toString('base64url')
+    // credSvc is async; source callback must return synchronously — file read only.
+    const refs = readRefsFile(rt)
+    const existing = refs.get(refName)
+    const value = (typeof existing === 'string' && existing !== '') ? existing : randomBytes(32).toString('base64url')
     secrets.set(refName, value)
     try {
       const credSvc = ctx?.get?.('credentials')
