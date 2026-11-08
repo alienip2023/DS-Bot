@@ -1,6 +1,6 @@
-# 模型网关 P1 分片计划 v16 (Model Gateway P1 Slice Plan)
+# 模型网关 P1 分片计划 v17 (Model Gateway P1 Slice Plan)
 
-**状态**: 修订稿 v16（2026-11-08，架构师，新增 Slice 1A-5：revision 相等判定 + settings ns 回退 + attach 后补推）
+**状态**: 修订稿 v17（2026-11-08，架构师，新增 Slice 1A-6：resolveDshHome + 启动诊断 + pushOnline 双触发；1A-5 口径修正）
 **分支**: feat/model-gateway-contract
 **依赖契约**: docs/model-gateway-contract.md v3 (2396338c) — 已冻结
 **代码基线**: dsh-remote-agent HEAD 14cb02f (0.10.1-fork.47) + ds-bot HEAD
@@ -341,10 +341,60 @@ ctx.effect(() => {
 
 **Slice 1A-5 门禁**：
 - 4 条测试全绿 + `node --check` 通过
-- T1/T2/T3 真机在 1A-5 装机后重跑验收（1A-5 之前的真机数据无效）
 - 版本：ds-bot `0.3.1-fork.36`，ra `0.10.1-fork.49`；package.json 与 commit message 必须一致
+- **注**：1A-5 只修了 revision 相等判定与补推路径；绑定地址（dshHome 解析）与 token 落盘属 1A-6；T1/T2/T3 真机验收排在 1A-6 装机之后，不在 1A-5 门禁内。
 
 **1B 隧道暂缓**：隧道 supervisor（Slice 1B）P1 范围内暂不实施；tailnet 直连已通，1B 留 P2。
+
+#### 1A-6. dshHome 统一解析 + 启动诊断 + 双触发推送（ds-bot `0.3.1-fork.37`）
+
+**背景（真机实测事实，fork.36，22:28 启动）**：
+
+| 现象 | 原因 |
+|---|---|
+| 日志 `gateway listening on 127.0.0.1:4387`，settings.yaml:198-200 配 `100.64.0.3:4387` 无效 | `config-source.js:199` `&& rt.dshHome` 为假 → 整段 YAML 读取未执行，恒默认 127.0.0.1 |
+| `~/.dsh/.credentials.yaml` 无 `GATEWAY_TOKEN_` | `readRefsFile` 用同一 `rt.dshHome` → 拼出 `undefined/.credentials.yaml` → 抛错被 catch 吞 → token 只在内存，未落盘 |
+| 日志：`config-sync source attached`(+2457ms) → `gateway not ready, providers pushed direct` → `gateway listening`(+2538ms) | attach/首推早于网关就绪；`attached` 标志挡住重推 → 节点永远收到 `gateway: null` |
+
+**修改文件（ds-bot `0.3.1-fork.37`）**：
+
+1. **新增 `resolveDshHome(rt)`**（`src/host/config-source.js` 或独立 `src/utils/dsh-home.js`）：
+   ```js
+   function resolveDshHome(rt) {
+     return rt.dshHome                              // 优先 rt 字段
+       ?? process.env.DSH_HOME                      // 次选环境变量
+       ?? path.join(os.homedir(), '.dsh')           // 默认
+   }
+   ```
+   全局替换 `rt.dshHome`（credentials 路径、settings.yaml 路径）→ `resolveDshHome(rt)`。
+
+2. **启动诊断日志**（gateway install 成功后输出）：
+   - `dshHome=<path>`（来源标注）
+   - `gateway config host=<host> port=<port> from=<settings.describe|yaml:<path>|env|default>`
+   - `gateway listening on <host>:<port>`（现有，确认 host 正确）
+
+3. **`readRefsFile` 错误可见**：catch 块改为 `rt.logger.warn('readRefsFile failed', err)`，不许静默吞掉。
+
+4. **抽 `pushOnline(service, nodeIdList, reason)`**，两处调用：
+   - attach 回调：`pushOnline(service, [nodeId], 'attach')`
+   - 网关就绪后（`gateway.start()` 成功）：`pushOnline(service, registry.onlineNodes(), 'gateway-ready')`
+   - 门禁：第二次推送（reason=`gateway-ready`）的 payload 必须带 `gateway.baseURL`（含 tailnet host）与 `GATEWAY_TOKEN_*` ref
+
+**新增契约条款**（写入 `docs/model-gateway-contract.md` 已知约束，本次只写计划，契约在下一笔提交）：
+> 任何读取 `~/.dsh` 的代码不得依赖 `rt.dshHome` 存在；必须走 `resolveDshHome(rt)` 统一解析器；失败要可见（warn），不许靠 catch 静默吞掉。
+
+**Slice 1A-6 测试**（ds-bot `test/gateway/`，node:test）：
+
+| 测试 | 断言 | 刀 |
+|---|---|---|
+| `1A6-dsh-home` rt.dshHome=undefined 时 resolveDshHome 回退至 DSH_HOME 或 ~/.dsh | `resolveDshHome({}) === process.env.DSH_HOME \|\| endsWith('.dsh')` | 删回退逻辑 → undefined → 红 |
+| `1A6-yaml-source` settings.yaml 有 ds-bot.gateway.host=127.0.0.2 时 gateway 绑 127.0.0.2 | `actualHost === '127.0.0.2'` | 删 YAML 读取（恒 127.0.0.1）→ 红 |
+| `1A6-repush` 网关就绪后补推 payload 含 gateway.baseURL + GATEWAY_TOKEN ref | `payload.providers[0].baseURL.includes('4387') && payload.providers[0].apiKeyEnv.startsWith('GATEWAY_TOKEN_')` | 删 gateway-ready pushOnline → payload 无 gateway → 红 |
+
+**Slice 1A-6 门禁**：
+- 3 条测试全绿 + `node --check` 通过
+- 版本：ds-bot `0.3.1-fork.37`；package.json 与 commit message 一致
+- T1/T2/T3 真机验收排在 1A-6 装机之后（含二次推送 gateway-ready 日志确认）
 
 #### 1B. 反向隧道 Supervisor（dsh-remote-agent 仓库）
 
