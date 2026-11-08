@@ -1,12 +1,26 @@
 // executor.js — dispatch a text message to a bot (remote joined or local).
-// send({ botId, text, rt }) → { ok: true, turnId } | throws with code
+//
+// send({ botId, text, rt, tracker?, timeoutMs? })
+//   → { ok: true, turnId, text, nodeId?, remoteBotId? }
+//   throws ExecutorError with code: E_NOT_FOUND | E_OFFLINE | E_TIMEOUT | E_REJECTED
+//
+// deliverTurn({ botId, text, rt, session, seenKeys, closedKeys, seenSteps, tracker?, timeoutMs? })
+//   — full pipeline: send + mirrorTurn. nodeSeq comes from the bot/turn-result payload.
+//   Contract: bot/turn-result does NOT currently carry a nodeSeq (validateBotTurnResult has no seq).
+//   S2 must add `seq` to validateBotTurnResult and bot/turn-result frame; until then nodeSeq is null
+//   (mirrorTurn skips idempotency when nodeSeq is null). This is a known S2 obligation.
+
 import { randomUUID } from 'node:crypto'
 import { joinedShadow } from './roster-join.js'
 import { listenBotTurnResult, JOINED_TURN_TIMEOUT_MS } from './joined-turn.js'
+import { mirrorTurn } from './mirror.js'
 
 /**
-    // KNIFE: removed check
- *   E_REJECTED — node explicitly rejected the turn (ok:false with error code)
+ * Error codes thrown by send() / deliverTurn():
+ *   E_NOT_FOUND — bot not registered or missing worker config
+ *   E_OFFLINE   — remote node is not reachable or registry unavailable
+ *   E_TIMEOUT   — no result within timeout (default 120s)
+ *   E_REJECTED  — node explicitly rejected the turn (ok:false with error code)
  */
 export class ExecutorError extends Error {
   constructor(code, message) {
@@ -17,34 +31,33 @@ export class ExecutorError extends Error {
 }
 
 /**
- * Send text to a bot.
- *
- * For remote joined bots: sends bot/turn via registry, waits for bot/turn-result.
- * For local bots: calls rt.sendUser to the bot's session.
+ * Send text to a bot. When a tracker is supplied, the turn is started before dispatch
+ * and finished (done/failed/timeout) on every exit path.
  *
  * @param {object} opts
- * @param {string} opts.botId   - The bot id (shadow id for joined, session/bot id for local)
- * @param {string} opts.text    - Message text
- * @param {object} opts.rt      - Runtime object
- * @param {number} [opts.timeoutMs] - Override timeout (default JOINED_TURN_TIMEOUT_MS)
- * @returns {{ ok: true, turnId: string }}
+ * @param {string} opts.botId
+ * @param {string} opts.text
+ * @param {object} opts.rt
+ * @param {object} [opts.tracker]     - createTurnTracker() instance; optional
+ * @param {number} [opts.timeoutMs]   - Override default timeout
+ * @returns {{ ok: true, turnId: string, text: string, nodeId?: string, remoteBotId?: string }}
  * @throws {ExecutorError}
  */
-export async function send({ botId, text, rt, timeoutMs: timeoutOverride }) {
+export async function send({ botId, text, rt, tracker, timeoutMs: timeoutOverride }) {
   const bot = rt.botOf?.(botId)
-  if (!bot) throw new ExecutorError('E_REJECTED', `bot not found: ${botId}`)
+  if (!bot) throw new ExecutorError('E_NOT_FOUND', `bot not found: ${botId}`)
 
   if (joinedShadow(bot)) {
-    return await sendRemote({ bot, text, rt, timeoutOverride })
+    return await sendRemote({ bot, text, rt, tracker, timeoutOverride })
   }
-  return await sendLocal({ bot, text, rt })
+  return await sendLocal({ bot, text, rt, tracker })
 }
 
-async function sendRemote({ bot, text, rt, timeoutOverride }) {
+async function sendRemote({ bot, text, rt, tracker, timeoutOverride }) {
   const nodeId = bot.worker?.nodeId
   const remoteBotId = bot.worker?.remoteBotId
   if (!nodeId || !remoteBotId) {
-    throw new ExecutorError('E_REJECTED', 'joined shadow missing nodeId/remoteBotId')
+    throw new ExecutorError('E_NOT_FOUND', 'joined shadow missing nodeId/remoteBotId')
   }
 
   let registry
@@ -57,37 +70,98 @@ async function sendRemote({ bot, text, rt, timeoutOverride }) {
   const timeoutMs = Number.isFinite(timeoutOverride) ? timeoutOverride : (rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS)
   const { pending, cancel } = listenBotTurnResult(registry, turnId, nodeId, timeoutMs)
 
-  const sent = registry.send(nodeId, 'bot/turn', {
-    nodeId,
-    remoteBotId,
-    exchangeId: turnId,
-    text: text ?? '',
-  })
+  tracker?.start(turnId, bot.id)
+
+  let sent = false
+  try {
+    sent = registry.send(nodeId, 'bot/turn', {
+      nodeId,
+      remoteBotId,
+      exchangeId: turnId,
+      text: text ?? '',
+    })
+  } catch (sendErr) {
+    cancel()
+    tracker?.finish(turnId, { status: 'failed', error: 'E_OFFLINE' })
+    throw new ExecutorError('E_OFFLINE', `registry.send threw: ${sendErr?.message ?? sendErr}`)
+  }
 
   if (sent !== true) {
     cancel()
+    tracker?.finish(turnId, { status: 'failed', error: 'E_OFFLINE' })
     throw new ExecutorError('E_OFFLINE', 'node offline or send failed')
   }
 
-  const result = await pending
+  let result
+  try {
+    result = await pending
+  } catch {
+    tracker?.finish(turnId, { status: 'failed', error: 'E_OFFLINE' })
+    throw new ExecutorError('E_OFFLINE', 'listener error')
+  }
 
   if (result === undefined) {
+    tracker?.finish(turnId, { status: 'timeout', error: 'E_TIMEOUT' })
     throw new ExecutorError('E_TIMEOUT', `no result within ${timeoutMs}ms`)
   }
   if (!result || result.error === 'bridge-down') {
+    tracker?.finish(turnId, { status: 'failed', error: 'E_OFFLINE' })
     throw new ExecutorError('E_OFFLINE', result?.error ?? 'bridge-down')
   }
   if (result.ok === false) {
+    tracker?.finish(turnId, { status: 'failed', error: 'E_REJECTED' })
     throw new ExecutorError('E_REJECTED', result.error ?? 'bot-turn-rejected')
   }
 
-  return { ok: true, turnId }
+  tracker?.finish(turnId, { status: 'done' })
+  return { ok: true, turnId, text: result.text ?? '', nodeId, remoteBotId }
 }
 
-async function sendLocal({ bot, text, rt }) {
-  if (!rt.sendUser) throw new ExecutorError('E_REJECTED', 'sendUser not available')
+async function sendLocal({ bot, text, rt, tracker }) {
+  if (!rt.sendUser) throw new ExecutorError('E_NOT_FOUND', 'sendUser not available')
   const sessionId = rt.chatOf?.(bot.id) ?? bot.id
   const turnId = randomUUID()
-  await rt.sendUser({ sessionId, content: [{ type: 'text', text: text ?? '' }], requestId: turnId })
-  return { ok: true, turnId }
+  tracker?.start(turnId, bot.id)
+  try {
+    await rt.sendUser({ sessionId, content: [{ type: 'text', text: text ?? '' }], requestId: turnId })
+    tracker?.finish(turnId, { status: 'done' })
+    return { ok: true, turnId, text: text ?? '' }
+  } catch (err) {
+    tracker?.finish(turnId, { status: 'failed', error: String(err?.code ?? err?.message ?? err) })
+    throw err
+  }
+}
+
+/**
+ * Full pipeline: send to remote bot + mirror the exchange into a local session.
+ *
+ * S2 contract for nodeSeq: bot/turn-result must carry `seq` (not yet in validateBotTurnResult).
+ * Until S2 adds seq to the frame, nodeSeq is null (mirrorTurn skips idempotency).
+ *
+ * @param {object} opts
+ * @param {string} opts.botId
+ * @param {string} opts.text
+ * @param {object} opts.rt
+ * @param {object} opts.session       - store-owned DSH Session for mirror writes
+ * @param {Set}    [opts.seenKeys]
+ * @param {Set}    [opts.closedKeys]
+ * @param {Set}    [opts.seenSteps]
+ * @param {object} [opts.tracker]
+ * @param {number} [opts.timeoutMs]
+ * @returns {{ ok: true, turnId: string, mirrorResult: object }}
+ */
+export async function deliverTurn({ botId, text, rt, session, seenKeys, closedKeys, seenSteps, tracker, timeoutMs }) {
+  const result = await send({ botId, text, rt, tracker, timeoutMs })
+  const mirrorResult = await mirrorTurn(session, {
+    turn: 1,
+    step: 1,
+    userText: text,
+    botText: result.text,
+    botId,
+    nodeSeq: null,   // S2 obligation: add seq to bot/turn-result frame
+    seenKeys,
+    closedKeys,
+    seenSteps,
+  })
+  return { ok: true, turnId: result.turnId, mirrorResult }
 }
