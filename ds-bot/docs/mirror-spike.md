@@ -200,9 +200,10 @@ Guard boundaries: `resolveAgent` (delivery.js:11) + `sessionController.prompt` (
 
 **Overall: ✅ Primary route (session.append) is feasible. No fallback routes (A/B/C) needed.**
 
-Two application-layer guards required for S1:
+Three application-layer guards required for S1:
 1. **(turn, step) dedup** — track written pairs, skip re-append
 2. **bySessionId reverse index** — populate at bot.sessionId assignment; check in wrapSendUser before botOf
+3. **(botId, nodeSeq) idempotency** — before each append, check whether this nodeSeq was already written; skip if so (P3: Session does not enforce idempotency)
 
 ## Reproducibility
 
