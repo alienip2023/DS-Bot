@@ -1,6 +1,6 @@
-# 模型网关 P1 分片计划 v15 (Model Gateway P1 Slice Plan)
+# 模型网关 P1 分片计划 v16 (Model Gateway P1 Slice Plan)
 
-**状态**: 修订稿 v15（2026-11-08，架构师，1A-4 测试路径修正：test/config-sync/ → 平铺文件）
+**状态**: 修订稿 v16（2026-11-08，架构师，新增 Slice 1A-5：revision 相等判定 + settings ns 回退 + attach 后补推）
 **分支**: feat/model-gateway-contract
 **依赖契约**: docs/model-gateway-contract.md v3 (2396338c) — 已冻结
 **代码基线**: dsh-remote-agent HEAD 14cb02f (0.10.1-fork.47) + ds-bot HEAD
@@ -299,6 +299,52 @@ ctx.effect(() => {
 | `1A4-legacy` 旧状态文件无 baseURL/apiKeyEnv → 一次重启 + legacy 日志 | `result.restarted === true && log.includes('legacy-fingerprint')` | 删 legacy 兜底 → 抛错 → 红 |
 
 **Slice 1A-4 门禁**：4 条全绿 + `node --check` 通过；版本号与 commit 信息一致 `0.10.1-fork.48`。
+
+#### 1A-5. 真机接线修复（P1 必修，三处 bug）
+
+**背景（真机实测事实，非推测）**：
+
+| 现象 | 原因 |
+|---|---|
+| 节点 `.credentials.yaml` 无 `GATEWAY_TOKEN_`，`config-sync.json` mtime 停在 12:39 | `handleSyncRequest` 用 `appliedRevision >= revision` 判定已最新；revision 是内容哈希（数值），节点旧 hash 比新 hash 大 → 永远判已最新 → 永不推送 |
+| 网关监听 `127.0.0.1:4387`，`~/.dsh/settings.yaml:198-200` 配 `100.64.0.3:4387` 无效 | `settings.describe()` 找 `ns:'ds-bot'`，该 ns 未注册 → 恒默认 `127.0.0.1`；已有 `DS_BOT_GATEWAY_HOST` 回退但未读 YAML `ds-bot:` 段 |
+| `harness.log: config-source skipped 3 provider(s) without a protocol or key` | source 被调用（attach 前的旧 syncRequest），但无协议/key 的 provider 被过滤；attach 后无补推路径，已在线节点永久错过 |
+
+**修改文件（ds-bot `0.3.1-fork.36`）**：
+
+1. `src/host/config-source.js`（或 `src/gateway/index.js`）— 配置回退读 YAML `ds-bot:` 段：
+   - 读 `settings.describe('ds-bot')?.gateway?.host` / `?.port`（若已注册）
+   - 否则读 `DS_BOT_GATEWAY_HOST`/`DS_BOT_GATEWAY_PORT` 环境变量
+   - 否则默认 `127.0.0.1:4387`
+   - 诊断 warn（`!actualHost || actualHost === '127.0.0.1'`）：日志 `gateway bound to loopback, tailnet nodes will not reach it`
+   - 诊断 warn（`listGatewayProviders` 返回空列表）：日志 `no upstream providers available, models endpoint will 404`
+   - 诊断 warn（attach 后发现已在线节点）：日志 `node {nodeId} was online before gateway attach, sending push now`
+
+2. `src/host/config-source.js`（或 hub/config-source install 钩子）— attach 后补推：
+   - `install()` 末尾：`for (const nodeId of registry.onlineNodes()) { sendPush(nodeId) }`（非阻塞，fire-and-forget）
+   - 补推前输出上述 warn
+
+**修改文件（dsh-remote-agent `0.10.1-fork.49`）**：
+
+1. `lib/hub/config-sync.js`（`handleSyncRequest`）— revision 判定改为相等：
+   - `if (appliedRevision >= revision)` → `if (appliedRevision === revision)`
+   - 注释：revision 是内容哈希（`computeRevision` 返回 `djb2` 等整型），无序语义，**不可比大小**（不可改回 `>=`）
+
+**Slice 1A-5 测试**（`test/config-sync.test.js`，node:test）：
+
+| 测试 | 断言 | 刀 |
+|---|---|---|
+| `1A5-revision-eq` appliedRevision = 旧 hash（数值大于新）→ 推送 | handleSyncRequest 调用 sendPush | 改回 `>=` → 不推送 → 红 |
+| `1A5-revision-same` appliedRevision = 当前 hash → 不推送 | sendPush 未调用 | 删 `=== revision` 检查 → 恒推送 → 红 |
+| `1A5-attach-push` install 后已在线节点收到补推 | `registry.onlineNodes()` 返回的每个 nodeId 都调用 sendPush | 删 attach 后循环 → 在线节点无推送 → 红 |
+| `1A5-warn-loopback` host=127.0.0.1 时输出诊断 warn | log 含 `loopback` | 删 warn → 无日志 → 红 |
+
+**Slice 1A-5 门禁**：
+- 4 条测试全绿 + `node --check` 通过
+- T1/T2/T3 真机在 1A-5 装机后重跑验收（1A-5 之前的真机数据无效）
+- 版本：ds-bot `0.3.1-fork.36`，ra `0.10.1-fork.49`；package.json 与 commit message 必须一致
+
+**1B 隧道暂缓**：隧道 supervisor（Slice 1B）P1 范围内暂不实施；tailnet 直连已通，1B 留 P2。
 
 #### 1B. 反向隧道 Supervisor（dsh-remote-agent 仓库）
 
