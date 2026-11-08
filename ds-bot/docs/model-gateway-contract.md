@@ -1,6 +1,6 @@
 # 模型网关契约 (Model Gateway Contract)
 
-**状态**: 初稿（2026-11-08，架构师，待司令复核）  
+**状态**: 修订稿 v2（2026-11-08，架构师，司令 6 处复核意见修正后待终审）  
 **分支**: feat/model-gateway-contract  
 **任务**: T-20261108-model-gateway-contract
 
@@ -303,18 +303,21 @@ Hub 侧的 API key 通过 DSH CredentialsController 管理：
 
 **文件**: `dsh-llm-pi-ai/lib/index.js:1457-1468 classifyPiAiError`
 
-| 上游 HTTP 状态 / 错误 | 分类码 | 触发条件（L1457-1468） |
-|----------------------|--------|----------------------|
-| 401 | `AUTH` | `/\b401\b/` |
-| 403 | `FORBIDDEN` | `/\b403\b/` |
-| 429 / rate limit | `RATE_LIMIT` | `/\b429\b\|rate.?limit/i` |
-| 413 / payload too large | `INVALID_REQUEST` | `/\b413\b\|payload too large/i` |
-| 400 / invalid request | `INVALID_REQUEST` | `/\b400\b\|invalid.?request/i` |
-| 5xx | `SERVER` | `/\b5\d\d\b/` |
-| timeout | `TIMEOUT` | `/\btime(?:d)?\s*out\b/i` |
-| network / connection / ECONN* | `TRANSPORT` | `/\b(?:network\|connection\|socket\|fetch)\b\|\bECONN[A-Z]+\b/i` |
-| stream ended prematurely | `TRANSPORT` | `/stream ended (?:before\|without)\b/i` |
-| 其他 | `PI_AI_ERROR` | 默认分支 |
+> 检查按**代码顺序**执行，先命中先返回（L1457-1468）。
+
+| 优先级 | 上游 HTTP 状态 / 错误 | 分类码 | 触发条件 |
+|--------|----------------------|--------|---------|
+| 1 | 余额/配额耗尽（含 402、余额字样） | `QUOTA_EXCEEDED` | `isQuotaExceededError(message)` (L1458)，先于所有 HTTP 码检查 |
+| 2 | 401 | `AUTH` | `/\b401\b/` (L1459) |
+| 3 | 403 | `FORBIDDEN` | `/\b403\b/` (L1460)，**403 独立为 FORBIDDEN，非 AUTH** |
+| 4 | 429 / rate limit | `RATE_LIMIT` | `/\b429\b\|rate.?limit/i` (L1461) |
+| 5 | 413 / payload too large | `INVALID_REQUEST` | `/\b413\b\|payload too large/i` (L1462) |
+| 6 | 400 / invalid request | `INVALID_REQUEST` | `/\b400\b\|invalid.?request/i` (L1463) |
+| 7 | 5xx | `SERVER` | `/\b5\d\d\b/` (L1464) |
+| 8 | timeout | `TIMEOUT` | `/\btime(?:d)?\s*out\b/i` (L1465) |
+| 9 | stream ended prematurely | `TRANSPORT` | `/stream ended (?:before\|without)\b/i` (L1466) |
+| 10 | network / connection / ECONN* | `TRANSPORT` | `/\b(?:network\|connection\|socket\|fetch)\b/i` (L1467) |
+| 11 | 其他 | `PI_AI_ERROR` | 默认分支 (L1468) |
 
 **文件**: `dsh-llm/lib/index.js:2436` 导出的规范错误码常量：
 
@@ -347,7 +350,12 @@ Hub 侧的 API key 通过 DSH CredentialsController 管理：
 - `fetch` 抛出网络错误 → 分类为 `TRANSPORT`（L1467）
 - 超时 → 分类为 `TIMEOUT`（L1465）
 - 错误通过 `adapterFailureChunk`（dsh-llm:2409-2420）包装为 `{type:"finish", reason:{kind:"error", failure:{message,code}}}` 传递给 agent-loop
-- agent-loop 收到 error finish → 写入 `assistant/message { interrupted: true }` + `turn/end { reason: { kind:"interrupted" } }`
+- agent-loop 收到 error/aborted finish（dsh-agent-loop:923-938）：
+  - 写入 `assistant/attempt`（非 `assistant/message`）：L924-928
+  - catch 块设 `turnEnds = { kind:"error", error:{ message, code } }`（L809-814）；若为 cancel 则 `{ kind:"aborted", reason:cause }`（L803-806）
+  - finally 写 `turn/end { turn, reason: turnEnds }`（L819-822）
+  - `interrupted:true` **仅在** abort-with-content 分支（L891-905）：`signal.aborted` 且流已有内容时才写 `assistant/message { interrupted:true }`；无内容时写 `assistant/attempt`
+- **断言**：断网/超时错误应断言 `turn/end.reason.kind === "error"` 且 `reason.error.code` 为 `TRANSPORT` 或 `TIMEOUT`
 
 ### 5.4 节点本地 Fallback
 
@@ -360,6 +368,8 @@ Hub 侧的 API key 通过 DSH CredentialsController 管理：
 
 如节点仍保留本地 provider（如本地 DeepSeek key）：hub 网关 TRANSPORT 错误不会自动 fallback 到本地 provider；需要用户手动切换模型。
 
+**配置位预留**：P1 在 hub/config-push frame schema 预留 `allowLocalFallback: boolean`（默认 `false`）配置位。P1 不实现自动切换逻辑，但 schema 落地避免 P3 改动 frame 格式。节点收到 `allowLocalFallback: true` 时的行为留 P3 定义。
+
 ---
 
 ## 6. P1 出口判据
@@ -369,7 +379,7 @@ Hub 侧的 API key 通过 DSH CredentialsController 管理：
 **目标**: 验证节点在 hub 网关 token 未设置时，模型请求失败并返回可见错误。
 
 **步骤**:
-1. 节点配置只有 hub gateway provider，`apiKeyEnv` 未设置（或指向空值的 credential-ref）
+1. 节点配置只有 hub gateway provider；`apiKeyEnv` 是可选字段（L1051 无 `.required()`），指向一个空 credential-ref（已注册但值为空）或直接省略
 2. 发送一条消息触发模型请求
 3. 预期链路: `resolveApiKey` 返回 undefined → `harnessApiKeyAuth.resolve()` 返回 `{auth:{}}` → 网关返回 HTTP 401 → `classifyPiAiError` → `AUTH`
 
@@ -405,7 +415,7 @@ Hub 侧的 API key 通过 DSH CredentialsController 管理：
 **验收标准**:
 - finish chunk 的 `failure.code` 为 `"TRANSPORT"` 或 `"TIMEOUT"`
 - 错误消息含连接失败描述（如 "could not reach"）
-- agent-loop 写入 `assistant/message` with `interrupted: true` 或 `turn/end` with error reason
+- agent-loop 写 `assistant/attempt`（非 `assistant/message`）+ `turn/end { reason: { kind:"error", error:{ code:"TRANSPORT"|"TIMEOUT" } } }`（dsh-agent-loop:809-822）
 - 用户在对话页可见错误信息（红色提示或错误气泡）
 
 ---
