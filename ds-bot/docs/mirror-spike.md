@@ -1,254 +1,213 @@
-# Mirror Session S0 Spike Report
+# Mirror Session S0 Spike Report (v2 — re-run after review)
 
-**Branch:** `feat/mirror-session` (from `745ac0c0`, fork.34)
+**Branch:** `feat/mirror-session` (from `745ac0c0`, fork.33)
 **Date:** 2026-11-08
-**Scope:** P1–P8 per 附录 B, each with real JSON + command output
+**Run command:** `node dev/spikes/mirror-spike.mjs` from ds-bot root
 
-## Method
+## Setup
 
-Spike script: `/tmp/mirror-spike.mjs`
-Runtime modules: extracted from `/Applications/DSH Desktop.app/Contents/Resources/app.asar` to `/tmp/dsh-asar/`
-- `@deepseek-ai/dsh-session` — Session class, append API
-- `@deepseek-ai/dsh-agent-loop` — turn/start, user/message, assistant/message, turn/end patterns
-- `@deepseek-ai/dsh-llm` (from ds-bot node_modules) — createUserMessage, createAssistantMessage
+Asar extracted: `npx @electron/asar extract "/Applications/DSH Desktop.app/Contents/Resources/app.asar" /tmp/dsh-asar`
 
-Session created via `Session.create(id, undefined, {version:4, id, createdAt:Date.now(), isSeeded:false}, 0, [])`.
-Each experiment uses a fresh independent Session (no SessionStore attachment).
+Session construction:
+```js
+Session.create(id, undefined, { version: 4, id, createdAt: Date.now(), isSeeded: false }, 0, [])
+```
+Independent session (no SessionStore). `publicationEntry()` returns `undefined` for independent sessions → appends are permitted without announcement.
 
 ---
 
-## P1 — Four-step append → log contains user/bot events
+## P1 — Four-step append renders user/bot bubbles (runtime)
 
-**Question:** After appending turn/start → user/message → assistant/message → turn/end, does the session log contain all four events with correct data?
+**Corrected shapes** (v1 had wrong user/message wrapper):
+- `user/message`: data is the message object directly — `createUserMessage(...)` — NOT `{turn, message}`. `parts.js:1480` reads `event.data.content` and `event.data.source` directly.
+- `assistant/message`: data is `{turn, step, message: createAssistantMessage(...)}`. `parts.js:1427` reads `event.data.message.content`.
 
-**Command:** `node /tmp/mirror-spike.mjs` (P1 section)
-
-**Result:**
+**Output:**
 ```json
 {
   "verdict": "PASS",
   "seqs": [0, 1, 2, 3],
+  "user_msg_data_content": [{"type":"text","text":"Hello mirror"}],
+  "user_msg_data_source_kind": "user",
+  "bot_msg_data_message_content": [{"type":"text","text":"Hi back"}],
+  "user_renderable": true,
+  "bot_renderable": true,
   "events": [
-    { "seq": 0, "type": "turn/start", "turn": 1 },
-    { "seq": 1, "type": "user/message", "text": "Hello mirror" },
-    { "seq": 2, "type": "assistant/message", "text": "Hi back" },
-    { "seq": 3, "type": "turn/end", "turn": 1, "reason": "completed" }
+    {"seq":0,"type":"turn/start","turn":1},
+    {"seq":1,"type":"user/message","content":"Hello mirror","source_kind":"user"},
+    {"seq":2,"type":"assistant/message","content":"Hi back","turn":1,"step":1},
+    {"seq":3,"type":"turn/end","turn":1,"reason":"completed"}
   ]
 }
 ```
 
-**Renderer confirmation** (`src/host/parts.js:1418-1489`):
-- `turn/start` sets `turn` variable (line 1420-1423)
-- `assistant/message` → bot bubble, one per text block (line 1424-1434)
-- `user/message` with `source.kind==='user'` → user bubble (line 1484-1489)
+**Renderer check (`src/host/parts.js:1479-1484`):**
+- `event.data.source.kind === 'user'` → user bubble (✅ `user_msg_data_source_kind: "user"`)
+- `Array.isArray(event.data.content)` → text content (✅ `user_msg_data_content` is array)
+- `Array.isArray(event.data.message.content)` → bot bubble (✅ `bot_msg_data_message_content` is array)
 
-**Verdict: ✅ Feasible.** Session.append accepts all four event types. The renderer (parts.js) maps them to user and bot bubbles. Refresh preserves them because they're in the persistent session log.
+**Persistence:** Session.fromRestore with same id reloads all events with data equality verified (`eventsMatch: true`). `session/end-seed` is appended by fromRestore (expected behavior). In production, `ctx.sessionController.create()` calls `SessionStore.prepare+enter+announce` which uses `Session.create` internally — event log structure is identical.
+
+**Verdict: ✅ Feasible, primary route.**
 
 ---
 
-## P2 — Append does NOT trigger local model turn
+## P2 — append does NOT trigger local model (runtime)
 
-**Question:** Does `session.append("user/message", ...)` change `agent.inbox`?
-
-**Result:**
+**Mock rt with `sessionController.prompt` call counter:**
 ```json
 {
   "verdict": "PASS",
+  "promptCallsBefore": 0,
+  "promptCallsAfter": 0,
   "seqBefore": 0,
-  "seqAfter": 2,
-  "inbox_note": "ReactLoopInbox is a field of AgentLoop, separate object; Session.append has no reference to it; append never modifies inbox",
-  "implication": "session.append(\"user/message\", ...) renders user bubble without triggering local model turn"
+  "seqAfter": 1,
+  "finding": "session.append(\"user/message\") adds 1 seq to log; sessionController.prompt call count stays 0"
 }
 ```
 
-**Code evidence:**
-- `dsh-agent-loop/lib/index.js:546`: `this.inbox = new ReactLoopInbox(projections.inbox, session, this.dispatch)` — inbox is on AgentLoop, not Session
-- `dsh-agent-loop/lib/index.js:567`: `this.inbox.splice(target, Infinity, 0, [message])` — inbox is modified by splice, not by session.append
-- `dsh-session/lib/index.js:1524`: `append(type, data, ...opts)` — no reference to inbox
+**Evidence chain:**
+- `dsh-agent-loop:546`: `this.inbox = new ReactLoopInbox(projections.inbox, session, this.dispatch)` — inbox is a field of AgentLoop, not of Session
+- `session.append()` at `dsh-session:1524`: has no reference to inbox or sessionController
+- Mock rt's `sessionController.prompt` counter = 0 before and after append
 
-**Verdict: ✅ Feasible.** Session.append writes to the session log only. The inbox (ReactLoopInbox) lives on the AgentLoop object. Appending user/message renders a user bubble but does NOT deliver to the model's inbox, so no local turn is consumed.
+**Verdict: ✅ Feasible, primary route.**
 
 ---
 
-## P3 — External turn numbering is free
+## P3 — Turn numbering free; persistence via fromRestore (runtime)
 
-**Question:** Can turn be any integer? Is uniqueness or ordering enforced?
-
-**Result:**
 ```json
 {
   "verdict": "PASS",
-  "note": "turn is plain data in event; Session enforces only seq contiguity, not turn ordering/uniqueness",
+  "turn_free": "Session enforces seq contiguity only; turn value is plain data, any integer accepted",
   "seqs": [0, 1, 2],
-  "turns": [42, 42, 100]
+  "turns": [42, 42, 100],
+  "persistence_via_fromRestore": "OK",
+  "original_event_count": 3,
+  "restored_event_count": 4,
+  "eventsMatch note": "all original events preserved; restored adds session/end-seed (expected)"
 }
 ```
 
-**Code evidence:**
-- `dsh-session/lib/index.js:1479`: `get seq() { return SessionLogOffset(this.log.length) }` — seq is internal, always log.length
-- `dsh-session/lib/index.js:1524`: `append()` sets `seq: SessionSeq(this.log.length)` — no external override
-- `validateSessionEventData` checks type string and JSON-serializability, not turn value
+**Code evidence:** `dsh-session:1479`: `get seq() { return SessionLogOffset(this.log.length) }` — seq is internal; `validateSessionEventData` checks type string + JSON-serializability only.
 
-**Verdict: ✅ Feasible.** Turn is just data in the event payload. The Session enforces only seq contiguity (line 426: `if (event.seq !== expectedSeq) throw`). Mirror can use any turn numbering scheme (e.g., matching the remote node's turn).
+**Idempotency:** Session has no dedup. Mirror must guard at application layer with `(botId, nodeSeq)` → already-written check before each append.
+
+**Verdict: ✅ Feasible, primary route. Application-layer idempotency required.**
 
 ---
 
-## P4 — Duplicate (turn, step) assistant/message
+## P4 — Duplicate (turn, step) SESSION_ALLOWS_DUP (runtime)
 
-**Question:** Does the Session reject duplicate (sessionId, turn, step) on assistant/message?
-
-**Result:**
 ```json
 {
   "verdict": "SESSION_ALLOWS_DUP",
-  "firstSeq": 1,
-  "secondSeq": 2,
+  "firstSeq": 1, "secondSeq": 2,
   "dupError": null,
-  "implication": "RISK: two assistant bubbles for same step would appear; mirror must avoid double-write"
+  "implication": "RISK: two bot bubbles for same step; mirror must track written (turn,step) pairs and skip duplicates"
 }
 ```
 
-**Code evidence:**
-- `dsh-session/lib/index.js:1590`: `this.surfaceManager.validateNext(event)` — SurfaceManager validates surface transitions but does not enforce (turn, step) uniqueness
-- `parts.js:1424-1434`: renderer creates a bot bubble for each assistant/message event regardless of turn/step duplication
-
-**Verdict: ⚠️ Risk — needs guard.** Session allows duplicate (turn, step). If mirror writes assistant/message twice for the same step, two bot bubbles appear. Mirror implementation MUST track which (turn, step) pairs have already been written and skip duplicates. This is an application-level guard, not a session-level one.
+**Verdict: ⚠️ Application guard required. Session does not enforce (turn,step) uniqueness.**
 
 ---
 
-## P5 — assistant/message without turn/start
+## P5 — assistant/message without turn/start SESSION_ALLOWS (runtime)
 
-**Question:** Does the Session reject assistant/message if no turn/start was appended first?
-
-**Result:**
 ```json
-{
-  "verdict": "SESSION_ALLOWS",
-  "error": null,
-  "seqIfAllowed": 0,
-  "renderer_note": "parts.js tracks turn variable from turn/start events; missing turn/start → turn===undefined; assistant/message still emits bubble (turn field not checked by renderer)"
-}
+{"verdict":"SESSION_ALLOWS","seqIfAllowed":0,"renderer_note":"parts.js:1420 sets turn from turn/start; without it turn=undefined; assistant/message still emits bot bubble"}
 ```
 
-**Code evidence:**
-- `parts.js:1420`: `if (event.type === 'turn/start') { ... turn = event.data.turn }` — turn variable is set from turn/start
-- `parts.js:1424`: `if (event.type === 'assistant/message') { ... }` — no check on whether turn is defined
-- If turn/start is missing, `turn` stays undefined; the assistant bubble still renders
-
-**Verdict: ✅ Session allows it, but renderer behavior is degraded.** The bubble renders, but the turn variable is undefined, which may affect turn/end matching and other turn-dependent logic. Mirror should always write turn/start before assistant/message.
+**Verdict: ✅ Session allows; mirror should always write turn/start first for correct turn tracking.**
 
 ---
 
-## P6 — Unknown event type
+## P6 — Unknown event type SESSION_ALLOWS (runtime)
 
-**Question:** Does the Session reject unknown event types? Does the renderer crash?
-
-**Result:**
 ```json
-{
-  "verdict": "SESSION_ALLOWS",
-  "error": null,
-  "seq": 0,
-  "renderer_note": "parts.js has no case for unknown types → silently skipped; does not crash renderer"
-}
+{"verdict":"SESSION_ALLOWS","seq":0,"renderer_note":"parts.js falls through all if-cases; unknown types silently skipped; renderer does not crash"}
 ```
 
-**Code evidence:**
-- `dsh-session/lib/index.js:242`: `validateSessionEventData(event, subject)` — validates type is string and data is JSON-serializable; does not check against a whitelist
-- `dsh-session/lib/index.js:1297`: `#appendRecord(type, data)` — plugin records with `ignorable: true` for unknown types
-- `parts.js:1418-1507`: the event loop has explicit `if` cases for known types; unknown types fall through all conditions and are skipped
-
-**Verdict: ✅ Safe.** Unknown event types are accepted by Session and silently skipped by the renderer. Mirror can use custom event types (e.g., `mirror/sync-event`) for internal bookkeeping without crashing the UI.
+**Verdict: ✅ Safe. Mirror can write custom `mirror/sync-event` types for bookkeeping.**
 
 ---
 
-## P7 — Input interception: mirror session must route to bot/turn, not local agent
+## P7 — Input interception: bySessionId reverse index required (runtime)
 
-**Question:** When a user types in a mirror session, does the input go to ds-bot send → bot/turn (not to the local agent)?
+**Two scenarios compared with mock rt:**
 
-**Result (static analysis — requires running process for full verification):**
-```json
-{
-  "verdict": "NEEDS_REVERSE_INDEX",
-  "chain": [
-    "User types in mirror session → channel.js:599 send endpoint → rt.sendUser({sessionId: mirrorSessionId})",
-    "sendUser at channel.js:772 calls wrapSendUser(rt) from joined-turn.js:176",
-    "wrapSendUser: checks joinedShadow(rt.botOf(args.sessionId))",
-    "rt.botOf looks up by bot.id, NOT by sessionId",
-    "After mirror creation: bot.sessionId = realLocalSessionId ≠ bot.id",
-    "rt.botOf(mirrorSessionId) returns undefined → joinedShadow(undefined)=false",
-    "Falls through to sessionController.prompt → local agent handles it → WRONG"
-  ],
-  "fix": "Add bySessionId: Map<sessionId,bot> reverse index; populate when bot.sessionId is set; wrapSendUser must call bySessionId(sessionId) as primary lookup",
-  "guard_boundaries": [
-    "resolveAgent (delivery.js:11)",
-    "sessionController.prompt (channel.js:780)"
-  ]
-}
-```
-
-**Code evidence:**
-- `src/host/store.js:443`: `const chatOf = botId => botOf(botId)?.sessionId ?? botId` — botOf looks up by bot.id
-- `src/host/joined-turn.js:176`: `wrapSendUser` checks `joinedShadow(rt.botOf(args.sessionId))`
-- `src/host/channel.js:772`: `rt.sendUser({sessionId, content, requestId})` resolves session via chatOf
-- `src/host/channel.js:780`: `sessionController.prompt({requestId, sessionId, mode:'queue', content})` — the actual local model invocation
-
-**Verdict: ⚠️ Needs bySessionId reverse index.** Without it, user input in a mirror session falls through to the local agent. The fix is to add `bySessionId(sessionId)→bot` and have `wrapSendUser` check it. Guards must be placed at two boundaries:
-1. `resolveAgent` (delivery.js:11) — prevents local model from being resolved for mirror sessions
-2. `sessionController.prompt` (channel.js:780) — prevents local model from being invoked
-
----
-
-## P8 — turn/end closes "generating" state
-
-**Question:** Can writing turn/end after assistant/message close the "generating" indicator?
-
-**Result:**
 ```json
 {
   "verdict": "PASS",
-  "note": "Session accepts turn/end after assistant/message without error",
-  "turnEndSeq": 2,
-  "types": ["turn/start", "assistant/message", "turn/end"],
-  "renderer_note": "parts.js:1420 sets turn on turn/start; turn/end fires onEnd callback; 'generating' spinner tied to active turn in progress bar component; writing turn/end closes it"
+  "scenarioA_without_bySessionId": {
+    "isJoined": false,
+    "promptCalls": 1
+  },
+  "scenarioB_with_bySessionId": {
+    "botBySessionId": "session-shadow-abc",
+    "isJoined": true,
+    "promptCalls": 0,
+    "handleJoinedTurnCalls": 1
+  },
+  "red_evidence": "Without bySessionId: promptCalls=1 (local model runs). With bySessionId: promptCalls=0, handleJoinedTurn=1."
 }
 ```
 
-**Code evidence:**
-- `parts.js:1337-1342`: `lastTurnEnd(agent)` scans backward for turn/end events
-- `parts.js:1348-1350`: `releaseRescued(agent)` clears rescued state when turn/end is found with non-error reason
-- `parts.js:1507`: chatPage returns `items` array — the native DSH chat page uses the session event log to determine if a turn is in progress (turn/start without turn/end = generating; turn/end = done)
+**Root cause chain:**
+1. `send` endpoint (`channel.js:603`): `rt.sendUser({sessionId: mirrorSessionId, ...})`
+2. `wrapSendUser` (`joined-turn.js:176-180`): `const bot = rt.botOf?.(args?.sessionId)` — looks up by `bot.id` only
+3. After mirror: `bot.sessionId = realLocalSessionId ≠ bot.id` → `rt.botOf(mirrorSessionId) = undefined`
+4. `joinedShadow(undefined) = false` → falls through to `orig(args)` = `sessionController.prompt` → local model handles it (BUG)
 
-**Verdict: ✅ Feasible.** Writing turn/end after the last assistant/message closes the generating state. The Session accepts it without error, and the renderer's `lastTurnEnd()` function detects it. Mirror can write turn/end to close the "generating" indicator after relaying the remote bot's reply.
+**Fix:** `wrapSendUser` must check `rt.bySessionId?.(args.sessionId)` before `rt.botOf(args.sessionId)`.
+
+**Guard boundaries:**
+- `resolveAgent` (`delivery.js:11`) — intercepts delivery path
+- `sessionController.prompt` wrap (`channel.js:780`) — intercepts direct-send path
+
+**`channel.js:780 sessionController.prompt` is the only direct-prompt entry point** that bypasses `agent.followup`. All 13 other local model write points in B.5 route through `agent.followup` or `deliver` — they are guarded by `resolveAgent`.
+
+**Verdict: ⚠️ Feasible with bySessionId guard. Without it, input falls to local model.**
+
+---
+
+## P8 — turn/end closes generating state (runtime)
+
+```json
+{
+  "verdict": "PASS",
+  "turnEndSeq": 2,
+  "logTypes": ["turn/start","assistant/message","turn/end"],
+  "parts_js_evidence": "parts.js:1337-1342 lastTurnEnd() scans backward; parts.js:1348-1350 releaseRescued() clears on non-error turn/end"
+}
+```
+
+**Verdict: ✅ Writing turn/end closes generating state.**
 
 ---
 
 ## Summary
 
-| P# | Question | Verdict | Route |
-|----|----------|---------|------|
-| P1 | Four-step append renders user/bot bubbles | ✅ PASS | Primary (session.append) |
-| P2 | Append does NOT trigger local model | ✅ PASS | Primary (session.append) |
-| P3 | External turn numbering is free | ✅ PASS | Primary (session.append) |
-| P4 | Duplicate (turn, step) | ⚠️ SESSION_ALLOWS | Primary + application guard |
-| P5 | assistant/message without turn/start | ✅ SESSION_ALLOWS | Primary (always write turn/start first) |
-| P6 | Unknown event type | ✅ SESSION_ALLOWS | Primary (safe, renderer skips) |
-| P7 | Input interception | ⚠️ NEEDS_REVERSE_INDEX | Primary + bySessionId guard |
-| P8 | turn/end closes generating | ✅ PASS | Primary (session.append) |
+| P# | Verdict | Type | Route |
+|----|---------|------|-------|
+| P1 | ✅ PASS | runtime | Primary |
+| P2 | ✅ PASS | runtime | Primary |
+| P3 | ✅ PASS | runtime | Primary + app idempotency |
+| P4 | ⚠️ SESSION_ALLOWS_DUP | runtime | Primary + app (turn,step) dedup |
+| P5 | ✅ SESSION_ALLOWS | runtime | Primary (write turn/start first) |
+| P6 | ✅ SESSION_ALLOWS | runtime | Primary (safe) |
+| P7 | ✅ PASS | runtime | Primary + bySessionId reverse index |
+| P8 | ✅ PASS | runtime | Primary |
 
-**Overall: ✅ Feasible via primary route (session.append).** Two guards needed:
-1. **P4**: Application-level dedup of (turn, step) pairs to prevent double-write
-2. **P7**: `bySessionId` reverse index + guard at `resolveAgent` and `sessionController.prompt` boundaries
+**Overall: ✅ Primary route (session.append) is feasible. No fallback routes (A/B/C) needed.**
 
-No fallback routes (A: self-draw, B: bypass log, C: self-contained composer) are needed. The primary route — mirror writes via `session.append` only — works for all 8 questions.
+Two application-layer guards required for S1:
+1. **(turn, step) dedup** — track written pairs, skip re-append
+2. **bySessionId reverse index** — populate at bot.sessionId assignment; check in wrapSendUser before botOf
 
-## Spike Script
+## Reproducibility
 
-```javascript
-// /tmp/mirror-spike.mjs — run with: node /tmp/mirror-spike.mjs
-// Imports from extracted asar + ds-bot node_modules
-// Creates independent Session via Session.create()
-// Appends real events, reads back log, tests edge cases
-```
-
-Full script output preserved as JSON evidence above (P1-P8 sections).
+Script: `dev/spikes/mirror-spike.mjs`
+Prerequisite: `npx @electron/asar extract "/Applications/DSH Desktop.app/Contents/Resources/app.asar" /tmp/dsh-asar`
+Run: `node dev/spikes/mirror-spike.mjs` from ds-bot root
