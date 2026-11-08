@@ -1,0 +1,1 @@
+[{"ttft":1,"total":4226,"conn":120,"cnt":200},{"ttft":1,"total":4235,"conn":42,"cnt":200},{"ttft":0,"total":4244,"conn":42,"cnt":200}]
