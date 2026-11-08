@@ -563,6 +563,8 @@ export function install(rt) {
   Object.assign(rt, {
     state, load, save, refresh, readOnly, own, onSaved, closeCard,
     botOf, roomOf, isMain, chatOf, sessionOfRoom, selfOf, isBotSession,
+    chatOwners, groupOwners, roomOwners, pastOwners,
+    groupSessionsOf, dropGroupSession, retireGroupSession, findBot, findRooms, isAdminOf,
     bySessionId: sid => bySessionIdMap.get(sid),
   })
 }

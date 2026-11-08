@@ -30,6 +30,7 @@ export async function mirrorTurn(session, opts = {}) {
 
   try {
     session.append('step/start', { turn: turnInt, step })
+    let stepEnded = false
 
     const userMsg = createUserMessage({
       content: [{ type: 'text', text: String(userText ?? '') }],
@@ -49,6 +50,7 @@ export async function mirrorTurn(session, opts = {}) {
     }, { surfaceOp: 'append' })
 
     session.append('step/end', { turn: turnInt, step })
+    stepEnded = true
 
     session.append('turn/end', { turn: turnInt, reason: { kind: 'completed' } })
 
@@ -57,7 +59,8 @@ export async function mirrorTurn(session, opts = {}) {
     if (seenSteps instanceof Set) seenSteps.add(stepKey)
 
   } catch (err) {
-    try { session.append('step/end', { turn: turnInt, step }) } catch {}
+    // stepEnded guards against a double step/end if the error occurred on or after step/end
+    try { if (!stepEnded) session.append('step/end', { turn: turnInt, step }) } catch {}
     try {
       session.append('turn/end', {
         turn: turnInt,

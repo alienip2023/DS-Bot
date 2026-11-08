@@ -53,6 +53,9 @@ test("error path: assistant append throws → turn/end has {kind:'error'}", asyn
   await ctx[Symbol.asyncDispose]?.() ?? ctx.dispose?.()
 })
 
+// NOTE: This test simulates a retry by pre-populating closedKeys (as if a previous error run closed
+// the nodeSeq). In production, if closedKeys is NOT passed by the caller, the already-closed guard
+// won't fire and a retry would proceed. Always pass closedKeys to mirrorTurn to enable idempotency.
 test("error path: retry after error returns {skipped:true, reason:'already-closed'}", async () => {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx)
