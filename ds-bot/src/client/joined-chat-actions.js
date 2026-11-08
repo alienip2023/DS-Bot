@@ -35,3 +35,21 @@ export function classifyItem(item) {
 export function sendJoined(call, botId, text) {
   return call('send', { sessionId: botId, text })
 }
+
+/**
+ * Dialog send path: calls actions.sendJoined(botId, text) — the single wired entry
+ * (team-actions.js binds it to the host call transport). A host `ok:false` result
+ * becomes a thrown Error so the dialog shows it; anything else is returned as-is.
+ * @param {{ sendJoined: (botId: string, text: string) => any }} actions
+ * @param {string} botId
+ * @param {string} text
+ * @param {string} [fallback]  message when the host gives no error text (the dialog passes the translated one)
+ */
+export async function sendFromDialog(actions, botId, text, fallback = 'Failed to send') {
+  const result = await actions.sendJoined(botId, text)
+  if (result?.ok === false) {
+    const err = result.error
+    throw new Error((err && err.message) ?? err ?? fallback)
+  }
+  return result
+}

@@ -2,7 +2,7 @@ import { createElement as h, Fragment, useEffect, useRef, useState } from 'react
 import { useEscape } from './overlay-hooks.js'
 import { CloseIcon } from './icons.js'
 import { t } from './i18n.js'
-import { classifyItem, sendJoined } from './joined-chat-actions.js'
+import { classifyItem, sendFromDialog } from './joined-chat-actions.js'
 
 const POLL_MS = 2500
 
@@ -60,11 +60,8 @@ export function JoinedChatDialog({ botId, roster, actions, leaving }) {
     setSending(true)
     setSendError(null)
     try {
-      // botId is the joined shadow id; sendJoined sets sessionId = botId
-      const r = await sendJoined(actions._call ?? ((n, b) => actions.joinedChatView.__call?.(n, b)), botId, text.trim())
-      // Fall back: actions.sendJoined wires to the same underlying call fn
-      const result = r ?? await actions.sendJoined(botId, text.trim())
-      if (result?.ok === false) throw new Error(result.error?.message ?? result.error ?? t('Failed to send'))
+      // botId is the joined shadow id; actions.sendJoined wires to the host call transport
+      await sendFromDialog(actions, botId, text.trim(), t('Failed to send'))
       setText('')
       await load()
     } catch (e) {
