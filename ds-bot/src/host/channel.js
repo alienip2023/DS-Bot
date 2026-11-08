@@ -259,9 +259,14 @@ export function install(rt) {
         case 'earlier':
           await rt.load()
           return ok(await rt.earlierPage(String(body.sessionId ?? ''), body.cursor ?? undefined))
-        case 'chat':
+        case 'chat': {
           await rt.load()
+          const chatBot = rt.botOf?.(String(body.botId ?? ''))
+          if (chatBot && typeof rt.joinedChatPage === 'function' && chatBot.origin === 'joined' && chatBot.worker?.home === 'remote') {
+            return ok(await rt.joinedChatPage(chatBot.id, body.cursor ?? undefined))
+          }
           return ok(await rt.chatPage(String(body.botId ?? ''), body.cursor ?? undefined))
+        }
         // DSH's own whole-log figures for the current part of a Bot's chat, the ones its
         // status bar shows; a window without that bar shows them in the Bot's details.
         case 'run-stats': {
@@ -708,6 +713,8 @@ export function install(rt) {
           await rt.load()
           const bot = rt.botOf(String(body.botId ?? ''))
           if (bot === undefined) return fail('Unknown Bot', 'bot/not-found')
+          // Joined shadows live on the remote node; a new part is a no-op on the hub.
+          if (bot.origin === 'joined' && bot.worker?.home === 'remote') return ok(true)
           return ok(await rt.newPart(rt.chatOf(bot.id)))
         }
         case 'bot-open-part': {
