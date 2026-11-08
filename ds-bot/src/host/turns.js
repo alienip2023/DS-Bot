@@ -1041,13 +1041,18 @@ export function install(rt) {
           const inRound = failure !== undefined && info === undefined && rt.failRoomTurn?.(id, failure) === true
           if (failure !== undefined) { if (!inRound) void rt.lateRoomFailure?.(id, info ?? {}, failure) }
           else if (reason?.kind !== 'aborted') void rt.lateRoomReply?.(id, info ?? {}, groupReply(), { shown })
-        } else if (!retry && info?.joinedTurn === true) {
+        } else if (!retry && info !== undefined) {
+          // Try to settle a joined-turn waiter (bot/turn from a remote hub).
+          // info.exchangeId was set by deliver({exchangeId}); info.requestId is set by sendUser({requestId}).
+          // settleJoinedTurn returns false when no waiter matches → fall through to finish().
+          const joinedExchangeId = info?.exchangeId ?? info?.requestId
           const reply = failure !== undefined
             ? `${name} could not answer your message: its model call failed (${failureLine(failure)}).`
             : replyText()
-          if (typeof rt.settleJoinedTurn === 'function') rt.settleJoinedTurn(info.exchangeId, reply, failure)
-        } else if (!retry && info !== undefined) {
-          finish(info, replyText())
+          const settled = typeof rt.settleJoinedTurn === 'function'
+            && typeof joinedExchangeId === 'string' && joinedExchangeId !== ''
+            && rt.settleJoinedTurn(joinedExchangeId, reply, failure)
+          if (!settled) finish(info, replyText())
         }
         for (const request of joined) {
           if (request.info.role === 'room' && stoppedRoomTurns.delete(request.info.exchangeId)) continue

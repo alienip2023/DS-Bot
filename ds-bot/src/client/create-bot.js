@@ -116,7 +116,7 @@ export function CreateBot({ roster, actions, start, brief = '', onBack, canGoBac
         : clash ? h('span', { className: 'bt-note bt-danger' }, t('A Bot named {name} already exists', { name: finalName })) : null),
     h('div', { className: 'bt-field' },
       h('span', { className: 'bt-field-label' }, t('Model')),
-      h(ModelMenu, { bot: { id: 'new-bot', name: finalName, model: model || undefined, effort }, roster, actions, wide: true, onPick: ref => { setModel(ref); setEffort(undefined) }, onPickEffort: picked => setEffort(picked ?? null) }),
+      h(ModelMenu, { bot: { id: 'new-bot', name: finalName, model: model || undefined, effort }, roster: isRemoteNode ? (() => { const n = remoteNodes.find(rn => rn.nodeId === targetNodeId); return { ...roster, models: (n?.models ?? []).map(m => ({ ref: m.ref, provider: m.provider, name: m.name, providerName: m.provider })) } })() : roster, actions, wide: true, onPick: ref => { setModel(ref); setEffort(undefined) }, onPickEffort: picked => setEffort(picked ?? null) }),
       h('span', { className: 'bt-note' }, model
         ? t('The Bot runs on this model. You can change it later in its details.')
         : (roster.models ?? []).length > 0

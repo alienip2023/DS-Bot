@@ -77,7 +77,10 @@ test('2. createBotOnNode: unknown model ref → returns bot-create-model-unknown
 // ── 3. createBotUpdateReceiver: node-side updates bot and returns profile ──────
 test('3. createBotUpdateReceiver: updates bot and returns profile', async () => {
   const updated = []
+  // Provide a fake llm so model validation passes
+  const fakeCtx = { get: (n) => n === 'llm' ? { listProviders: () => [{ id: 'prov' }] } : undefined }
   const rt = makeRt({
+    ctx: fakeCtx,
     updateBot: async (id, patch) => { updated.push({ id, patch }); return { model: patch.model ?? 'old', effort: null, instructions: null, workDir: null } },
   })
   const receiver = createBotUpdateReceiver(rt)
@@ -89,7 +92,9 @@ test('3. createBotUpdateReceiver: updates bot and returns profile', async () => 
 })
 
 test('4. createBotUpdateReceiver: bot-not-found → ok:false', async () => {
-  const rt = makeRt({ updateBot: async () => null })
+  // Provide llm stub so model validation passes, then updateBot returns null
+  const fakeCtx = { get: (n) => n === 'llm' ? { listProviders: () => [{ id: 'prov' }] } : undefined }
+  const rt = makeRt({ ctx: fakeCtx, updateBot: async () => null })
   const receiver = createBotUpdateReceiver(rt)
   const result = await receiver({ remoteBotId: 'session-missing', model: 'prov/m', effort: null, instructions: null, workDir: null })
   assert.equal(result.ok, false)

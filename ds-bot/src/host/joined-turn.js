@@ -141,10 +141,9 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS }
       pending.set(exchangeId, { resolve, reject, timer })
     })
     try {
-      // Use rt.sendUser (the real user-message path) so chatPage shows a user bubble
-      // and the bot's reply lands as a bot bubble. On the node, this Bot is local so
-      // sendUser routes through the normal chat pipeline without any joined-shadow
-      // wrapper interference.
+      // sendUser creates a real user bubble in chatPage (not an event entry).
+      // The bot's reply lands as a bot bubble. turns.js calls settleJoinedTurn
+      // when the turn finishes, resolving `done`.
       if (typeof rt.sendUser !== 'function') throw new Error('sendUser unavailable')
       await rt.sendUser({
         sessionId: rt.chatOf?.(bot.id),

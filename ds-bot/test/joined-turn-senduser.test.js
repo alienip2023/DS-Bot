@@ -1,10 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-// ── joined-turn.js: sendUser produces user+bot bubbles in chatPage ─────────────
-test('6. acceptJoinedTurn: uses rt.sendUser so chatPage gets user bubble (knife: revert to deliver)', async () => {
-  // This test exercises the node-side createBotTurnReceiver.
-  // We use a minimal rt stub where sendUser is available and records the call.
+// ── joined-turn.js: sendUser + turns.js settle produces bot reply ──────────────
+// This test simulates the real flow: sendUser queues a message, turns.js finishes
+// the turn and calls settleJoinedTurn. No manual settle call.
+test('6. acceptJoinedTurn: sendUser → turn completes → settleJoinedTurn fires → result returned', async () => {
   const { createBotTurnReceiver } = await import('../src/host/joined-turn.js')
 
   const sentUser = []
@@ -13,34 +13,34 @@ test('6. acceptJoinedTurn: uses rt.sendUser so chatPage gets user bubble (knife:
     state: { bots: { 'session-bot-abc': bot } },
     botOf(id) { return this.state.bots[id] },
     chatOf(id) { return id },
-    settleJoinedTurn: null,
-    sendUser: async (args) => { sentUser.push(args); return { ok: true } },
+    settleJoinedTurn: null, // createBotTurnReceiver sets this
+    sendUser: async (args) => {
+      sentUser.push(args)
+      // Simulate turns.js: after sendUser resolves, the turn finishes and settles
+      const xid = args.requestId
+      setImmediate(() => {
+        if (typeof rt.settleJoinedTurn === 'function') {
+          rt.settleJoinedTurn(xid, 'The bot replied with this text.')
+        }
+      })
+      return { ok: true }
+    },
     warn: () => {},
   }
 
-  const accept = createBotTurnReceiver(rt)
+  const accept = createBotTurnReceiver(rt, { timeoutMs: 500 }) // short for testability
   const exchangeId = 'xid-001'
 
-  // Trigger accept in background; settle the turn manually after sendUser is called
-  const resultP = accept({ remoteBotId: 'session-bot-abc', exchangeId, text: 'Hello from hub' })
+  const result = await accept({ remoteBotId: 'session-bot-abc', exchangeId, text: 'Hello from hub' })
 
-  // Wait for sendUser to be invoked
-  await new Promise(r => setImmediate(r))
-
-  assert.equal(sentUser.length, 1, 'rt.sendUser must be called (knife: revert to deliver → sentUser.length=0)')
+  // sendUser must have been called (knife: revert to deliver → sendUser not called → settle never fires → timeout → ok:false)
+  assert.equal(sentUser.length, 1, 'rt.sendUser must be called')
   assert.equal(sentUser[0].content?.[0]?.text, 'Hello from hub', 'sendUser content must include original text')
   assert.equal(sentUser[0].requestId, exchangeId, 'requestId must equal exchangeId')
 
-  // Settle the turn so the promise resolves
-  if (typeof rt.settleJoinedTurn === 'function') {
-    rt.settleJoinedTurn(exchangeId, 'Hi there!')
-  }
-
-  const result = await resultP
-  // The result.text must be 'Hi there!' (the settled text)
-  if (result.ok) {
-    assert.equal(result.text, 'Hi there!', 'bot/turn-result text must equal settled reply')
-  }
+  // The result must be ok with the bot reply text (settled by the simulated turn completion)
+  assert.equal(result.ok, true, 'accept must return ok:true when turn settles (knife: revert to deliver → settle never fires → timeout → ok:false)')
+  assert.equal(result.text, 'The bot replied with this text.', 'bot/turn-result text must equal settled reply')
 })
 
 // ── config-source: multi-namespace + CLI skip ────────────────────────────────

@@ -85,7 +85,16 @@ export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRef
     }
   }
   if (skipped > 0) rt.warn?.('ds-bot: config-source skipped %d provider(s) without a protocol or key', skipped)
-  return { providers, defaultModel: typeof defaultModel === 'string' && defaultModel !== '' ? defaultModel : null }
+  // Ensure defaultModel's provider is among the pushed providers
+  let validatedDefault = null
+  if (typeof defaultModel === 'string' && defaultModel !== '' && providers.length > 0) {
+    const pushedProviderIds = new Set(providers.map(p => p.id))
+    const defaultProviderId = defaultModel.includes('/') ? defaultModel.split('/')[0] : defaultModel
+    if (pushedProviderIds.has(defaultProviderId)) {
+      validatedDefault = defaultModel
+    }
+  }
+  return { providers, defaultModel: validatedDefault }
 }
 
 export function install(rt) {

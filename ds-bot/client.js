@@ -11386,7 +11386,7 @@ function BotSettingsForm({ bot, roster, actions, run: run2 }) {
         "div",
         { className: "bt-set-row bt-bs-row" },
         (0, import_react25.createElement)("span", { className: "bt-set-copy" }, (0, import_react25.createElement)("span", { className: "bt-bs-label" }, t("Model")), (0, import_react25.createElement)("span", { className: "bt-set-hint" }, modelHint(bot, roster))),
-        (0, import_react25.createElement)(ModelMenu, { bot, roster, actions, run: run2 })
+        (0, import_react25.createElement)(ModelMenu, { bot, roster: bot.origin === "joined" && bot.worker?.home === "remote" && Array.isArray(bot.worker.models) ? { ...roster, models: bot.worker.models.map((m) => ({ ref: m.ref, provider: m.provider, name: m.name, providerName: m.provider })) } : roster, actions, run: run2 })
       )
     ),
     (0, import_react25.createElement)(
@@ -17907,7 +17907,10 @@ function CreateBot({ roster, actions, start, brief = "", onBack, canGoBack, onCr
       "div",
       { className: "bt-field" },
       (0, import_react39.createElement)("span", { className: "bt-field-label" }, t("Model")),
-      (0, import_react39.createElement)(ModelMenu, { bot: { id: "new-bot", name: finalName, model: model || void 0, effort }, roster, actions, wide: true, onPick: (ref) => {
+      (0, import_react39.createElement)(ModelMenu, { bot: { id: "new-bot", name: finalName, model: model || void 0, effort }, roster: isRemoteNode ? (() => {
+        const n = remoteNodes.find((rn) => rn.nodeId === targetNodeId);
+        return { ...roster, models: (n?.models ?? []).map((m) => ({ ref: m.ref, provider: m.provider, name: m.name, providerName: m.provider })) };
+      })() : roster, actions, wide: true, onPick: (ref) => {
         setModel(ref);
         setEffort(void 0);
       }, onPickEffort: (picked) => setEffort(picked ?? null) }),

@@ -171,10 +171,11 @@ export async function joinedUpdateBot(rt, botId, patch) {
   const result = await waiter.pending
   if (!result?.ok) return { ok: false, error: result?.error ?? 'bot-update-failed' }
 
-  // Sync shadow row
+  // Sync shadow row — write both bot.model (what UI reads via modelOf) and bot.worker.model
   if (result.model !== undefined && result.model !== null) {
     if (!bot.worker) bot.worker = {}
     bot.worker.model = result.model
+    bot.model = result.model
   }
   if (result.effort !== undefined) bot.effort = result.effort
   await rt.save?.()
@@ -187,6 +188,36 @@ export function createBotUpdateReceiver(rt) {
     const remoteBotId = typeof spec?.remoteBotId === 'string' ? spec.remoteBotId.trim() : ''
     if (!remoteBotId) return { ok: false, error: 'bot-update-remoteBotId-missing' }
     if (typeof rt.updateBot !== 'function') return { ok: false, error: 'bot-update-no-roster' }
+
+    const workDir = spec.workDir ?? null
+    const modelRef = typeof spec.model === 'string' ? spec.model : null
+
+    // workDir boundary check — same fail-closed logic as createBotCreateReceiver
+    if (workDir !== null) {
+      let policy
+      try { policy = rt.ctx?.get?.('remote-agent:node-policy') } catch { policy = undefined }
+      if (!policy) return { ok: false, error: 'bot-update-workdir-denied' }
+      const roots = Array.isArray(policy.roots) ? policy.roots : []
+      if (roots.length === 0) return { ok: false, error: 'bot-update-workdir-denied' }
+      const { resolve: pathResolve, sep: pathSep } = await import('node:path')
+      const { isInsideRoot } = await import('./joined-create.js')
+      const resolved = pathResolve(workDir)
+      const ignoreCase = process.platform === 'win32'
+      const inRoots = roots.some((r) => isInsideRoot(resolved, pathResolve(r), { sep: pathSep, ignoreCase }))
+      if (!inRoots) return { ok: false, error: 'bot-update-workdir-denied' }
+    }
+
+    // model validation against node catalog (if llm available)
+    if (modelRef !== null) {
+      const providerId = modelRef.includes('/') ? modelRef.split('/')[0] : modelRef
+      const llm = rt.ctx?.get?.('llm') ?? rt.ctx?.llm
+      if (!llm || typeof llm.listProviders !== 'function') {
+        return { ok: false, error: 'bot-update-model-unknown' }
+      }
+      const providerIds = llm.listProviders().map(p => typeof p === 'string' ? p : p.id)
+      if (!providerIds.includes(providerId)) return { ok: false, error: 'bot-update-model-unknown' }
+    }
+
     try {
       const patch = {}
       if (spec.model !== null) patch.model = spec.model

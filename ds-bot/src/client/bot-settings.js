@@ -213,7 +213,9 @@ export function BotSettingsForm({ bot, roster, actions, run }) {
     h(Card, { title: t('Model') },
       h('div', { className: 'bt-set-row bt-bs-row' },
         h('span', { className: 'bt-set-copy' }, h('span', { className: 'bt-bs-label' }, t('Model')), h('span', { className: 'bt-set-hint' }, modelHint(bot, roster))),
-        h(ModelMenu, { bot, roster, actions, run }))),
+        h(ModelMenu, { bot, roster: (bot.origin === 'joined' && bot.worker?.home === 'remote' && Array.isArray(bot.worker.models))
+          ? { ...roster, models: bot.worker.models.map(m => ({ ref: m.ref, provider: m.provider, name: m.name, providerName: m.provider })) }
+          : roster, actions, run }))),
     h(Card, { title: t('Working folder') },
       h('div', { className: 'bt-set-row bt-bs-row' },
         h('span', { className: 'bt-set-copy' }, h('span', { className: 'bt-bs-label' }, t('Folder'))),

@@ -43,6 +43,24 @@ function listenBotCreateResult(registry, requestId, nodeId, timeoutMs) {
  * 在指定 node 上新建一个 Bot，成功后写入影子行。
  * 返回影子行 id（成功）或 { ok: false, error }（失败）。
  */
+/**
+ * Shared fail-closed workDir root boundary check.
+ * Returns null if OK, or an error string if rejected.
+ */
+export function checkWorkDirRoots(rt, workDir) {
+  if (workDir === null || workDir === undefined) return null
+  let policy
+  try { policy = rt.ctx?.get?.('remote-agent:node-policy') } catch { policy = undefined }
+  if (!policy) return 'bot-create-workdir-denied'
+  const roots = Array.isArray(policy.roots) ? policy.roots : []
+  if (roots.length === 0) return 'bot-create-workdir-denied'
+  const resolved = pathResolve(workDir)
+  const ignoreCase = process.platform === 'win32'
+  const inRoots = roots.some((r) => isInsideRoot(resolved, pathResolve(r), { sep: pathSep, ignoreCase }))
+  if (!inRoots) return 'bot-create-workdir-denied'
+  return null
+}
+
 export async function createBotOnNode(rt, { nodeId, name, role, modelRef = null, effort = null, workDir = null, instructions = null } = {}) {
   const nid = trimmed(nodeId)
   if (nid === '') return { ok: false, error: 'bot-create-nodeId-missing' }
@@ -175,22 +193,24 @@ export function createBotCreateReceiver(rt) {
     const createBot = rt.createBot
     if (typeof createBot !== 'function') return { ok: false, error: 'bot-create-no-roster' }
 
-    // §4 校验顺序：modelRef (hub-side, against node catalog) → workDir → createBot
-    // NOTE: The old main-side llm.listProviders() check was removed — it validated
-    // against the HUB's providers, not the node's, so main-only providers would pass
-    // here and then fail on the node. Real validation is now in createBotOnNode.
+    // §4 校验顺序：modelRef (node-side, this bot's own llm) → workDir → createBot
+    // This runs on the NODE, so llm.listProviders() reflects the node's actual providers.
+    if (modelRef !== null) {
+      // Fail-closed: if llm service unavailable, cannot verify provider → reject.
+      const providerId = modelRef.includes('/') ? modelRef.split('/')[0] : modelRef
+      const llm = rt.ctx?.get?.('llm') ?? rt.ctx?.llm
+      if (!llm || typeof llm.listProviders !== 'function') {
+        return { ok: false, error: 'bot-create-model-unknown' }
+      }
+      const providerIds = llm.listProviders().map(p => typeof p === 'string' ? p : p.id)
+      if (!providerIds.includes(providerId)) return { ok: false, error: 'bot-create-model-unknown' }
+      const missing = typeof rt.missingKeys === 'function' ? await rt.missingKeys([providerId]) : new Set()
+      if (missing.has(providerId)) return { ok: false, error: 'bot-create-model-no-key' }
+    }
 
-    if (workDir !== null) {
-      // Fail-closed: if node-policy unavailable, reject workDir (never allow-all).
-      let policy
-      try { policy = rt.ctx?.get?.('remote-agent:node-policy') } catch { policy = undefined }
-      if (!policy) return { ok: false, error: 'bot-create-workdir-denied' }
-      const roots = Array.isArray(policy.roots) ? policy.roots : []
-      if (roots.length === 0) return { ok: false, error: 'bot-create-workdir-denied' }
-      const resolved = pathResolve(workDir)
-      const ignoreCase = process.platform === 'win32'
-      const inRoots = roots.some((r) => isInsideRoot(resolved, pathResolve(r), { sep: pathSep, ignoreCase }))
-      if (!inRoots) return { ok: false, error: 'bot-create-workdir-denied' }
+    {
+      const wdErr = checkWorkDirRoots(rt, workDir)
+      if (wdErr) return { ok: false, error: wdErr }
     }
 
     try {
