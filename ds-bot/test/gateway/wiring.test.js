@@ -21,7 +21,7 @@ function canConnect(port, host = '127.0.0.1') {
 }
 
 // Real Cordis effect semantics: fn() called sync; only typeof result === 'function' registered as disposer.
-// Async fns return Promise → NOT registered → stop() never called.
+// Async fns return Promise -> NOT registered -> stop() never called.
 function makeRt({ gatewayPort = 0, gatewayHost = '127.0.0.1', hasSyncService = true, providers = [], env: envOverride = {} } = {}) {
   // When gatewayPort=0 (random), inject DS_BOT_GATEWAY_PORT=0 so readGatewaySettings uses it
   const env = gatewayPort === 0 ? { DS_BOT_GATEWAY_PORT: '0', ...envOverride } : { ...envOverride }
@@ -32,12 +32,14 @@ function makeRt({ gatewayPort = 0, gatewayHost = '127.0.0.1', hasSyncService = t
   const mockService = hasSyncService ? { setSource: cb => { setSourceCb = cb } } : null
   const store = Object.create(null)
   store['remote-agent:config-sync'] = mockService
-  const dsBot = gatewayPort !== 0 ? { gatewayPort, gatewayHost } : null
+  // Build settings sections: include ds-bot section when gatewayPort is explicit (non-zero)
+  const dsBotSection = gatewayPort !== 0 ? { ns: 'ds-bot', value: { gatewayPort, gatewayHost } } : null
+  const baseSections = [
+    ...(dsBotSection ? [dsBotSection] : []),
+    { ns: 'llm-pi-ai', value: { providers: {} } },
+  ]
   const settings = {
-    describe: () => [
-      ...(dsBot ? [{ ns: 'ds-bot', value: dsBot }] : []),
-      { ns: 'llm-pi-ai', value: { providers: {} } },
-    ],
+    describe: () => baseSections,
   }
   store.settings = settings
   const ctx = {
@@ -76,8 +78,8 @@ test('1A3-start: install starts gateway, provide gives real port', async () => {
 
 // --- 1A3-node-token: different nodeIds get different refName; same nodeId idempotent ---
 // Goes through real ensureToken via setSource callback with a gateway provider.
-// Knife A: register ignores nodeId → same refName for all → RED
-// Knife B: every-call-generate (ignore secrets.has) → token value changes → RED
+// Knife: register ignores nodeId -> same refName for all -> RED
+// Knife: every-call-generate (ignore secrets.has) -> token value changes -> RED
 test('1A3-node-token: nodeId-scoped tokens + idempotency', async () => {
   const { writeFileSync, mkdtempSync } = await import('node:fs')
   const { join } = await import('node:path')
@@ -126,15 +128,19 @@ test('1A3-no-gateway: port in use, providers keep original baseURL', async () =>
   const tmpHome = mkdtempSync(join(tmpdir(), 'ds-bot-nogw-'))
   writeFileSync(join(tmpHome, '.credentials.yaml'), 'refs:\n  ALPHA_KEY: sk-alpha\n', { mode: 0o600 })
 
-  const settingsSections = [
-    { ns: 'llm-pi-ai', value: { providers: { alpha: { api: 'openai-completions', baseURL: 'https://up.example.com/v1', apiKeyEnv: 'ALPHA_KEY', models: [{ id: 'a1' }], gateway: true } } } },
-  ]
   const cfgProviders = [
     { provider: 'alpha', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'alpha'] },
   ]
 
   const blocker = await startBlocker()
-  const { rt, warns, getSetSource, getProvidedPort, dispose } = makeRt({ gatewayPort: blocker.port })
+  // IMPORTANT: include ds-bot section with blocker.port so gateway always tries this occupied port.
+  // Without this, readGatewaySettings falls back to default 4387, which may or may not be occupied.
+  const settingsSections = [
+    { ns: 'ds-bot', value: { gatewayPort: blocker.port, gatewayHost: '127.0.0.1' } },
+    { ns: 'llm-pi-ai', value: { providers: { alpha: { api: 'openai-completions', baseURL: 'https://up.example.com/v1', apiKeyEnv: 'ALPHA_KEY', models: [{ id: 'a1' }], gateway: true } } } },
+  ]
+
+  const { rt, warns, getSetSource, getProvidedPort, dispose } = makeRt({ gatewayPort: 0 })
   rt.ctx.get('settings').describe = () => settingsSections
   rt.ctx.llm.listConfigurableProviders = () => cfgProviders
   rt.dshHome = tmpHome
@@ -169,23 +175,28 @@ test('1A3-stop: dispose releases gateway port', async () => {
   assert.equal(await canConnect(port), false, 'port should be released after dispose')
 })
 
-// --- 1A3-providers: listGatewayProviders derives from real settings ---
-// Knife: providers: [] (empty) → listGatewayProviders returns [] → alpha missing → RED
-test('1A3-providers: listGatewayProviders returns real provider list', async () => {
+// --- 1A3-providers: providersFn resolved per-request from real listGatewayProviders ---
+// Goes through product path: setSource callback -> Bearer token -> HTTP -> models endpoint.
+// Knife A: providersFn returns [] -> alpha 404 -> RED
+// Knife C: resolveProviders evaluates once at creation -> beta not found on second request -> RED
+test('1A3-providers: per-request provider resolution via real setSource path', async () => {
   const { writeFileSync, mkdtempSync } = await import('node:fs')
   const { join } = await import('node:path')
   const { tmpdir } = await import('node:os')
   const tmpHome = mkdtempSync(join(tmpdir(), 'ds-bot-gw-prov-'))
-  writeFileSync(join(tmpHome, '.credentials.yaml'), 'refs:\n  ALPHA_KEY: sk-alpha\n', { mode: 0o600 })
+  writeFileSync(join(tmpHome, '.credentials.yaml'), 'refs:\n  ALPHA_KEY: sk-alpha\n  BETA_KEY: sk-beta\n', { mode: 0o600 })
 
-  const settingsSections = [
-    { ns: 'llm-pi-ai', value: { providers: { alpha: { api: 'openai-completions', baseURL: 'https://up.example.com/v1', apiKeyEnv: 'ALPHA_KEY', models: [{ id: 'alpha-1' }, { id: 'alpha-2' }], gateway: true } } } },
-  ]
-  const cfgProviders = [
+  let cfgProviders = [
     { provider: 'alpha', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'alpha'] },
   ]
+  const settingsSections = [
+    { ns: 'llm-pi-ai', value: { providers: {
+      alpha: { api: 'openai-completions', baseURL: 'https://up.example.com/v1', apiKeyEnv: 'ALPHA_KEY', models: [{ id: 'alpha-1' }, { id: 'alpha-2' }], gateway: true },
+      beta:  { api: 'openai-completions', baseURL: 'https://up2.example.com/v1', apiKeyEnv: 'BETA_KEY',  models: [{ id: 'beta-1' }],  gateway: true },
+    } } },
+  ]
 
-  const { rt, getProvidedPort, dispose } = makeRt({ gatewayPort: 0 })
+  const { rt, getSetSource, getProvidedPort, dispose } = makeRt({ gatewayPort: 0 })
   rt.ctx.get('settings').describe = () => settingsSections
   rt.ctx.llm.listConfigurableProviders = () => cfgProviders
   rt.dshHome = tmpHome
@@ -195,44 +206,87 @@ test('1A3-providers: listGatewayProviders returns real provider list', async () 
   try {
     const port = getProvidedPort()
     assert.ok(port != null && port > 0, 'gateway should have started')
+    const cb = getSetSource()
+    assert.ok(cb, 'setSource callback should be captured')
 
-    // listGatewayProviders should return alpha (has key + baseURL)
-    const list = listGatewayProviders(rt)
-    assert.ok(list.some(p => p.id === 'alpha'), 'alpha should be in provider list')
-    const alpha = list.find(p => p.id === 'alpha')
-    assert.equal(alpha.models.length, 2, 'alpha should have 2 models')
+    // Get token for node-x via setSource callback (ensureToken is called inside)
+    const payload = cb('node-x')
+    const alphaEntry = payload.providers.find(p => p.id === 'alpha')
+    assert.ok(alphaEntry, 'alpha should be in payload providers')
+    const token = alphaEntry.apiKey  // token value written to secrets by ensureToken
 
-    // GET /gw/alpha/v1/models — auth required but provider IS registered: 401 (not 404)
-    const r1 = await fetch(`http://127.0.0.1:${port}/gw/alpha/v1/models`).catch(() => null)
-    if (r1) {
-      const b1 = await r1.json().catch(() => ({}))
-      assert.ok(r1.status !== 404, `alpha should not be 404 (providers registered), got ${r1.status}: ${JSON.stringify(b1)}`)
-    }
+    // Request 1: GET /gw/alpha/v1/models with valid Bearer token -> 200, data.length === 2
+    const r1 = await fetch(`http://127.0.0.1:${port}/gw/alpha/v1/models`, {
+      headers: { authorization: `Bearer ${token}` },
+    })
+    const b1 = await r1.json()
+    assert.equal(r1.status, 200, `alpha models should return 200, got ${r1.status}: ${JSON.stringify(b1)}`)
+    assert.equal(b1.data.length, 2, `alpha should have 2 models, got ${b1.data.length}`)
+    assert.equal(b1.data[0].id, 'alpha-1', `first model should be alpha-1, got ${b1.data[0].id}`)
 
-    // Unknown provider → 401 without auth first; check auth-required response
-    const r2 = await fetch(`http://127.0.0.1:${port}/gw/unknown/v1/models`).catch(() => null)
-    if (r2) {
-      // 401 is fine here (auth checked before routing), but provider-not-found must not appear
-      // because auth fails before we reach provider lookup
-      const b2 = await r2.json().catch(() => ({}))
-      assert.notEqual(b2.error, 'provider-not-found', 'should not see provider-not-found before auth passes')
-    }
+    // Request 2: GET /gw/unknown/v1/models -> 404 provider-not-found
+    const r2 = await fetch(`http://127.0.0.1:${port}/gw/unknown/v1/models`, {
+      headers: { authorization: `Bearer ${token}` },
+    })
+    const b2 = await r2.json()
+    assert.equal(r2.status, 404, `unknown provider should return 404, got ${r2.status}`)
+    assert.equal(b2.error, 'provider-not-found', `error should be provider-not-found, got ${b2.error}`)
+
+    // Per-request resolution: add beta provider AFTER gateway started
+    cfgProviders = [
+      { provider: 'alpha', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'alpha'] },
+      { provider: 'beta',  settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'beta'] },
+    ]
+    // Request 3: GET /gw/beta/v1/models -> 200 (proves per-request resolution, not cached at creation)
+    const r3 = await fetch(`http://127.0.0.1:${port}/gw/beta/v1/models`, {
+      headers: { authorization: `Bearer ${token}` },
+    })
+    const b3 = await r3.json()
+    assert.equal(r3.status, 200, `beta models should return 200 after dynamic add, got ${r3.status}: ${JSON.stringify(b3)}`)
+    assert.equal(b3.data[0].id, 'beta-1', `beta model should be beta-1, got ${b3.data[0]?.id}`)
   } finally { await dispose() }
 })
 
-// --- 1A3-config: DS_BOT_GATEWAY_HOST/PORT env vars control bind ---
-// Uses env to specify port=0 (random), verifies gateway starts and port > 0.
-// Knife: ignore env, always default 127.0.0.1:4387 → 4387 likely occupied → null → RED
-test('1A3-config: env var DS_BOT_GATEWAY_PORT controls port', async () => {
-  // Set DS_BOT_GATEWAY_PORT=0 so gateway picks a random free port via OS (default would be 4387)
-  // No 'ds-bot' settings section — env is the only config path being exercised
-  const { rt, getProvidedPort, dispose } = makeRt({ gatewayPort: 0, env: { DS_BOT_GATEWAY_PORT: '0' } })
+// --- 1A3-config: DS_BOT_GATEWAY_HOST env var controls bind host (via payload baseURL) ---
+// Use DS_BOT_GATEWAY_HOST=localhost: gateway binds to localhost, payload baseURL uses localhost.
+// Knife B: DS_BOT_GATEWAY_HOST ignored -> host stays 127.0.0.1 -> baseURL has 127.0.0.1 -> RED
+test('1A3-config: env var DS_BOT_GATEWAY_HOST controls gateway host in payload', async () => {
+  const { writeFileSync, mkdtempSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+  const tmpHome = mkdtempSync(join(tmpdir(), 'ds-bot-cfg-'))
+  writeFileSync(join(tmpHome, '.credentials.yaml'), 'refs:\n  ALPHA_KEY: sk-alpha\n', { mode: 0o600 })
+
+  const cfgProviders = [
+    { provider: 'alpha', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'alpha'] },
+  ]
+  // No ds-bot section in settings: host/port come from env only
+  const settingsSections = [
+    { ns: 'llm-pi-ai', value: { providers: { alpha: { api: 'openai-completions', baseURL: 'https://up.example.com/v1', apiKeyEnv: 'ALPHA_KEY', models: [{ id: 'a1' }], gateway: true } } } },
+  ]
+
+  // Set DS_BOT_GATEWAY_HOST=localhost and DS_BOT_GATEWAY_PORT=0 via env (no ds-bot settings section)
+  const { rt, getSetSource, getProvidedPort, dispose } = makeRt({
+    gatewayPort: 0,
+    env: { DS_BOT_GATEWAY_HOST: 'localhost', DS_BOT_GATEWAY_PORT: '0' },
+  })
+  rt.ctx.get('settings').describe = () => settingsSections
+  rt.ctx.llm.listConfigurableProviders = () => cfgProviders
+  rt.dshHome = tmpHome
+
   install(rt)
   await new Promise(r => setTimeout(r, 150))
   try {
     const port = getProvidedPort()
-    // Port should be a positive number chosen by OS (not 4387 the default)
-    assert.ok(typeof port === 'number' && port > 0, `gateway should have started via env port=0, got ${port}`)
-    assert.ok(await canConnect(port), `gateway port ${port} should accept connections`)
+    assert.ok(typeof port === 'number' && port > 0, `gateway should have started via env host=localhost, got ${port}`)
+    assert.ok(await canConnect(port, 'localhost'), `gateway should accept connections on localhost:${port}`)
+
+    const cb = getSetSource()
+    assert.ok(cb, 'setSource callback should be captured')
+    const payload = cb('node-x')
+    const alpha = payload.providers.find(p => p.id === 'alpha')
+    assert.ok(alpha, 'alpha provider should be in payload')
+    // baseURL should reflect the gateway host from env (localhost), not default 127.0.0.1
+    assert.ok(alpha.baseURL.startsWith('http://localhost:'), `alpha baseURL should use localhost from env, got: ${alpha.baseURL}`)
   } finally { await dispose() }
 })
