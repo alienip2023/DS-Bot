@@ -440,6 +440,8 @@ export function install(rt) {
   const roomOwners = new Map()
   /** @type {Map<string, {botId?:string, roomId?:string}>} */
   const pastOwners = new Map()
+  /** @type {Map<string, object>} sessionId → raw bot for joined-shadow lookup via bySessionId */
+  const bySessionIdMap = new Map()
   const chatOf = botId => botOf(botId)?.sessionId ?? botId
   const sessionOfRoom = room => (room === undefined ? undefined : room.sessionId ?? room.id)
   // DSH turns away every step of an archived Session and every task aimed at it, so a
@@ -471,9 +473,15 @@ export function install(rt) {
     groupOwners.clear()
     roomOwners.clear()
     pastOwners.clear()
+    bySessionIdMap.clear()
     for (const bot of Object.values(state.bots)) {
       for (const segment of bot.segments ?? []) pastOwners.set(segment.sessionId, { botId: bot.id })
       chatOwners.set(chatOf(bot.id), bot.id)
+      // Maintain bySessionId reverse index for mirror session lookup
+      if (typeof bot.sessionId === 'string' && bot.sessionId !== '') bySessionIdMap.set(bot.sessionId, bot)
+      for (const segment of bot.segments ?? []) {
+        if (segment.sessionId) bySessionIdMap.set(segment.sessionId, bot)
+      }
     }
     for (const room of Object.values(state.rooms)) {
       const sessionId = sessionOfRoom(room)
@@ -555,6 +563,7 @@ export function install(rt) {
   Object.assign(rt, {
     state, load, save, refresh, readOnly, own, onSaved, closeCard,
     botOf, roomOf, isMain, chatOf, sessionOfRoom, selfOf, isBotSession,
+    bySessionId: sid => bySessionIdMap.get(sid),
     chatOwners, groupOwners, roomOwners, pastOwners,
     groupSessionsOf, dropGroupSession, retireGroupSession, findBot, findRooms, isAdminOf,
   })
