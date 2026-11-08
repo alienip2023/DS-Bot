@@ -173,69 +173,87 @@ try {
   }
 } catch (e) { R.P6 = { verdict: 'FAIL', error: e.message } }
 
-// ── P7: wrapSendUser lookup failure — static chain + mock runtime ──────────
+// ── P7: wrapSendUser — real install(rt) from joined-turn.js ───────────────
+// Uses REAL wrapSendUser via install(rt), not a mock.
+// Scenario A: without bySessionId — botOf(mirrorSessionId) returns undefined → prompt called
+// Scenario B: with bySessionId on rt — current code doesn't check it → STILL prompt called (RED)
 try {
-  // Simulate what happens when send endpoint fires with mirrorSessionId
-  // wrapSendUser: rt.botOf(args.sessionId) → undefined → joinedShadow(undefined) = false → orig(args)
-  // orig(args) = sessionController.prompt path
+  const { install } = await import('../../src/host/joined-turn.js')
+
+  // joined bot record
   const joinedBot = { id: 'session-shadow-abc', origin: 'joined', worker: { home: 'remote', nodeId: 'n1', remoteBotId: 'session-remote-123' } }
-  const mirrorSessionId = 'session-local-mirror-xyz'  // bot.sessionId after mirror creation, ≠ bot.id
-
-  // Bot store: keyed by bot.id, NOT by bot.sessionId
+  // mirror session id (after mirror creation, bot.sessionId = realLocalSessionId ≠ bot.id)
+  const mirrorSessionId = 'session-local-mirror-xyz'
+  // bot store: keyed by bot.id only (current behavior, no bySessionId)
   const bots = new Map([['session-shadow-abc', joinedBot]])
+  // state.bots keyed by shadowId for handleJoinedTurn
+  const shadowIdKey = 'joined:n1:session-remote-123'
+  const state = { bots: { [shadowIdKey]: joinedBot }, exchanges: [] }
 
-  // Scenario A: WITHOUT bySessionId — current behavior
+  // ── Scenario A: WITHOUT bySessionId (current behavior) ──
   let promptCallsA = 0
+  let handleJoinedTurnCallsA = 0
   const rtA = {
+    ctx: { provide() {}, get() { return undefined } },
+    state,
     botOf: (id) => bots.get(id),  // looks up by bot.id only
-    sendUser: null,
-    sessionController: { prompt: async () => { promptCallsA++ } }
+    sendUser: async function origSendUser(args) {
+      // This is the "orig" that wrapSendUser falls through to when not joined
+      // In production this calls sessionController.prompt
+      promptCallsA++
+      return { ok: true }
+    },
+    deliver: async () => {},
+    warn: () => {},
   }
+  install(rtA)  // installs wrapSendUser on rtA.sendUser
+  // Override handleJoinedTurn AFTER install (wrapSendUser reads rt.handleJoinedTurn dynamically)
+  rtA.handleJoinedTurn = async (msg) => { handleJoinedTurnCallsA++; return { ok: true, text: 'reply' } }
 
-  // Install wrapSendUser from joined-turn.js
-  // We'll mock the behavior: wrapSendUser checks botOf(sessionId)
-  // botOf(mirrorSessionId) = bots.get('session-local-mirror-xyz') = undefined
-  // joinedShadow(undefined) = false → calls orig = sessionController.prompt
-  const botFromSessionIdA = rtA.botOf(mirrorSessionId)
-  const isJoinedA = Boolean(botFromSessionIdA && botFromSessionIdA.origin === 'joined' && botFromSessionIdA.worker && botFromSessionIdA.worker.home === 'remote')
-  if (!isJoinedA) { await rtA.sessionController.prompt() } // falls through
+  // Now call sendUser with mirrorSessionId — botOf won't find it
+  await rtA.sendUser({ sessionId: mirrorSessionId, content: [{ type: 'text', text: 'hi' }] })
 
-  // Scenario B: WITH bySessionId — after fix
+  // ── Scenario B: WITH bySessionId on rt — but current code doesn't check it ──
   let promptCallsB = 0
-  let handleJoinedTurnCalls = 0
-  const bySessionId = new Map([[mirrorSessionId, joinedBot]])
+  let handleJoinedTurnCallsB = 0
   const rtB = {
-    botOf: (id) => bots.get(id),
-    bySessionId: (sid) => bySessionId.get(sid),  // new reverse index
-    sendUser: null,
-    sessionController: { prompt: async () => { promptCallsB++ } },
-    handleJoinedTurn: async () => { handleJoinedTurnCalls++; return { ok: true, text: 'reply' } }
+    ctx: { provide() {}, get() { return undefined } },
+    state,
+    botOf: (id) => bots.get(id),  // still only by bot.id
+    bySessionId: (sid) => bots.get('session-shadow-abc'),  // reverse index EXISTS on rt
+    sendUser: async function origSendUser(args) {
+      promptCallsB++
+      return { ok: true }
+    },
+    deliver: async () => {},
+    warn: () => {},
   }
+  install(rtB)
+  rtB.handleJoinedTurn = async (msg) => { handleJoinedTurnCallsB++; return { ok: true, text: 'reply' } }
 
-  const botFromSessionIdB = rtB.bySessionId(mirrorSessionId) ?? rtB.botOf(mirrorSessionId)
-  const isJoinedB = Boolean(botFromSessionIdB && botFromSessionIdB.origin === 'joined' && botFromSessionIdB.worker && botFromSessionIdB.worker.home === 'remote')
-  if (isJoinedB) { await rtB.handleJoinedTurn({ toId: joinedBot.id, text: 'hi', role: 'request' }) }
-  else { await rtB.sessionController.prompt() }
+  await rtB.sendUser({ sessionId: mirrorSessionId, content: [{ type: 'text', text: 'hi' }] })
 
   R.P7 = {
-    verdict: (promptCallsA === 1 && promptCallsB === 0 && handleJoinedTurnCalls === 1) ? 'PASS' : 'FAIL',
+    verdict: (promptCallsA === 1 && promptCallsB === 1) ? 'RED_CONFIRMS_FIX_REQUIRED' : 'UNEXPECTED',
+    method: 'real install(rt) from src/host/joined-turn.js:205, not mock',
     scenarioA_without_bySessionId: {
-      botOf_mirrorSessionId: botFromSessionIdA,   // undefined
-      isJoined: isJoinedA,                         // false
-      promptCalls: promptCallsA,                   // 1 — local model invoked (BUG)
+      botOf_mirrorSessionId: rtA.botOf(mirrorSessionId),  // undefined
+      isJoined: false,
+      promptCalls: promptCallsA,          // 1 — local model invoked (current bug)
+      handleJoinedTurnCalls: handleJoinedTurnCallsA,  // 0
     },
-    scenarioB_with_bySessionId: {
-      botBySessionId: botFromSessionIdB?.id,      // 'session-shadow-abc'
-      isJoined: isJoinedB,                         // true
-      promptCalls: promptCallsB,                   // 0 — local model NOT invoked
-      handleJoinedTurnCalls,                       // 1 — correctly routed to joined
+    scenarioB_with_bySessionId_but_not_checked: {
+      bySessionId_exists: typeof rtB.bySessionId,  // 'function'
+      botOf_still_returns: rtB.botOf(mirrorSessionId),  // undefined — wrapSendUser doesn't use bySessionId
+      promptCalls: promptCallsB,          // STILL 1 — wrapSendUser doesn't check bySessionId!
+      handleJoinedTurnCalls: handleJoinedTurnCallsB,  // 0
     },
-    red_evidence: 'Without bySessionId: promptCalls=1 (local model runs). With bySessionId: promptCalls=0, handleJoinedTurn=1.',
-    fix: 'wrapSendUser must check bySessionId(args.sessionId) as primary lookup before botOf(args.sessionId)',
+    red_evidence: 'Scenario A: promptCalls=1 (local model runs). Scenario B: bySessionId exists on rt but wrapSendUser does not read it → promptCalls=1 still. This confirms the fix (adding bySessionId check in wrapSendUser) is REQUIRED.',
+    fix: 'wrapSendUser in joined-turn.js:180 must check rt.bySessionId?.(args.sessionId) before rt.botOf(args.sessionId)',
     guard_boundaries: ['resolveAgent (delivery.js:11)', 'sessionController.prompt (channel.js:780)'],
     type: 'runtime'
   }
-} catch (e) { R.P7 = { verdict: 'FAIL', error: e.message } }
+} catch (e) { R.P7 = { verdict: 'FAIL', error: e.message, stack: e.stack?.split('\n').slice(0,5).join('\n') } }
 
 // ── P8: turn/end closes generating state ──────────────────────────────────
 try {

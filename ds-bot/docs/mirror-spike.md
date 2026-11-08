@@ -46,7 +46,7 @@ Independent session (no SessionStore). `publicationEntry()` returns `undefined` 
 - `Array.isArray(event.data.content)` → text content (✅ `user_msg_data_content` is array)
 - `Array.isArray(event.data.message.content)` → bot bubble (✅ `bot_msg_data_message_content` is array)
 
-**Persistence:** Session.fromRestore with same id reloads all events with data equality verified (`eventsMatch: true`). `session/end-seed` is appended by fromRestore (expected behavior). In production, `ctx.sessionController.create()` calls `SessionStore.prepare+enter+announce` which uses `Session.create` internally — event log structure is identical.
+**Persistence via fromRestore (surrogate):** Session.fromRestore with same id reloads all events with data equality verified (`eventsMatch: true`). `session/end-seed` is appended by fromRestore (expected behavior). **store-owned session (`sessionController.create`) deferred to S1** — SessionStore requires a full cordis ctx (inject/effect/parallel) not feasible in a standalone script; S1 first task is a sessionController.create integration test.
 
 **Verdict: ✅ Feasible, primary route.**
 
@@ -133,44 +133,42 @@ Independent session (no SessionStore). `publicationEntry()` returns `undefined` 
 
 ---
 
-## P7 — Input interception: bySessionId reverse index required (runtime)
+## P7 — wrapSendUser lookup failure: real `install(rt)` evidence (runtime)
 
-**Two scenarios compared with mock rt:**
+**Method:** `install(rt)` imported from real `src/host/joined-turn.js:205` (not a mock). Two scenarios.
 
 ```json
 {
-  "verdict": "PASS",
+  "verdict": "RED_CONFIRMS_FIX_REQUIRED",
+  "method": "real install(rt) from src/host/joined-turn.js:205, not mock",
   "scenarioA_without_bySessionId": {
+    "botOf_mirrorSessionId": null,
     "isJoined": false,
-    "promptCalls": 1
+    "promptCalls": 1,
+    "handleJoinedTurnCalls": 0
   },
-  "scenarioB_with_bySessionId": {
-    "botBySessionId": "session-shadow-abc",
-    "isJoined": true,
-    "promptCalls": 0,
-    "handleJoinedTurnCalls": 1
+  "scenarioB_with_bySessionId_but_not_checked": {
+    "bySessionId_exists": "function",
+    "botOf_still_returns": null,
+    "promptCalls": 1,
+    "handleJoinedTurnCalls": 0
   },
-  "red_evidence": "Without bySessionId: promptCalls=1 (local model runs). With bySessionId: promptCalls=0, handleJoinedTurn=1."
+  "red_evidence": "Scenario A: promptCalls=1 (local model runs). Scenario B: bySessionId exists on rt but wrapSendUser does not read it → promptCalls=1 still. This confirms the fix (adding bySessionId check in wrapSendUser) is REQUIRED."
 }
 ```
 
-**Root cause chain:**
-1. `send` endpoint (`channel.js:603`): `rt.sendUser({sessionId: mirrorSessionId, ...})`
-2. `wrapSendUser` (`joined-turn.js:176-180`): `const bot = rt.botOf?.(args?.sessionId)` — looks up by `bot.id` only
-3. After mirror: `bot.sessionId = realLocalSessionId ≠ bot.id` → `rt.botOf(mirrorSessionId) = undefined`
-4. `joinedShadow(undefined) = false` → falls through to `orig(args)` = `sessionController.prompt` → local model handles it (BUG)
+**Root cause chain (`src/host/joined-turn.js:176-196`):**
+1. `wrapSendUser:180`: `const bot = rt.botOf?.(args?.sessionId)` — looks up by `bot.id` only
+2. After mirror: `bot.sessionId = realLocalSessionId ≠ bot.id` → `rt.botOf(mirrorSessionId) = undefined`
+3. `joinedShadow(undefined) = false` → falls through to `orig(args)` → local model handles it (BUG)
+4. Scenario B confirms: even with `rt.bySessionId` function present, wrapSendUser ignores it — `promptCalls=1` both scenarios
 
-**Fix:** `wrapSendUser` must check `rt.bySessionId?.(args.sessionId)` before `rt.botOf(args.sessionId)`.
+**Fix:** `joined-turn.js:180` must check `rt.bySessionId?.(args.sessionId)` before `rt.botOf(args.sessionId)`.
 
-**Guard boundaries:**
-- `resolveAgent` (`delivery.js:11`) — intercepts delivery path
-- `sessionController.prompt` wrap (`channel.js:780`) — intercepts direct-send path
+**`channel.js:780 sessionController.prompt` is the only direct-prompt entry bypassing `agent.followup`.**
+Guard boundaries: `resolveAgent` (delivery.js:11) + `sessionController.prompt` (channel.js:780).
 
-**`channel.js:780 sessionController.prompt` is the only direct-prompt entry point** that bypasses `agent.followup`. All 13 other local model write points in B.5 route through `agent.followup` or `deliver` — they are guarded by `resolveAgent`.
-
-**Verdict: ⚠️ Feasible with bySessionId guard. Without it, input falls to local model.**
-
----
+**Verdict: ✅ RED evidence confirmed. Fix is required before S1.**
 
 ## P8 — turn/end closes generating state (runtime)
 
@@ -193,7 +191,7 @@ Independent session (no SessionStore). `publicationEntry()` returns `undefined` 
 |----|---------|------|-------|
 | P1 | ✅ PASS | runtime | Primary |
 | P2 | ✅ PASS | runtime | Primary |
-| P3 | ✅ PASS | runtime | Primary + app idempotency |
+| P3 | ✅ PASS (store-owned deferred to S1) | runtime | Primary + app idempotency |
 | P4 | ⚠️ SESSION_ALLOWS_DUP | runtime | Primary + app (turn,step) dedup |
 | P5 | ✅ SESSION_ALLOWS | runtime | Primary (write turn/start first) |
 | P6 | ✅ SESSION_ALLOWS | runtime | Primary (safe) |
