@@ -1,22 +1,44 @@
 # 模型网关 P1 分片计划 v6 (Model Gateway P1 Slice Plan)
 
-**状态**: 修订稿 v6（2026-11-08，架构师，司令 v5 审查 3 条修正后重写；v6 待冻结）
+**状态**: 修订稿 v5（2026-11-08，架构师，tailnet 通道补充，df704ae1 三条实施备注维持）
 **分支**: feat/model-gateway-contract
 **依赖契约**: docs/model-gateway-contract.md v3 (2396338c) — 已冻结
 **代码基线**: dsh-remote-agent HEAD 14cb02f (0.10.1-fork.47) + ds-bot HEAD
 
 ---
 
-## 环境事实
+## 环境事实（已更新 2026-11-08）
 
 | 事实 | 值 |
 |---|---|
-| hub 私网地址 | 10.0.0.90（无 Tailscale，无公网入口） |
-| 节点公网地址 | 118.89.29.49 |
-| SSH 可用性 | hub→节点 SSH（dsh-ssh.json remote: 118.89.29.49:22, root, 密码认证） |
-| sshd AllowTcpForwarding | 须为 `yes` 或 `remote`（-R 需要 remote forward，`local` 不允许） |
+| hub tailnet 地址 | 100.64.0.3（Headscale 今日入网） |
+| hub 私网地址 | 10.0.0.90 |
+| 节点 dshtest-1 | 118.89.29.49（tailnet 内，直连 16ms） |
+| hk-vps | tailnet 内，直连 19ms |
+| DERP hk | 18.5ms；UDP 打洞成功 |
+| 三节点 tailnet | ✅ hub + dshtest-1 + hk-vps 全在 tailnet 内 |
+| SSH 可用性 | hub→节点 SSH 仍可用（兜底通道） |
+| sshd AllowTcpForwarding | 兜底时须为 `yes` 或 `remote` |
 
-**通道定案：反向 SSH 隧道 + hub 本地网关（127.0.0.1:4387）**
+**通道 v2（tailnet 优先）**：
+
+```
+节点 (100.64.x.x)                        hub (100.64.0.3)
+┌──────────────────┐                    ┌─────────────────────────┐
+│ pi-ai adapter    │    HTTP request     │  网关 100.64.0.3:4387   │
+│ baseURL =        │──→ 100.64.0.3:4387 →│  ↓                      │
+│ http://100.64.   │    (tailnet 路由)    │  上游 provider (apiKey) │
+│ 0.3:4387/gw/{p}  │                    └─────────────────────────┘
+└──────────────────┘
+```
+
+- `gatewayHost` 可配，默认 `127.0.0.1`，tailnet 下配 `100.64.0.3`
+- 网关绑 `gatewayHost:4387`（当 tailnet 可用时 gatewayHost = 100.64.0.3）
+- 节点 `baseURL = http://{gatewayHost}:{gatewayPort}/gw/{providerId}/v1`
+- 反向 SSH 隧道降为**兜底通道**（节点不在 tailnet 时启用），不作默认
+- 代码结构不变（地址已可配），只改默认路径和验收命令
+
+> **注**：原 df704ae1 计划中的反向 SSH 隧道 supervisor 实现不废除，仍保留为自动兜底。
 
 ---
 
@@ -269,10 +291,53 @@ conn.on('tcp connection', (info, accept, reject) => {
 
 ---
 
+## 通道 v2 验收命令（tailnet 模式）
+
+以下命令在 dshtest-1 节点上执行，经 `100.64.0.3:4387` 验证网关通路。
+
+### T1：/v1/models 可达
+```bash
+# 在 dshtest-1 上执行
+curl -s -H "Authorization: Bearer $GATEWAY_TOKEN" \
+  http://100.64.0.3:4387/gw/openai/v1/models | jq '.data[].id'
+# 断言：返回 JSON，包含至少一个 model id，HTTP 200
+```
+
+### T2：流式请求（一次推理）
+```bash
+curl -s -N -H "Authorization: Bearer $GATEWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"openai/gpt-4o","messages":[{"role":"user","content":"ping"}],"stream":true}' \
+  http://100.64.0.3:4387/gw/openai/v1/chat/completions
+# 断言：收到至少一行 data: {...}，最后收到 data: [DONE]
+```
+
+### T3：abort 传播（≤1s）
+```bash
+# 在 dshtest-1 上执行（--max-time 0.5 触发客户端 abort）
+curl -s -N --max-time 0.5 -H "Authorization: Bearer $GATEWAY_TOKEN" \
+  -d '{"model":"openai/gpt-4o","messages":[{"role":"user","content":"count to 1000"}],"stream":true}' \
+  http://100.64.0.3:4387/gw/openai/v1/chat/completions || true
+# 断言：hub 网关日志出现 upstream aborted，1s 内上游 fetch 终止
+```
+
+### T4：token 轮换后重启验证
+```bash
+# 1. hub 侧触发 token 轮换（新 epoch refName），推新 config-push revision
+# 2. 观察 dshtest-1 上 dsh-worker 重启（systemctl status dsh-worker 出现 restart）
+# 3. 重启后用新 token 发 T2，断言成功
+# 4. 旧 token 在窗口内仍通，窗口（首次成功或 10min）后返回 401
+```
+
+> 以上命令同样适用于回归测试 SSH 兜底通道（替换 IP 为 127.0.0.1，确保 forwardIn 隧道已建立）。
+
+
+---
+
 ## 开工前检查清单
 
 - [ ] S1 (feat/mirror-session) 门禁通过
 - [ ] Slice 0 探针跑完，数字达标（全链路节点侧 curl 或 node fetch 测量）
-- [ ] sshd `AllowTcpForwarding yes|remote` 已确认
+- [ ] tailnet 可达性确认（hub ping 100.64.x.x ≤ 30ms）；sshd `AllowTcpForwarding yes|remote` 兜底时确认
 - [ ] 待验证项 G1 结论出
-- [ ] hub config `gatewayTunnels` 配置就绪（`{ "dshtest-1": "remote" }`）
+- [ ] hub config `gatewayHost = 100.64.0.3` 已配置（tailnet 模式）；兜底时 `gatewayTunnels = { "dshtest-1": "remote" }` 已配
