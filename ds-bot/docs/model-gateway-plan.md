@@ -1,6 +1,6 @@
-# 模型网关 P1 分片计划 v17 (Model Gateway P1 Slice Plan)
+# 模型网关 P1 分片计划 v18 (Model Gateway P1 Slice Plan)
 
-**状态**: 修订稿 v17（2026-11-08，架构师，新增 Slice 1A-6：resolveDshHome + 启动诊断 + pushOnline 双触发；1A-5 口径修正）
+**状态**: 修订稿 v18（2026-11-08，架构师，新增 Slice 1A-7 E2E 触发补推）
 **分支**: feat/model-gateway-contract
 **依赖契约**: docs/model-gateway-contract.md v3 (2396338c) — 已冻结
 **代码基线**: dsh-remote-agent HEAD 14cb02f (0.10.1-fork.47) + ds-bot HEAD
@@ -396,6 +396,44 @@ ctx.effect(() => {
 - 版本：ds-bot `0.3.1-fork.37`；package.json 与 commit message 一致
 - T1/T2/T3 真机验收排在 1A-6 装机之后（含二次推送 gateway-ready 日志确认）
 
+---
+
+#### 1A-7. E2E 建立后触发 config-sync 补推（dsh-remote-agent，0.10.1-fork.50）
+
+**真机根因（证据来源）**：
+
+真机日志出现 `config-sync: no e2e session, refuse to push ... revision:1181119400`；
+- `lib/hub/config-sync.js` 的 `hasE2E` 护栏在 E2E 未建立时拒推，设计正确；
+- `pushOnline`（1A-6 新增）在 attach 与 gateway-ready 两个时刻触发，但此时 E2E 会话尚未建立，推送全部被护栏拒绝；
+- 节点侧全仓无发送 `CONFIG_SYNC_REQUEST` 的代码（`lib/protocol.js:136` 仅定义，`lib/hub/registry-ingest.js:351` 仅接收）；
+- 重连不触发推送，节点永久停在旧配置（`/root/.dsh/config-sync.json` mtime 12:39）。
+
+**修法（ra，0.10.1-fork.50）**：
+
+- hub：`handleE2EOffer()` 成功后发 `e2eEstablished(nodeId)` 事件；config-sync 订阅，对该节点调用 `sendPush(nodeId)`（护栏此时已过，E2E 已建立）；
+- node：transport `online` 事件后读本地 `appliedRevision` 并发 `CONFIG_SYNC_REQUEST`（现有接收路径 `registry-ingest.js:351` 已就绪，不需要新帧）；
+- **护栏不动**：`hasE2E` 守住「无会话绝不发明文」。
+
+**已知不变量（新增契约条款）**：带密钥的下行不得在无 E2E 时发送，也不得因时序丢失而永远不重试——护栏 + 补推缺一不可。
+
+**修改文件**（dsh-remote-agent 仓库）：
+- `lib/hub/config-sync.js` — 订阅 `e2eEstablished` 事件，对节点补推
+- `lib/hub/e2e.js`（或 `handleE2EOffer` 所在文件）— 成功后 emit `e2eEstablished`
+- `lib/node/index.js` — transport online 后发 `CONFIG_SYNC_REQUEST`
+
+**Slice 1A-7 测试**（dsh-remote-agent `test/config-sync.test.js`，node:test）：
+
+| 测试 | 断言 | 刀 |
+|---|---|---|
+| `1A7-e2e-push` | E2E 建立后 sendPush 被调用，payload 含 `GATEWAY_TOKEN_` ref | 删 e2eEstablished 订阅 → 不推 → 红 |
+| `1A7-node-request` | node transport online 后发 CONFIG_SYNC_REQUEST，hub 收到后推送 | 删 CONFIG_SYNC_REQUEST 发送 → 节点无更新 → 红 |
+| `1A7-no-plaintext` | hasE2E=false 时推送被拒，apiKey 不出现在明文帧 | 删 hasE2E 护栏 → 明文下行 → 红 |
+
+**版本**：ra `0.10.1-fork.50`（package.json 同步，commit 信息一致）。
+
+**真机验收顺序**（更新）：1A-7 装机 → 用户 ⌘Q 重启 → 先核「E2E established 日志 + 节点 `.credentials.yaml` 出现 `GATEWAY_TOKEN_`」→ 再跑 T1/T2/T3；T4（token 轮换重启）依赖 1A-4 fingerprint，仍排在 T1–T3 之后。1B 隧道继续暂缓。
+
+
 #### 1B. 反向隧道 Supervisor（dsh-remote-agent 仓库）
 
 **新建文件**：`lib/hub/tunnel-supervisor.js`
@@ -464,6 +502,8 @@ conn.on('tcp connection', (info, accept, reject) => {
 ---
 
 ## 已知限制
+
+0. **E2E 护栏 + 补推缺一不可**：带密钥的下行不得在无 E2E 时发送，也不得因时序丢失永远不重试（1A-7）。
 
 1. **`currentRevision` 为单值**：改成 per-node source 后，`currentRevision` 只表示「最近一次计算」的版本，不反映各节点实际 appliedRevision。`handleSyncRequest` 每次 `readSource(nodeId)` + `computeRevision` 实时对比，正确性不受影响；per-node revision map 状态展示留 P2。
 
