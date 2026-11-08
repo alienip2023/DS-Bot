@@ -137,7 +137,7 @@ test('createBotCreateReceiver calls local createBot without type remote-worker',
       created.push(opts)
       const id = `local-${opts.name}`
       rt.state.bots[id] = { id, name: opts.name, role: opts.role ?? '' }
-      return id
+      return rt.state.bots[id]
     },
   }
   const accept = createBotCreateReceiver(rt)
@@ -233,7 +233,7 @@ test('createBotCreateReceiver passes model/effort/workDir/instructions to create
       created.push(opts)
       const id = `local-${opts.name}`
       rt.state.bots[id] = { id, name: opts.name, role: opts.role ?? '' }
-      return id
+      return rt.state.bots[id]
     },
   }
   const accept = createBotCreateReceiver(rt)

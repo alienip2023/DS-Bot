@@ -192,13 +192,17 @@ export function createBotCreateReceiver(rt) {
 
     try {
       // 不传 type:'remote-worker'，建出来是普通本地 Bot，reportableBots 才会上报
-      const id = await createBot({ name, role, model: modelRef, effort, workDir, instructions })
-      const bot = rt.state?.bots?.[id]
+      // roster.js createBot resolves to the Bot object (buildBot returns `bot`), not an id.
+      const bot = await createBot({ name, role, model: modelRef, effort, workDir, instructions })
+      const id = typeof bot?.id === 'string' ? bot.id.trim() : ''
+      // The hub accepts only a non-empty string id and silently drops anything else, so an
+      // answer without one is a failure here, never an empty or object-valued remoteBotId.
+      if (id === '') return { ok: false, error: 'bot-create-failed: createBot returned no Bot id' }
       return {
         ok: true,
         remoteBotId: id,
-        name: bot?.name ?? name,
-        role: bot?.role ?? role,
+        name: bot.name ?? name,
+        role: bot.role ?? role,
       }
     } catch (err) {
       // Log the full stack so journalctl -u dsh-worker captures it for diagnostics.
