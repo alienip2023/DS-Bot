@@ -77,6 +77,201 @@ export function markNodeOffline(state, nodeId, now = Date.now()) {
   }
 }
 
+/**
+ * Migrate legacy joined Bots: rebuild mirror sessions from node history.
+ * For each joined Bot:
+ *   - Fetch all history via joinedChatPage (paginating to cursor=null)
+ *   - Group items by turn into {userText, botText, turn, seq} pairs
+ *   - If bot.mirrorWatermark >= maxSeq → skip (already up-to-date)
+ *   - Else rebuild: create new session, importHistory, update watermark
+ * opts.dryRun: return wouldRebuild list, zero writes
+ * Returns {migrated, skipped, failed, errors}
+ */
+export async function migrateLegacyJoined(rt, opts = {}) {
+  const { dryRun = false } = opts
+  const { importHistory } = await import('./mirror.js')
+  // Use rt.joinedChatPage if available (testability), else import from module
+  const joinedChatPage = typeof rt.joinedChatPage === 'function'
+    ? rt.joinedChatPage
+    : (await import('./joined-page.js')).joinedChatPage
+  const { existsSync, mkdirSync, writeFileSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { homedir } = await import('node:os')
+
+  const bots = Object.values(rt?.state?.bots ?? {}).filter(b => b?.origin === 'joined')
+  const migrated = []
+  const skipped = []
+  const failed = []
+  const errors = []
+  const wouldRebuild = []
+
+  // Snapshot state before any writes
+  if (!dryRun && bots.length > 0) {
+    const dshHome = rt.dshHome ?? join(homedir(), '.dsh')
+    const backupData = JSON.stringify(rt.state?.bots, null, 2)
+    let backupPath = join(dshHome, 'bot-home-s2-backup.json')
+    if (existsSync(backupPath)) {
+      backupPath = join(dshHome, `bot-home-s2-backup-${Date.now()}.json`)
+    }
+    try {
+      mkdirSync(dshHome, { recursive: true })
+      writeFileSync(backupPath, backupData, { encoding: 'utf8', flag: 'wx' })
+    } catch (backupErr) {
+      rt.warn?.('ds-bot: migrateLegacyJoined backup failed: %s', backupErr?.message ?? backupErr)
+    }
+  }
+
+  for (const bot of bots) {
+    try {
+      // Fetch all history from node, paginating to cursor=null
+      const allItems = []
+      let cursor = undefined
+      let offlineDetected = false
+
+      do {
+        const page = await joinedChatPage(rt, bot.id, cursor)
+        const items = page?.items ?? []
+        // Detect offline/error items (only 1 item with kind:'bot' and no seq)
+        if (items.length === 1 && items[0].kind === 'bot' && typeof items[0].seq !== 'number') {
+          offlineDetected = true
+          break
+        }
+        allItems.push(...items)
+        // ?? null ensures undefined cursor stops the loop (undefined != null is true without this)
+        cursor = page?.cursor ?? null
+      } while (cursor != null)
+
+      if (offlineDetected) {
+        const msg = 'node offline or history unavailable'
+        failed.push(bot.id)
+        errors.push({ botId: bot.id, error: msg })
+        rt.warn?.('ds-bot: migrateLegacyJoined %s failed: %s', bot.id, msg)
+        continue
+      }
+
+      // Group items by turn into {userText, botText, turn, seq} pairs
+      // allItems is newest-first (pagination order) — reverse to get time-ascending order
+      const orderedItems = [...allItems].reverse()
+      const byTurn = new Map()
+      let maxSeq = 0
+      for (const item of orderedItems) {
+        if (typeof item.seq === 'number' && item.seq > maxSeq) maxSeq = item.seq
+        const t = item.turn ?? 0
+        if (!byTurn.has(t)) byTurn.set(t, { turn: t, userText: '', botText: '', seq: null })
+        const g = byTurn.get(t)
+        // join multi-text blocks with newline (newest-first pagination can yield multiple per turn)
+        if (item.kind === 'user') g.userText = g.userText ? g.userText + '\n' + (item.text ?? '') : (item.text ?? '')
+        if (item.kind === 'bot') { g.botText = g.botText ? g.botText + '\n' + (item.text ?? '') : (item.text ?? ''); if (typeof item.seq === 'number' && (g.seq === null || item.seq > g.seq)) g.seq = item.seq }
+      }
+
+      // Filter: only complete pairs (user + bot)
+      const groups = [...byTurn.values()]
+        .filter(g => g.userText !== '' && g.botText !== '')
+        .sort((a, b) => a.turn - b.turn)
+
+      // Skip: empty history + existing mirror → preserve (node may have been wiped, don't clobber mirror)
+      if (allItems.length === 0 && typeof bot.sessionId === 'string' && bot.sessionId !== '') {
+        skipped.push(bot.id)
+        continue
+      }
+
+      // Skip if bot already has a mirror session and watermark covers all items
+      const currentWatermark = bot.mirrorWatermark ?? 0
+      if (typeof bot.sessionId === 'string' && bot.sessionId !== '' && currentWatermark >= maxSeq) {
+        // watermark >= maxSeq: mirror is up-to-date — preserve
+        skipped.push(bot.id)
+        continue
+      }
+
+      if (dryRun) {
+        wouldRebuild.push({ botId: bot.id, turns: groups.length, maxSeq, currentWatermark })
+        continue
+      }
+
+      // Rebuild: create new session
+      const oldSessionId = bot.sessionId ?? null
+      let newSessionId
+      try {
+        newSessionId = await rt.createSession(bot.id + ' (mirror)')
+      } catch (createErr) {
+        const msg = 'createSession failed: ' + (createErr?.message ?? createErr)
+        failed.push(bot.id)
+        errors.push({ botId: bot.id, error: msg })
+        rt.warn?.('ds-bot: migrateLegacyJoined %s failed: %s', bot.id, msg)
+        continue
+      }
+
+      let agent
+      try {
+        agent = await rt.resolveAgent(newSessionId)
+      } catch (resolveErr) {
+        const msg = 'resolveAgent failed: ' + (resolveErr?.message ?? resolveErr)
+        failed.push(bot.id)
+        errors.push({ botId: bot.id, error: msg })
+        rt.warn?.('ds-bot: migrateLegacyJoined %s failed: %s', bot.id, msg)
+        continue
+      }
+
+      const session = agent.session
+      const seenKeys = new Set()
+      const closedKeys = new Set()
+      const seenSteps = new Set()
+
+      let importResult
+      try {
+        importResult = await importHistory(session, groups, {
+          botId: bot.id,
+          watermark: 0,
+          gapMode: 'turn',  // bulk migration: check turn order not seq continuity
+          seenKeys,
+          closedKeys,
+          seenSteps,
+        })
+      } catch (importErr) {
+        // Import failed: revert bot state (don't leave half-built session)
+        const msg = 'importHistory failed: ' + (importErr?.message ?? importErr)
+        failed.push(bot.id)
+        errors.push({ botId: bot.id, error: msg })
+        rt.warn?.('ds-bot: migrateLegacyJoined %s failed: %s', bot.id, msg)
+        // Don't update bot.sessionId — leave it pointing to old session
+        continue
+      }
+
+      // Update bot state, then save — rollback all fields if save fails
+      const prevSessionId = bot.sessionId
+      const prevLegacyMirrorSessionId = bot.legacyMirrorSessionId
+      const prevWatermark = bot.mirrorWatermark
+      const prevRebuiltAt = bot.mirrorRebuiltAt
+      bot.legacyMirrorSessionId = oldSessionId
+      bot.sessionId = newSessionId
+      rt.updateBySessionId?.(bot.id, oldSessionId, newSessionId)
+      bot.mirrorWatermark = maxSeq
+      bot.mirrorRebuiltAt = new Date().toISOString()
+      try {
+        await rt.save?.()
+      } catch (saveErr) {
+        // Rollback all state changes
+        bot.sessionId = prevSessionId
+        bot.legacyMirrorSessionId = prevLegacyMirrorSessionId
+        bot.mirrorWatermark = prevWatermark
+        bot.mirrorRebuiltAt = prevRebuiltAt
+        rt.updateBySessionId?.(bot.id, newSessionId, prevSessionId)
+        throw saveErr
+      }
+
+      migrated.push({ botId: bot.id, imported: importResult.imported, warnings: importResult.warnings })
+    } catch (err) {
+      const msg = err?.message ?? String(err)
+      failed.push(bot.id)
+      errors.push({ botId: bot.id, error: msg })
+      rt.warn?.('ds-bot: migrateLegacyJoined %s failed: %s', bot.id, msg)
+    }
+  }
+
+  if (dryRun) return { wouldRebuild, skipped, failed, errors }
+  return { migrated, skipped, failed, errors }
+}
+
 export function install(rt) {
   const ctx = rt.ctx
   const onRoster = (report) => {

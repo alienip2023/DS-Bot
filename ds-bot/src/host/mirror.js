@@ -123,6 +123,97 @@ export function mirrorTurnEnd(session, turn, errorMessage) {
  * @returns {Promise<object>}  store-owned Session
  * @throws {Error} with code 'no-session' on any failure
  */
+/**
+ * Import a batch of normalized history items into a mirror Session.
+ * Each item represents one complete exchange (user + bot).
+ * items: [{userText, botText, turn, step?, seq?, time?}]
+ * opts:  {seenKeys, closedKeys, seenSteps, watermark=0, botId}
+ * Returns {imported, skipped, warnings}
+ */
+export async function importHistory(session, items, opts = {}) {
+  const { seenKeys, closedKeys, seenSteps, watermark = 0, botId, seqStep = 1, gapMode = 'seq' } = opts
+  const warnings = []
+  let imported = 0
+  let skipped = 0
+
+  for (const item of items) {
+    const { userText, botText, turn, step = 1, seq } = item
+
+    // watermark check: seq <= watermark → silent skip
+    if (typeof seq === 'number' && seq <= watermark) {
+      skipped++
+      continue
+    }
+
+    // gap check (gapMode: 'seq' checks event-seq continuity; 'turn' checks turn order; 'none' skips)
+    if (gapMode === 'seq' && typeof seq === 'number' && seq > watermark + seqStep + (imported + skipped) * seqStep) {
+      warnings.push(`gap: seq=${seq} watermark=${watermark}`)
+      skipped++
+      continue
+    }
+    if (gapMode === 'turn' && typeof item.turn === 'number' && imported + skipped > 0) {
+      // Only warn on turn gaps, never skip (bulk migration may have sparse turns)
+      const expectedTurn = imported + skipped + 1
+      if (item.turn !== expectedTurn && item.turn > expectedTurn) {
+        warnings.push(`gap: turn=${item.turn} expected=${expectedTurn}`)
+      }
+    }
+
+    // dedup check via seenKeys (seq-based) or seenSteps (turn:step-based)
+    const nodeKey = (botId != null && typeof seq === 'number' && seenKeys instanceof Set)
+      ? String(botId) + ':' + String(seq) : null
+    if (nodeKey !== null && seenKeys.has(nodeKey)) { skipped++; continue }
+    if (nodeKey !== null && closedKeys instanceof Set && closedKeys.has(nodeKey)) { skipped++; continue }
+
+    const stepKey = String(turn) + ':' + String(step)
+    if (seenSteps instanceof Set && seenSteps.has(stepKey)) { skipped++; continue }
+
+    // Allocate turn from session.log — never use items.turn directly in turn/start
+    const turnInt = allocateTurn(session)
+
+    let stepEnded = false
+    try {
+      session.append('turn/start', { turn: turnInt })
+      session.append('step/start', { turn: turnInt, step })
+
+      const userMsg = createUserMessage({
+        content: [{ type: 'text', text: String(userText ?? '') }],
+        source: { kind: 'user' },
+      })
+      session.append('user/message', userMsg, { surfaceOp: 'append' })
+
+      const botMsg = createAssistantMessage({
+        content: [{ type: 'text', text: String(botText ?? '') }],
+        source: { kind: 'model', provider: MIRROR_PROVIDER, model: MIRROR_MODEL },
+      })
+      session.append('assistant/message', {
+        turn: turnInt,
+        step,
+        message: botMsg,
+        stream: [],   // required by dsh-session assertAssistantSettlementShape
+      }, { surfaceOp: 'append' })
+
+      session.append('step/end', { turn: turnInt, step })
+      stepEnded = true
+      session.append('turn/end', { turn: turnInt, reason: { kind: 'completed' } })
+
+      if (nodeKey !== null) seenKeys.add(nodeKey)
+      if (nodeKey !== null && closedKeys instanceof Set) closedKeys.add(nodeKey)
+      if (seenSteps instanceof Set) seenSteps.add(stepKey)
+
+      imported++
+    } catch (err) {
+      // Single-item failure: close any open turn, record warning, continue
+      try { if (!stepEnded) session.append('step/end', { turn: turnInt, step }) } catch {}
+      try { session.append('turn/end', { turn: turnInt, reason: { kind: 'error', error: { message: String(err?.message ?? err) } } }) } catch {}
+      warnings.push(`item turn=${turn} seq=${seq ?? '?'} failed: ${err?.message ?? err}`)
+    }
+  }
+
+  return { imported, skipped, warnings }
+}
+
+
 export async function ensureMirrorSession(rt, bot) {
   if (typeof bot?.sessionId === 'string' && bot.sessionId !== '') {
     try {
