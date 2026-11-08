@@ -1,6 +1,6 @@
-# 模型网关 P1 分片计划 v13 (Model Gateway P1 Slice Plan)
+# 模型网关 P1 分片计划 v14 (Model Gateway P1 Slice Plan)
 
-**状态**: 修订稿 v13（2026-11-08，架构师，1A-3 补全：provider 来源/effect 形状/host-port 配置优先级/已知限制 2 条）
+**状态**: 修订稿 v14（2026-11-08，架构师，新增 Slice 1A-4 ra 侧：readSource(nodeId)+extractProviderFingerprints，S2 欠账移入）
 **分支**: feat/model-gateway-contract
 **依赖契约**: docs/model-gateway-contract.md v3 (2396338c) — 已冻结
 **代码基线**: dsh-remote-agent HEAD 14cb02f (0.10.1-fork.47) + ds-bot HEAD
@@ -268,6 +268,38 @@ ctx.effect(() => {
 | `1P` GET /v1/models 返回 profile.models | `data[0].id === profile.models[0].id`，HTTP 200 | 删 models.js handler → 404 → 红 |
 | `1O` mixed: 一走网关一直连 | 网关 provider baseURL origin = `http://${gatewayHost}:${gatewayPort}`，直连含原值 | 删 per-provider 分支 → 红 |
 
+#### 1A-4. ra 侧接线：readSource(nodeId) + extractProviderFingerprints（dsh-remote-agent）
+
+**背景**：ds-bot 侧 `setSource((nodeId) => ...)` 按节点分发不同 token，但 `ra/lib/hub/config-sync.js:24-37` `readSource(nodeId)` 内部是 `payload = sourceFn()`——nodeId 没传给 source → 所有节点收到同一 token → T1/T2 真机必失败。同时 `ra/lib/node/config-sync.js:422-424` 只比 provider id 集合；token 轮换仅改 `apiKeyEnv`，id 不变 → `shouldRestart=false` → 节点持旧 ref → G1 必踩。
+
+**1A-4 完成后才具备完整链路**：节点经 tailnet 连 `100.64.0.3:4387`、token 轮换能自动重启；T1/T2 真机验收排在 1A-4 之后。
+
+**修改文件**（dsh-remote-agent，目标版本 `0.10.1-fork.48`）：
+
+1. `lib/hub/config-sync.js:24-37`：
+   - `payload = sourceFn()` → `payload = sourceFn(nodeId)`
+   - 零参 source（`sourceFn.length === 0`）仍兼容，不传 nodeId 视同之前行为
+   - 必须同步返回普通对象（现有 Promise 检测逻辑不变）
+
+2. `lib/node/config-sync.js:422-424`：
+   - 替换 `sameProviderSet(extractProviderIds(...))` → `sameProviderFingerprints(extractProviderFingerprints(...))`
+   - 指纹：`{ id, baseURL, apiKeyEnv }` 三元组
+   - `lastPayload` 落盘结构补 `baseURL`/`apiKeyEnv` 字段（`lib/node/config-sync.js` 第 9 步现在只存 `{id}`）
+   - 旧状态文件缺字段（无 `baseURL`/`apiKeyEnv`）→ 视为 `legacy-fingerprint`，允许一次重启，日志标记 `legacy-fingerprint`
+
+3. `package.json`（dsh-remote-agent）：版本号改为 `0.10.1-fork.48`（提交信息与版本必须一致）
+
+**Slice 1A-4 测试**（dsh-remote-agent `test/config-sync/`，node:test）：
+
+| 测试 | 断言 | 刀 |
+|---|---|---|
+| `1A4-source-nodeid` source 收到 nodeId | `source.lastCallArgs[0] === nodeId`（mock source 记录入参） | 删 `sourceFn(nodeId)` 参数 → `lastCallArgs[0] === undefined` → 红 |
+| `1A4-rotate-restart` 只改 apiKeyEnv → shouldRestart=true | `shouldRestart === true` | 删 `apiKeyEnv` 进入指纹 → `shouldRestart=false` → 红 |
+| `1A4-idempotent` payload 不变 → shouldRestart=false | `shouldRestart === false` | 删 fingerprint 比较 → 恒 true → 红 |
+| `1A4-legacy` 旧状态文件无 baseURL/apiKeyEnv → 一次重启 + legacy 日志 | `result.restarted === true && log.includes('legacy-fingerprint')` | 删 legacy 兜底 → 抛错 → 红 |
+
+**Slice 1A-4 门禁**：4 条全绿 + `node --check` 通过；版本号与 commit 信息一致 `0.10.1-fork.48`。
+
 #### 1B. 反向隧道 Supervisor（dsh-remote-agent 仓库）
 
 **新建文件**：`lib/hub/tunnel-supervisor.js`
@@ -305,7 +337,7 @@ conn.on('tcp connection', (info, accept, reject) => {
 
 **修改文件**：
 - `src/host/config-source.js`（ds-bot）— per-provider gateway 开关 + epoch refName；source 签名 `(nodeId) => payload`（ra/lib/hub/config-sync.js:24 `readSource(nodeId)` 须改为 `sourceFn(nodeId)`）
-- `lib/node/config-sync.js`（dsh-remote-agent）— **S2 必改**：`extractProviderFingerprints`（id + baseURL + apiKeyEnv）替代 `extractProviderIds`（现在 ra/lib/node/config-sync.js:422-424 只比 id 集合；token 轮换只改 apiKeyEnv，集合不变 → shouldRestart=false → 节点持旧 token → G1 必踩）
+- `lib/node/config-sync.js`（dsh-remote-agent）— fingerprint 扩展已移入 **Slice 1A-4**（见下）；S2 不再重复
 
 **Slice 2 测试**（dsh-remote-agent `test/config-sync/` + ds-bot `test/`，node:test）：
 
@@ -318,7 +350,7 @@ conn.on('tcp connection', (info, accept, reject) => {
 | `2E` direct provider 不变 | 与原 buildConfigPayload 一致 | 破坏 direct 分支 → 红 |
 | `2F` stale revision 静默丢弃 | `result.stale === true` | 删 revision 检查 → 红 |
 | `2G` apiKeyEnv 合法 ref 名 | `/^[A-Za-z_][A-Za-z0-9_]*$/.test(p.apiKeyEnv)` | 用含连字符 nodeId → 红 |
-| `2H` baseURL/apiKeyEnv 变化触发重启 | 改 baseURL，`shouldRestart === true` | 删 fingerprint 扩展 → false → 红 |
+| `2H` baseURL/apiKeyEnv 变化触发重启 | 改 baseURL，`shouldRestart === true`（依赖 1A-4 fingerprint 扩展） | 删 fingerprint 扩展 → false → 红（须 1A-4 已合入） |
 
 **待验证项 G1（Slice 2 门禁前）**：dshtest-1 节点上验证 `GATEWAY_TOKEN_*` ref 重启后可解析，pi-ai 发 Bearer token 到 `http://{gatewayHost}:4387/...`（tailnet 模式下为 `100.64.0.3:4387`），hub auth.js 校验通过。
 
