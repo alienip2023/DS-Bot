@@ -117,3 +117,69 @@ test('7. buildConfigPayload: enumerates multi-namespace providers, skips claude-
   assert.ok(!ids.includes('codex-cli/local'), 'codex-cli/local must be skipped')
   assert.equal(payload.providers.find(p => p.id === 'prov-a')?.apiKey, 'sk-aaa')
 })
+
+// ── turns.js defect 1: user/message arrives AFTER turn/start (queue mode) ──────
+// Knife: remove entry.userRpcId = source.rpcId in user/message handler → settle not called
+test('6e. turns.js: user/message after turn/start still settles joined waiter via userRpcId', async () => {
+  const { install } = await import('../src/host/turns.js')
+
+  let sessionEventHandler = null
+  const settled = []
+  const sessionId = 'session-test-6e'
+  const botId = 'bot-test-6e'
+
+  const rt = {
+    ctx: {
+      on: (event, handler) => {
+        if (event === 'session/event') sessionEventHandler = handler
+      },
+    },
+    state: {},
+    isBotSession: (id) => id === sessionId,
+    roomOf: () => undefined,
+    groupOwners: new Map(),
+    chatOwners: new Map([[sessionId, botId]]),
+    selfOf: (id) => botId,
+    botOf: (id) => ({ id, name: 'TestBot' }),
+    settleJoinedTurn: (id, reply) => { settled.push({ id, reply }); return true },
+    warn: () => {},
+    deliver: async () => {},
+    userAnswered: () => {},
+    userWrote: () => {},
+    holdKickoffAgain: () => {},
+    routeRefused: async () => {},
+    lateRoomReply: undefined,
+    lateRoomFailure: undefined,
+    failRoomTurn: undefined,
+    withRoomSteps: undefined,
+    roomStepText: undefined,
+    takeRoomSteps: undefined,
+    touchRoomTurn: undefined,
+    goalSettled: undefined,
+    resolveAgent: async () => undefined,
+    workRoomTurn: undefined,
+    callsRoomMember: undefined,
+    closeCard: () => {},
+    state: { questions: {}, views: {} },
+  }
+  install(rt)
+
+  assert.ok(typeof sessionEventHandler === 'function', 'install must register session/event handler')
+
+  const session = { id: sessionId }
+  const rpcId = 'live-rpc-7'
+
+  // Feed: turn/start → user/message (source.kind=user, rpcId set) → turn/end (kind=done)
+  sessionEventHandler(session, { type: 'turn/start', data: { turn: { n: 1 } }, time: Date.now() })
+  sessionEventHandler(session, {
+    type: 'user/message',
+    data: { source: { kind: 'user', rpcId }, content: [{ type: 'text', text: 'test' }] },
+  })
+  sessionEventHandler(session, {
+    type: 'turn/end',
+    data: { reason: { kind: 'done' } },
+  })
+
+  assert.equal(settled.length, 1, 'settleJoinedTurn must be called exactly once')
+  assert.equal(settled[0].id, rpcId, 'settled id must be the rpcId from user/message source')
+})

@@ -672,6 +672,7 @@ export function install(rt) {
         entry.shown = 0
         entry.step = undefined
         entry.info = undefined
+        entry.userRpcId = undefined
         entry.toolCount = 0
         entry.suppressedSubagent = false
         // A turn turned away before its first step may end without a turn/end.
@@ -727,6 +728,10 @@ export function install(rt) {
           }
         } else if (source?.kind === 'user' || source?.kind === SOURCE_KIND) {
           stoppedSubagentParents.delete(id)
+        }
+        // Record rpcId for joined-turn settle: sendUser({requestId}) lands on source as rpcId.
+        if (source?.kind === 'user' && typeof source.rpcId === 'string' && source.rpcId !== '') {
+          entry.userRpcId = source.rpcId
         }
         // A result that came back counts as taken once a turn reads it.
         if (source?.kind === SOURCE_KIND && source.work !== undefined && source.replyTo !== undefined) rt.takenWork?.(source.work, source.replyTo)
@@ -1041,14 +1046,17 @@ export function install(rt) {
           const inRound = failure !== undefined && info === undefined && rt.failRoomTurn?.(id, failure) === true
           if (failure !== undefined) { if (!inRound) void rt.lateRoomFailure?.(id, info ?? {}, failure) }
           else if (reason?.kind !== 'aborted') void rt.lateRoomReply?.(id, info ?? {}, groupReply(), { shown })
-        } else if (!retry && info !== undefined) {
+        } else if (!retry && (info !== undefined || entry.userRpcId !== undefined)) {
           // Try to settle a joined-turn waiter (bot/turn from a remote hub).
           // sendUser({requestId}) lands as source.rpcId; deliver({exchangeId}) lands as source.exchangeId.
+          // When user/message arrives after turn/start (prompt mode:'queue'), entry.info is
+          // undefined but entry.userRpcId was recorded from source.rpcId.
+          const joinInfo = info ?? (entry.userRpcId ? { rpcId: entry.userRpcId } : undefined)
           const reply = failure !== undefined
             ? `${name} could not answer your message: its model call failed (${failureLine(failure)}).`
             : replyText()
-          const settled = settleJoinForTurn(rt, info, reply, failure)
-          if (!settled) finish(info, replyText())
+          const settled = settleJoinForTurn(rt, joinInfo, reply, failure)
+          if (!settled && info !== undefined) finish(info, replyText())
         }
         for (const request of joined) {
           if (request.info.role === 'room' && stoppedRoomTurns.delete(request.info.exchangeId)) continue
