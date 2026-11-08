@@ -753,6 +753,7 @@ var ZH = {
   "Bot exchange": "Bot 间对话",
   "Bot exchange transcript": "Bot 间对话记录",
   "No messages yet": "还没有消息",
+  "Node is offline or unreachable": "节点离线或不可达",
   "Close Chat": "关闭",
   "Show all · {count} characters": "显示全部 · {count} 字",
   "Showing the first {count} characters": "只显示前 {count} 字",
@@ -1984,6 +1985,23 @@ function countCards(state, sessionId, callIds, delta) {
   return { ...state, [sessionId]: own };
 }
 
+// src/client/joined-chat-actions.js
+function openJoinedChat(ui2, botId) {
+  if (!botId) return;
+  ui2.set((state) => ({ ...state, joinedChat: botId, menu: null, palette: null }));
+}
+function classifyItem(item) {
+  if (item.kind === "divider") return "divider";
+  if (item.kind === "event") {
+    if (!item.text && !item.label) return "skip";
+    return "event";
+  }
+  return item.kind === "user" ? "mine" : "theirs";
+}
+function sendJoined(call2, botId, text) {
+  return call2("send", { sessionId: botId, text });
+}
+
 // src/client/team-actions.js
 function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards, heldCards, turnClock, panelFolded }) {
   const memoryOf = (id) => roster.getSnapshot().roomsById[id] ? { roomId: id } : { botId: id };
@@ -2172,14 +2190,12 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
     connectorAdd: (spec) => after(call2("connector-add", spec)),
     connectorRemove: (id) => after(call2("connector-remove", { id })),
     // Joined (remote) bot chat: open, close, send a message to remote session.
-    openJoinedChat: (botId) => {
-      if (botId) ui2.set((state) => ({ ...state, joinedChat: botId, menu: null, palette: null }));
-    },
+    openJoinedChat: (botId) => openJoinedChat(ui2, botId),
     closeJoinedChat: () => {
       ui2.set((state) => state.joinedChat ? { ...state, joinedChat: null } : state);
     },
     joinedChatView: (botId) => call2("chat", { botId }),
-    sendJoined: (sessionId, text) => call2("send", { sessionId, text }),
+    sendJoined: (botId, text) => sendJoined(call2, botId, text),
     connectorImportScan: () => call2("connector-import-scan", {}),
     connectorImport: (items) => after(call2("connector-import", { items })),
     connectorRequestCancel: (requestId) => after(call2("connector-request-cancel", { requestId })),
@@ -3549,6 +3565,32 @@ html[data-windows-titlebar]:not([data-fullscreen]) :is(.bt-pane,.bt-panel)::befo
 body[data-ds-dark-theme] .bt-scrim{background:rgba(0,0,0,.5)}
 .bt-settings{--bt-set-w:min(1100px,calc(100vw - 48px));--bt-set-h:min(780px,calc(100vh - 2*max(32px,var(--dsh-frame-overlay-top,32px))));position:relative;width:var(--bt-set-w);height:var(--bt-set-h);background:var(--bt-main);border-radius:16px;border:.5px solid var(--bt-line-2);box-shadow:0 24px 80px rgba(0,0,0,.24);display:flex;overflow:hidden;color:var(--bt-ink);animation:bt-dialog-rise ${SPRING_SHAPE.duration}ms ${SPRING_SHAPE.easing},bt-veil-in .2s ease-out}
 :is(.bt-settings-layer,.bt-mem-layer)[data-leaving]{pointer-events:none}
+
+/* Joined-chat overlay: the layer, scrim, dialog panel, header, messages, footer */
+.jcd-layer{position:fixed;inset:var(--dsh-frame-chrome-top,0px) 0 0;z-index:62;display:flex;align-items:center;justify-content:center;font-family:var(--bt-font)}
+.jcd-layer[data-leaving]{pointer-events:none}
+.jcd-layer[data-leaving] .jcd-scrim{opacity:0;transition:opacity .16s ease-in}
+.jcd-layer[data-leaving] .jcd-dialog{animation:bt-dialog-sink .16s cubic-bezier(.4,0,1,1) forwards}
+.jcd-scrim{position:absolute;inset:0;background:rgba(0,0,0,.32);animation:bt-fade .22s ease-out}
+body[data-ds-dark-theme] .jcd-scrim{background:rgba(0,0,0,.5)}
+.jcd-dialog{position:relative;width:min(680px,calc(100vw - 48px));height:min(680px,calc(100vh - 2*max(32px,var(--dsh-frame-overlay-top,32px))));background:var(--bt-main);border-radius:20px;border:.5px solid var(--bt-line-2);box-shadow:0 24px 80px rgba(0,0,0,.24);display:flex;flex-direction:column;overflow:hidden;color:var(--bt-ink);animation:bt-dialog-rise ${SPRING_SHAPE.duration}ms ${SPRING_SHAPE.easing},bt-veil-in .2s ease-out}
+.jcd-head{display:flex;align-items:center;gap:8px;height:56px;flex:none;padding:0 14px 0 20px;border-bottom:.5px solid var(--bt-line);box-sizing:border-box}
+.jcd-head h2{flex:1;margin:0;font-size:16px;line-height:24px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.jcd-body{flex:1;overflow-y:auto;scrollbar-width:thin;padding:8px 0}
+.jcd-messages{display:flex;flex-direction:column;gap:4px;padding:8px 16px}
+.jcd-bubble{max-width:72%;padding:8px 12px;border-radius:14px;font-size:14px;line-height:20px;box-sizing:border-box;word-break:break-word}
+.jcd-mine{align-self:flex-end;background:var(--bt-accent);color:var(--bt-accent-ink,#fff);border-bottom-right-radius:4px}
+.jcd-theirs{align-self:flex-start;background:var(--bt-card);border:.5px solid var(--bt-line);border-bottom-left-radius:4px}
+.jcd-event{font-size:12px;line-height:16px;color:var(--bt-ink-2);text-align:center;padding:4px 16px;user-select:none}
+.jcd-divider{font-size:11px;line-height:16px;color:var(--bt-ink-3);text-align:center;padding:8px 16px;user-select:none;border-top:.5px solid var(--bt-line);margin:4px 0}
+.jcd-empty{font-size:13px;color:var(--bt-ink-2);text-align:center;padding:32px 16px}
+.jcd-loading,.jcd-offline{font-size:13px;color:var(--bt-ink-2);text-align:center;padding:32px 16px;display:flex;flex-direction:column;align-items:center;gap:12px}
+.jcd-foot{flex:none;padding:8px 12px;border-top:.5px solid var(--bt-line);display:flex;flex-direction:column;gap:6px;box-sizing:border-box}
+.jcd-error{font-size:12px;color:var(--bt-danger,#e03);padding:2px 4px}
+.jcd-input{width:100%;padding:8px 10px;border-radius:10px;border:.5px solid var(--bt-line-2);background:var(--bt-card);color:var(--bt-ink);font:inherit;font-size:14px;line-height:20px;resize:none;box-sizing:border-box;outline:none;transition:border-color .12s ease}
+.jcd-input:focus{border-color:var(--bt-accent)}
+.jcd-send{align-self:flex-end}
+@media (prefers-reduced-motion:reduce){.jcd-dialog,.jcd-scrim{animation-duration:.01s}}
 :is(.bt-settings-layer,.bt-mem-layer)[data-leaving] .bt-scrim{opacity:0;transition:opacity .16s ease-in}
 :is(.bt-settings-layer,.bt-mem-layer)[data-leaving]>[role=dialog]{animation:bt-dialog-sink .16s cubic-bezier(.4,0,1,1) forwards}
 @keyframes bt-dialog-rise{from{transform:translateY(12px) scale(.96)}}
@@ -25772,17 +25814,13 @@ var BROWSER_CSS = `
 var import_react59 = require("react");
 var POLL_MS3 = 2500;
 function ChatItem({ item }) {
-  if (item.kind === "divider") {
-    return (0, import_react59.createElement)("div", { className: "jcd-divider" }, item.label ?? "");
-  }
-  if (item.kind === "event") {
-    if (!item.text && !item.label) return null;
-    return (0, import_react59.createElement)("div", { className: "jcd-event" }, item.text ?? item.label ?? "");
-  }
-  const isMine = item.kind === "user";
+  const kind = classifyItem(item);
+  if (kind === "skip") return null;
+  if (kind === "divider") return (0, import_react59.createElement)("div", { className: "jcd-divider" }, item.label ?? "");
+  if (kind === "event") return (0, import_react59.createElement)("div", { className: "jcd-event" }, item.text ?? item.label ?? "");
   return (0, import_react59.createElement)(
     "div",
-    { className: isMine ? "jcd-bubble jcd-mine" : "jcd-bubble jcd-theirs" },
+    { className: kind === "mine" ? "jcd-bubble jcd-mine" : "jcd-bubble jcd-theirs" },
     (0, import_react59.createElement)("div", { className: "jcd-bubble-text" }, item.text ?? "")
   );
 }
@@ -25790,7 +25828,6 @@ function JoinedChatDialog({ botId, roster, actions, leaving }) {
   const bot = roster.byId?.[botId];
   const botName = bot?.name ?? botId;
   const [items, setItems] = (0, import_react59.useState)(null);
-  const [sessionId, setSessionId] = (0, import_react59.useState)(null);
   const [offline, setOffline] = (0, import_react59.useState)(false);
   const [sendError, setSendError] = (0, import_react59.useState)(null);
   const [text, setText] = (0, import_react59.useState)("");
@@ -25808,7 +25845,6 @@ function JoinedChatDialog({ botId, roster, actions, leaving }) {
         return;
       }
       setOffline(false);
-      if (result?.sessionId) setSessionId(result.sessionId);
       if (Array.isArray(result?.value?.items)) setItems(result.value.items);
       else if (Array.isArray(result?.items)) setItems(result.items);
       else if (result?.value != null) setItems([]);
@@ -25821,8 +25857,7 @@ function JoinedChatDialog({ botId, roster, actions, leaving }) {
     stopRef.current = false;
     load();
     const poll = setInterval(() => {
-      if (document.hidden) return;
-      load();
+      if (!document.hidden) load();
     }, POLL_MS3);
     const onVisible = () => {
       if (!document.hidden) load();
@@ -25837,14 +25872,14 @@ function JoinedChatDialog({ botId, roster, actions, leaving }) {
   (0, import_react59.useEffect)(() => {
     if (items) endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [items?.length]);
-  const sendMessage = async () => {
+  const doSend = async () => {
     if (!text.trim() || sending) return;
-    const sid = bot?.worker?.remoteBotId ?? sessionId ?? botId;
     setSending(true);
     setSendError(null);
     try {
-      const r = await actions.sendJoined(sid, text.trim());
-      if (r?.ok === false) throw new Error(r.error ?? "send failed");
+      const r = await sendJoined(actions._call ?? ((n, b) => actions.joinedChatView.__call?.(n, b)), botId, text.trim());
+      const result = r ?? await actions.sendJoined(botId, text.trim());
+      if (result?.ok === false) throw new Error(result.error?.message ?? result.error ?? t("Failed to send"));
       setText("");
       await load();
     } catch (e) {
@@ -25856,26 +25891,21 @@ function JoinedChatDialog({ botId, roster, actions, leaving }) {
   const onKey = (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      sendMessage();
+      doSend();
     }
   };
   return (0, import_react59.createElement)(
     "div",
-    { className: "jcd-backdrop", "data-leaving": leaving || void 0, onClick: (e) => {
-      if (e.target === e.currentTarget) actions.closeJoinedChat();
-    } },
+    { className: "jcd-layer", "data-leaving": leaving || void 0 },
+    (0, import_react59.createElement)("div", { className: "jcd-scrim", onClick: () => actions.closeJoinedChat() }),
     (0, import_react59.createElement)(
       "div",
-      { className: "jcd-panel", role: "dialog", "aria-modal": "true", "aria-label": t("Chat with {name}", { name: botName }) },
+      { className: "jcd-dialog", role: "dialog", "aria-modal": "true", "aria-label": t("Chat with {name}", { name: botName }) },
       (0, import_react59.createElement)(
         "div",
-        { className: "jcd-header" },
-        (0, import_react59.createElement)("span", { className: "jcd-title" }, t("Chat with {name}", { name: botName })),
-        (0, import_react59.createElement)(
-          "button",
-          { type: "button", className: "jcd-close", "aria-label": t("Close"), onClick: () => actions.closeJoinedChat() },
-          (0, import_react59.createElement)(CloseIcon)
-        )
+        { className: "jcd-head" },
+        (0, import_react59.createElement)("h2", null, t("Chat with {name}", { name: botName })),
+        (0, import_react59.createElement)("button", { type: "button", className: "bt-icon-btn", "aria-label": t("Close"), onClick: () => actions.closeJoinedChat() }, (0, import_react59.createElement)(CloseIcon))
       ),
       (0, import_react59.createElement)(
         "div",
@@ -25883,19 +25913,19 @@ function JoinedChatDialog({ botId, roster, actions, leaving }) {
         offline ? (0, import_react59.createElement)(
           "div",
           { className: "jcd-offline" },
-          (0, import_react59.createElement)("p", null, t("Node is offline or unreachable.")),
-          (0, import_react59.createElement)("button", { type: "button", className: "jcd-retry", onClick: load }, t("Retry"))
+          (0, import_react59.createElement)("p", null, t("Node is offline or unreachable")),
+          (0, import_react59.createElement)("button", { type: "button", className: "bt-btn", onClick: load }, t("Retry"))
         ) : items === null ? (0, import_react59.createElement)("div", { className: "jcd-loading" }, t("Loading…")) : (0, import_react59.createElement)(
           "div",
           { className: "jcd-messages" },
-          items.length === 0 ? (0, import_react59.createElement)("div", { className: "jcd-empty" }, t("No messages yet.")) : null,
+          items.length === 0 ? (0, import_react59.createElement)("div", { className: "jcd-empty" }, t("No messages yet")) : null,
           items.map((item, i) => (0, import_react59.createElement)(ChatItem, { key: i, item })),
           (0, import_react59.createElement)("div", { ref: endRef })
         )
       ),
       (0, import_react59.createElement)(
         "div",
-        { className: "jcd-footer" },
+        { className: "jcd-foot" },
         sendError ? (0, import_react59.createElement)("div", { className: "jcd-error", role: "alert" }, sendError) : null,
         (0, import_react59.createElement)("textarea", {
           className: "jcd-input",
@@ -25908,9 +25938,9 @@ function JoinedChatDialog({ botId, roster, actions, leaving }) {
         }),
         (0, import_react59.createElement)("button", {
           type: "button",
-          className: "jcd-send",
+          className: "bt-btn jcd-send",
           disabled: !text.trim() || sending || offline,
-          onClick: sendMessage
+          onClick: doSend
         }, sending ? t("Sending…") : t("Send"))
       )
     )

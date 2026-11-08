@@ -697,6 +697,7 @@ const ZH = {
   'Bot exchange': 'Bot 间对话',
   'Bot exchange transcript': 'Bot 间对话记录',
   'No messages yet': '还没有消息',
+  'Node is offline or unreachable': '节点离线或不可达',
   'Close Chat': '关闭',
   'Show all · {count} characters': '显示全部 · {count} 字',
   'Showing the first {count} characters': '只显示前 {count} 字',

@@ -1,4 +1,5 @@
 import { countCards, heldCardKey } from './sources.js'
+import { openJoinedChat as _openJoinedChat, sendJoined as _sendJoined } from './joined-chat-actions.js'
 import { noteClientError } from './diagnostics.js'
 
 // The actions every window that draws the Bot views shares: dialogs and panels (the `ui`
@@ -168,10 +169,10 @@ export function teamActions({ call, after, partFor, roster, ui, live, cards, hel
     connectorAdd: spec => after(call('connector-add', spec)),
     connectorRemove: id => after(call('connector-remove', { id })),
     // Joined (remote) bot chat: open, close, send a message to remote session.
-    openJoinedChat: (botId) => { if (botId) ui.set(state => ({ ...state, joinedChat: botId, menu: null, palette: null })) },
+    openJoinedChat: (botId) => _openJoinedChat(ui, botId),
     closeJoinedChat: () => { ui.set(state => (state.joinedChat ? { ...state, joinedChat: null } : state)) },
     joinedChatView: (botId) => call('chat', { botId }),
-    sendJoined: (sessionId, text) => call('send', { sessionId, text }),
+    sendJoined: (botId, text) => _sendJoined(call, botId, text),
     connectorImportScan: () => call('connector-import-scan', {}),
     connectorImport: items => after(call('connector-import', { items })),
     connectorRequestCancel: requestId => after(call('connector-request-cancel', { requestId })),

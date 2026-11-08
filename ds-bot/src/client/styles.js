@@ -526,6 +526,32 @@ html[data-windows-titlebar]:not([data-fullscreen]) :is(.bt-pane,.bt-panel)::befo
 body[data-ds-dark-theme] .bt-scrim{background:rgba(0,0,0,.5)}
 .bt-settings{--bt-set-w:min(1100px,calc(100vw - 48px));--bt-set-h:min(780px,calc(100vh - 2*max(32px,var(--dsh-frame-overlay-top,32px))));position:relative;width:var(--bt-set-w);height:var(--bt-set-h);background:var(--bt-main);border-radius:16px;border:.5px solid var(--bt-line-2);box-shadow:0 24px 80px rgba(0,0,0,.24);display:flex;overflow:hidden;color:var(--bt-ink);animation:bt-dialog-rise ${SPRING_SHAPE.duration}ms ${SPRING_SHAPE.easing},bt-veil-in .2s ease-out}
 :is(.bt-settings-layer,.bt-mem-layer)[data-leaving]{pointer-events:none}
+
+/* Joined-chat overlay: the layer, scrim, dialog panel, header, messages, footer */
+.jcd-layer{position:fixed;inset:var(--dsh-frame-chrome-top,0px) 0 0;z-index:62;display:flex;align-items:center;justify-content:center;font-family:var(--bt-font)}
+.jcd-layer[data-leaving]{pointer-events:none}
+.jcd-layer[data-leaving] .jcd-scrim{opacity:0;transition:opacity .16s ease-in}
+.jcd-layer[data-leaving] .jcd-dialog{animation:bt-dialog-sink .16s cubic-bezier(.4,0,1,1) forwards}
+.jcd-scrim{position:absolute;inset:0;background:rgba(0,0,0,.32);animation:bt-fade .22s ease-out}
+body[data-ds-dark-theme] .jcd-scrim{background:rgba(0,0,0,.5)}
+.jcd-dialog{position:relative;width:min(680px,calc(100vw - 48px));height:min(680px,calc(100vh - 2*max(32px,var(--dsh-frame-overlay-top,32px))));background:var(--bt-main);border-radius:20px;border:.5px solid var(--bt-line-2);box-shadow:0 24px 80px rgba(0,0,0,.24);display:flex;flex-direction:column;overflow:hidden;color:var(--bt-ink);animation:bt-dialog-rise ${SPRING_SHAPE.duration}ms ${SPRING_SHAPE.easing},bt-veil-in .2s ease-out}
+.jcd-head{display:flex;align-items:center;gap:8px;height:56px;flex:none;padding:0 14px 0 20px;border-bottom:.5px solid var(--bt-line);box-sizing:border-box}
+.jcd-head h2{flex:1;margin:0;font-size:16px;line-height:24px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.jcd-body{flex:1;overflow-y:auto;scrollbar-width:thin;padding:8px 0}
+.jcd-messages{display:flex;flex-direction:column;gap:4px;padding:8px 16px}
+.jcd-bubble{max-width:72%;padding:8px 12px;border-radius:14px;font-size:14px;line-height:20px;box-sizing:border-box;word-break:break-word}
+.jcd-mine{align-self:flex-end;background:var(--bt-accent);color:var(--bt-accent-ink,#fff);border-bottom-right-radius:4px}
+.jcd-theirs{align-self:flex-start;background:var(--bt-card);border:.5px solid var(--bt-line);border-bottom-left-radius:4px}
+.jcd-event{font-size:12px;line-height:16px;color:var(--bt-ink-2);text-align:center;padding:4px 16px;user-select:none}
+.jcd-divider{font-size:11px;line-height:16px;color:var(--bt-ink-3);text-align:center;padding:8px 16px;user-select:none;border-top:.5px solid var(--bt-line);margin:4px 0}
+.jcd-empty{font-size:13px;color:var(--bt-ink-2);text-align:center;padding:32px 16px}
+.jcd-loading,.jcd-offline{font-size:13px;color:var(--bt-ink-2);text-align:center;padding:32px 16px;display:flex;flex-direction:column;align-items:center;gap:12px}
+.jcd-foot{flex:none;padding:8px 12px;border-top:.5px solid var(--bt-line);display:flex;flex-direction:column;gap:6px;box-sizing:border-box}
+.jcd-error{font-size:12px;color:var(--bt-danger,#e03);padding:2px 4px}
+.jcd-input{width:100%;padding:8px 10px;border-radius:10px;border:.5px solid var(--bt-line-2);background:var(--bt-card);color:var(--bt-ink);font:inherit;font-size:14px;line-height:20px;resize:none;box-sizing:border-box;outline:none;transition:border-color .12s ease}
+.jcd-input:focus{border-color:var(--bt-accent)}
+.jcd-send{align-self:flex-end}
+@media (prefers-reduced-motion:reduce){.jcd-dialog,.jcd-scrim{animation-duration:.01s}}
 :is(.bt-settings-layer,.bt-mem-layer)[data-leaving] .bt-scrim{opacity:0;transition:opacity .16s ease-in}
 :is(.bt-settings-layer,.bt-mem-layer)[data-leaving]>[role=dialog]{animation:bt-dialog-sink .16s cubic-bezier(.4,0,1,1) forwards}
 @keyframes bt-dialog-rise{from{transform:translateY(12px) scale(.96)}}

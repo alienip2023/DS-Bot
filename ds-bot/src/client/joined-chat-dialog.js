@@ -2,20 +2,16 @@ import { createElement as h, Fragment, useEffect, useRef, useState } from 'react
 import { useEscape } from './overlay-hooks.js'
 import { CloseIcon } from './icons.js'
 import { t } from './i18n.js'
+import { classifyItem, sendJoined } from './joined-chat-actions.js'
 
 const POLL_MS = 2500
 
-// Map a chat item to a bubble/row element.
 function ChatItem({ item }) {
-  if (item.kind === 'divider') {
-    return h('div', { className: 'jcd-divider' }, item.label ?? '')
-  }
-  if (item.kind === 'event') {
-    if (!item.text && !item.label) return null
-    return h('div', { className: 'jcd-event' }, item.text ?? item.label ?? '')
-  }
-  const isMine = item.kind === 'user'
-  return h('div', { className: isMine ? 'jcd-bubble jcd-mine' : 'jcd-bubble jcd-theirs' },
+  const kind = classifyItem(item)
+  if (kind === 'skip') return null
+  if (kind === 'divider') return h('div', { className: 'jcd-divider' }, item.label ?? '')
+  if (kind === 'event') return h('div', { className: 'jcd-event' }, item.text ?? item.label ?? '')
+  return h('div', { className: kind === 'mine' ? 'jcd-bubble jcd-mine' : 'jcd-bubble jcd-theirs' },
     h('div', { className: 'jcd-bubble-text' }, item.text ?? ''))
 }
 
@@ -23,7 +19,6 @@ export function JoinedChatDialog({ botId, roster, actions, leaving }) {
   const bot = roster.byId?.[botId]
   const botName = bot?.name ?? botId
   const [items, setItems] = useState(null)
-  const [sessionId, setSessionId] = useState(null)
   const [offline, setOffline] = useState(false)
   const [sendError, setSendError] = useState(null)
   const [text, setText] = useState('')
@@ -40,7 +35,6 @@ export function JoinedChatDialog({ botId, roster, actions, leaving }) {
       if (stopRef.current) return
       if (result?.ok === false) { setOffline(true); return }
       setOffline(false)
-      if (result?.sessionId) setSessionId(result.sessionId)
       if (Array.isArray(result?.value?.items)) setItems(result.value.items)
       else if (Array.isArray(result?.items)) setItems(result.items)
       else if (result?.value != null) setItems([])
@@ -53,31 +47,24 @@ export function JoinedChatDialog({ botId, roster, actions, leaving }) {
   useEffect(() => {
     stopRef.current = false
     load()
-    const poll = setInterval(() => {
-      if (document.hidden) return
-      load()
-    }, POLL_MS)
+    const poll = setInterval(() => { if (!document.hidden) load() }, POLL_MS)
     const onVisible = () => { if (!document.hidden) load() }
     document.addEventListener('visibilitychange', onVisible)
-    return () => {
-      stopRef.current = true
-      clearInterval(poll)
-      document.removeEventListener('visibilitychange', onVisible)
-    }
+    return () => { stopRef.current = true; clearInterval(poll); document.removeEventListener('visibilitychange', onVisible) }
   }, [botId])
 
-  useEffect(() => {
-    if (items) endRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [items?.length])
+  useEffect(() => { if (items) endRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [items?.length])
 
-  const sendMessage = async () => {
+  const doSend = async () => {
     if (!text.trim() || sending) return
-    const sid = bot?.worker?.remoteBotId ?? sessionId ?? botId
     setSending(true)
     setSendError(null)
     try {
-      const r = await actions.sendJoined(sid, text.trim())
-      if (r?.ok === false) throw new Error(r.error ?? 'send failed')
+      // botId is the joined shadow id; sendJoined sets sessionId = botId
+      const r = await sendJoined(actions._call ?? ((n, b) => actions.joinedChatView.__call?.(n, b)), botId, text.trim())
+      // Fall back: actions.sendJoined wires to the same underlying call fn
+      const result = r ?? await actions.sendJoined(botId, text.trim())
+      if (result?.ok === false) throw new Error(result.error?.message ?? result.error ?? t('Failed to send'))
       setText('')
       await load()
     } catch (e) {
@@ -87,28 +74,26 @@ export function JoinedChatDialog({ botId, roster, actions, leaving }) {
     }
   }
 
-  const onKey = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage() }
-  }
+  const onKey = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSend() } }
 
-  return h('div', { className: 'jcd-backdrop', 'data-leaving': leaving || undefined, onClick: (e) => { if (e.target === e.currentTarget) actions.closeJoinedChat() } },
-    h('div', { className: 'jcd-panel', role: 'dialog', 'aria-modal': 'true', 'aria-label': t('Chat with {name}', { name: botName }) },
-      h('div', { className: 'jcd-header' },
-        h('span', { className: 'jcd-title' }, t('Chat with {name}', { name: botName })),
-        h('button', { type: 'button', className: 'jcd-close', 'aria-label': t('Close'), onClick: () => actions.closeJoinedChat() },
-          h(CloseIcon))),
+  return h('div', { className: 'jcd-layer', 'data-leaving': leaving || undefined },
+    h('div', { className: 'jcd-scrim', onClick: () => actions.closeJoinedChat() }),
+    h('div', { className: 'jcd-dialog', role: 'dialog', 'aria-modal': 'true', 'aria-label': t('Chat with {name}', { name: botName }) },
+      h('div', { className: 'jcd-head' },
+        h('h2', null, t('Chat with {name}', { name: botName })),
+        h('button', { type: 'button', className: 'bt-icon-btn', 'aria-label': t('Close'), onClick: () => actions.closeJoinedChat() }, h(CloseIcon))),
       h('div', { className: 'jcd-body' },
         offline
           ? h('div', { className: 'jcd-offline' },
-              h('p', null, t('Node is offline or unreachable.')),
-              h('button', { type: 'button', className: 'jcd-retry', onClick: load }, t('Retry')))
+              h('p', null, t('Node is offline or unreachable')),
+              h('button', { type: 'button', className: 'bt-btn', onClick: load }, t('Retry')))
           : items === null
             ? h('div', { className: 'jcd-loading' }, t('Loading…'))
             : h('div', { className: 'jcd-messages' },
-                items.length === 0 ? h('div', { className: 'jcd-empty' }, t('No messages yet.')) : null,
+                items.length === 0 ? h('div', { className: 'jcd-empty' }, t('No messages yet')) : null,
                 items.map((item, i) => h(ChatItem, { key: i, item })),
                 h('div', { ref: endRef }))),
-      h('div', { className: 'jcd-footer' },
+      h('div', { className: 'jcd-foot' },
         sendError ? h('div', { className: 'jcd-error', role: 'alert' }, sendError) : null,
         h('textarea', {
           className: 'jcd-input',
@@ -121,8 +106,8 @@ export function JoinedChatDialog({ botId, roster, actions, leaving }) {
         }),
         h('button', {
           type: 'button',
-          className: 'jcd-send',
+          className: 'bt-btn jcd-send',
           disabled: !text.trim() || sending || offline,
-          onClick: sendMessage,
+          onClick: doSend,
         }, sending ? t('Sending…') : t('Send')))))
 }
