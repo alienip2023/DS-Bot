@@ -91,9 +91,10 @@ export async function migrateLegacyJoined(rt, opts = {}) {
   const { dryRun = false } = opts
   const { importHistory } = await import('./mirror.js')
   // Use rt.joinedChatPage if available (testability), else import from module
+  // Normalise to uniform (botId, cursor) call convention
   const joinedChatPage = typeof rt.joinedChatPage === 'function'
-    ? rt.joinedChatPage
-    : (await import('./joined-page.js')).joinedChatPage
+    ? (botId, cursor) => rt.joinedChatPage(botId, cursor)
+    : async (botId, cursor) => (await import('./joined-page.js')).joinedChatPage(rt, botId, cursor)
   const { existsSync, mkdirSync, writeFileSync } = await import('node:fs')
   const { join } = await import('node:path')
   const { homedir } = await import('node:os')
@@ -129,7 +130,7 @@ export async function migrateLegacyJoined(rt, opts = {}) {
       let offlineDetected = false
 
       do {
-        const page = await joinedChatPage(rt, bot.id, cursor)
+        const page = await joinedChatPage(bot.id, cursor)
         const items = page?.items ?? []
         // Detect offline/error items (only 1 item with kind:'bot' and no seq)
         if (items.length === 1 && items[0].kind === 'bot' && typeof items[0].seq !== 'number') {

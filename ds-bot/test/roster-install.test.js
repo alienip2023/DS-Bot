@@ -118,4 +118,53 @@ describe('S23: auto-migration on first roster event', () => {
       global.setTimeout = origSetTimeout
     }
   })
+  it('S23-migrate-botof-arg: joinedChatPage receives bot.id string, not rt object', async () => {
+    // Knife: change joinedChatPage(bot.id, cursor) → joinedChatPage(rt, bot.id, cursor) → botId = rt object → RED
+    const bot = {
+      id: 'bot-j3', origin: 'joined',
+      worker: { nodeId: 'n3', remoteBotId: 'rb3', home: 'remote' },
+      sessionId: null, mirrorWatermark: 0,
+    }
+    const emitter = new EventEmitter()
+    const registry = {
+      on: (ev, fn) => emitter.on(ev, fn),
+      off: (ev, fn) => emitter.off(ev, fn),
+      __rosterJoin: false,
+    }
+
+    const receivedBotIds = []
+    const sessions = new Map()
+    const rt = {
+      ctx: {
+        get: (key) => key === 'remote-agent:registry' ? registry : undefined,
+        on: () => {}, off: () => {},
+      },
+      state: { bots: { 'bot-j3': bot } },
+      warn: () => {},
+      save: async () => {},
+      botOf: (id) => rt.state.bots[id],
+      updateBySessionId: () => {},
+      joinedChatPage: async (botId, cursor) => {
+        receivedBotIds.push(botId)
+        return { items: [], cursor: null }
+      },
+      createSession: async () => {
+        const sid = 'arg-sid-1'
+        bot.sessionId = sid
+        sessions.set(sid, { sessionId: sid, log: [], append: () => {} })
+        return sid
+      },
+      resolveAgent: async (sid) => ({ session: sessions.get(sid) ?? { sessionId: sid, log: [], append: () => {} } }),
+    }
+
+    rosterJoin.install(rt)
+    emitter.emit('roster', { nodes: {} })
+    await new Promise(r => setTimeout(r, 100))
+
+    assert.ok(receivedBotIds.length >= 1, 'joinedChatPage must be called at least once')
+    // botId must be a string (bot.id), not the rt object
+    assert.equal(typeof receivedBotIds[0], 'string', `botId must be a string, got ${typeof receivedBotIds[0]}`)
+    assert.equal(receivedBotIds[0], 'bot-j3', `botId must be bot.id='bot-j3', got '${receivedBotIds[0]}'`)
+  })
+
 })
