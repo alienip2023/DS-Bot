@@ -168,3 +168,43 @@ test('11. install: remote-agent arriving later is attached on a later tick', (t)
   t.mock.timers.tick(5_000)
   assert.equal(calls.length, 1, 'attached once')
 })
+
+// ── fork.64 M4: catalog routes configured with `models` only (xai) are completed from the catalog ──
+// Shape of the real directory entry: llm-pi-ai's directoryEntries() spreads providerDefaultsOf(), so a
+// catalog route carries `defaultBaseURL` and `nativeAuth.env`; its settings profile holds `models` only.
+const XAI_ENTRY = { provider: 'xai', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'xai'], defaultBaseURL: 'https://api.x.ai/v1', nativeAuth: { env: ['XAI_API_KEY'], oauth: true } }
+const XAI_PROFILES = { xai: { models: [{ id: 'grok-4.3', name: 'Grok 4.3' }] } }
+
+test('M4-xai-key: a catalog route with models only and a key under its native env name is pushed, completed from the catalog', () => {
+  const { rt, readRefs } = makeRt({ profiles: XAI_PROFILES, entries: [XAI_ENTRY], refs: { XAI_API_KEY: KEY_A } })
+  const payload = buildConfigPayload(rt, { readRefs })
+  assert.deepEqual(payload.providers, [{
+    id: 'xai', api: 'openai-responses', baseURL: 'https://api.x.ai/v1', apiKeyEnv: 'XAI_API_KEY', apiKey: KEY_A,
+    models: [{ id: 'grok-4.3', name: 'Grok 4.3' }],
+  }])
+})
+
+test('M4-xai-nokey: the same route without a key is skipped (counted in the warn, key and ref name never logged)', () => {
+  const { rt, warns, readRefs } = makeRt({ profiles: XAI_PROFILES, entries: [XAI_ENTRY], refs: { OTHER_KEY: KEY_B } })
+  const payload = buildConfigPayload(rt, { readRefs })
+  assert.deepEqual(payload.providers, [])
+  assert.equal(warns.length, 1)
+  assert.match(warns[0], /skipped 1 provider/)
+  assert.equal(warns.join('\n').includes(KEY_B), false)
+})
+
+test('M4-explicit-wins: an explicit api / baseURL / apiKeyEnv in the profile is not overridden by the catalog', () => {
+  const profiles = { xai: { api: 'openai-completions', baseURL: 'https://proxy.example/v1', apiKeyEnv: 'MY_XAI', models: [{ id: 'g' }] } }
+  const { rt, readRefs } = makeRt({ profiles, entries: [XAI_ENTRY], refs: { MY_XAI: KEY_A, XAI_API_KEY: KEY_B } })
+  const [p] = buildConfigPayload(rt, { readRefs }).providers
+  assert.equal(p.api, 'openai-completions')
+  assert.equal(p.baseURL, 'https://proxy.example/v1')
+  assert.equal(p.apiKeyEnv, 'MY_XAI')
+  assert.equal(p.apiKey, KEY_A)
+})
+
+test('M4-not-catalog: a route outside the catalog table is still skipped without api / ref (never guessed)', () => {
+  const entry = { provider: 'amazon-bedrock', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'amazon-bedrock'], nativeAuth: { env: ['AWS_PROFILE'] } }
+  const { rt, readRefs } = makeRt({ profiles: { 'amazon-bedrock': { models: [{ id: 'x' }] } }, entries: [entry], refs: { AWS_PROFILE: KEY_A } })
+  assert.deepEqual(buildConfigPayload(rt, { readRefs }).providers, [])
+})

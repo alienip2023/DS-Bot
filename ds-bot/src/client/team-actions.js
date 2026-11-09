@@ -1,6 +1,7 @@
 import { countCards, heldCardKey } from './sources.js'
 import { openJoinedChat as _openJoinedChat, sendJoined as _sendJoined } from './joined-chat-actions.js'
 import { noteClientError } from './diagnostics.js'
+import { joinedUpdateError } from './joined-errors.js'
 
 // The actions every window that draws the Bot views shares: dialogs and panels (the `ui`
 // source), requests to the host, and the notes the transcript keeps. The shell around the
@@ -124,7 +125,8 @@ export function teamActions({ call, after, partFor, roster, ui, live, cards, hel
     importAvatars: items => call('avatar-import', { items }),
     deleteAvatar: id => call('avatar-delete', { id }),
     createRoom: (members, options = {}) => after(call('create-room', { members, ...options })),
-    updateBot: (id, patch) => after(call('update-bot', { id, ...patch })),
+    // A remote Bot's node can refuse a change with its own reason code; the user reads a sentence.
+    updateBot: (id, patch) => after(call('update-bot', { id, ...patch })).catch((error) => { throw joinedUpdateError(error, roster.getSnapshot().byId?.[id]) }),
     refreshModels: () => after(call('models')).catch(() => {}),
     efforts: ref => call('efforts', { ref }),
     // Model providers and their API keys; DSH keeps them, and a key only travels to the host.

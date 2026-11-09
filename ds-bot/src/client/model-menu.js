@@ -203,6 +203,34 @@ function ModelRows({ roster, current, onPick }) {
     h('span', { className: 'bt-model-tick', 'aria-hidden': true }, model.ref === current ? h(CheckIcon) : null)))))
 }
 
+// What the pick does: close the menu, then hand the ref to `onPick`, or save it to the Bot.
+export function makePick({ bot, current, actions, run, onPick, close }) {
+  return (ref) => {
+    close()
+    if (onPick) onPick(ref)
+    else if (ref !== current || !bot.model) void run(actions.updateBot(bot.id, { model: ref }))
+  }
+}
+
+// The menu body (no hooks, so it renders on its own): an optional notice, the pickable models grouped
+// by provider, then `unavailable` — models the picker's source lists but the Bot's host cannot run
+// (a remote Bot's node has not synced them). Those are greyed out and cannot be picked; each row
+// says why in `reason`.
+export function ModelChoices({ roster, current, onPick, unavailable = [], notice }) {
+  const models = roster.models ?? []
+  return h(Fragment, null,
+    notice ? h('div', { className: 'bt-model-notice', role: 'note' }, notice) : null,
+    models.length > 0 ? h(ModelRows, { roster, current, onPick })
+      : (unavailable.length > 0 ? null : h('div', { className: 'bt-model-none' }, t('No models are set up in DeepSeek Harness yet.'))),
+    unavailable.length > 0 ? h('div', { className: 'bt-model-group', role: 'presentation' }, t('Not synced to the node yet')) : null,
+    unavailable.map(model => h('button', {
+      key: `off:${model.ref}`, type: 'button', role: 'menuitem', className: 'bt-model-off', disabled: true, 'aria-disabled': true,
+      title: model.reason,
+    },
+    h('span', { className: 'bt-menu-label' }, model.name),
+    h('span', { className: 'bt-menu-hint' }, model.reason))))
+}
+
 export const Caret = () => h('svg', { className: 'bt-model-caret', width: 12, height: 12, viewBox: '0 0 20 20', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true }, h('path', { d: 'M5.5 8l4.5 4.5L14.5 8' }))
 
 // A menu that opens under its trigger, or above when the window has no room below. A
@@ -255,7 +283,7 @@ export function useAnchoredMenu() {
 // levels of the shown model when it has them.
 // `onPick`/`onPickEffort` replace saving to the Bot, for a Bot that does not exist yet.
 // `withEfforts: false` keeps the Thinking section out, for a pick that has no level of its own.
-export function ModelMenu({ bot, roster, actions, run, wide = false, onPick, onPickEffort, withEfforts = true }) {
+export function ModelMenu({ bot, roster, actions, run, wide = false, onPick, onPickEffort, withEfforts = true, unavailable, notice }) {
   const { isOpen, shownPlace, leaving, button, menu, open, close } = useAnchoredMenu()
   const shown = modelOf(bot, roster)
   const current = bot.model ?? bot.appliedModel
@@ -273,11 +301,7 @@ export function ModelMenu({ bot, roster, actions, run, wide = false, onPick, onP
     void actions?.refreshModels?.()
     open()
   }
-  const pick = (ref) => {
-    close()
-    if (onPick) onPick(ref)
-    else if (ref !== current || !bot.model) void run(actions.updateBot(bot.id, { model: ref }))
-  }
+  const pick = makePick({ bot, current, actions, run, onPick, close })
   const pickEffort = (effort) => {
     if (onPickEffort) onPickEffort(effort)
     else if (effort !== bot.effort) void run(actions.updateBot(bot.id, { effort: effort ?? null }))
@@ -298,9 +322,7 @@ export function ModelMenu({ bot, roster, actions, run, wide = false, onPick, onP
         : t('{provider} · not available', { provider: shown.provider })) : null),
     h(Caret)),
     shownPlace ? createPortal(h('div', { ref: menu, className: `bt-menu bt-model-menu${shownPlace.bottom !== undefined ? ' bt-menu-up' : ''}`, role: 'menu', 'aria-label': t('Model for {name}', { name: bot.name }), style: shownPlace, 'data-leaving': leaving || undefined },
-      h('div', { className: 'bt-model-scroll' },
-        models.length > 0 ? h(ModelRows, { roster, current, onPick: pick })
-          : h('div', { className: 'bt-model-none' }, t('No models are set up in DeepSeek Harness yet.'))),
+      h('div', { className: 'bt-model-scroll' }, h(ModelChoices, { roster, current, onPick: pick, unavailable, notice })),
       hasEfforts || manage ? h('div', { className: 'bt-model-foot' },
         hasEfforts ? h(EffortBar, { reasoning, current: picked, onPick: pickEffort }) : null,
         hasEfforts && manage ? h('div', { className: 'bt-menu-sep', role: 'separator' }) : null,
@@ -478,6 +500,9 @@ export const MODEL_CSS = `
 .bt-model-tick{flex:none;width:16px;height:16px;display:inline-flex;color:var(--bt-ink-2)}
 .bt-model-tick svg{animation:bt-check-pop ${SPRING_POP.duration}ms ${SPRING_POP.easing} 60ms backwards}
 .bt-model-none{padding:8px;font-size:13px;line-height:18px;color:var(--bt-ink-2)}
+.bt-model-notice{padding:6px 8px 4px;font-size:12px;line-height:16px;color:var(--bt-ink-2)}
+.bt-model-off{opacity:.55;cursor:not-allowed}
+.bt-model-off .bt-menu-hint{white-space:normal;text-align:right}
 /* DSH centers the message column inside its scroll padding, which can sit a few px off this dock's center; the side shadows keep the band over the column's edges. */
 .bt-model-dock{width:100%;max-width:var(--dsh-chat-content-width,748px);margin:0 auto;display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:0 0 10px;box-sizing:border-box;background:var(--bt-main);box-shadow:-12px 0 0 var(--bt-main),12px 0 0 var(--bt-main);animation:bt-model-in ${SPRING_POP.duration}ms ${SPRING_POP.easing} backwards}
 /* The scroll box clips at its padding edge, so 3px of padding keeps the chips' focus rings visible; the negative margins cancel it so the chips stay in place. */

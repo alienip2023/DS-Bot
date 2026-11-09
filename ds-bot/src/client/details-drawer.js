@@ -9,7 +9,8 @@ import { drawerMenuKeys } from './side-model.js'
 import { useEscape } from './overlay-hooks.js'
 import { BotSettingsForm } from './bot-settings.js'
 import { GroupSettingsForm, ROOM_MODES, roomSubtitle, shownMode } from './group-settings.js'
-import { ModelMenu, modelOf } from './model-menu.js'
+import { modelOf } from './model-menu.js'
+import { BotModelMenu } from './node-models.js'
 import { FolderMenu } from './folder-menu.js'
 import { MemoryRow } from './memory-panel.js'
 import { ScheduleSummary } from './schedules.js'
@@ -323,7 +324,7 @@ export function DetailsDrawer({ sessionId, startRenaming, startTab, hasStrip, ro
         h(RunStats, { key: 'stats', bot, part, running, actions }),
         h('div', { key: 'model', className: 'bt-drawer-model' },
           h('div', { className: 'bt-section-title' }, t('Model')),
-          h(ModelMenu, { bot, roster, actions, run, wide: true }),
+          h(BotModelMenu, { bot, roster, actions, run, wide: true }),
           modelOf(bot, roster) ? null : h('div', { className: 'bt-note' }, t('Pick a model and {name} can start.', { name: bot.name })),
         ),
         bot.engine ? h(AgentSessions, { key: 'sessions', bot, part, run, useSessions }) : null,

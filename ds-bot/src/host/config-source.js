@@ -20,6 +20,21 @@ const PROVIDER_ID = /^[A-Za-z0-9._-]+$/
 const CRED_REF = /^[A-Za-z_][A-Za-z0-9_]*$/
 const RETRY_MS = 5_000
 
+// Catalog routes of llm-pi-ai (xai, anthropic, groq, ...) are usually configured with a
+// `models` list only: the wire protocol and the endpoint live in pi-ai's built-in catalog,
+// and the key is read from the provider's native env name (`nativeAuth.env`). A node has
+// no catalog entry to lean on for a pushed route, so the source completes the route from
+// the catalog before pushing. The endpoint comes from the configurable-provider directory
+// entry (`defaultBaseURL`, generated from pi-ai's PROVIDER_DATA); the protocol is this
+// snapshot of the installed catalog, limited to routes that speak ONE protocol the node
+// can serve (anthropic-messages / openai-completions / openai-responses). A route that is
+// not listed here (mixed protocols, bedrock, vertex, ...) is still skipped, never guessed.
+const CATALOG_API = Object.freeze({
+  ...Object.fromEntries(['ant-ling', 'baseten', 'cerebras', 'deepseek', 'groq', 'huggingface', 'kimi-coding', 'moonshotai', 'moonshotai-cn', 'nvidia', 'qwen-token-plan', 'qwen-token-plan-cn', 'qwen-token-plan-individual', 'together', 'xiaomi', 'xiaomi-token-plan-ams', 'xiaomi-token-plan-cn', 'xiaomi-token-plan-sgp', 'zai', 'zai-coding-cn'].map(id => [id, 'openai-completions'])),
+  ...Object.fromEntries(['anthropic', 'minimax', 'minimax-cn'].map(id => [id, 'anthropic-messages'])),
+  ...Object.fromEntries(['meta', 'xai'].map(id => [id, 'openai-responses'])),
+})
+
 // Find the directory that actually contains settings.yaml.
 // Order: rt.dshHome → ~/.dsh → DSH_HOME env — first with settings.yaml wins.
 function findSettingsDir(rt) {
@@ -107,9 +122,13 @@ export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRef
       if (LOCAL_CLI_PREFIX.test(entry.provider)) { skipped += 1; continue }
       const profile = entry.settingsPath.reduce((value, key) => value?.[key], sections.get(entry.settingsNs)?.value)
       if (!profile || typeof profile !== 'object') continue
-      const apiKeyEnv = typeof profile.apiKeyEnv === 'string' ? profile.apiKeyEnv : ''
+      // Catalog route that names neither protocol nor credential ref: complete it from the catalog.
+      const catalogApi = Object.hasOwn(CATALOG_API, entry.provider) ? CATALOG_API[entry.provider] : undefined
+      const nativeEnv = Array.isArray(entry.nativeAuth?.env) ? entry.nativeAuth.env.find(name => typeof name === 'string' && CRED_REF.test(name)) : undefined
+      const apiKeyEnv = typeof profile.apiKeyEnv === 'string' && profile.apiKeyEnv !== '' ? profile.apiKeyEnv : (catalogApi !== undefined && nativeEnv !== undefined ? nativeEnv : '')
+      const api = typeof profile.api === 'string' && profile.api !== '' ? profile.api : (catalogApi ?? '')
       const apiKey = refs.get(apiKeyEnv)
-      if (!PROVIDER_ID.test(entry.provider) || !CRED_REF.test(apiKeyEnv) || typeof profile.api !== 'string' || profile.api === '' || typeof apiKey !== 'string' || apiKey === '') {
+      if (!PROVIDER_ID.test(entry.provider) || !CRED_REF.test(apiKeyEnv) || api === '' || typeof apiKey !== 'string' || apiKey === '') {
         skipped += 1
         continue
       }
@@ -119,7 +138,8 @@ export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRef
 
       // Per-provider gateway rewriting: only when profile.gateway === true and gateway param is set
       // gateway = { host, port, token: { refName, value } } — one token shared by all gateway providers
-      let finalBaseURL = typeof profile.baseURL === 'string' && profile.baseURL !== '' ? profile.baseURL : undefined
+      let finalBaseURL = typeof profile.baseURL === 'string' && profile.baseURL !== '' ? profile.baseURL
+        : (catalogApi !== undefined && typeof entry.defaultBaseURL === 'string' && entry.defaultBaseURL !== '' && !entry.defaultBaseURL.includes('{') ? entry.defaultBaseURL : undefined)
       let finalApiKeyEnv = apiKeyEnv
       let finalApiKey = apiKey
       if (profile.gateway === true && gateway != null) {
@@ -140,7 +160,7 @@ export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRef
 
       providers.push({
         id: entry.provider,
-        api: profile.api,
+        api,
         ...(finalBaseURL !== undefined ? { baseURL: finalBaseURL } : {}),
         apiKeyEnv: finalApiKeyEnv,
         apiKey: finalApiKey,
