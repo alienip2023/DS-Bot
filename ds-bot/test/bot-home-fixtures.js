@@ -6,7 +6,7 @@ import { indexRoster, EMPTY_ROSTER } from '../src/client/sources.js'
 import { createRuntime } from '../index.js'
 import { fakeContext } from './fake-ctx.js'
 
-export function realTeamActions(rosterState) {
+export function realTeamActions(rosterState, overrides = {}) {
   return teamActions({
     call: () => Promise.resolve({}),
     after: p => p,
@@ -18,6 +18,8 @@ export function realTeamActions(rosterState) {
     heldCards: { getSnapshot: () => ({}) },
     turnClock: { getSnapshot: () => ({}) },
     panelFolded: () => false,
+    openSession: () => {},
+    ...overrides,
   })
 }
 

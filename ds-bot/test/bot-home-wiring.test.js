@@ -46,62 +46,77 @@ const walk = (node, visit) => {
 }
 const find = (tree, match) => { const hits = []; walk(tree, node => { if (match(node)) hits.push(node) }); return hits }
 
-// The actions the page hands down: the real teamActions plus spies for the core's navigation.
-function pageActions(roster) {
+// The page's actions: the REAL teamActions (openJoinedHome, botHasHome) over a roster that a
+// real runtime's chatOf produced, with spies for the core's navigation. `joined-ensure` is
+// answered the way channel.js does: the Bot gets its mirror sessionId and the team is read again.
+function pageActions(rt) {
   const calls = []
+  let roster = hostRoster(rt)
+  const real = realTeamActions(roster, {
+    roster: { getSnapshot: () => roster },
+    call: async (endpoint, body) => {
+      calls.push([endpoint, body.botId])
+      if (endpoint === 'joined-ensure') rt.state.bots[body.botId].sessionId = 'sess-mirror-new'
+      return {}
+    },
+    after: async (promise) => { const value = await promise; roster = hostRoster(rt); return value },
+    openSession: id => calls.push(['openSession', id]),
+  })
   const actions = {
-    ...realTeamActions(roster),
+    ...real,
     openSession: id => calls.push(['openSession', id]),
     openJoinedChat: id => calls.push(['openJoinedChat', id]),
     openMenu() {}, toggleSidebar() {}, setLeftDrawer() {}, clearUnread() {},
   }
-  return { calls, actions }
+  return { calls, actions, roster: () => roster }
 }
 
-function sidebarClick(roster, bot) {
-  const { calls, actions } = pageActions(roster)
+const settle = () => new Promise(resolve => setTimeout(resolve, 5))
+
+async function sidebarClick(rt, botId) {
+  const { calls, actions, roster } = pageActions(rt)
   const tree = TeamSidebar({
     wide: true, actions,
-    useRoster: pick => pick(roster), useUi: pick => pick({ unread: {}, leftDrawer: false }), useRegistry: pick => pick({}),
+    useRoster: pick => pick(roster()), useUi: pick => pick({ unread: {}, leftDrawer: false }), useRegistry: pick => pick({}),
     useSessions: pick => pick({ ids: [], byId: {} }), useUpdate: () => ({}),
     useSessionStatus: pick => pick(new Map()), useSessionRetainInfo: (part, pick) => pick(undefined),
     useActivity: pick => pick({}), useWork: pick => pick({ rooms: {}, waiting: {} }),
   })
-  const [row] = find(tree, node => node.type?.name === 'BotRow' && node.props.bot.id === bot.id)
-  assert.ok(row, 'the sidebar must render a BotRow for the joined Bot')
+  const [row] = find(tree, node => node.type?.name === 'BotRow' && node.props.bot.id === botId)
+  assert.ok(row, 'the sidebar must render a BotRow for the Bot')
   const [button] = find(row.type(row.props), node => node.type === 'button' && node.props.className === 'bt-row')
   assert.ok(button, 'BotRow must render its bt-row button')
   button.props.onClick()
+  await settle()
   return calls
 }
 
-function cellsClick(roster, bot) {
-  const { calls, actions } = pageActions(roster)
+async function cellsClick(rt, botId) {
+  const { calls, actions, roster } = pageActions(rt)
+  const bot = roster().byId[botId]
   const tree = GroupMessage({
-    bot, text: 'hi', room: { id: 'room', name: 'Team', members: [bot.id], createdAt: 1 }, roster, actions,
+    bot, text: 'hi', room: { id: 'room', name: 'Team', members: [bot.id], createdAt: 1 }, roster: roster(), actions,
     useUi: pick => pick({}), time: 1, duration: 1,
   })
   const [lead] = find(tree, node => node.type === 'button' && node.props.className === 'bt-lead')
   assert.ok(lead, 'GroupMessage must render its bt-lead button')
   lead.props.onClick()
+  await settle()
   return calls
 }
 
 for (const [name, click] of [['sidebar BotRow', sidebarClick], ['cells GroupMessage lead', cellsClick]]) {
-  test(`S23b-wiring ${name}: joined Bot not chatted yet -> openJoinedChat, openSession never`, () => {
-    const roster = hostRoster(joinedRuntime())
-    assert.deepEqual(click(roster, roster.byId['bot-j1']), [['openJoinedChat', 'bot-j1']])
+  test(`S23b-wiring ${name}: joined Bot not chatted yet -> joined-ensure, then openSession(bot.id); never the dialog`, async () => {
+    assert.deepEqual(await click(joinedRuntime(), 'bot-j1'), [['joined-ensure', 'bot-j1'], ['openSession', 'bot-j1']])
   })
 
-  test(`S23b-wiring ${name}: joined Bot with a mirror session -> openSession(bot.id) once`, () => {
-    const roster = hostRoster(joinedRuntime({ mirrorSessionId: 'sess-mirror' }))
-    assert.deepEqual(click(roster, roster.byId['bot-j1']), [['openSession', 'bot-j1']])
+  test(`S23b-wiring ${name}: joined Bot with a mirror session -> openSession(bot.id) once, no ensure`, async () => {
+    assert.deepEqual(await click(joinedRuntime({ mirrorSessionId: 'sess-mirror' }), 'bot-j1'), [['openSession', 'bot-j1']])
   })
 
-  test(`S23b-wiring ${name}: a local Bot always opens its session`, () => {
+  test(`S23b-wiring ${name}: a local Bot always opens its session`, async () => {
     const rt = joinedRuntime()
     rt.state.bots['bot-l1'] = { id: 'bot-l1', name: 'Local', origin: 'local', type: 'local' }
-    const roster = hostRoster(rt)
-    assert.deepEqual(click(roster, roster.byId['bot-l1']), [['openSession', 'bot-l1']])
+    assert.deepEqual(await click(rt, 'bot-l1'), [['openSession', 'bot-l1']])
   })
 }

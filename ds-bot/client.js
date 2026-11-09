@@ -2011,7 +2011,27 @@ async function sendFromDialog(actions, botId, text, fallback = "Failed to send")
 }
 
 // src/client/team-actions.js
-function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards, heldCards, turnClock, panelFolded }) {
+function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards, heldCards, turnClock, panelFolded, openSession }) {
+  const reportError = (error, where = "action") => {
+    noteClientError(where, error);
+    ui2.set((state) => ({ ...state, toast: { text: error?.message ?? String(error), token: Date.now() } }));
+  };
+  const botHasHome = (botId) => {
+    const bot = roster.getSnapshot().byId?.[botId];
+    const sessionId = bot?.sessionId;
+    return typeof sessionId === "string" && sessionId !== "" && sessionId !== (bot.id ?? botId);
+  };
+  const openJoinedHome = async (botId) => {
+    try {
+      if (!botHasHome(botId)) {
+        await after(call2("joined-ensure", { botId }));
+        if (!botHasHome(botId)) throw new Error("The Bot page is not ready yet. Try again in a moment.");
+      }
+      openSession(botId);
+    } catch (error) {
+      reportError(error, "joined-home");
+    }
+  };
   const memoryOf = (id) => roster.getSnapshot().roomsById[id] ? { roomId: id } : { botId: id };
   const yieldTo = (state, view) => state.panelYield === true || panelFolded?.(view) === true;
   const openSideChat = (sessionId, chatId) => {
@@ -2200,15 +2220,8 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
     // Joined (remote) bot chat: open, close, send a message to remote session.
     openJoinedChat: (botId) => openJoinedChat(ui2, botId),
     botHomeEnabled: () => roster.getSnapshot().botHomeEnabled === true,
-    // Read-only: does this Bot already have a local mirror session to open? The host
-    // always sends `sessionId` (channel.js view(): rt.chatOf(bot.id)), and chatOf falls
-    // back to the Bot's own id until the mirror session is created on the first send,
-    // so only a sessionId different from the Bot's id means a session exists.
-    botHasHome: (botId) => {
-      const bot = roster.getSnapshot().byId?.[botId];
-      const sessionId = bot?.sessionId;
-      return typeof sessionId === "string" && sessionId !== "" && sessionId !== (bot.id ?? botId);
-    },
+    botHasHome,
+    openJoinedHome,
     closeJoinedChat: () => {
       ui2.set((state) => state.joinedChat ? { ...state, joinedChat: null } : state);
     },
@@ -2255,11 +2268,7 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
     diagnosticsLog: () => call2("diagnostics-log"),
     diagnosticsClear: () => call2("diagnostics-clear"),
     repoStars: () => call2("repo-stars"),
-    // A failed action away from any form (a menu, the palette) shows as a toast.
-    reportError: (error, where = "action") => {
-      noteClientError(where, error);
-      ui2.set((state) => ({ ...state, toast: { text: error?.message ?? String(error), token: Date.now() } }));
-    },
+    reportError,
     dismissToast: (token) => ui2.set((state) => state.toast && (token === void 0 || state.toast.token === token) ? { ...state, toast: null } : state),
     noteTurnTime: (sessionId, turn, key, time) => {
       if (sessionId === void 0 || !Number.isFinite(turn) || !Number.isFinite(time)) return;
@@ -12613,11 +12622,7 @@ var CONNECTOR_CSS = `
 // src/client/row-actions.js
 function botRowClick(joined, id, actions) {
   if (joined) {
-    if (actions.botHomeEnabled?.() && actions.botHasHome?.(id)) {
-      actions.openSession(id);
-      return;
-    }
-    actions.openJoinedChat(id);
+    actions.openJoinedHome(id);
     return;
   }
   actions.openSession(id);
@@ -15562,6 +15567,7 @@ function TeamSidebar(props) {
   const rowActions = {
     ...actions,
     openSession: (id) => navigate(actions.openSession, id),
+    openJoinedHome: (id) => navigate(actions.openJoinedHome, id),
     openAgent: (id) => navigate(actions.openAgent, id),
     openAgentSession: (id) => navigate(actions.openAgentSession, id),
     newAgentSession: (id) => navigate(actions.newAgentSession, id)
@@ -27921,7 +27927,7 @@ function apply(ctx) {
     }
   };
   const actions = {
-    ...teamActions({ call, after, partFor, roster, ui: ui2, live, cards, heldCards, turnClock, panelFolded }),
+    ...teamActions({ call, after, partFor, roster, ui: ui2, live, cards, heldCards, turnClock, panelFolded, openSession: (id) => actions.openSession(id) }),
     learningAnswer: (id, approve) => after(call("learning-answer", { id, approve })),
     // The full-pane overlays sit above the conversation, so opening one must dismiss them
     // or the click appears to do nothing.

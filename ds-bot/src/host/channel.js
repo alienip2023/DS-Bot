@@ -7,8 +7,8 @@ import { handoffReply, questionReply, viewReply } from './parts.js'
 import { validateViewAnswer } from 'deep-view/core'
 import { COLORS, EXTRA_COLORS, ROUTE } from './constants.js'
 import { joinedShadow } from './roster-join.js'
-import { ensureMirrorSession } from './mirror.js'
-import { deliverTurn } from './executor.js'
+import { ensureMirrorSession, mirrorStateOf } from './mirror.js'
+import { startPageTurn } from './executor.js'
 import { createTurnTracker } from './turn-tracker.js'
 
 // Pure helper: map a registry defaultModel (string or {provider,model} object) to a ref string.
@@ -39,14 +39,9 @@ export function errorCode(error) {
  */
 export function createSendUser(rt, { textOfContent, getMirrorState, ctx } = {}) {
   const _textOfContent = textOfContent ?? ((c) => (typeof c === 'string' ? c : Array.isArray(c) ? c.map(b => typeof b?.text === 'string' ? b.text : '').join('') : ''))
-  const _getMirrorState = getMirrorState ?? ((rt, botId) => {
-    if (!rt._mirrorState) rt._mirrorState = new Map()
-    let s = rt._mirrorState.get(botId)
-    if (!s) { s = { seenKeys: new Set(), closedKeys: new Set(), seenSteps: new Set() }; rt._mirrorState.set(botId, s) }
-    return s
-  })
+  const _getMirrorState = getMirrorState ?? mirrorStateOf
   return async function sendUser({ sessionId: ref, content, requestId = randomUUID() }) {
-    // Joined shadow: route through ensureMirrorSession + executor.deliverTurn
+    // Joined shadow: ensureMirrorSession + startPageTurn (user message on the page first, node answer after)
     const directBot = rt.botOf(ref)
     const joinedBot = joinedShadow(directBot) ? directBot
       : joinedShadow(rt.bySessionId(ref)) ? rt.bySessionId(ref)
@@ -55,17 +50,14 @@ export function createSendUser(rt, { textOfContent, getMirrorState, ctx } = {}) 
       const text = _textOfContent(content)
       const session = await ensureMirrorSession(rt, joinedBot)
       const ms = _getMirrorState(rt, joinedBot.id)
-      await deliverTurn({
-        botId: joinedBot.id,
-        text,
-        rt,
-        session,
-        seenKeys: ms.seenKeys,
-        closedKeys: ms.closedKeys,
-        seenSteps: ms.seenSteps,
+      // One in-flight turn per Bot (the same table the page's prompt takeover uses); the
+      // user's message is on the page before the node answers.
+      const { done } = startPageTurn({
+        rt, bot: joinedBot, text, requestId, session, state: ms,
         tracker: rt.turnTracker,
-        timeoutMs: 120_000,
+        timeoutMs: rt.joinedTurnTimeoutMs ?? 120_000,
       })
+      await done
       return
     }
     // Original path for non-joined
@@ -83,6 +75,30 @@ export function createSendUser(rt, { textOfContent, getMirrorState, ctx } = {}) 
       mode: 'queue',
       content,
     }, AbortSignal.timeout(30_000))
+  }
+}
+
+/**
+ * Create the `joined-ensure` route handler: make sure a joined Bot has its local mirror
+ * Session (created once, on the first call) and say which one it is. The Bot page is that
+ * Session, so the client calls this before opening a Bot that has not been chatted with.
+ * Exported for testing; install() uses it inside the 'joined-ensure' case.
+ * @param {object} rt
+ */
+export function createJoinedEnsureRoute(rt) {
+  const ok = value => ({ ok: true, value })
+  const refuse = message => ({ ok: false, error: { code: 'bot/refused', message, details: {} } })
+  return async function joinedEnsureRoute(body) {
+    const botId = String(body?.botId ?? '')
+    await rt.load()
+    const bot = rt.botOf(botId)
+    if (!joinedShadow(bot)) return refuse('Not a joined Bot')
+    try {
+      await ensureMirrorSession(rt, bot)
+    } catch (error) {
+      return refuse(`Could not open the Bot's page: ${error?.message ?? error}`)
+    }
+    return ok({ sessionId: bot.sessionId })
   }
 }
 
@@ -674,6 +690,7 @@ export function install(rt) {
           await rt.save()
           return ok(true)
         }
+        case 'joined-ensure': return await createJoinedEnsureRoute(rt)(body)
         case 'send': {
           const text = String(body.text ?? '').trim()
           if (text === '' || typeof body.sessionId !== 'string') return fail('Nothing to send', 'bot/invalid')

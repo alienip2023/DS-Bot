@@ -21,18 +21,16 @@ test('1. openJoinedChat sets ui.joinedChat (imported)', () => {
   assert.equal(ui.get().joinedChat, 'joined:dshtest-1:session-abc')
 })
 
-// ── test 2: botRowClick joined → openJoinedChat (imported from row-actions.js) ──────
-test('2. botRowClick joined: openJoinedChat called, openSession skipped (imported)', () => {
-  const openJoinedChatCalls = []
-  const openSessionCalls = []
+// ── test 2: botRowClick joined → openJoinedHome, never the dialog (imported from row-actions.js) ──
+test('2. botRowClick joined: openJoinedHome called, openJoinedChat and openSession skipped (imported)', () => {
+  const calls = []
   const actions = {
-    openJoinedChat: (id) => openJoinedChatCalls.push(id),
-    openSession: (id) => openSessionCalls.push(id),
+    openJoinedHome: (id) => calls.push(['openJoinedHome', id]),
+    openJoinedChat: (id) => calls.push(['openJoinedChat', id]),
+    openSession: (id) => calls.push(['openSession', id]),
   }
   botRowClick(true, 'joined:dshtest-1:session-bot1', actions)
-  assert.equal(openJoinedChatCalls.length, 1, 'openJoinedChat must be called once')
-  assert.equal(openJoinedChatCalls[0], 'joined:dshtest-1:session-bot1')
-  assert.equal(openSessionCalls.length, 0, 'openSession must NOT be called for joined bot')
+  assert.deepEqual(calls, [['openJoinedHome', 'joined:dshtest-1:session-bot1']])
 })
 
 // ── test 3: botRowClick non-joined → openSession (imported from row-actions.js) ─────

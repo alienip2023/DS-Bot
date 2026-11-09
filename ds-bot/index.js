@@ -42,6 +42,7 @@ import * as dshUpdate from './src/host/dsh-update.js'
 import * as thinking from './src/host/thinking.js'
 import * as channel from './src/host/channel.js'
 import * as joinedTurn from './src/host/joined-turn.js'
+import * as joinedPrompt from './src/host/joined-prompt.js'
 import * as joinedCreate from './src/host/joined-create.js'
 import * as configSource from './src/host/config-source.js'
 import * as joinedPage from './src/host/joined-page.js'
@@ -63,7 +64,7 @@ export const inject = ['llm', 'tools', 'systemPrompt', 'sessionController', 'ses
 // install. Listeners run and tools are listed in registration order, so this order holds:
 // usage meters model requests after every listener that rewrites them. privacy checks a
 // call before the hooks of tools do, so a closed call never reaches a card they show.
-const MODULES = [diagnostics, store, models, providers, permissions, turns, steer, handoffs, requests, delivery, workerBridge, rosterJoin, roster, folders, privacy, agents, prompt, timeContext, tools, chatIndex, groups, goals, approvals, resume, memory, parts, images, avatarLibrary, secrets, connectors, capabilities, learning, schedules, browser, browserPlugins, computer, usage, update, dshUpdate, thinking, feed, im, channel, joinedTurn, joinedCreate, configSource, joinedPage, officeSkills, goalSkills, localAgents]
+const MODULES = [diagnostics, store, models, providers, permissions, turns, steer, handoffs, requests, delivery, workerBridge, rosterJoin, roster, folders, privacy, agents, prompt, timeContext, tools, chatIndex, groups, goals, approvals, resume, memory, parts, images, avatarLibrary, secrets, connectors, capabilities, learning, schedules, browser, browserPlugins, computer, usage, update, dshUpdate, thinking, feed, im, channel, joinedTurn, joinedPrompt, joinedCreate, configSource, joinedPage, officeSkills, goalSkills, localAgents]
 
 export function apply(ctx, config = {}) {
   createRuntime(ctx, config)
@@ -86,7 +87,8 @@ export function createRuntime(ctx, config = {}) {
       mainRole: config.mainRole ?? 'Chief of Staff',
     },
   }
-  rt.botHomeEnabled = config.features?.botHome === true
+  // On by default; `features.botHome: false` is the kill switch for the takeover of a joined Bot's page input.
+  rt.botHomeEnabled = config.features?.botHome !== false
   for (const module of MODULES) module.install(rt)
   return rt
 }

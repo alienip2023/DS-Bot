@@ -25,11 +25,12 @@ function runtime(config) {
   return createRuntime(fakeContext(), { home, ...config })
 }
 
-test('S23c-flag-on: createRuntime with features.botHome=true sets rt.botHomeEnabled', () => {
+test('S23c-flag-on: createRuntime with features.botHome=true keeps rt.botHomeEnabled true', () => {
   assert.equal(runtime({ features: { botHome: true } }).botHomeEnabled, true)
 })
 
-test('S23c-flag-default-off: absent or non-true features.botHome keeps rt.botHomeEnabled false', () => {
-  assert.equal(runtime({}).botHomeEnabled, false)
-  assert.equal(runtime({ features: { botHome: 'yes' } }).botHomeEnabled, false)
+test('S23c-flag-default-on: absent features keeps rt.botHomeEnabled true; only features.botHome:false turns it off', () => {
+  assert.equal(runtime({}).botHomeEnabled, true)
+  assert.equal(runtime({ features: {} }).botHomeEnabled, true)
+  assert.equal(runtime({ features: { botHome: false } }).botHomeEnabled, false)
 })

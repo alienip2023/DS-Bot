@@ -13,7 +13,7 @@
 import { randomUUID } from 'node:crypto'
 import { joinedShadow } from './roster-join.js'
 import { listenBotTurnResult, JOINED_TURN_TIMEOUT_MS } from './joined-turn.js'
-import { mirrorTurn } from './mirror.js'
+import { mirrorTurn, allocateTurn, mirrorTurnStart, mirrorTurnFinish, mirrorTurnFail } from './mirror.js'
 
 /**
  * Error codes thrown by send() / deliverTurn():
@@ -54,12 +54,16 @@ export async function send({ botId, text, rt, tracker, timeoutMs: timeoutOverrid
   if (!bot) throw new ExecutorError('E_NOT_FOUND', `bot not found: ${botId}`)
 
   if (joinedShadow(bot)) {
-    return await sendRemote({ bot, text, rt, tracker, timeoutOverride })
+    return await dispatchRemote({ bot, text, rt, tracker, timeoutOverride }).settle()
   }
   return await sendLocal({ bot, text, rt, tracker })
 }
 
-async function sendRemote({ bot, text, rt, tracker, timeoutOverride }) {
+// Dispatch is synchronous (no await): the listener is registered, the frame is sent, and
+// every refusal that can be known right away (offline, invalid worker, send failed) throws
+// before anything is returned. `settle()` then waits for the node's answer and returns the
+// send() result or throws an ExecutorError; `cancel()` drops the listener.
+function dispatchRemote({ bot, text, rt, tracker, timeoutOverride }) {
   if (!bot.worker) {
     throw new ExecutorError('E_NOT_FOUND', 'joined shadow missing worker config')
   }
@@ -101,34 +105,38 @@ async function sendRemote({ bot, text, rt, tracker, timeoutOverride }) {
     throw new ExecutorError('E_OFFLINE', 'node offline or send failed')
   }
 
-  let result
-  try {
-    result = await pending
-  } catch {
-    tracker?.finish(turnId, { status: 'failed', error: 'E_OFFLINE' })
-    throw new ExecutorError('E_OFFLINE', 'listener error')
-  }
+  const settle = async () => {
+    let result
+    try {
+      result = await pending
+    } catch {
+      tracker?.finish(turnId, { status: 'failed', error: 'E_OFFLINE' })
+      throw new ExecutorError('E_OFFLINE', 'listener error')
+    }
 
-  if (result === undefined) {
-    tracker?.finish(turnId, { status: 'timeout', error: 'E_TIMEOUT' })
-    throw new ExecutorError('E_TIMEOUT', `no result within ${timeoutMs}ms`)
-  }
-  if (!result || result.error === 'bridge-down') {
-    tracker?.finish(turnId, { status: 'failed', error: 'E_OFFLINE' })
-    throw new ExecutorError('E_OFFLINE', result?.error ?? 'bridge-down')
-  }
-  if (result.ok === false) {
-    tracker?.finish(turnId, { status: 'failed', error: 'E_REJECTED' })
-    throw new ExecutorError('E_REJECTED', result.error ?? 'bot-turn-rejected')
-  }
-  // Validate seq field (S2-1 contract: seq must be a non-negative integer)
-  if (typeof result.seq !== 'number' || !Number.isInteger(result.seq) || result.seq < 0) {
-    tracker?.finish(turnId, { status: 'failed', error: 'E_REJECTED' })
-    throw new ExecutorError('E_REJECTED', result.error ?? 'bot-turn-result-seq-missing')
-  }
+    if (result === undefined) {
+      tracker?.finish(turnId, { status: 'timeout', error: 'E_TIMEOUT' })
+      throw new ExecutorError('E_TIMEOUT', `no result within ${timeoutMs}ms`)
+    }
+    if (!result || result.error === 'bridge-down') {
+      tracker?.finish(turnId, { status: 'failed', error: 'E_OFFLINE' })
+      throw new ExecutorError('E_OFFLINE', result?.error ?? 'bridge-down')
+    }
+    if (result.ok === false) {
+      tracker?.finish(turnId, { status: 'failed', error: 'E_REJECTED' })
+      throw new ExecutorError('E_REJECTED', result.error ?? 'bot-turn-rejected')
+    }
+    // Validate seq field (S2-1 contract: seq must be a non-negative integer)
+    if (typeof result.seq !== 'number' || !Number.isInteger(result.seq) || result.seq < 0) {
+      tracker?.finish(turnId, { status: 'failed', error: 'E_REJECTED' })
+      throw new ExecutorError('E_REJECTED', result.error ?? 'bot-turn-result-seq-missing')
+    }
 
-  tracker?.finish(turnId, { status: 'done' })
-  return { ok: true, turnId, text: result.text ?? '', nodeId, remoteBotId, seq: result.seq }
+    tracker?.finish(turnId, { status: 'done' })
+    return { ok: true, turnId, text: result.text ?? '', nodeId, remoteBotId, seq: result.seq }
+
+  }
+  return { turnId, nodeId, remoteBotId, settle, cancel }
 }
 
 async function sendLocal({ bot, text, rt, tracker }) {
@@ -180,4 +188,83 @@ export async function deliverTurn({ botId, text, rt, session, turn, step = 1, se
     seenSteps,
   })
   return { ok: true, turnId: result.turnId, mirrorResult }
+}
+
+const FAILURE_WORDS = {
+  E_OFFLINE: '节点离线或不可达',
+  E_TIMEOUT: '等待节点回复超时',
+  E_REJECTED: '节点拒绝了这条消息',
+  E_NOT_FOUND: '找不到这个远程 Bot',
+  E_INVALID: '消息或 Bot 配置无效',
+  E_BUSY: '上一条消息还在处理',
+}
+
+/** The words the page shows after "⚠ 无法送达节点：" for a failed delivery. */
+export function failureText(err) {
+  const code = typeof err?.code === 'string' ? err.code : ''
+  const detail = String(err?.message ?? err ?? '')
+  const word = FAILURE_WORDS[code]
+  if (word === undefined) return detail || 'unknown'
+  return detail !== '' && detail !== code ? `${word}（${code}: ${detail}）` : `${word}（${code}）`
+}
+
+/**
+ * Start one turn that came from the Bot's page (S2-4 contract §2–§3).
+ *
+ *   Phase A  one turn per Bot: claim the in-flight table (E_BUSY if taken), then dispatch the
+ *            frame to the node — both synchronous, so a refusal throws here and the page
+ *            has no half turn.
+ *   Phase B  allocateTurn + mirrorTurnStart with no await between: the user's message is on
+ *            the page (source.rpcId = requestId, so the client retires its echo).
+ *   Phase C  `done` waits for the node, then writes Finish — or Fail, a visible
+ *            "⚠ 无法送达节点：…" message and a turn/end that carries the error code.
+ *
+ * Returns { turn, turnId, done }. `done` resolves { ok, turnId, mirrorResult } and rejects
+ * (the same ExecutorError) after a Fail was written; the in-flight claim is released when it
+ * settles. A Start that cannot be written after a successful dispatch only warns: the node
+ * has the message, and a later history rebuild fills the page in.
+ */
+export function startPageTurn({ rt, bot, text, requestId, session, step = 1, state = {}, tracker, timeoutMs }) {
+  if (!rt.joinedInFlight) rt.joinedInFlight = new Map()
+  if (rt.joinedInFlight.has(bot.id)) throw new ExecutorError('E_BUSY', 'a turn for this Bot is still in flight')
+  rt.joinedInFlight.set(bot.id, { requestId })
+  const release = () => { if (rt.joinedInFlight.get(bot.id)?.requestId === requestId) rt.joinedInFlight.delete(bot.id) }
+
+  let dispatched
+  try {
+    dispatched = dispatchRemote({ bot, text, rt, tracker, timeoutOverride: timeoutMs })
+  } catch (err) {
+    release()
+    throw err
+  }
+
+  const { seenKeys, closedKeys, seenSteps, closedTurns } = state
+  let turn = null
+  try {
+    turn = allocateTurn(session)
+    mirrorTurnStart(session, { turn, step, userText: text, rpcId: requestId })
+  } catch (err) {
+    rt.warn?.('ds-bot: joined Bot %s page turn not written: %s', bot.id, err?.message ?? err)
+    turn = null
+  }
+
+  const done = (async () => {
+    try {
+      let result
+      try {
+        result = await dispatched.settle()
+      } catch (err) {
+        if (turn !== null) mirrorTurnFail(session, { turn, step, code: err?.code, message: failureText(err), closedTurns })
+        throw err
+      }
+      let mirrorResult = { skipped: true, reason: 'no-page-turn' }
+      if (turn !== null) {
+        mirrorResult = mirrorTurnFinish(session, { turn, step, botText: result.text, botId: bot.id, nodeSeq: result.seq, seenKeys, closedKeys, seenSteps, closedTurns })
+      }
+      return { ok: true, turnId: dispatched.turnId, mirrorResult }
+    } finally {
+      release()
+    }
+  })()
+  return { turn, turnId: dispatched.turnId, done }
 }

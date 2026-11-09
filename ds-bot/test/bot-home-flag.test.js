@@ -1,55 +1,29 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { botRowClick } from '../src/client/row-actions.js'
+import { teamActions } from '../src/client/team-actions.js'
 import { realTeamActions, hostRoster, joinedRuntime } from './bot-home-fixtures.js'
 
-function spyActions({ enabled, hasHome }) {
+function spyActions() {
   const calls = []
   const rec = name => id => { calls.push([name, id]) }
   return {
     calls,
-    actions: {
-      botHomeEnabled: () => enabled,
-      botHasHome: () => hasHome,
-      openSession: rec('openSession'),
-      openJoinedChat: rec('openJoinedChat'),
-    },
+    actions: { openSession: rec('openSession'), openJoinedHome: rec('openJoinedHome'), openJoinedChat: rec('openJoinedChat') },
   }
 }
 
-function clickThrough(roster) {
-  const real = realTeamActions(roster)
-  const calls = []
-  const actions = { ...real, openSession: id => calls.push(['openSession', id]), openJoinedChat: id => calls.push(['openJoinedChat', id]) }
-  botRowClick(true, 'bot-j1', actions)
-  return calls
-}
-
-describe('S23b: Bot Home routing of a joined Bot click', () => {
-  it('S23b-a flag on + has sessionId -> openSession(bot.id) once, openJoinedChat never', () => {
-    const { calls, actions } = spyActions({ enabled: true, hasHome: true })
+describe('S23b: a joined Bot click opens its Bot page, never the dialog', () => {
+  it('S23b-a joined -> openJoinedHome(bot.id) once; openSession and openJoinedChat never', () => {
+    const { calls, actions } = spyActions()
     botRowClick(true, 'bot-j1', actions)
-    assert.deepEqual(calls, [['openSession', 'bot-j1']])
+    assert.deepEqual(calls, [['openJoinedHome', 'bot-j1']])
   })
 
-  it('S23b-b flag on + no sessionId -> openJoinedChat once, openSession never', () => {
-    const { calls, actions } = spyActions({ enabled: true, hasHome: false })
-    botRowClick(true, 'bot-j1', actions)
-    assert.deepEqual(calls, [['openJoinedChat', 'bot-j1']])
-  })
-
-  it('S23b-c flag off -> openJoinedChat even when the Bot has a sessionId', () => {
-    const { calls, actions } = spyActions({ enabled: false, hasHome: true })
-    botRowClick(true, 'bot-j1', actions)
-    assert.deepEqual(calls, [['openJoinedChat', 'bot-j1']])
-  })
-
-  it('S23b-d non-joined Bot -> openSession regardless of flag and sessionId', () => {
-    for (const [enabled, hasHome] of [[true, true], [true, false], [false, true], [false, false]]) {
-      const { calls, actions } = spyActions({ enabled, hasHome })
-      botRowClick(false, 'bot-local', actions)
-      assert.deepEqual(calls, [['openSession', 'bot-local']])
-    }
+  it('S23b-d non-joined Bot -> openSession only', () => {
+    const { calls, actions } = spyActions()
+    botRowClick(false, 'bot-local', actions)
+    assert.deepEqual(calls, [['openSession', 'bot-local']])
   })
 
   it('S23b-botHasHome: id fallback is not a home; a distinct sessionId is (real host shape)', () => {
@@ -69,30 +43,61 @@ describe('S23b: Bot Home routing of a joined Bot click', () => {
     assert.equal(actions.botHasHome('fallback'), true, 'must read the live snapshot, not a copy')
   })
 
-  it('S23b-flag-from-roster: real teamActions.botHomeEnabled follows roster.botHomeEnabled', () => {
-    const state = { botHomeEnabled: true }
-    const actions = realTeamActions(state)
-    assert.equal(actions.botHomeEnabled(), true)
-    state.botHomeEnabled = false
-    assert.equal(actions.botHomeEnabled(), false)
-  })
-
   it('S23b-no-dead-action: openBotHome no longer exists on teamActions', () => {
     assert.equal(realTeamActions({}).openBotHome, undefined)
   })
+})
 
-  it('S23b-real-shape-1: joined Bot not chatted yet (chatOf falls back to its id), flag on -> openJoinedChat only', () => {
-    const rt = joinedRuntime()
-    const roster = hostRoster(rt)
-    assert.equal(roster.byId['bot-j1'].sessionId, 'bot-j1', 'precondition: real chatOf fell back to the Bot id')
-    assert.equal(roster.botHomeEnabled, true)
-    assert.deepEqual(clickThrough(roster), [['openJoinedChat', 'bot-j1']])
+describe('S23b: openJoinedHome (real teamActions)', () => {
+  // The real host shape: the roster comes from a real runtime's chatOf; `joined-ensure`
+  // is answered like channel.js does, by giving the Bot its mirror sessionId.
+  function harness({ mirrorSessionId, ensure = 'ok', refresh = true } = {}) {
+    const rt = joinedRuntime({ mirrorSessionId })
+    let roster = hostRoster(rt)
+    const calls = []
+    const ui = { state: {}, set(fn) { this.state = fn(this.state) }, getSnapshot() { return this.state } }
+    const actions = teamActions({
+      call: async (endpoint, body) => {
+        calls.push([endpoint, body])
+        if (endpoint !== 'joined-ensure') return {}
+        if (ensure === 'fail') throw new Error('Could not open the Bot\'s page: disk full')
+        rt.state.bots[body.botId].sessionId = 'sess-mirror-new'
+        return { sessionId: 'sess-mirror-new' }
+      },
+      after: async (promise) => { const value = await promise; if (refresh) roster = hostRoster(rt); return value },
+      partFor: () => null,
+      roster: { getSnapshot: () => roster },
+      ui,
+      live: { getSnapshot: () => ({}) }, cards: { getSnapshot: () => ({}) }, heldCards: { getSnapshot: () => ({}) },
+      turnClock: { getSnapshot: () => ({}) }, panelFolded: () => false,
+      openSession: id => calls.push(['openSession', id]),
+    })
+    return { actions, calls, ui }
+  }
+
+  it('S23b-home-existing: a Bot with a mirror session opens at once, no ensure call', async () => {
+    const { actions, calls } = harness({ mirrorSessionId: 'sess-mirror' })
+    await actions.openJoinedHome('bot-j1')
+    assert.deepEqual(calls, [['openSession', 'bot-j1']])
   })
 
-  it('S23b-real-shape-2: joined Bot with a mirror session, flag on -> openSession(bot.id) once', () => {
-    const rt = joinedRuntime({ mirrorSessionId: 'sess-mirror' })
-    const roster = hostRoster(rt)
-    assert.equal(roster.byId['bot-j1'].sessionId, 'sess-mirror')
-    assert.deepEqual(clickThrough(roster), [['openSession', 'bot-j1']])
+  it('S23b-home-ensure: a Bot never chatted with is ensured first, then opened once', async () => {
+    const { actions, calls } = harness()
+    await actions.openJoinedHome('bot-j1')
+    assert.deepEqual(calls, [['joined-ensure', { botId: 'bot-j1' }], ['openSession', 'bot-j1']])
+  })
+
+  it('S23b-home-ensure-fail: a host failure is shown as a toast, the page is not opened', async () => {
+    const { actions, calls, ui } = harness({ ensure: 'fail' })
+    await actions.openJoinedHome('bot-j1')
+    assert.deepEqual(calls, [['joined-ensure', { botId: 'bot-j1' }]])
+    assert.match(ui.state.toast?.text ?? '', /disk full/)
+  })
+
+  it('S23b-home-not-ready: ensure answered but the team still shows no session -> toast, no open', async () => {
+    const { actions, calls, ui } = harness({ refresh: false })
+    await actions.openJoinedHome('bot-j1')
+    assert.deepEqual(calls, [['joined-ensure', { botId: 'bot-j1' }]])
+    assert.match(ui.state.toast?.text ?? '', /not ready/i)
   })
 })

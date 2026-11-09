@@ -711,6 +711,7 @@ export function TeamSidebar(props) {
   const rowActions = {
     ...actions,
     openSession: id => navigate(actions.openSession, id),
+    openJoinedHome: id => navigate(actions.openJoinedHome, id),
     openAgent: id => navigate(actions.openAgent, id),
     openAgentSession: id => navigate(actions.openAgentSession, id),
     newAgentSession: id => navigate(actions.newAgentSession, id),
