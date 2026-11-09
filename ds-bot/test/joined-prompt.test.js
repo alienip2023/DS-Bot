@@ -4,11 +4,12 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import EventEmitter from 'node:events'
 import { install } from '../src/host/joined-prompt.js'
+import { mirrorTurnStart, mirrorTurnFinish, mirrorTurnFail } from '../src/host/mirror.js'
 import { createJoinedEnsureRoute } from '../src/host/channel.js'
 
 const { Session } = await import('@deepseek-ai/dsh-session')
 
-function makeWorld({ sessionId = 'mirror-1', bot: botOverrides = {}, sendResult = true, timeoutMs, botHomeEnabled } = {}) {
+function makeWorld({ sessionId = 'mirror-1', bot: botOverrides = {}, sendResult = true, sendThrows = false, noRegistry = false, failAppendOn, timeoutMs, botHomeEnabled } = {}) {
   const emitter = new EventEmitter()
   const frames = []
   const sessions = new Map()
@@ -18,6 +19,7 @@ function makeWorld({ sessionId = 'mirror-1', bot: botOverrides = {}, sendResult 
   let seq = 0
   const registry = {
     send: (nodeId, type, payload) => {
+      if (sendThrows) throw new Error('socket closed')
       if (sendResult !== true) return false
       frames.push({ nodeId, type, payload })
       return true
@@ -31,14 +33,24 @@ function makeWorld({ sessionId = 'mirror-1', bot: botOverrides = {}, sendResult 
     ...(sessionId === null ? {} : { sessionId }),
     ...botOverrides,
   }
-  const sessionOf = (sid) => { if (!sessions.has(sid)) sessions.set(sid, new Session(sid)); return sessions.get(sid) }
+  const sessionOf = (sid) => {
+    if (!sessions.has(sid)) {
+      const created = new Session(sid)
+      if (failAppendOn !== undefined) {
+        const append = created.append.bind(created)
+        created.append = (type, ...rest) => { if (type === failAppendOn) throw new Error('disk full'); return append(type, ...rest) }
+      }
+      sessions.set(sid, created)
+    }
+    return sessions.get(sid)
+  }
   if (bot.sessionId) bySession.set(bot.sessionId, bot)
   const originalResult = { accepted: true, from: 'original' }
   const disposers = []
   const rt = {
     ...(botHomeEnabled === undefined ? {} : { botHomeEnabled }),
     ctx: {
-      get: key => (key === 'remote-agent:registry' ? registry : undefined),
+      get: key => (key === 'remote-agent:registry' && !noRegistry ? registry : undefined),
       sessionController: { prompt: async (...args) => { originalCalls.push(args); return originalResult } },
       effect: (fn) => { const dispose = fn(); if (typeof dispose === 'function') disposers.push(dispose) },
     },
@@ -118,14 +130,62 @@ describe('S24: joined Bot page prompt takeover', () => {
     assert.equal(session.log.at(-1).data.reason.error.code, 'E_REJECTED')
   })
 
-  it('S24-b3 node offline at dispatch: the prompt is refused (structured error) and the page gets no half turn', async () => {
-    const w = makeWorld({ sendResult: false })
+  it('S24-b3 no registry at all (nothing can be sent): the prompt is refused with a structured non-busy error and the page gets no half turn', async () => {
+    const w = makeWorld({ noRegistry: true })
     const error = await rejection(w.prompt(textRequest('hi')))
     assert.equal(error.isDSHRemoteError, true)
-    assert.equal(error.code, 'session/agent-busy')
+    // An unreachable node is not "the agent is busy": the toast's trailing code must say so.
+    assert.notEqual(error.code, 'session/agent-busy')
+    assert.equal(error.code, 'session/agent-unavailable')
+    assert.equal(error.details.reason, 'JOINED_NODE_E_OFFLINE')
     assert.match(error.message, /无法送达节点/)
     assert.deepEqual(types(w.sessionOf('mirror-1')), [], 'nothing written for a dispatch that never left')
     assert.equal(w.rt.joinedInFlight.size, 0, 'the in-flight claim is released')
+  })
+
+  it('S24-b4 the node does not take the frame (offline): the user message is on the page, then a visible E_OFFLINE failure; the prompt itself was accepted', async () => {
+    for (const world of [{ sendResult: false }, { sendThrows: true }]) {
+      const w = makeWorld(world)
+      assert.deepEqual(await w.prompt(textRequest('hi')), { accepted: true })
+      await w.idle()
+      const session = w.sessionOf('mirror-1')
+      assert.deepEqual(types(session), ['turn/start', 'step/start', 'user/message', 'assistant/message', 'step/end', 'turn/end'])
+      assert.match(session.log.find(event => event.type === 'assistant/message').data.message.content[0].text, /^⚠ 无法送达节点：.*E_OFFLINE/)
+      assert.equal(session.log.at(-1).data.reason.error.code, 'E_OFFLINE')
+      assert.equal(w.frames.length, 0)
+      assert.equal(w.rt.joinedInFlight.size, 0, 'the in-flight claim is released')
+      assert.equal(w.emitter.listenerCount('botTurnResult'), 0, 'the result listener is dropped')
+      // and the Bot is usable again
+      assert.deepEqual(await w.prompt(textRequest('again', 'req-2')), { accepted: true })
+      await w.idle()
+    }
+  })
+
+  it('S24-b5 a late node result after the timeout is dropped: nothing more is written, the listener is gone', async () => {
+    const w = makeWorld({ timeoutMs: 20 })
+    await w.prompt(textRequest('slow?'))
+    await w.idle()
+    const session = w.sessionOf('mirror-1')
+    const before = session.log.length
+    assert.equal(w.emitter.listenerCount('botTurnResult'), 0)
+    w.reply(0)
+    await w.idle()
+    assert.equal(session.log.length, before, 'the late answer writes nothing')
+    assert.equal(types(session).filter(t => t === 'turn/end').length, 1)
+    assert.equal(session.log.at(-1).data.reason.error.code, 'E_TIMEOUT')
+  })
+
+  it('S24-b6 the page turn cannot be written: nothing is sent to the node, the prompt is refused with a code, the claim and listener are released', async () => {
+    const w = makeWorld({ failAppendOn: 'user/message' })
+    const error = await rejection(w.prompt(textRequest('hello')))
+    assert.equal(error.isDSHRemoteError, true)
+    assert.equal(error.code, 'session/agent-unavailable')
+    assert.equal(error.details.reason, 'JOINED_NODE_E_MIRROR_WRITE')
+    assert.match(error.message, /无法送达节点/)
+    assert.equal(w.frames.length, 0, 'a message the page does not show must not reach the node')
+    assert.equal(w.rt.joinedInFlight.size, 0)
+    assert.equal(w.emitter.listenerCount('botTurnResult'), 0)
+    assert.equal(types(w.sessionOf('mirror-1')).filter(t => t === 'turn/end').length, 1, 'the half-written turn is closed')
   })
 
   it('S24-c ordinary Bot / group / unknown Session: the original prompt gets the very same arguments and its own result', async () => {
@@ -158,9 +218,16 @@ describe('S24: joined Bot page prompt takeover', () => {
     for (const part of [{ type: 'image', mediaType: 'image/png', data: 'AAAA' }, { type: 'file', receiptId: 'r1' }]) {
       const error = await rejection(w.prompt({ requestId: 'req-a', sessionId: 'mirror-1', content: [{ type: 'text', text: 'look' }, part] }))
       assert.equal(error.isDSHRemoteError, true)
-      assert.equal(error.code, 'session/attachment-invalid')
-      assert.match(error.message, /不支持附件/)
+      // The composer sends session/attachment-invalid through attachmentErrorText(), which
+      // would print "image send failed (JOINED_ATTACHMENT_UNSUPPORTED)"; our own code gets the
+      // generic toast. composerToast mirrors dsh-client-ui-conversation lib/client.js:21754.
+      assert.notEqual(error.code, 'session/attachment-invalid')
+      assert.notEqual(error.code, 'subagent/attachment-invalid')
+      assert.equal(error.code, 'session/joined-attachment-unsupported')
+      assert.equal(error.message, '副机 Bot 暂不支持附件，请改为文字发送')
       assert.equal(error.details.reason, 'JOINED_ATTACHMENT_UNSUPPORTED')
+      const composerToast = e => (e.code === 'session/attachment-invalid' || e.code === 'subagent/attachment-invalid' ? `image send failed: ${e.details.reason}` : `${e.message} (${e.code})`)
+      assert.equal(composerToast(error), '副机 Bot 暂不支持附件，请改为文字发送 (session/joined-attachment-unsupported)')
     }
     assert.equal(w.frames.length, 0)
     assert.equal(w.originalCalls.length, 0)
@@ -185,6 +252,18 @@ describe('S24: joined Bot page prompt takeover', () => {
     const session = w.sessionOf('mirror-1')
     assert.deepEqual(session.log.filter(event => event.type === 'turn/start').map(event => event.data.turn), [1, 2])
     assert.deepEqual(session.log.filter(event => event.type === 'turn/end').map(event => event.data.reason.kind), ['completed', 'completed'])
+  })
+
+  it('S24-e2 mode:steer while a turn is in flight is refused the same way (no second frame)', async () => {
+    const w = makeWorld()
+    await w.prompt(textRequest('first', 'req-1'))
+    const error = await rejection(w.prompt({ ...textRequest('steer it', 'req-2'), mode: 'steer' }))
+    assert.equal(error.code, 'session/agent-busy')
+    assert.equal(error.details.reason, 'JOINED_TURN_IN_FLIGHT')
+    assert.equal(w.frames.length, 1)
+    assert.equal(w.originalCalls.length, 0)
+    w.reply(0)
+    await w.idle()
   })
 
   it('S24-f a repeated requestId is acknowledged and never sent to the node twice', async () => {
@@ -239,5 +318,33 @@ describe('S24: joined-ensure route', () => {
     const failed = await createJoinedEnsureRoute(w.rt)({ botId: w.bot.id })
     assert.equal(failed.ok, false)
     assert.match(failed.error.message, /disk full/)
+  })
+})
+
+describe('S24: one turn/end per Start (closedTurns)', () => {
+  it('S24-closed Finish, Fail, Finish on the same turn leave exactly one turn/end and one answer', () => {
+    const session = new Session('closed-1')
+    const closedTurns = new Set()
+    mirrorTurnStart(session, { turn: 1, userText: 'q', rpcId: 'r1' })
+    const first = mirrorTurnFinish(session, { turn: 1, botText: 'a1', closedTurns })
+    const fail = mirrorTurnFail(session, { turn: 1, code: 'E_TIMEOUT', message: 'late', closedTurns })
+    const second = mirrorTurnFinish(session, { turn: 1, botText: 'a2', closedTurns })
+    assert.equal(first.skipped, false)
+    assert.equal(fail.skipped, true)
+    assert.equal(second.skipped, true)
+    assert.equal(types(session).filter(t => t === 'turn/end').length, 1)
+    assert.equal(types(session).filter(t => t === 'assistant/message').length, 1)
+    assert.equal(session.log.find(event => event.type === 'assistant/message').data.message.content[0].text, 'a1')
+  })
+
+  it('S24-closed Fail then Finish: the failure stays the only ending', () => {
+    const session = new Session('closed-2')
+    const closedTurns = new Set()
+    mirrorTurnStart(session, { turn: 1, userText: 'q', rpcId: 'r1' })
+    mirrorTurnFail(session, { turn: 1, code: 'E_TIMEOUT', message: 'timeout', closedTurns })
+    mirrorTurnFinish(session, { turn: 1, botText: 'late', closedTurns })
+    assert.equal(types(session).filter(t => t === 'turn/end').length, 1)
+    assert.equal(session.log.at(-1).data.reason.error.code, 'E_TIMEOUT')
+    assert.equal(types(session).filter(t => t === 'assistant/message').length, 1)
   })
 })

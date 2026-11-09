@@ -13371,11 +13371,7 @@ function Bubbles({ texts: texts2, roster, selfId, actions, streaming, sessionId,
     event.preventDefault();
     event.stopPropagation();
     const mentionedBot = roster.byId?.[target];
-    if (mentionedBot?.origin === "joined" && mentionedBot?.worker?.home === "remote") {
-      actions.openJoinedChat(target);
-    } else {
-      actions.openSession(target);
-    }
+    botRowClick(mentionedBot?.origin === "joined" && mentionedBot?.worker?.home === "remote", target, actions);
   };
   const reactions = useUi ? useUi((state) => msgKey ? state.reactions?.[msgKey] ?? null : null) : null;
   return (0, import_react31.createElement)(

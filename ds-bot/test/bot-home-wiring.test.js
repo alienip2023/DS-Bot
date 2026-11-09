@@ -14,7 +14,7 @@ import { realTeamActions, hostRoster, joinedRuntime } from './bot-home-fixtures.
 const PLUGIN = dirname(dirname(fileURLToPath(import.meta.url)))
 const { outputFiles } = await build({
   stdin: {
-    contents: "export { TeamSidebar } from './src/client/sidebar.js'\nexport { GroupMessage } from './src/client/cells.js'",
+    contents: "export { TeamSidebar } from './src/client/sidebar.js'\nexport { GroupMessage, Bubbles } from './src/client/cells.js'",
     resolveDir: PLUGIN,
   },
   bundle: true, format: 'cjs', platform: 'browser', write: false, logLevel: 'silent',
@@ -29,13 +29,16 @@ const react = {
   useEffect() {}, useLayoutEffect() {}, useState: initial => [initial, () => {}],
   useMemo: make => make(), useRef: current => ({ current }), useId: () => 'id',
 }
+// mentionTarget() asks `event.target instanceof Element`; a stand-in the click can carry.
+class MockElement { constructor(href) { this.href = href } closest() { return { getAttribute: () => this.href } } }
 const module = { exports: {} }
 runInNewContext(outputFiles[0].text, {
   module, exports: module.exports,
   require: name => (name === 'react' ? react : {}),
   window: { innerWidth: 1280 },
+  Element: MockElement,
 })
-const { TeamSidebar, GroupMessage } = module.exports
+const { TeamSidebar, GroupMessage, Bubbles } = module.exports
 
 const walk = (node, visit) => {
   if (Array.isArray(node)) { node.forEach(child => walk(child, visit)); return }
@@ -120,3 +123,32 @@ for (const [name, click] of [['sidebar BotRow', sidebarClick], ['cells GroupMess
     assert.deepEqual(await click(rt, 'bot-l1'), [['openSession', 'bot-l1']])
   })
 }
+
+// An @mention inside a message bubble: the real Bubbles' click handler, fed a click on the
+// mention link the markdown produces (https://bots.local/<botId>).
+async function mentionClick(rt, botId) {
+  const { calls, actions, roster } = pageActions(rt)
+  const tree = Bubbles({ texts: ['@bot hi'], roster: roster(), selfId: 'me', actions, streaming: false, sessionId: 's', msgKey: 'k' })
+  const stopped = []
+  tree.props.onClickCapture({
+    target: new MockElement(`https://bots.local/${botId}`),
+    preventDefault: () => stopped.push('preventDefault'), stopPropagation: () => stopped.push('stopPropagation'),
+  })
+  await settle()
+  assert.deepEqual(stopped, ['preventDefault', 'stopPropagation'])
+  return calls
+}
+
+test('S23b-mention: @mention of a joined Bot not chatted yet -> joined-ensure, then openSession; never the dialog', async () => {
+  assert.deepEqual(await mentionClick(joinedRuntime(), 'bot-j1'), [['joined-ensure', 'bot-j1'], ['openSession', 'bot-j1']])
+})
+
+test('S23b-mention: @mention of a joined Bot with a mirror session -> openSession once, no ensure', async () => {
+  assert.deepEqual(await mentionClick(joinedRuntime({ mirrorSessionId: 'sess-mirror' }), 'bot-j1'), [['openSession', 'bot-j1']])
+})
+
+test('S23b-mention: @mention of a local Bot opens its session', async () => {
+  const rt = joinedRuntime()
+  rt.state.bots['bot-l1'] = { id: 'bot-l1', name: 'Local', origin: 'local', type: 'local' }
+  assert.deepEqual(await mentionClick(rt, 'bot-l1'), [['openSession', 'bot-l1']])
+})

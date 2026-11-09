@@ -13,7 +13,8 @@
 // {type:'text',text} | {type:'image',…} | {type:'file',receiptId}; the acknowledgement is
 // { accepted: true } (:899, :937); a repeated requestId is acknowledged, not re-run (:899);
 // refusals are structured RemoteErrors (isDSHRemoteError + code), a bare Error becomes
-// 'gateway/internal'.
+// 'gateway/internal'. The composer's toast (dsh-client-ui-conversation lib/client.js:21754)
+// is `${message} (${code})` except for the two attachment-invalid codes.
 import { joinedShadow } from './roster-join.js'
 import { ensureMirrorSession, mirrorStateOf, hasPromptRequest } from './mirror.js'
 import { startPageTurn, failureText } from './executor.js'
@@ -46,7 +47,11 @@ export async function remoteError(code, message, details) {
 export async function promptText(content) {
   const parts = typeof content === 'string' ? [{ type: 'text', text: content }] : Array.isArray(content) ? content : []
   if (parts.some(part => part?.type !== 'text')) {
-    throw await remoteError('session/attachment-invalid', NO_ATTACHMENTS, { reason: 'JOINED_ATTACHMENT_UNSUPPORTED' })
+    // Not 'session/attachment-invalid': the composer renders that code through
+    // attachmentErrorText(), which only knows the core's image reasons and turns any other
+    // one into "image send failed: <constant>". Our own code takes the generic toast
+    // `${message} (${code})`, so the user reads NO_ATTACHMENTS.
+    throw await remoteError('session/joined-attachment-unsupported', NO_ATTACHMENTS, { reason: 'JOINED_ATTACHMENT_UNSUPPORTED' })
   }
   return parts.map(part => String(part.text ?? '')).join('\n')
 }
@@ -77,7 +82,7 @@ export function install(rt) {
       })
     } catch (error) {
       if (error?.code === 'E_BUSY') throw await remoteError('session/agent-busy', BUSY, { reason: 'JOINED_TURN_IN_FLIGHT' })
-      throw await remoteError('session/agent-busy', `无法送达节点：${failureText(error)}`, { reason: `JOINED_NODE_${error?.code ?? 'ERROR'}` })
+      throw await remoteError('session/agent-unavailable', `无法送达节点：${failureText(error)}`, { reason: `JOINED_NODE_${error?.code ?? 'ERROR'}` })
     }
     // The user's message is on the page; the node's answer (or the failure) follows there.
     const task = turn.done

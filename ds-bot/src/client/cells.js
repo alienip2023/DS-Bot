@@ -47,11 +47,7 @@ export function Bubbles({ texts, roster, selfId, actions, streaming, sessionId, 
     event.preventDefault()
     event.stopPropagation()
     const mentionedBot = roster.byId?.[target]
-    if (mentionedBot?.origin === 'joined' && mentionedBot?.worker?.home === 'remote') {
-      actions.openJoinedChat(target)
-    } else {
-      actions.openSession(target)
-    }
+    botRowClick(mentionedBot?.origin === 'joined' && mentionedBot?.worker?.home === 'remote', target, actions)
   }
   const reactions = useUi ? useUi(state => (msgKey ? state.reactions?.[msgKey] ?? null : null)) : null
   return h('div', { className: 'bt-astack', 'data-lead': lead ? '' : undefined, onClickCapture: onClick },

@@ -123,7 +123,7 @@ export function install(rt) {
   }
 
   // ------------------------------------------------------------- connections
-  const connections = () => (state.im ??= { connections: {} }).connections
+  const connections = () => ((state.im ??= {}).connections ??= {})
   const adaptersFor = () => Object.keys(adapters)
   const hasSecrets = conn => Object.values(conn.secrets ?? {}).every(name => rt.secretValue(name) !== undefined)
   const fieldsOf = (conn) => {
