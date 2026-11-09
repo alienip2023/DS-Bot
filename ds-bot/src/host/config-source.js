@@ -14,6 +14,7 @@ import { randomBytes } from 'node:crypto'
 import { createGatewayServer } from '../gateway/index.js'
 import { createTokenStore } from '../gateway/token-store.js'
 import { readUpstreamProviders } from '../gateway/upstream.js'
+import { DEEPSEEK_ENTRY, deepseekPlugin, modelV2, nodeSpeaksV2, providerExtrasV2 } from './config-v2.js'
 
 const PI_AI = 'llm-pi-ai'
 const PROVIDER_ID = /^[A-Za-z0-9._-]+$/
@@ -100,17 +101,24 @@ function readRefsFile(rt) {
  * The payload for remote nodes: `{ providers, defaultModel }` (no revision; the hub adds it).
  * Synchronous. `defaultModel` is passed in because resolving it is async (see `install`).
  *
+ * `schema: 2` is only for a node that announced `config-sync/2` (see `install`). It adds the full model
+ * fields, `plugins[]` (deepseek-official, with its key) and `cliExpect[]`; the default `schema: 1` payload
+ * is byte-for-byte what a node without that cap has always received, so its revision does not move.
+ *
  * @param {object} gateway - optional { host, port, tokens } for per-provider gateway rewriting.
  *   tokens is a Map(providerId -> { refName, value }) from the gateway token store.
  *   Only providers whose profile.gateway === true are rewritten; others pass through unchanged.
  *   If gateway is not provided, or a provider has no gateway flag, behavior is unchanged.
  */
-export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRefsFile, gateway } = {}) {
+export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRefsFile, gateway, schema = 1 } = {}) {
   const ctx = rt.ctx
   const settings = ctx.get?.('settings')
   const entries = typeof ctx.llm?.listConfigurableProviders === 'function' ? ctx.llm.listConfigurableProviders() : []
   const providers = []
+  const plugins = []
   let skipped = 0
+  let droppedPluginFields = 0
+  const v2 = schema === 2
   if (settings && entries.length > 0) {
     const sections = new Map(settings.describe({ redactSecrets: true }).map(section => [section.ns, section]))
     const refs = readRefs(rt)
@@ -122,6 +130,13 @@ export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRef
       if (LOCAL_CLI_PREFIX.test(entry.provider)) { skipped += 1; continue }
       const profile = entry.settingsPath.reduce((value, key) => value?.[key], sections.get(entry.settingsNs)?.value)
       if (!profile || typeof profile !== 'object') continue
+      // v2: deepseek-official is a plugin entry (llm-deepseek-api-key), not a pi-ai route. No key → nothing goes
+      // out, and the node removes the ref and the entry it owns (that is how a revoked key propagates).
+      if (v2 && entry.provider === DEEPSEEK_ENTRY.provider) {
+        const built = deepseekPlugin(profile, name => refs.get(name))
+        if (built) { plugins.push(built.plugin); droppedPluginFields += built.dropped }
+        continue
+      }
       // Catalog route that names neither protocol nor credential ref: complete it from the catalog.
       const catalogApi = Object.hasOwn(CATALOG_API, entry.provider) ? CATALOG_API[entry.provider] : undefined
       const nativeEnv = Array.isArray(entry.nativeAuth?.env) ? entry.nativeAuth.env.find(name => typeof name === 'string' && CRED_REF.test(name)) : undefined
@@ -134,7 +149,7 @@ export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRef
       }
       const models = (Array.isArray(profile.models) ? profile.models : [])
         .filter(model => model && typeof model.id === 'string' && model.id !== '')
-        .map(model => ({ id: model.id, name: typeof model.name === 'string' && model.name !== '' ? model.name : model.id }))
+        .map(model => v2 ? modelV2(model) : ({ id: model.id, name: typeof model.name === 'string' && model.name !== '' ? model.name : model.id }))
 
       // Per-provider gateway rewriting: only when profile.gateway === true and gateway param is set
       // gateway = { host, port, token: { refName, value } } — one token shared by all gateway providers
@@ -165,12 +180,15 @@ export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRef
         apiKeyEnv: finalApiKeyEnv,
         apiKey: finalApiKey,
         models,
+        ...(v2 ? { ...providerExtrasV2(profile), ...(typeof profile.api !== 'string' || profile.api === '' ? { catalog: true } : {}) } : {}),
       })
     }
     if (gwFallbackCount > 0) rt.warn?.('ds-bot: config-source gateway not started, %d provider(s) fall back to direct', gwFallbackCount)
     if (gwTokenMissingCount > 0) rt.warn?.('ds-bot: config-source gateway token missing, %d provider(s) fall back to direct', gwTokenMissingCount)
   }
   if (skipped > 0) rt.warn?.('ds-bot: config-source skipped %d provider(s) without a protocol or key', skipped)
+  // Counts only: never a key, a ref name or a field value.
+  if (v2 && droppedPluginFields > 0) rt.warn?.('ds-bot: config-source v2 dropped %d plugin config field(s) the node would refuse', droppedPluginFields)
   // Ensure defaultModel's provider is among the pushed providers
   let validatedDefault = null
   if (typeof defaultModel === 'string' && defaultModel !== '' && providers.length > 0) {
@@ -180,7 +198,9 @@ export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRef
       validatedDefault = defaultModel
     }
   }
-  return { providers, defaultModel: validatedDefault }
+  if (!v2) return { providers, defaultModel: validatedDefault }
+  // cliExpect stays empty in this slice (the CLI comparison is a later one).
+  return { schema: 2, providers, defaultModel: validatedDefault, plugins, cliExpect: [] }
 }
 
 export function listGatewayProviders(rt) {
@@ -342,6 +362,15 @@ export function install(rt) {
       } else { defaultModel = null }
     } catch { defaultModel = null }
   }
+  // schema:2 only for a node whose hello announced `config-sync/2`; an unknown node, a missing registry or a
+  // registry that throws all mean v1, the payload every node has always understood.
+  const schemaOf = (nodeId) => {
+    if (typeof nodeId !== 'string' || nodeId === '') return 1
+    try {
+      const registry = ctx?.get?.('remote-agent:registry')
+      return nodeSpeaksV2(registry?.getNode?.(nodeId)?.hello?.caps) ? 2 : 1
+    } catch { return 1 }
+  }
   let attached = false
   const attach = () => {
     if (attached) return
@@ -358,7 +387,7 @@ export function install(rt) {
       const gw = (nodeId && actualPort !== null)
         ? { host: gwHost, port: actualPort, token: ensureToken(nodeId) }
         : null
-      return buildConfigPayload(rt, { defaultModel, gateway: gw })
+      return buildConfigPayload(rt, { defaultModel, gateway: gw, schema: schemaOf(nodeId) })
     })
     rt.warn?.('ds-bot: config-sync source attached')
     pushOnline(service, 'attach')
