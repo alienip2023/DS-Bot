@@ -33,3 +33,18 @@ test('S23c-flag-default-off: absent or non-true features.botHome keeps rt.botHom
   assert.equal(runtime({}).botHomeEnabled, false)
   assert.equal(runtime({ features: { botHome: 'yes' } }).botHomeEnabled, false)
 })
+
+test('S23c-joined-bot-as-agent: joined bots with sessionId appear in agents array so openAgent finds them', () => {
+  // Knife: remove joined bots from agents array → openAgent can't find them → RED
+  // This test verifies that channel.js view() includes joined bots in the agents response
+  // so that client-side openAgent(botId) finds them in agentsById
+  const channelSrc = readFileSync(join(root, 'src/host/channel.js'), 'utf8')
+  assert.ok(
+    channelSrc.includes("bot.origin === 'joined' && bot.sessionId"),
+    'channel.js view() must filter joined bots with sessionId into agents array'
+  )
+  assert.ok(
+    channelSrc.includes('sessions: [bot.sessionId]'),
+    'channel.js view() must expose joined bot sessionId as an agent session'
+  )
+})
