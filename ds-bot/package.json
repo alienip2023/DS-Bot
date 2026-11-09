@@ -1,6 +1,6 @@
 {
   "name": "ds-bot",
-  "version": "0.3.1-fork.75",
+  "version": "0.3.1-fork.76",
   "description": "DS Bot: a team of long-lived Bots for DeepSeek Harness, with Main Bots, Bot-to-Bot messages and group chats",
   "keywords": [
     "dsh-plugin",

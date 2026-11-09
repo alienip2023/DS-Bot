@@ -2,6 +2,7 @@
 // The session is store-owned; writes go through session.append ONLY.
 // No followup / steer / sendUser / sessionController.prompt.
 import { createUserMessage, createAssistantMessage } from '@deepseek-ai/dsh-llm'
+import { turnEnd } from './turn-end.js'
 
 const MIRROR_PROVIDER = 'mirror'
 const MIRROR_MODEL = 'mirror-proxy'
@@ -10,7 +11,7 @@ const MIRROR_MODEL = 'mirror-proxy'
  * Allocate the next turn number from session.log.
  * Reads already-committed events, finds the last turn/end, and returns max+1.
  * If there is an unclosed turn (turn/start without matching turn/end), closes
- * it first with reason {kind:'aborted'} before returning the next number.
+ * it first with reason {kind:'interrupted'} (turn-end.js) before returning the next number.
  * Always returns an integer >= 1.
  */
 export function allocateTurn(session) {
@@ -30,7 +31,7 @@ export function allocateTurn(session) {
 
   if (openTurn !== null) {
     // Close the dangling turn before opening a new one
-    session.append('turn/end', { turn: openTurn, reason: { kind: 'aborted' } })
+    session.append('turn/end', { turn: openTurn, reason: turnEnd.interrupted() })
     return openTurn + 1
   }
 
@@ -85,7 +86,7 @@ export async function mirrorTurn(session, opts = {}) {
     session.append('step/end', { turn: turnInt, step })
     stepEnded = true
 
-    session.append('turn/end', { turn: turnInt, reason: { kind: 'completed' } })
+    session.append('turn/end', { turn: turnInt, reason: turnEnd.completed() })
 
     if (nodeKey !== null) seenKeys.add(nodeKey)
     if (nodeKey !== null && closedKeys instanceof Set) closedKeys.add(nodeKey)
@@ -96,7 +97,7 @@ export async function mirrorTurn(session, opts = {}) {
     try {
       session.append('turn/end', {
         turn: turnInt,
-        reason: { kind: 'error', error: { message: String(err?.message ?? err) } },
+        reason: turnEnd.error(err?.message ?? err, 'E_MIRROR_WRITE'),
       })
     } catch {}
     if (nodeKey !== null && closedKeys instanceof Set) closedKeys.add(nodeKey)
@@ -131,7 +132,7 @@ export function mirrorTurnStart(session, { turn, step = 1, userText, rpcId } = {
       source: rpcId === undefined ? { kind: 'user' } : { kind: 'user', rpcId },
     }), { surfaceOp: 'append' })
   } catch (err) {
-    try { session.append('turn/end', { turn, reason: { kind: 'error', error: { message: String(err?.message ?? err) } } }) } catch {}
+    try { session.append('turn/end', { turn, reason: turnEnd.error(err?.message ?? err, 'E_MIRROR_WRITE') }) } catch {}
     throw err
   }
 }
@@ -157,14 +158,14 @@ export function mirrorTurnFinish(session, { turn, step = 1, botText, botId, node
   const duplicate = nodeKey !== null && (seenKeys.has(nodeKey) || (closedKeys instanceof Set && closedKeys.has(nodeKey)))
   if (duplicate) {
     try { session.append('step/end', { turn, step }) } catch {}
-    try { session.append('turn/end', { turn, reason: { kind: 'aborted' } }) } catch {}
+    try { session.append('turn/end', { turn, reason: turnEnd.duplicateResult() }) } catch {}
     if (closedTurns instanceof Set) closedTurns.add(turn)
     return { skipped: true, reason: 'already-written:nodeSeq' }
   }
   try {
     appendAssistant(session, turn, step, botText, usage)
     session.append('step/end', { turn, step })
-    session.append('turn/end', { turn, reason: { kind: 'completed' } })
+    session.append('turn/end', { turn, reason: turnEnd.completed() })
   } catch (err) {
     mirrorTurnFail(session, { turn, step, code: 'E_MIRROR_WRITE', message: err?.message ?? err, visible: false, closedTurns })
     throw err
@@ -188,7 +189,7 @@ export function mirrorTurnFail(session, { turn, step = 1, code, message, visible
   const text = String(message ?? 'unknown')
   if (visible) { try { appendAssistant(session, turn, step, `⚠ 无法送达节点：${text}`) } catch {} }
   try { session.append('step/end', { turn, step }) } catch {}
-  try { session.append('turn/end', { turn, reason: { kind: 'error', error: { message: text, ...(code === undefined ? {} : { code }) } } }) } catch {}
+  try { session.append('turn/end', { turn, reason: turnEnd.error(text, code) }) } catch {}
   if (closedTurns instanceof Set) closedTurns.add(turn)
   return { skipped: false }
 }
@@ -198,14 +199,14 @@ export const STOPPED_TEXT = '已停止等待节点'
 
 /**
  * The user pressed Stop on a turn still waiting for the node: one visible assistant line
- * "⏹ 已停止等待节点（…）", step/end, turn/end {kind:'aborted'}. `closedTurns` keeps it to one
+ * "⏹ 已停止等待节点（…）", step/end, turn/end {kind:'aborted', reason:{kind:'user'}}. `closedTurns` keeps it to one
  * turn/end per Start, whichever of Finish / Fail / Abort comes first.
  */
 export function mirrorTurnAbort(session, { turn, step = 1, closedTurns } = {}) {
   if (closedTurns instanceof Set && closedTurns.has(turn)) return { skipped: true, reason: 'already-closed:turn' }
   try { appendAssistant(session, turn, step, `⏹ ${STOPPED_TEXT}（节点之后若回复，会补在这里）`) } catch {}
   try { session.append('step/end', { turn, step }) } catch {}
-  try { session.append('turn/end', { turn, reason: { kind: 'aborted' } }) } catch {}
+  try { session.append('turn/end', { turn, reason: turnEnd.stopped() }) } catch {}
   if (closedTurns instanceof Set) closedTurns.add(turn)
   return { skipped: false }
 }
@@ -232,7 +233,7 @@ export function mirrorLateReply(session, { step = 1, botText, botId, nodeSeq, se
     session.append('step/start', { turn, step })
     appendAssistant(session, turn, step, `${LATE_REPLY_MARK}\n\n${String(botText ?? '')}`, usage)
     session.append('step/end', { turn, step })
-    session.append('turn/end', { turn, reason: { kind: 'completed' } })
+    session.append('turn/end', { turn, reason: turnEnd.completed() })
   } catch (err) {
     mirrorTurnFail(session, { turn, step, code: 'E_MIRROR_WRITE', message: err?.message ?? err, visible: false, closedTurns })
     throw err
@@ -262,10 +263,7 @@ export function hasPromptRequest(session, requestId) {
 }
 
 export function mirrorTurnEnd(session, turn, errorMessage) {
-  const reason = errorMessage
-    ? { kind: 'error', error: { message: String(errorMessage) } }
-    : { kind: 'aborted' }
-  session.append('turn/end', { turn, reason })
+  session.append('turn/end', { turn, reason: errorMessage ? turnEnd.error(errorMessage) : turnEnd.stopped() })
 }
 
 /**
@@ -350,7 +348,7 @@ export async function importHistory(session, items, opts = {}) {
 
       session.append('step/end', { turn: turnInt, step })
       stepEnded = true
-      session.append('turn/end', { turn: turnInt, reason: { kind: 'completed' } })
+      session.append('turn/end', { turn: turnInt, reason: turnEnd.completed() })
 
       if (nodeKey !== null) seenKeys.add(nodeKey)
       if (nodeKey !== null && closedKeys instanceof Set) closedKeys.add(nodeKey)
@@ -360,7 +358,7 @@ export async function importHistory(session, items, opts = {}) {
     } catch (err) {
       // Single-item failure: close any open turn, record warning, continue
       try { if (!stepEnded) session.append('step/end', { turn: turnInt, step }) } catch {}
-      try { session.append('turn/end', { turn: turnInt, reason: { kind: 'error', error: { message: String(err?.message ?? err) } } }) } catch {}
+      try { session.append('turn/end', { turn: turnInt, reason: turnEnd.error(err?.message ?? err, 'E_MIRROR_WRITE') }) } catch {}
       warnings.push(`item turn=${turn} seq=${seq ?? '?'} failed: ${err?.message ?? err}`)
     }
   }

@@ -514,10 +514,12 @@ describe('allocateTurn: turn number allocation from session.log', () => {
       ['turn/start', { turn: 2 }],  // NO turn/end — dangling
     ])
     const next = allocateTurn(session)
-    // allocateTurn must have appended turn/end for turn 2 (aborted), then returns 3
+    // allocateTurn must have appended turn/end for turn 2, then returns 3. The core's marker for a turn
+    // that never ended is `interrupted` (dsh-session TurnEndReasonMap); a bare `aborted` has no cause and
+    // breaks the chat rebuild (test/turn-end-core.test.js).
     assert.equal(next, 3, 'must close dangling turn 2 and return 3')
     const lastEvt = session.log[session.log.length - 1]
     assert.equal(lastEvt.type, 'turn/end', 'dangling turn must be closed')
-    assert.equal(lastEvt.data.reason.kind, 'aborted', 'dangling turn must be closed with aborted')
+    assert.deepEqual(lastEvt.data.reason, { kind: 'interrupted' }, 'dangling turn must be closed with interrupted')
   })
 })
