@@ -160,15 +160,7 @@ export function install(rt) {
     // model-visible history; the side panel reads them here.
     sideChats: rt.sideView?.() ?? {},
     // The team's DSH Agent (at most one): plain dsh Sessions, not Bots.
-    // Joined bots with a mirror session are exposed here so that the core
-    // `openAgent(botId)` path finds them in `agentsById` and can call
-    // `openAgentSession(sessionId)` to navigate to the mirror session.
-    agents: [
-      ...Object.values(state.agents),
-      ...Object.values(state.bots)
-        .filter(bot => bot.origin === 'joined' && bot.sessionId)
-        .map(bot => ({ id: bot.id, sessions: [bot.sessionId], name: bot.name })),
-    ],
+    agents: Object.values(state.agents),
     // Key names and who may use them; values never leave the host.
     secrets: rt.secretsView(),
     capabilities: rt.capabilityLibraryView(),

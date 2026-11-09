@@ -381,7 +381,7 @@ function GroupMessage({ bot, text, texts = [text], room, roster, actions, msgKey
     scheduleGroupChains(flow)
     return () => scheduleGroupChains(flow)
   }, [bot.id])
-  const lead = h('button', { type: 'button', className: 'bt-lead', 'aria-label': t("Open {name}'s chat", { name: bot.name }), onClick: () => { if (bot.origin === 'joined' && bot.worker?.home === 'remote') { if (actions.botHomeEnabled?.()) { actions.openAgent(bot.id) } else { actions.openJoinedChat(bot.id) } } else { actions.openSession(bot.id) } } },
+  const lead = h('button', { type: 'button', className: 'bt-lead', 'aria-label': t("Open {name}'s chat", { name: bot.name }), onClick: () => { if (bot.origin === 'joined' && bot.worker?.home === 'remote') { if (actions.botHomeEnabled?.()) { actions.openBotHome?.(bot.id) } else { actions.openJoinedChat(bot.id) } } else { actions.openSession(bot.id) } } },
     h(BotMark, { bot, size: 22 }))
   const flat = layoutOf(roster.prefs) === 'flat'
   const took = Number.isFinite(duration) && duration >= 1000 ? elapsedLabel(duration) : undefined

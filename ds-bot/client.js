@@ -2200,6 +2200,15 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
     // Joined (remote) bot chat: open, close, send a message to remote session.
     openJoinedChat: (botId) => openJoinedChat(ui2, botId),
     botHomeEnabled: () => roster.getSnapshot().botHomeEnabled === true,
+    // Bot Home: navigate to the joined bot's mirror session directly in the main panel.
+    // Uses ui.set so the DSH renderer picks up the session change without going through
+    // the agents path (which would create a spurious sidebar Agent entry).
+    openBotHome: (botId) => {
+      const bot = roster.getSnapshot().byId?.[botId];
+      const sessionId = bot?.sessionId;
+      if (!sessionId) return;
+      ui2.set((state) => ({ ...state, session: sessionId, joinedChat: null, menu: null, palette: null, newChat: null, exchange: null }));
+    },
     closeJoinedChat: () => {
       ui2.set((state) => state.joinedChat ? { ...state, joinedChat: null } : state);
     },
@@ -13728,7 +13737,7 @@ function GroupMessage({ bot, text, texts: texts2 = [text], room: room2, roster, 
     { type: "button", className: "bt-lead", "aria-label": t("Open {name}'s chat", { name: bot.name }), onClick: () => {
       if (bot.origin === "joined" && bot.worker?.home === "remote") {
         if (actions.botHomeEnabled?.()) {
-          actions.openAgent(bot.id);
+          actions.openBotHome?.(bot.id);
         } else {
           actions.openJoinedChat(bot.id);
         }
@@ -14817,7 +14826,7 @@ function installFrameWatch(frame) {
 function botRowClick(joined, id, actions) {
   if (joined) {
     if (actions.botHomeEnabled?.()) {
-      actions.openAgent(id);
+      actions.openBotHome?.(id);
       return;
     }
     actions.openJoinedChat(id);
