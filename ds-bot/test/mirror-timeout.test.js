@@ -11,11 +11,11 @@ import { listenBotTurnResult, JOINED_TURN_TIMEOUT_MS } from '../src/host/joined-
 describe('listenBotTurnResult: timeout behavior', () => {
   after(() => mock.timers.reset())
 
-  it('JOINED_TURN_TIMEOUT_MS is 120_000 (2 minutes)', () => {
-    assert.equal(JOINED_TURN_TIMEOUT_MS, 120_000)
+  it('JOINED_TURN_TIMEOUT_MS is 600_000 (10 minutes: a node Bot with tool calls takes minutes)', () => {
+    assert.equal(JOINED_TURN_TIMEOUT_MS, 600_000)
   })
 
-  it('does not settle at 119999ms', async () => {
+  it('does not settle one millisecond before the timeout', async () => {
     mock.timers.enable({ apis: ['setTimeout'] })
     const handlers = {}
     const fakeRegistry = {
@@ -26,14 +26,14 @@ describe('listenBotTurnResult: timeout behavior', () => {
     let settled = false
     pending.then(() => { settled = true })
 
-    mock.timers.tick(119_999)
+    mock.timers.tick(JOINED_TURN_TIMEOUT_MS - 1)
     // Allow microtask queue to drain
     await Promise.resolve()
-    assert.equal(settled, false, 'should not have settled at 119999ms')
+    assert.equal(settled, false, 'should not have settled before the timeout')
     mock.timers.reset()
   })
 
-  it('settles with undefined at exactly 120000ms (timeout)', async () => {
+  it('settles with undefined at exactly the timeout', async () => {
     mock.timers.enable({ apis: ['setTimeout'] })
     const handlers = {}
     const fakeRegistry = {
@@ -42,7 +42,7 @@ describe('listenBotTurnResult: timeout behavior', () => {
     }
     const { pending } = listenBotTurnResult(fakeRegistry, 'ex-2', 'node-1', JOINED_TURN_TIMEOUT_MS)
 
-    mock.timers.tick(120_000)
+    mock.timers.tick(JOINED_TURN_TIMEOUT_MS)
     const result = await pending
     assert.equal(result, undefined, 'timeout should resolve with undefined')
     mock.timers.reset()

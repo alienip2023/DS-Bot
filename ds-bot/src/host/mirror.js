@@ -193,6 +193,42 @@ export function mirrorTurnFail(session, { turn, step = 1, code, message, visible
   return { skipped: false }
 }
 
+/** The line a late reply starts with: the page shows which message it answers is already behind it. */
+export const LATE_REPLY_MARK = '↩ 节点迟到回复'
+
+/**
+ * The node answered AFTER the page turn ended with E_TIMEOUT. The answer is written as a NEW
+ * turn — turn/start, step/start, one assistant message that starts with LATE_REPLY_MARK,
+ * step/end, turn/end completed — without a user message (the original one is already on the
+ * page). The number comes from allocateTurn like every other turn (I1), the message carries
+ * stream:[] (I4), and (botId,nodeSeq) makes a repeated delivery write nothing (I3).
+ * The caller makes sure no page turn is open on this Session: allocateTurn would close it.
+ */
+export function mirrorLateReply(session, { step = 1, botText, botId, nodeSeq, seenKeys, closedKeys, seenSteps, closedTurns, usage } = {}) {
+  const nodeKey = (botId != null && nodeSeq != null && seenKeys instanceof Set) ? String(botId) + ':' + String(nodeSeq) : null
+  if (nodeKey !== null && (seenKeys.has(nodeKey) || (closedKeys instanceof Set && closedKeys.has(nodeKey)))) {
+    return { skipped: true, reason: 'already-written:nodeSeq' }
+  }
+  const turn = allocateTurn(session)
+  session.append('turn/start', { turn })
+  try {
+    session.append('step/start', { turn, step })
+    appendAssistant(session, turn, step, `${LATE_REPLY_MARK}\n\n${String(botText ?? '')}`, usage)
+    session.append('step/end', { turn, step })
+    session.append('turn/end', { turn, reason: { kind: 'completed' } })
+  } catch (err) {
+    mirrorTurnFail(session, { turn, step, code: 'E_MIRROR_WRITE', message: err?.message ?? err, visible: false, closedTurns })
+    throw err
+  }
+  if (closedTurns instanceof Set) closedTurns.add(turn)
+  if (nodeKey !== null) {
+    seenKeys.add(nodeKey)
+    if (closedKeys instanceof Set) closedKeys.add(nodeKey)
+  }
+  if (seenSteps instanceof Set) seenSteps.add(turn + ':' + step)
+  return { skipped: false, turn }
+}
+
 /** Per-Bot idempotency state shared by every path that mirrors a joined Bot's turns. */
 export function mirrorStateOf(rt, botId) {
   if (!rt._mirrorState) rt._mirrorState = new Map()

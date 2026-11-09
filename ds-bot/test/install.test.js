@@ -120,6 +120,10 @@ test('apply registers listeners and effects in a fixed order', (t) => {
     'effect ds-bot: api route',
     'route POST /api/bot',
     'effect ds-bot: load state',
+    'effect ds-bot: joined late reply listeners',
+    'on agent/created (prepend)',
+    'on agent/inbox/inserted (prepend)',
+    'effect ds-bot: joined Bot mirror guard',
     'effect ds-bot: local agents',
   ])
 })

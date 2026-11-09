@@ -8,6 +8,7 @@ import { mock } from 'node:test'
 import EventEmitter from 'node:events'
 
 import { send, deliverTurn, ExecutorError } from '../src/host/executor.js'
+import { JOINED_TURN_TIMEOUT_MS } from '../src/host/joined-turn.js'
 import { mirrorTurn } from '../src/host/mirror.js'
 import { createTurnTracker } from '../src/host/turn-tracker.js'
 import { historyEntry } from '../src/host/parts.js'
@@ -116,9 +117,9 @@ describe('executor.send: remote joined bot', () => {
       off: (ev, fn) => emitter.off(ev, fn),
     }
     const rt = makeRt(bot, registry)
-    // No timeoutMs override — uses JOINED_TURN_TIMEOUT_MS (120s) as default
+    // No timeoutMs override — uses JOINED_TURN_TIMEOUT_MS as default
     const p = send({ botId: bot.id, text: 'Hi', rt })
-    mock.timers.tick(120_000)
+    mock.timers.tick(JOINED_TURN_TIMEOUT_MS)
     await assert.rejects(p, (err) => err instanceof ExecutorError && err.code === 'E_TIMEOUT')
     mock.timers.reset()
   })

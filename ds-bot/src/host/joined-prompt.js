@@ -18,6 +18,7 @@
 import { joinedShadow } from './roster-join.js'
 import { ensureMirrorSession, mirrorStateOf, hasPromptRequest } from './mirror.js'
 import { startPageTurn, failureText } from './executor.js'
+import { JOINED_TURN_TIMEOUT_MS } from './joined-turn.js'
 
 const BUSY = '副机 Bot 正在回复上一条，请稍候再发'
 const NO_ATTACHMENTS = '副机 Bot 暂不支持附件，请改为文字发送'
@@ -58,6 +59,11 @@ export async function promptText(content) {
 
 export function install(rt) {
   const { ctx } = rt
+  // Late-reply listeners (executor.js armLateReply) end with the plugin.
+  ctx?.effect?.(() => () => {
+    for (const dispose of rt.joinedLate ?? []) dispose()
+    rt.joinedLate?.clear()
+  }, 'ds-bot: joined late reply listeners')
   const controller = ctx?.sessionController
   const original = controller?.prompt
   if (typeof original !== 'function') return
@@ -78,7 +84,7 @@ export function install(rt) {
       turn = startPageTurn({
         rt, bot, text, requestId: request.requestId, session, state: mirrorStateOf(rt, bot.id),
         tracker: rt.turnTracker,
-        timeoutMs: rt.joinedTurnTimeoutMs ?? 120_000,
+        timeoutMs: rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS,
       })
     } catch (error) {
       if (error?.code === 'E_BUSY') throw await remoteError('session/agent-busy', BUSY, { reason: 'JOINED_TURN_IN_FLIGHT' })

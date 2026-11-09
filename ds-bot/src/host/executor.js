@@ -12,8 +12,8 @@
 
 import { randomUUID } from 'node:crypto'
 import { joinedShadow } from './roster-join.js'
-import { listenBotTurnResult, JOINED_TURN_TIMEOUT_MS } from './joined-turn.js'
-import { mirrorTurn, allocateTurn, mirrorTurnStart, mirrorTurnFinish, mirrorTurnFail } from './mirror.js'
+import { listenBotTurnResult, JOINED_TURN_TIMEOUT_MS, JOINED_LATE_WINDOW_MS } from './joined-turn.js'
+import { mirrorTurn, allocateTurn, mirrorTurnStart, mirrorTurnFinish, mirrorTurnFail, mirrorLateReply } from './mirror.js'
 
 /**
  * Error codes thrown by send() / deliverTurn():
@@ -153,7 +153,28 @@ function prepareRemote({ bot, text, rt, tracker, timeoutOverride }) {
   }
   // A prepared turn that is dropped before send(): drop the listener and close the tracker.
   const abandon = () => { cancel(); tracker?.finish(turnId, { status: 'failed', error: 'E_ABANDONED' }) }
-  return { turnId, nodeId, remoteBotId, send, settle, cancel, abandon }
+  // After settle() threw E_TIMEOUT the listener is gone, but the node may still finish and send
+  // its bot/turn-result. This keeps listening for THIS exchange only, once, for `windowMs`;
+  // `onResult(payload)` gets that result. Returns the disposer (also called by the window's end).
+  const awaitLate = (onResult, windowMs) => {
+    let ended = false
+    const end = () => {
+      if (ended) return
+      ended = true
+      clearTimeout(timer)
+      registry.off?.('botTurnResult', onEvent)
+    }
+    const onEvent = (payload) => {
+      if (payload?.exchangeId !== turnId) return
+      end()
+      onResult(payload)
+    }
+    const timer = setTimeout(end, windowMs)
+    timer.unref?.()
+    registry.on?.('botTurnResult', onEvent)
+    return end
+  }
+  return { turnId, nodeId, remoteBotId, send, settle, cancel, abandon, awaitLate }
 }
 
 async function sendLocal({ bot, text, rt, tracker }) {
@@ -209,7 +230,7 @@ export async function deliverTurn({ botId, text, rt, session, turn, step = 1, se
 
 const FAILURE_WORDS = {
   E_OFFLINE: '节点离线或不可达',
-  E_TIMEOUT: '等待节点回复超时',
+  E_TIMEOUT: '等待节点回复超时（节点完成后，回复会补到这里）',
   E_REJECTED: '节点拒绝了这条消息',
   E_NOT_FOUND: '找不到这个远程 Bot',
   E_INVALID: '消息或 Bot 配置无效',
@@ -224,6 +245,44 @@ export function failureText(err) {
   const word = FAILURE_WORDS[code]
   if (word === undefined) return detail || 'unknown'
   return detail !== '' && detail !== code ? `${word}（${code}: ${detail}）` : `${word}（${code}）`
+}
+
+// ── A node answer that comes after the page turn already ended with E_TIMEOUT ──
+//
+// The turn was closed with "⚠ …E_TIMEOUT" and the in-flight claim released, but the node is
+// still working and its bot/turn-result arrives later. It is written as a new turn
+// (mirrorLateReply). While another page turn of the same Bot is open the write waits: the new
+// turn's number comes from allocateTurn, which would close that open turn as aborted.
+function armLateReply({ rt, bot, session, state, prepared }) {
+  if (typeof prepared.awaitLate !== 'function') return
+  const windowMs = Number.isFinite(rt.joinedLateWindowMs) ? rt.joinedLateWindowMs : JOINED_LATE_WINDOW_MS
+  const dispose = prepared.awaitLate((payload) => {
+    rt.joinedLate?.delete(dispose)
+    if (payload?.ok === false || !Number.isInteger(payload?.seq) || payload.seq < 0 || typeof payload?.text !== 'string') {
+      rt.warn?.('ds-bot: a late node result for Bot %s was not written (no usable reply or seq)', bot.id)
+      return
+    }
+    const write = () => {
+      try {
+        mirrorLateReply(session, { botText: payload.text, botId: bot.id, nodeSeq: payload.seq, ...state })
+      } catch (error) {
+        rt.warn?.('ds-bot: a late node reply for Bot %s was not written: %s', bot.id, error?.message ?? error)
+      }
+    }
+    if (rt.joinedInFlight?.has(bot.id)) {
+      if (!rt.joinedLateQueue) rt.joinedLateQueue = new Map()
+      rt.joinedLateQueue.set(bot.id, [...(rt.joinedLateQueue.get(bot.id) ?? []), write])
+    } else write()
+  }, windowMs)
+  if (!rt.joinedLate) rt.joinedLate = new Set()
+  rt.joinedLate.add(dispose)
+}
+
+function flushLateReplies(rt, botId) {
+  const queued = rt.joinedLateQueue?.get(botId)
+  if (!queued) return
+  rt.joinedLateQueue.delete(botId)
+  for (const write of queued) write()
 }
 
 /**
@@ -249,7 +308,11 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
   if (!rt.joinedInFlight) rt.joinedInFlight = new Map()
   if (rt.joinedInFlight.has(bot.id)) throw new ExecutorError('E_BUSY', 'a turn for this Bot is still in flight')
   rt.joinedInFlight.set(bot.id, { requestId })
-  const release = () => { if (rt.joinedInFlight.get(bot.id)?.requestId === requestId) rt.joinedInFlight.delete(bot.id) }
+  const release = () => {
+    if (rt.joinedInFlight.get(bot.id)?.requestId !== requestId) return
+    rt.joinedInFlight.delete(bot.id)
+    flushLateReplies(rt, bot.id)
+  }
 
   let prepared
   try {
@@ -285,6 +348,7 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
         result = await prepared.settle()
       } catch (err) {
         fail(err)
+        if (err?.code === 'E_TIMEOUT') armLateReply({ rt, bot, session, state, prepared })
         throw err
       }
       const mirrorResult = mirrorTurnFinish(session, { turn, step, botText: result.text, botId: bot.id, nodeSeq: result.seq, seenKeys, closedKeys, seenSteps, closedTurns })

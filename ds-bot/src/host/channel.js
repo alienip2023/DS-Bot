@@ -9,6 +9,7 @@ import { COLORS, EXTRA_COLORS, ROUTE } from './constants.js'
 import { joinedShadow } from './roster-join.js'
 import { ensureMirrorSession, mirrorStateOf } from './mirror.js'
 import { startPageTurn } from './executor.js'
+import { JOINED_TURN_TIMEOUT_MS } from './joined-turn.js'
 import { createTurnTracker } from './turn-tracker.js'
 
 // Pure helper: map a registry defaultModel (string or {provider,model} object) to a ref string.
@@ -55,7 +56,7 @@ export function createSendUser(rt, { textOfContent, getMirrorState, ctx } = {}) 
       const { done } = startPageTurn({
         rt, bot: joinedBot, text, requestId, session, state: ms,
         tracker: rt.turnTracker,
-        timeoutMs: rt.joinedTurnTimeoutMs ?? 120_000,
+        timeoutMs: rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS,
       })
       await done
       return

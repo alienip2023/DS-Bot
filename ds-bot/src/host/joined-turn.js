@@ -5,7 +5,18 @@ import { randomUUID } from 'node:crypto'
 import { joinedShadow, shadowId } from './roster-join.js'
 
 export const BRIDGE_DOWN_TEXT = '副机仍在执行，桥已断'
-export const JOINED_TURN_TIMEOUT_MS = 120_000
+// How long a turn waits for the node's answer. A node Bot that calls tools takes minutes (the
+// first tool call alone can run for over a minute), so the wait covers that; the node's reply
+// that still comes after this is not lost (executor.js startPageTurn writes it as a late reply).
+export const JOINED_TURN_TIMEOUT_MS = 600_000
+// How long after a timeout a late bot/turn-result is still written into the mirror Session.
+export const JOINED_LATE_WINDOW_MS = 3_600_000
+const MAX_TIMER_MS = 2_147_483_647
+
+/** `config.joinedTurnTimeoutMs`: whole milliseconds between 1s and the timer limit, else the default. */
+export function joinedTimeoutFrom(value) {
+  return Number.isInteger(value) && value >= 1000 && value <= MAX_TIMER_MS ? value : JOINED_TURN_TIMEOUT_MS
+}
 const SKIP_ROLES = new Set(['reply', 'report', 'kickoff', 'continue', 'update'])
 
 export function joinedDispatchRole(role) {
