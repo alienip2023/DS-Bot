@@ -2,6 +2,6 @@
 // No React imports — safe to import in Node.js tests.
 
 export function botRowClick(joined, id, actions) {
-  if (joined) { actions.openJoinedChat(id); return }
+  if (joined) { actions.openAgent(id); return }
   actions.openSession(id)
 }

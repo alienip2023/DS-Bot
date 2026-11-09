@@ -86,6 +86,7 @@ export function createRuntime(ctx, config = {}) {
       mainRole: config.mainRole ?? 'Chief of Staff',
     },
   }
+  rt.botHomeEnabled = config.features?.botHome === true
   for (const module of MODULES) module.install(rt)
   return rt
 }

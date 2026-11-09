@@ -2199,6 +2199,7 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
     connectorRemove: (id) => after(call2("connector-remove", { id })),
     // Joined (remote) bot chat: open, close, send a message to remote session.
     openJoinedChat: (botId) => openJoinedChat(ui2, botId),
+    botHomeEnabled: () => rt.botHomeEnabled === true,
     closeJoinedChat: () => {
       ui2.set((state) => state.joinedChat ? { ...state, joinedChat: null } : state);
     },
@@ -13726,7 +13727,11 @@ function GroupMessage({ bot, text, texts: texts2 = [text], room: room2, roster, 
     "button",
     { type: "button", className: "bt-lead", "aria-label": t("Open {name}'s chat", { name: bot.name }), onClick: () => {
       if (bot.origin === "joined" && bot.worker?.home === "remote") {
-        actions.openJoinedChat(bot.id);
+        if (actions.botHomeEnabled?.()) {
+          actions.openAgent(bot.id);
+        } else {
+          actions.openJoinedChat(bot.id);
+        }
       } else {
         actions.openSession(bot.id);
       }
@@ -14811,6 +14816,10 @@ function installFrameWatch(frame) {
 // src/client/row-actions.js
 function botRowClick(joined, id, actions) {
   if (joined) {
+    if (actions.botHomeEnabled?.()) {
+      actions.openAgent(id);
+      return;
+    }
     actions.openJoinedChat(id);
     return;
   }
