@@ -125,6 +125,8 @@ export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRef
   const plugins = []
   let skipped = 0
   let droppedPluginFields = 0
+  let loopbackBaseURLs = 0
+  const providerTally = { n: 0 }
   const v2 = schema === 2
   if (settings && entries.length > 0) {
     const sections = new Map(settings.describe({ redactSecrets: true }).map(section => [section.ns, section]))
@@ -141,7 +143,7 @@ export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRef
       // out, and the node removes the ref and the entry it owns (that is how a revoked key propagates).
       if (v2 && entry.provider === DEEPSEEK_ENTRY.provider) {
         const built = deepseekPlugin(profile, name => refs.get(name))
-        if (built) { plugins.push(built.plugin); droppedPluginFields += built.dropped }
+        if (built) { plugins.push(built.plugin); droppedPluginFields += built.dropped; if (built.loopback) loopbackBaseURLs += 1 }
         continue
       }
       // Catalog route that names neither protocol nor credential ref: complete it from the catalog.
@@ -156,7 +158,7 @@ export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRef
       }
       const models = (Array.isArray(profile.models) ? profile.models : [])
         .filter(model => model && typeof model.id === 'string' && model.id !== '')
-        .map(model => v2 ? modelV2(model) : ({ id: model.id, name: typeof model.name === 'string' && model.name !== '' ? model.name : model.id }))
+        .map(model => v2 ? modelV2(model, providerTally) : ({ id: model.id, name: typeof model.name === 'string' && model.name !== '' ? model.name : model.id }))
 
       // Per-provider gateway rewriting: only when profile.gateway === true and gateway param is set
       // gateway = { host, port, token: { refName, value } } — one token shared by all gateway providers
@@ -187,15 +189,30 @@ export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRef
         apiKeyEnv: finalApiKeyEnv,
         apiKey: finalApiKey,
         models,
-        ...(v2 ? { ...providerExtrasV2(profile), ...(typeof profile.api !== 'string' || profile.api === '' ? { catalog: true } : {}) } : {}),
+        ...(v2 ? { ...providerExtrasV2(profile, providerTally), ...(typeof profile.api !== 'string' || profile.api === '' ? { catalog: true } : {}) } : {}),
       })
     }
     if (gwFallbackCount > 0) rt.warn?.('ds-bot: config-source gateway not started, %d provider(s) fall back to direct', gwFallbackCount)
     if (gwTokenMissingCount > 0) rt.warn?.('ds-bot: config-source gateway token missing, %d provider(s) fall back to direct', gwTokenMissingCount)
   }
   if (skipped > 0) rt.warn?.('ds-bot: config-source skipped %d provider(s) without a protocol or key', skipped)
+  // v2 only: a provider whose credential ref is also a plugin's ref with ANOTHER value (e.g. a pi-ai `deepseek`
+  // catalog route reads DEEPSEEK_API_KEY while deepseek-official's key sits under a different ref) would make the
+  // node refuse the whole push (`credentialRefs.conflict`), holding back every other update. The plugin keeps the ref
+  // (it is the official route, the one the node plugin needs); the clashing route is left out.
+  let clashingProviders = 0
+  if (v2 && plugins.length > 0) {
+    const pluginKeys = new Map(plugins.flatMap(plugin => plugin.credentialRefs.map(c => [c.ref, c.apiKey])))
+    for (let i = providers.length - 1; i >= 0; i -= 1) {
+      const wanted = pluginKeys.get(providers[i].apiKeyEnv)
+      if (wanted !== undefined && wanted !== providers[i].apiKey) { providers.splice(i, 1); clashingProviders += 1 }
+    }
+  }
   // Counts only: never a key, a ref name or a field value.
   if (v2 && droppedPluginFields > 0) rt.warn?.('ds-bot: config-source v2 dropped %d plugin config field(s) the node would refuse', droppedPluginFields)
+  if (v2 && providerTally.n > 0) rt.warn?.('ds-bot: config-source v2 left out %d provider/model field(s) (invalid for the node, or never synced)', providerTally.n)
+  if (v2 && loopbackBaseURLs > 0) rt.warn?.('ds-bot: config-source v2 did not send %d baseURL(s) that point at the main itself', loopbackBaseURLs)
+  if (clashingProviders > 0) rt.warn?.('ds-bot: config-source v2 left out %d provider(s) whose credential ref clashes with a plugin key', clashingProviders)
   // Ensure defaultModel's provider is among the pushed providers
   let validatedDefault = null
   if (typeof defaultModel === 'string' && defaultModel !== '' && providers.length > 0) {

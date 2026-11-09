@@ -38,8 +38,10 @@ export function modelOf(bot, roster) {
   const ref = bot.model ?? bot.appliedModel
   if (!ref) return undefined
   const served = servedOf(roster, ref)
+  // `roster.labels` (a remote Bot's picker): names for models this list cannot serve but the main knows, so they are not shown by their raw ref.
+  const known = served ?? roster.labels?.[ref]
   const [provider, ...rest] = ref.split('/')
-  return { ref, name: served?.name ?? rest.join('/'), provider: served?.providerName ?? provider, served: served !== undefined }
+  return { ref, name: known?.name ?? rest.join('/'), provider: known?.providerName ?? provider, served: served !== undefined }
 }
 
 // The thinking levels of one model, `{efforts, defaultEffort?}` or undefined when it

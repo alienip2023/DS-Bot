@@ -11,7 +11,9 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { spawnSync } from 'node:child_process'
 import { buildConfigPayload, install } from '../src/host/config-source.js'
+import { isLoopback, nodeSpeaksV2 } from '../src/host/config-v2.js'
 
 const DS_KEY = 'sk-DEEPSEEK-secret-value-9999'
 const PI_KEY = 'sk-PIAI-secret-value-7777'
@@ -193,8 +195,12 @@ test('P1b1-v2-negotiated: a node whose hello announced config-sync/2 gets schema
 
 const RA = process.env.DSH_REMOTE_AGENT ?? '/tmp/ra-p1b'
 const RA_VALIDATOR = join(RA, 'lib/node/config-managed.js')
+// A run without the remote-agent checkout must SAY so: these tests are the only place the node side of the contract is checked.
+// DSH_REQUIRE_REMOTE_AGENT=1 (CI) turns the skip into a failure.
+const NO_RA = `remote-agent checkout not found at ${RA} (set DSH_REMOTE_AGENT): the NODE side of the payload contract is NOT checked in this run`
+const skipWithoutRa = (...paths) => (paths.every(path => existsSync(path)) || process.env.DSH_REQUIRE_REMOTE_AGENT === '1' ? false : NO_RA)
 
-test('P1b1-v2-node-accepts: the plugin the source builds passes the real node validator (and a bad one is what the node would refuse)', { skip: !existsSync(RA_VALIDATOR) }, async () => {
+test('P1b1-v2-node-accepts: the plugin the source builds passes the real node validator (and a bad one is what the node would refuse)', { skip: skipWithoutRa(RA_VALIDATOR) }, async () => {
   const { validatePlugins } = await import(pathToFileURL(RA_VALIDATOR).href)
   for (const section of [DS_SECTION, {}, { ...DS_SECTION, baseURL: 'https://proxy.example.com/anthropic', thinking: 'disabled', reasoningEffort: 'high' },
     { ...DS_SECTION, models: [{ id: 'x', inputModalities: ['audio'] }, 'junk'], retryPolicy: { mode: 'always', backoff: { jitterRatio: 5 } } }]) {
@@ -211,7 +217,7 @@ test('P1b1-v2-node-accepts: the plugin the source builds passes the real node va
 const RA_SYNC = join(RA, 'lib/node/config-sync.js')
 const RA_HASH = join(RA, 'lib/hub/stable-hash.js')
 
-test('P1b1-e2e: real source → real hub revision → real node apply: the key lands 0600, the entry has no key; revoking the key removes both', { skip: !existsSync(RA_SYNC) || !existsSync(RA_HASH) }, async () => {
+test('P1b1-e2e: real source → real hub revision → real node apply: the key lands 0600, the entry has no key; revoking the key removes both', { skip: skipWithoutRa(RA_SYNC, RA_HASH) }, async () => {
   const { handleConfigPush } = await import(pathToFileURL(RA_SYNC).href)
   const { computeRevision } = await import(pathToFileURL(RA_HASH).href)
   const home = mkdtempSync(join(tmpdir(), 'cfgv2-e2e-'))
@@ -246,4 +252,109 @@ test('P1b1-e2e: real source → real hub revision → real node apply: the key l
   assert.equal(/DEEPSEEK_API_KEY:/.test(readFileSync(cred, 'utf8')), false, 'revoked key is gone from the node')
   assert.equal(/- id: llm-deepseek/.test(readFileSync(patch, 'utf8')), false, 'its entry is gone too')
   for (const line of logs) for (const key of [DS_KEY, PI_KEY]) assert.equal(line.includes(key), false, 'the node log never holds a key')
+})
+
+// ═══ P1b-2 prestage (acceptance round 2) ═══
+
+const PI_DEEPSEEK_ENTRY = { provider: 'deepseek', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'deepseek'], defaultBaseURL: 'https://api.deepseek.com/v1', nativeAuth: { env: ['DEEPSEEK_API_KEY'] } }
+const PI_DS_KEY = 'sk-PIAI-DEEPSEEK-route-value-5555'
+
+function clash({ sameValue = false } = {}) {
+  return makeRt({
+    deepseek: { ...DS_SECTION, apiKeyEnv: 'MY_DS_KEY' },
+    entries: [DS_ENTRY, PI_DEEPSEEK_ENTRY, PI_ENTRY],
+    pi: { deepseek: { models: [{ id: 'deepseek-chat' }] }, alpha: PI_PROFILE },
+    refs: { MY_DS_KEY: DS_KEY, DEEPSEEK_API_KEY: sameValue ? DS_KEY : PI_DS_KEY, ALPHA_KEY: PI_KEY },
+  })
+}
+
+test('P1b2-clash: a pi-ai deepseek route (native ref DEEPSEEK_API_KEY) and deepseek-official under another ref with a different value: the route is left out, the plugin keeps the ref, the count is logged', () => {
+  const { rt, warns, readRefs } = clash()
+  const payload = buildConfigPayload(rt, { readRefs, schema: 2 })
+  assert.deepEqual(payload.providers.map(p => p.id), ['alpha'], 'the clashing route is left out, the others stay')
+  assert.deepEqual(payload.plugins[0].credentialRefs, [{ ref: 'DEEPSEEK_API_KEY', apiKey: DS_KEY }])
+  assert.ok(warns.some(w => /left out 1 provider\(s\) whose credential ref clashes/.test(w)), warns.join('\n'))
+  for (const w of warns) for (const key of [DS_KEY, PI_DS_KEY, PI_KEY]) assert.equal(w.includes(key), false, w)
+})
+
+test('P1b2-clash-none: the same ref with the SAME value is not a clash (nothing is dropped)', () => {
+  const { rt, readRefs } = clash({ sameValue: true })
+  assert.deepEqual(buildConfigPayload(rt, { readRefs, schema: 2 }).providers.map(p => p.id), ['deepseek', 'alpha'])
+})
+
+test('P1b2-clash-v1: a v1 payload has no plugins, so no clash handling and no provider is dropped', () => {
+  const { rt, readRefs } = clash()
+  assert.deepEqual(buildConfigPayload(rt, { readRefs }).providers.map(p => p.id), ['deepseek', 'alpha'])
+})
+
+test('P1b2-clash-node: what the source builds for a clashing config is accepted by the real node (without the guard the node rejects the whole push)', { skip: skipWithoutRa(RA_SYNC, RA_HASH) }, async () => {
+  const { handleConfigPush } = await import(pathToFileURL(RA_SYNC).href)
+  const { computeRevision } = await import(pathToFileURL(RA_HASH).href)
+  const home = mkdtempSync(join(tmpdir(), 'cfgv2-clash-'))
+  const profileDir = join(home, 'profiles', 'web')
+  mkdirSync(profileDir, { recursive: true })
+  const { rt, readRefs } = clash()
+  const payload = buildConfigPayload(rt, { readRefs, schema: 2 })
+  const acks = []
+  handleConfigPush({ data: { ...payload, revision: computeRevision(payload) }, dshHome: home, profileDir, send: (type, ack) => acks.push(ack), logger() {}, _restartFn() {}, _systemd: false })
+  assert.equal(acks.at(-1)?.ok, true, JSON.stringify(acks.at(-1)))
+  assert.match(readFileSync(join(home, '.credentials.yaml'), 'utf8'), new RegExp(`DEEPSEEK_API_KEY: ${DS_KEY}`))
+})
+
+test('P1b2-loopback: the main\'s own endpoints (127.x, 0.0.0.0, [::], [::1], localhost, *.localhost, [::ffff:127.0.0.1]) are not sent and are counted; a reachable one is sent', () => {
+  for (const url of ['http://127.0.0.1:8795', 'http://0.0.0.0:8795', 'http://[::ffff:127.0.0.1]:8795', 'http://[::1]:8795', 'http://[::]:8795', 'http://localhost:8795', 'http://proxy.localhost:8795', 'http://127.1:8795']) {
+    const { rt, warns, readRefs } = makeRt({ deepseek: { ...DS_SECTION, baseURL: url } })
+    const config = buildConfigPayload(rt, { readRefs, schema: 2 }).plugins[0].config
+    assert.equal('baseURL' in config, false, url)
+    assert.ok(warns.some(w => /did not send 1 baseURL\(s\) that point at the main itself/.test(w)), `${url}: ${warns.join('|')}`)
+    for (const w of warns) assert.equal(w.includes('8795'), false, 'the URL itself is never logged')
+  }
+  for (const url of ['http://192.168.1.5:8795', 'http://[::ffff:8.8.8.8]:8795', 'https://proxy.example.com/anthropic']) {
+    const { rt, warns, readRefs } = makeRt({ deepseek: { ...DS_SECTION, baseURL: url } })
+    assert.equal(buildConfigPayload(rt, { readRefs, schema: 2 }).plugins[0].config.baseURL, url)
+    assert.equal(warns.some(w => /point at the main itself/.test(w)), false, url)
+  }
+  assert.equal(isLoopback('[::ffff:7f00:1]'), true)
+  assert.equal(isLoopback('example.com'), false)
+})
+
+test('P1b2-log-fields: provider/model fields the node cannot take (and headers, never synced) are counted in one log line, never printed', () => {
+  const pi = { alpha: { ...PI_PROFILE, displayName: 12345, streamIdleTimeoutMs: -1, models: [{ id: 'm1', contextWindow: 0, maxTokens: 'big', input: ['audio'], reasoningEfforts: 'x' }] } }
+  const { rt, warns, readRefs } = makeRt({ pi, refs: { DEEPSEEK_API_KEY: DS_KEY, ALPHA_KEY: PI_KEY } })
+  buildConfigPayload(rt, { readRefs, schema: 2 })
+  // displayName, streamIdleTimeoutMs, headers (3) + contextWindow, maxTokens, input, reasoningEfforts (4)
+  assert.ok(warns.some(w => /left out 7 provider\/model field\(s\)/.test(w)), warns.join('|'))
+  for (const w of warns) { assert.equal(w.includes('must-never-travel'), false); assert.equal(w.includes('12345'), false) }
+})
+
+test('P1b2-D8: a key with a control character is not sent from the main (the node would refuse the whole push) and is never logged', () => {
+  for (const bad of ['sk-line\nbreak', 'sk-cr\rhere', 'sk-nul\u0000x', 'sk-del\u007fx', 'sk-tab\tx']) {
+    const { rt, warns, readRefs } = makeRt({ refs: { DEEPSEEK_API_KEY: bad, ALPHA_KEY: PI_KEY } })
+    assert.deepEqual(buildConfigPayload(rt, { readRefs, schema: 2 }).plugins, [], JSON.stringify(bad))
+    for (const w of warns) assert.equal(w.includes('sk-'), false)
+  }
+})
+
+test('P1b2-D1d: the cap match is exact — config-sync/10, config-sync/2.1, config-sync/2x, a bare string or a non-array is not config-sync/2', () => {
+  for (const caps of [['config-sync/10'], ['config-sync/2.1'], ['config-sync/2x'], ['xconfig-sync/2'], ['config-sync/20', 'config-sync/3'], 'config-sync/2', { 0: 'config-sync/2', length: 1 }, null, undefined, []]) {
+    assert.equal(nodeSpeaksV2(caps), false, JSON.stringify(caps))
+  }
+  assert.equal(nodeSpeaksV2(['fs', 'config-sync/2']), true)
+  const { source } = installed({ caps: ['config-sync/10'] })
+  assert.equal(source('n-known').schema, undefined, 'such a node gets v1')
+})
+
+// The skip must say what it did not check; CI can make it a failure. Run this very file in a child where the checkout is missing.
+test('P1b2-skip-notice: without the remote-agent checkout the node-side tests are skipped WITH the reason; with DSH_REQUIRE_REMOTE_AGENT=1 the run fails', { skip: process.env.DSH_META_CHILD === '1' && 'meta test, not run inside its own child' }, () => {
+  const run = extra => spawnSync(process.execPath, ['--import', './test/harness-resolve.mjs', '--test', '--test-reporter=tap', '--test-force-exit', '--test-timeout=60000', 'test/config-source-v2.test.js'], {
+    cwd: join(import.meta.dirname, '..'), encoding: 'utf8', timeout: 120000,
+    // NODE_TEST_CONTEXT would make the child a subtest of this run (it would report in the runner's own format).
+    env: { ...process.env, NODE_TEST_CONTEXT: undefined, DSH_META_CHILD: '1', DSH_REMOTE_AGENT: '/nonexistent-remote-agent', DSH_HARNESS: process.env.DSH_HARNESS ?? '/private/tmp/deepseek-harness', ...extra },
+  })
+  const skipped = run({ DSH_REQUIRE_REMOTE_AGENT: '' })
+  assert.equal(skipped.status, 0, skipped.stdout.slice(-600))
+  const notices = skipped.stdout.split('\n').filter(line => /# SKIP .*DSH_REMOTE_AGENT.*NOT checked/.test(line))
+  assert.equal(notices.length, 3, `node-accepts, e2e and clash-node each say why they were skipped:\n${notices.join('\n')}`)
+  const required = run({ DSH_REQUIRE_REMOTE_AGENT: '1' })
+  assert.notEqual(required.status, 0, 'CI mode: a missing checkout is a failure, not a skip')
 })

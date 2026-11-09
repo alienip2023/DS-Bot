@@ -146,6 +146,8 @@ async function openDrawerMenu(p, sessionId) {
     off: items.filter(n => n.props.className === 'bt-model-off'),
     text: textOf(open),
     all: items,
+    triggerName: textOf(find(open, n => n.props?.className === 'bt-model-name')[0]),
+    triggerProvider: textOf(find(open, n => n.props?.className === 'bt-model-provider')[0]),
   }
 }
 
@@ -183,6 +185,21 @@ test('M5-R10b: the Bot\'s node is not among the targets (other nodes only) → n
   assert.deepEqual(m.pickable.map(n => n.props.title), MAIN_MODELS.map(x => x.ref), 'the main list, all pickable')
   assert.ok(m.props.notice, 'the notice says the node reported nothing')
   assert.equal(m.off.length, 0, 'nothing is greyed out against another node\'s list')
+})
+
+// Same model, same name: the trigger of a Bot whose model the node cannot run, and that model's greyed row.
+test('M5-names: a Bot on a model the node has not synced shows it in the trigger under the same name as its greyed row (not the raw ref tail)', async () => {
+  const m = await openDrawerMenu(page({ bot: { model: 'claude-code/sonnet' } }), 'bot-j1')
+  const row = m.off.find(n => n.props.title !== undefined && textOf(n).startsWith('Claude Code Sonnet'))
+  assert.ok(row, 'the greyed row is named by the main')
+  assert.equal(m.triggerName, 'Claude Code Sonnet', 'the trigger uses that same name')
+  assert.match(m.triggerProvider, /Claude Code/, 'and the provider display name, not the raw id')
+  assert.match(m.triggerProvider, /not available/)
+})
+
+test('M5-names-served: a model the node does serve keeps its node name in the trigger', async () => {
+  const m = await openDrawerMenu(page({ bot: { model: 'ccmax/claude-sonnet-5-5' } }), 'bot-j1')
+  assert.equal(m.triggerName, 'Claude Sonnet 5.5')
 })
 
 test('M5-a2: picking a node model saves it (updateBot -> update-bot); a greyed-out row is disabled and saves nothing', async () => {

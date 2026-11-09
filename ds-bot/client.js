@@ -9323,8 +9323,9 @@ function modelOf(bot, roster) {
   const ref = bot.model ?? bot.appliedModel;
   if (!ref) return void 0;
   const served = servedOf(roster, ref);
+  const known = served ?? roster.labels?.[ref];
   const [provider, ...rest] = ref.split("/");
-  return { ref, name: served?.name ?? rest.join("/"), provider: served?.providerName ?? provider, served: served !== void 0 };
+  return { ref, name: known?.name ?? rest.join("/"), provider: known?.providerName ?? provider, served: served !== void 0 };
 }
 var effortCache = /* @__PURE__ */ new Map();
 function useEfforts(served, ref, actions) {
@@ -9893,8 +9894,9 @@ function joinedModelView(bot, roster, nodeModels) {
     providerName: model.providerName,
     reason: CLI_PROVIDER.test(model.ref) ? NODE_REASONS.cli() : NODE_REASONS.provider()
   }));
+  const labels = Object.fromEntries(unavailable.map((model) => [model.ref, { name: model.name, providerName: model.providerName }]));
   return {
-    roster: { ...roster, models: nodeModels.map((model) => ({ ref: model.ref, provider: model.provider, name: model.name, providerName: model.provider })) },
+    roster: { ...roster, models: nodeModels.map((model) => ({ ref: model.ref, provider: model.provider, name: model.name, providerName: model.provider })), labels },
     unavailable,
     notice: null
   };

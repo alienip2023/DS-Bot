@@ -29,8 +29,11 @@ export function joinedModelView(bot, roster, nodeModels) {
     ref: model.ref, name: model.name, provider: model.provider, providerName: model.providerName,
     reason: CLI_PROVIDER.test(model.ref) ? NODE_REASONS.cli() : NODE_REASONS.provider(),
   }))
+  // `labels`: how the main names the models the node cannot run. The model picker's trigger reads it for a Bot whose
+  // model is one of those, so the trigger and the greyed row call the same model by the same name.
+  const labels = Object.fromEntries(unavailable.map(model => [model.ref, { name: model.name, providerName: model.providerName }]))
   return {
-    roster: { ...roster, models: nodeModels.map(model => ({ ref: model.ref, provider: model.provider, name: model.name, providerName: model.provider })) },
+    roster: { ...roster, models: nodeModels.map(model => ({ ref: model.ref, provider: model.provider, name: model.name, providerName: model.provider })), labels },
     unavailable, notice: null,
   }
 }
