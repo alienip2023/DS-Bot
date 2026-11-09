@@ -776,6 +776,7 @@ export function install(rt) {
     await rt.releaseBot(id, [...parts, ...rt.groupSessionsOf(id)])
     if (closedArchive !== undefined) state.privateArchives = [...(state.privateArchives ?? []).filter(entry => entry.id !== id), closedArchive]
     delete state.bots[id]
+    if (bot.origin === 'joined') { if (!Array.isArray(state.deletedJoinedIds)) state.deletedJoinedIds = []; if (!state.deletedJoinedIds.includes(id)) state.deletedJoinedIds.push(id) }
     // The shared capability list is the user's and keeps its items; only a
     // still-unapproved local MCP this Bot alone asked for leaves with it.
     rt.dropOrphanCapabilities?.(bot)
@@ -807,6 +808,7 @@ export function install(rt) {
     // Past parts are archived too: a part move can leave tasks on the old Session,
     // which otherwise stays armed and invisible. Already-archived ids are a no-op.
     for (const part of parts) {
+      if (typeof part === 'string' && part.startsWith('joined:')) continue
       await ctx.workspaceRegistry.archiveSession(part, { stopActivity: true })
         .catch(error => rt.warn('ds-bot: Bot %s not archived: %s', bot.name, error))
     }

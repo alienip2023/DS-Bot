@@ -42,6 +42,7 @@ export function applyRosterReport(state, report, now = Date.now()) {
     const remoteBotId = typeof bot.id === 'string' ? bot.id.trim() : ''
     if (remoteBotId === '') continue
     const id = shadowId(nodeId, remoteBotId)
+    if (Array.isArray(state.deletedJoinedIds) && state.deletedJoinedIds.includes(id)) continue
     const existing = state.bots[id]
     const row = {
       ...(existing ?? {}),
