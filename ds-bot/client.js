@@ -2207,7 +2207,7 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
       const bot = roster.getSnapshot().byId?.[botId];
       const sessionId = bot?.sessionId;
       if (!sessionId) return;
-      ui2.set((state) => ({ ...state, session: sessionId, joinedChat: null, menu: null, palette: null, newChat: null, exchange: null }));
+      ui2.set((state) => ({ ...state, details: sessionId, view: "side", side: null, joinedChat: null, menu: null, palette: null, newChat: null, exchange: null, renaming: false, tab: null }));
     },
     closeJoinedChat: () => {
       ui2.set((state) => state.joinedChat ? { ...state, joinedChat: null } : state);

@@ -91,7 +91,8 @@ describe('S23b: botHome feature flag routing', () => {
       panelFolded: () => false,
     })
     actions.openBotHome('bot-j1')
-    assert.equal(uiState.session, 'session-mirror-001', 'ui.session must be set to mirror sessionId')
+    assert.equal(uiState.details, 'session-mirror-001', 'ui.details must be set to mirror sessionId')
+    assert.equal(uiState.view, 'side', 'view must be set to side')
     assert.equal(uiState.joinedChat, null, 'joinedChat must be cleared')
   })
 })

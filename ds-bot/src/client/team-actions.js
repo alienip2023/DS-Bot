@@ -178,7 +178,7 @@ export function teamActions({ call, after, partFor, roster, ui, live, cards, hel
       const bot = roster.getSnapshot().byId?.[botId]
       const sessionId = bot?.sessionId
       if (!sessionId) return
-      ui.set(state => ({ ...state, session: sessionId, joinedChat: null, menu: null, palette: null, newChat: null, exchange: null }))
+      ui.set(state => ({ ...state, details: sessionId, view: 'side', side: null, joinedChat: null, menu: null, palette: null, newChat: null, exchange: null, renaming: false, tab: null }))
     },
     closeJoinedChat: () => { ui.set(state => (state.joinedChat ? { ...state, joinedChat: null } : state)) },
     joinedChatView: (botId) => call('chat', { botId }),
