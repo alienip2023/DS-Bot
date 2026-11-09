@@ -18,6 +18,7 @@ import * as privacy from './src/host/privacy.js'
 import * as agents from './src/host/agents.js'
 import * as prompt from './src/host/prompt.js'
 import * as timeContext from './src/host/time-context.js'
+import * as hostContext from './src/host/host-context.js'
 import * as tools from './src/host/tools.js'
 import * as chatIndex from './src/host/chat-index.js'
 import * as groups from './src/host/groups.js'
@@ -66,7 +67,7 @@ export const inject = ['llm', 'tools', 'systemPrompt', 'sessionController', 'ses
 // install. Listeners run and tools are listed in registration order, so this order holds:
 // usage meters model requests after every listener that rewrites them. privacy checks a
 // call before the hooks of tools do, so a closed call never reaches a card they show.
-export const MODULES = [diagnostics, store, models, providers, permissions, turns, steer, handoffs, requests, delivery, workerBridge, rosterJoin, roster, folders, privacy, agents, prompt, timeContext, tools, chatIndex, groups, goals, approvals, resume, memory, parts, images, avatarLibrary, secrets, connectors, capabilities, learning, schedules, browser, browserPlugins, computer, usage, update, dshUpdate, thinking, feed, im, channel, joinedTurn, joinedPrompt, mirrorGuard, joinedCreate, configSource, joinedPage, officeSkills, goalSkills, localAgents]
+export const MODULES = [diagnostics, store, models, providers, permissions, turns, steer, handoffs, requests, delivery, workerBridge, rosterJoin, roster, folders, privacy, agents, prompt, timeContext, hostContext, tools, chatIndex, groups, goals, approvals, resume, memory, parts, images, avatarLibrary, secrets, connectors, capabilities, learning, schedules, browser, browserPlugins, computer, usage, update, dshUpdate, thinking, feed, im, channel, joinedTurn, joinedPrompt, mirrorGuard, joinedCreate, configSource, joinedPage, officeSkills, goalSkills, localAgents]
 
 export function apply(ctx, config = {}) {
   createRuntime(ctx, config)
