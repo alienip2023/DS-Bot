@@ -2199,7 +2199,7 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
     connectorRemove: (id) => after(call2("connector-remove", { id })),
     // Joined (remote) bot chat: open, close, send a message to remote session.
     openJoinedChat: (botId) => openJoinedChat(ui2, botId),
-    botHomeEnabled: () => rt.botHomeEnabled === true,
+    botHomeEnabled: () => roster.getSnapshot().botHomeEnabled === true,
     closeJoinedChat: () => {
       ui2.set((state) => state.joinedChat ? { ...state, joinedChat: null } : state);
     },

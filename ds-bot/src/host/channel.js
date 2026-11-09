@@ -123,6 +123,9 @@ export function install(rt) {
   const view = () => ({
     revision: state.revision,
     workspaceId: state.workspaceId ?? null,
+    // `botHomeEnabled`: feature flag for Bot Home conversation page (S2-3b).
+    // Pushed with every state response so the client can gate UI routing.
+    botHomeEnabled: rt.botHomeEnabled === true,
     // `mainBotId` is the first Main Bot, which the sidebar shows as its tile.
     mainBotId: state.mainBotIds[0] ?? null,
     mainBotIds: state.mainBotIds,

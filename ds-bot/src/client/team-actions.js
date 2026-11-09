@@ -170,7 +170,7 @@ export function teamActions({ call, after, partFor, roster, ui, live, cards, hel
     connectorRemove: id => after(call('connector-remove', { id })),
     // Joined (remote) bot chat: open, close, send a message to remote session.
     openJoinedChat: (botId) => _openJoinedChat(ui, botId),
-    botHomeEnabled: () => rt.botHomeEnabled === true,
+    botHomeEnabled: () => roster.getSnapshot().botHomeEnabled === true,
     closeJoinedChat: () => { ui.set(state => (state.joinedChat ? { ...state, joinedChat: null } : state)) },
     joinedChatView: (botId) => call('chat', { botId }),
     sendJoined: (botId, text) => _sendJoined(call, botId, text),

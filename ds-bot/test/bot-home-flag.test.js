@@ -1,8 +1,30 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { botRowClick } from '../src/client/row-actions.js'
+import { teamActions } from '../src/client/team-actions.js'
 
 describe('S23b: botHome feature flag routing', () => {
+  it('S23b-flag-from-roster: botHomeEnabled reads roster.botHomeEnabled, not undefined rt', () => {
+    // Knife: change to rt.botHomeEnabled → ReferenceError (rt undefined) → RED
+    const rosterState = { botHomeEnabled: true }
+    const roster = { getSnapshot: () => rosterState }
+    const actions = teamActions({
+      call: () => Promise.resolve({}),
+      after: p => p,
+      partFor: () => null,
+      roster,
+      ui: { set: () => {}, getSnapshot: () => ({}) },
+      live: { getSnapshot: () => ({}) },
+      cards: { getSnapshot: () => ({}) },
+      heldCards: { getSnapshot: () => ({}) },
+      turnClock: { getSnapshot: () => ({}) },
+      panelFolded: () => false,
+    })
+    assert.equal(actions.botHomeEnabled(), true, 'must read roster.botHomeEnabled=true')
+    rosterState.botHomeEnabled = false
+    assert.equal(actions.botHomeEnabled(), false, 'must reflect roster update to false')
+  })
+
   it('S23b-flag-off: botHomeEnabled=false → openJoinedChat called, openAgent not called', () => {
     // Knife: delete botHomeEnabled check (always openAgent) → openJoinedChat not called → RED
     const calls = { openJoinedChat: 0, openAgent: 0, openSession: 0 }
