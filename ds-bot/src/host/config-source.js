@@ -17,7 +17,7 @@ import { readUpstreamProviders } from '../gateway/upstream.js'
 import { DEEPSEEK_ENTRY, deepseekPlugin, modelV2, nodeSpeaksV2, providerExtrasV2 } from './config-v2.js'
 
 const PI_AI = 'llm-pi-ai'
-const PROVIDER_ID = /^[A-Za-z0-9._-]+$/
+export const PROVIDER_ID = /^[A-Za-z0-9._-]+$/
 const CRED_REF = /^[A-Za-z_][A-Za-z0-9_]*$/
 const RETRY_MS = 5_000
 
@@ -30,7 +30,14 @@ const RETRY_MS = 5_000
 // snapshot of the installed catalog, limited to routes that speak ONE protocol the node
 // can serve (anthropic-messages / openai-completions / openai-responses). A route that is
 // not listed here (mixed protocols, bedrock, vertex, ...) is still skipped, never guessed.
-const CATALOG_API = Object.freeze({
+//
+// Source of the table: `@earendil-works/pi-ai` 1.3.0, `dist/models.generated.js` `MODELS[<provider>][*].api`
+// (the pi-ai that `@deepseek-ai/dsh-llm-pi-ai` 0.2.2-alpha.2 depends on, as shipped in DSH Desktop 0.13.2).
+// A provider is listed only when ALL its models use the same protocol. Re-check the table when pi-ai is upgraded;
+// `test/config-source.test.js` ('C5-table-matches-pi-ai') does it when a DSH install is at hand.
+// Keys are looked up with Object.hasOwn: a provider id such as `constructor` or `toString` must not resolve to
+// an Object.prototype member (see 'C5-proto-keys').
+export const CATALOG_API = Object.freeze({
   ...Object.fromEntries(['ant-ling', 'baseten', 'cerebras', 'deepseek', 'groq', 'huggingface', 'kimi-coding', 'moonshotai', 'moonshotai-cn', 'nvidia', 'qwen-token-plan', 'qwen-token-plan-cn', 'qwen-token-plan-individual', 'together', 'xiaomi', 'xiaomi-token-plan-ams', 'xiaomi-token-plan-cn', 'xiaomi-token-plan-sgp', 'zai', 'zai-coding-cn'].map(id => [id, 'openai-completions'])),
   ...Object.fromEntries(['anthropic', 'minimax', 'minimax-cn'].map(id => [id, 'anthropic-messages'])),
   ...Object.fromEntries(['meta', 'xai'].map(id => [id, 'openai-responses'])),

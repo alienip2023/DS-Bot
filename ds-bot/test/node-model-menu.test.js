@@ -98,7 +98,7 @@ const NODE_MODELS = [
 ]
 
 // A page whose roster comes from a real runtime (joined Bot `bot-j1` on node n1 + a local Bot).
-function page({ nodeModels = NODE_MODELS, targetsFail = false, bot: botPatch = {} } = {}) {
+function page({ nodeModels = NODE_MODELS, targetsFail = false, targets = null, bot: botPatch = {} } = {}) {
   const rt = joinedRuntime({ mirrorSessionId: 'sess-mirror' })
   Object.assign(rt.state.bots['bot-j1'], botPatch)
   rt.state.bots['bot-local'] = { id: 'bot-local', name: 'Local', type: 'bot', model: 'piion/m1' }
@@ -109,7 +109,7 @@ function page({ nodeModels = NODE_MODELS, targetsFail = false, bot: botPatch = {
       roster: { getSnapshot: () => roster },
       call: async (endpoint, body) => {
         calls.push([endpoint, body])
-        if (endpoint === 'bot-create-targets') { if (targetsFail) throw new Error('boom'); return [{ nodeId: 'n1', hostname: 'node-1', online: true, models: nodeModels, defaultModel: null }] }
+        if (endpoint === 'bot-create-targets') { if (targetsFail) throw new Error('boom'); return targets ?? [{ nodeId: 'n1', hostname: 'node-1', online: true, models: nodeModels, defaultModel: null }] }
         return {}
       },
     }),
@@ -159,6 +159,30 @@ test('M5-a: a joined remote Bot drawer lists the node catalog, plus the rest gre
   ])
   assert.match(m.text, /Not synced to the node yet/)
   assert.equal(m.props.notice, null)
+})
+
+// R10 (acceptance): with several nodes the picker must show the catalog of THE BOT'S node, not the first target's.
+const OTHER_NODE_MODELS = [{ ref: 'xai/grok-4.3', provider: 'xai', id: 'grok-4.3', name: 'Grok 4.3' }]
+const twoNodes = order => {
+  const mine = { nodeId: 'n1', hostname: 'node-1', online: true, models: NODE_MODELS, defaultModel: null }
+  const other = { nodeId: 'n-other', hostname: 'node-other', online: true, models: OTHER_NODE_MODELS, defaultModel: null }
+  return order === 'other-first' ? [other, mine] : [mine, other]
+}
+
+test('M5-R10: with two nodes the drawer lists the catalog of the Bot\'s own node, whichever order the targets come in', async () => {
+  for (const order of ['other-first', 'mine-first']) {
+    const m = await openDrawerMenu(page({ targets: twoNodes(order) }), 'bot-j1')
+    assert.deepEqual(m.pickable.map(n => n.props.title), ['ccmax/claude-sonnet-5-5', 'piion/m1'], order)
+    assert.equal(m.props.notice, null, order)
+  }
+})
+
+test('M5-R10b: the Bot\'s node is not among the targets (other nodes only) → no catalog for it: main list with the notice, never another node\'s list', async () => {
+  const other = { nodeId: 'n-other', hostname: 'node-other', online: true, models: OTHER_NODE_MODELS, defaultModel: null }
+  const m = await openDrawerMenu(page({ targets: [other] }), 'bot-j1')
+  assert.deepEqual(m.pickable.map(n => n.props.title), MAIN_MODELS.map(x => x.ref), 'the main list, all pickable')
+  assert.ok(m.props.notice, 'the notice says the node reported nothing')
+  assert.equal(m.off.length, 0, 'nothing is greyed out against another node\'s list')
 })
 
 test('M5-a2: picking a node model saves it (updateBot -> update-bot); a greyed-out row is disabled and saves nothing', async () => {

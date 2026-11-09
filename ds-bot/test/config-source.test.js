@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { format } from 'node:util'
-import { buildConfigPayload, install, parseCredentialRefs } from '../src/host/config-source.js'
+import { buildConfigPayload, install, parseCredentialRefs, CATALOG_API, PROVIDER_ID } from '../src/host/config-source.js'
 
 const KEY_A = 'sk-AAAA-secret-value-1111'
 const KEY_B = 'sk-BBBB-secret-value-2222'
@@ -207,4 +207,36 @@ test('M4-not-catalog: a route outside the catalog table is still skipped without
   const entry = { provider: 'amazon-bedrock', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'amazon-bedrock'], nativeAuth: { env: ['AWS_PROFILE'] } }
   const { rt, readRefs } = makeRt({ profiles: { 'amazon-bedrock': { models: [{ id: 'x' }] } }, entries: [entry], refs: { AWS_PROFILE: KEY_A } })
   assert.deepEqual(buildConfigPayload(rt, { readRefs }).providers, [])
+})
+
+// ── acceptance (fork.64): the catalog table and its prototype-key guard ──
+test('C5-proto-keys: a provider id that is an Object.prototype member (constructor / toString / __proto__ ...) is never completed from the catalog: skipped, nothing pushed', () => {
+  for (const id of ['constructor', 'toString', 'hasOwnProperty', 'valueOf', '__proto__']) {
+    const entry = { provider: id, settingsNs: 'llm-pi-ai', settingsPath: ['providers', id], defaultBaseURL: 'https://evil.example/v1', nativeAuth: { env: ['PROTO_KEY'] } }
+    const { rt, warns, readRefs } = makeRt({ profiles: { [id]: { models: [{ id: 'm' }] } }, entries: [entry], refs: { PROTO_KEY: KEY_A } })
+    const payload = buildConfigPayload(rt, { readRefs })
+    assert.deepEqual(payload.providers, [], `${id}: no protocol of its own, so not pushed`)
+    assert.match(warns.join('\n'), /skipped 1 provider/, id)
+  }
+})
+
+test('C5-table-ids: every id in the catalog table is a valid provider id and names a protocol the node can serve', () => {
+  const ids = Object.keys(CATALOG_API)
+  assert.ok(ids.length > 20, 'the table is not empty')
+  for (const id of ids) assert.match(id, PROVIDER_ID, `${id} would be rejected by the PROVIDER_ID check and never pushed`)
+  for (const [id, api] of Object.entries(CATALOG_API)) assert.ok(['openai-completions', 'anthropic-messages', 'openai-responses'].includes(api), `${id}: ${api}`)
+  // control: the check can fail
+  assert.doesNotMatch('bad id', PROVIDER_ID)
+})
+
+import { existsSync as exists } from 'node:fs'
+import { pathToFileURL } from 'node:url'
+const PI_AI_DATA = join(process.env.DSH_NODE_MODULES || '/tmp/dsh-asar/node_modules', '@earendil-works/pi-ai/dist/models.generated.js')
+test('C5-table-matches-pi-ai: each table entry is a provider of the installed pi-ai whose models all speak that one protocol', { skip: !exists(PI_AI_DATA) && `pi-ai catalog not found at ${PI_AI_DATA}` }, async () => {
+  const { MODELS } = await import(pathToFileURL(PI_AI_DATA).href)
+  for (const [id, api] of Object.entries(CATALOG_API)) {
+    assert.ok(Object.hasOwn(MODELS, id), `${id} is not a pi-ai provider`)
+    const apis = new Set(Object.values(MODELS[id]).map(model => model.api))
+    assert.deepEqual([...apis], [api], `${id}: pi-ai says ${[...apis].join(',')}`)
+  }
 })
