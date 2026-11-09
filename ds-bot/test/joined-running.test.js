@@ -4,7 +4,8 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { makeWorld, textRequest, types } from './joined-world.js'
-import { mirrorTurnStart, mirrorTurnFinish, mirrorTurnFail, mirrorTurnAbort, STOPPED_TEXT } from '../src/host/mirror.js'
+import { mirrorTurnStart, mirrorTurnFinish, mirrorTurnFail, mirrorTurnAbort, STOPPED_TEXT, mirrorStateOf } from '../src/host/mirror.js'
+import { startPageTurn, stopPageTurn } from '../src/host/executor.js'
 
 const { Session } = await import('@deepseek-ai/dsh-session')
 const assistantTexts = session => session.log.filter(event => event.type === 'assistant/message').map(event => event.data.message.content[0].text)
@@ -360,5 +361,36 @@ describe('S36-e9: what happens at the moment the slot is released', () => {
     assert.ok(timeline.some(entry => entry.startsWith('status:false')), timeline.join(','))
     assert.equal(w.rt.joinedInFlight.has(w.bot.id), false)
     assert.deepEqual(w.statuses().at(-1), [MIRROR, false])
+  })
+})
+
+describe('S37-release: a slot released twice announces running:false once', () => {
+  // Stop releases the slot; the turn's own `finally` releases it again a microtask later.
+  const startDirect = (w, text, requestId) => startPageTurn({
+    rt: w.rt, bot: w.bot, text, requestId, session: w.sessionOf(MIRROR), state: mirrorStateOf(w.rt, w.bot.id),
+    tracker: w.rt.turnTracker, timeoutMs: 5000,
+  })
+
+  it('S37-release-a: Stop then the turn\'s own finally — exactly one running:false', async () => {
+    const w = makeWorld({ tracker: true })
+    const turn = startDirect(w, 'a', 'req-a')
+    assert.equal(stopPageTurn(w.rt, w.bot.id), true)
+    await turn.done
+    assert.deepEqual(w.statuses(), [[MIRROR, true], [MIRROR, false]])
+    assert.equal(w.rt.joinedInFlight.has(w.bot.id), false)
+  })
+
+  it('S37-release-b: a newer turn of the same Bot (even with the same requestId) started between the two releases keeps its slot and its running state', async () => {
+    const w = makeWorld({ tracker: true })
+    const older = startDirect(w, 'a', 'same-id')
+    stopPageTurn(w.rt, w.bot.id)                      // release #1, running:false
+    const newer = startDirect(w, 'b', 'same-id')      // takes the free slot, running:true
+    await older.done                                   // release #2 of the OLDER turn
+    assert.equal(w.rt.joinedInFlight.has(w.bot.id), true, 'the newer turn still holds the slot')
+    assert.deepEqual(w.statuses(), [[MIRROR, true], [MIRROR, false], [MIRROR, true]], 'no false for the newer turn')
+    assert.equal(stopPageTurn(w.rt, w.bot.id), true, 'and it can still be stopped')
+    await newer.done
+    assert.deepEqual(w.statuses().at(-1), [MIRROR, false])
+    assert.equal(w.statuses().length, 4)
   })
 })

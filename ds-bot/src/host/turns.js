@@ -120,6 +120,44 @@ const RETRY_PROMISE_TEXT = 'Your last reply said you would start working, but yo
 const PROMISED_WORK = /(?:^(?:收到|好的|明白|好|行|没问题|了解)[，,、。.!！：\s]*(?:我(?:现在|这就|先|马上|立刻|去|来)?(?:开始|着手|去|来|准备)?(?:排查|检查|调查|查看|看看|搜索|搜一下|分析|处理|执行|运行|跑一下|修改|修复|实现|编写|整理|验证|测试|读一下|翻一下)(?!过了|过(?:[，,。.!！、；;\s]|$)|完了|完毕|好了)|(?:现在|马上|立刻)?(?:开始|着手)(?:执行|处理|排查|检查|调查|干活|开工)(?!过了|过(?:[，,。.!！、；;\s]|$)|完了|完毕|好了)|开工(?:[。！!，,\s]|$))|^(?:开工(?:[。！!，,\s]|$)|我(?:现在|这就|先|马上|立刻)(?:开始|着手|去)(?:排查|检查|调查|查看|搜索|分析|处理|执行|运行|修改|修复|实现|编写|整理|验证|测试)(?!过了|过(?:[，,。.!！、；;\s]|$)|完了|完毕|好了))|\b(?:(?:i\s+will|i'll|let\s+me|going\s+to)\s+(?:start|begin|check|look\s+into|investigate|search|run|inspect|read|fix|implement|work\s+on)\b|(?:starting|beginning)\s+(?:the\s+)?(?:investigation|check|search|work|execution|analysis)\b|^on\s+it[,.\s!]+(?:i'll|i\s+will|let\s+me|starting|checking)\b))/i
 export const promisesWork = text => typeof text === 'string' && text.trim().length <= 240 && PROMISED_WORK.test(text.trim())
 
+/**
+ * DSH's prompt admission wraps any unexpected failure as 'session/agent-busy' and keeps the real
+ * cause in details.reason, which the window never shows and the log never saw (#424). For a
+ * Session this team owns, the reason is written to the diagnostics and put into the error the
+ * user reads. Exported so the install/dispose can be run on a real cordis context in tests.
+ */
+export function installPromptReasons(rt, placeOf) {
+  const { ctx } = rt
+  wrapControllerMethod(ctx, ctx.sessionController, 'prompt', prompt => async function (request, ...rest) {
+    try {
+      return await prompt.call(this, request, ...rest)
+    } catch (error) {
+      const id = request?.sessionId
+      if (id === undefined || (rt.roomOf(id) === undefined && !rt.isBotSession(id))) throw error
+      // The reason can name local paths or carry tokens, so the same cleaning the
+      // diagnostics get applies before it reaches the client.
+      const reason = typeof error?.details?.reason === 'string' && error.details.reason !== ''
+        ? cleanText(error.details.reason, { redact: rt.redactSecrets })
+        : undefined
+      rt.noteFailure({
+        source: 'prompt',
+        text: `prompt rejected for ${placeOf(id)}${reason === undefined ? '' : `: ${reason}`}`,
+        code: error?.code,
+        where: placeOf(id),
+        sessionId: id,
+      })
+      // The gateway passes a RemoteError's code and details on as they are, but
+      // wraps a fresh plain Error as 'gateway/internal': the reason is written on
+      // the rejection itself, keeping its identity.
+      if (reason !== undefined) {
+        error.message = `${error?.message ?? 'prompt rejected'} — ${reason}`
+        error.details = { ...error.details, reason }
+      }
+      throw error
+    }
+  }, 'ds-bot: prompt rejection reasons')
+}
+
 export function install(rt) {
   const { ctx, state } = rt
 
@@ -1122,40 +1160,7 @@ export function install(rt) {
     if (entry?.turn !== undefined) entry.cut = { texts: entry.texts.length }
   }
 
-  // DSH's prompt admission wraps any unexpected failure as 'session/agent-busy' and
-  // keeps the real cause in details.reason, which the window never shows and the log
-  // never saw (#424). For a Session this team owns, the reason is written to the
-  // diagnostics and put into the error the user reads.
-  {
-    wrapControllerMethod(ctx, ctx.sessionController, 'prompt', prompt => async function (request, ...rest) {
-      try {
-        return await prompt.call(this, request, ...rest)
-      } catch (error) {
-        const id = request?.sessionId
-        if (id === undefined || (rt.roomOf(id) === undefined && !rt.isBotSession(id))) throw error
-        // The reason can name local paths or carry tokens, so the same cleaning the
-        // diagnostics get applies before it reaches the client.
-        const reason = typeof error?.details?.reason === 'string' && error.details.reason !== ''
-          ? cleanText(error.details.reason, { redact: rt.redactSecrets })
-          : undefined
-        rt.noteFailure({
-          source: 'prompt',
-          text: `prompt rejected for ${placeOf(id)}${reason === undefined ? '' : `: ${reason}`}`,
-          code: error?.code,
-          where: placeOf(id),
-          sessionId: id,
-        })
-        // The gateway passes a RemoteError's code and details on as they are, but
-        // wraps a fresh plain Error as 'gateway/internal': the reason is written on
-        // the rejection itself, keeping its identity.
-        if (reason !== undefined) {
-          error.message = `${error?.message ?? 'prompt rejected'} — ${reason}`
-          error.details = { ...error.details, reason }
-        }
-        throw error
-      }
-    }, 'ds-bot: prompt rejection reasons')
-  }
+  installPromptReasons(rt, placeOf)
 
   Object.assign(rt, { live, liveOf, roomWaiters, roomProgress, roomInbox, activityView, workView, roomWorkView, turnsView, steeredView, callDetail, doingOf, stopRoomTurn, stopChat, releaseBot, unblockBots, resumeBot, markSteerCut, hasSubagents, stopSubagents })
 

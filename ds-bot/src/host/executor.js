@@ -326,7 +326,10 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
   // on the page until the slot is released (joined-running.js).
   let announced = false
   const release = () => {
-    if (rt.joinedInFlight.get(bot.id)?.requestId !== requestId) return
+    // Only the claim this turn took: a second release of an older turn (Stop releases, then the
+    // turn's own finally does) must not free — or announce for — a newer turn of the same Bot,
+    // even one carrying the same requestId.
+    if (rt.joinedInFlight.get(bot.id) !== claim) return
     rt.joinedInFlight.delete(bot.id)
     if (announced) { announced = false; rt.joinedRunning?.(bot, false) }
     flushLateReplies(rt, bot.id)

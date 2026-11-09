@@ -2,12 +2,13 @@ import { countCards, heldCardKey } from './sources.js'
 import { openJoinedChat as _openJoinedChat, sendJoined as _sendJoined } from './joined-chat-actions.js'
 import { noteClientError } from './diagnostics.js'
 import { joinedUpdateError } from './joined-errors.js'
+import { t } from './i18n.js'
 
 // The actions every window that draws the Bot views shares: dialogs and panels (the `ui`
 // source), requests to the host, and the notes the transcript keeps. The shell around the
 // views adds navigation and its own panels. `after` reads the team again once a request
 // is done; `partFor` maps a Bot id, or any part of its chat, to its current part.
-export function teamActions({ call, after, partFor, roster, ui, live, cards, heldCards, turnClock, panelFolded, openSession }) {
+export function teamActions({ call, after, partFor, roster, ui, live, cards, heldCards, turnClock, panelFolded, openSession, sessionListed, refreshSessions }) {
   // A failed action away from any form (a menu, the palette) shows as a toast.
   const reportError = (error, where = 'action') => {
     noteClientError(where, error)
@@ -25,11 +26,24 @@ export function teamActions({ call, after, partFor, roster, ui, live, cards, hel
   // Open a joined Bot's page: its mirror session through the core's openSession. A Bot never
   // chatted with has none yet, so the host makes it (`joined-ensure`), the team is read
   // again, and only then does the page open. Any failure is shown, never swallowed.
+  // A mirror session that existed before the click is in DSH's session list, unless its stored log
+  // cannot be read (a damaged log is dropped from the list with only a line in the host log).
+  // The core's opener then waits for a session that never comes and the click does nothing, so
+  // the list is read again once and a session still missing is reported.
+  const mirrorListed = async (botId) => {
+    if (typeof sessionListed !== 'function') return true
+    const sessionId = roster.getSnapshot().byId?.[botId]?.sessionId
+    if (sessionListed(sessionId)) return true
+    await refreshSessions?.()
+    return sessionListed(sessionId)
+  }
   const openJoinedHome = async (botId) => {
     try {
       if (!botHasHome(botId)) {
         await after(call('joined-ensure', { botId }))
         if (!botHasHome(botId)) throw new Error('The Bot page is not ready yet. Try again in a moment.')
+      } else if (!await mirrorListed(botId)) {
+        throw new Error(t('The mirror conversation file of this remote Bot is damaged or cannot be read, so it cannot be opened here. The conversation on the node is not affected. Ask the maintainer to rebuild the mirror (the cause is in the DS Bot log).'))
       }
       openSession(botId)
     } catch (error) {

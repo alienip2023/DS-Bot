@@ -580,6 +580,7 @@ const ZH = {
   'Choose a model': '选择模型',
   '{provider} · not available': '{provider} · 不可用',
   'Model for {name}': '{name} 的模型',
+  'The mirror conversation file of this remote Bot is damaged or cannot be read, so it cannot be opened here. The conversation on the node is not affected. Ask the maintainer to rebuild the mirror (the cause is in the DS Bot log).': '这个远程 Bot 的镜像对话文件已损坏或无法读取，没法在本机打开。节点上的对话不受影响，请联系维护者重建镜像对话（原因见 DS Bot 日志）。',
   'No models are set up in DeepSeek Harness yet.': 'DeepSeek Harness 里还没有设置模型。',
   'Not synced to the node yet': '节点尚未同步',
   'The node has no matching CLI yet, or its setup is not synced': '节点还没装对应 CLI 或配置未同步',

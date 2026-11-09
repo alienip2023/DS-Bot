@@ -607,6 +607,7 @@ var ZH = {
   "Choose a model": "选择模型",
   "{provider} · not available": "{provider} · 不可用",
   "Model for {name}": "{name} 的模型",
+  "The mirror conversation file of this remote Bot is damaged or cannot be read, so it cannot be opened here. The conversation on the node is not affected. Ask the maintainer to rebuild the mirror (the cause is in the DS Bot log).": "这个远程 Bot 的镜像对话文件已损坏或无法读取，没法在本机打开。节点上的对话不受影响，请联系维护者重建镜像对话（原因见 DS Bot 日志）。",
   "No models are set up in DeepSeek Harness yet.": "DeepSeek Harness 里还没有设置模型。",
   "Not synced to the node yet": "节点尚未同步",
   "The node has no matching CLI yet, or its setup is not synced": "节点还没装对应 CLI 或配置未同步",
@@ -2047,7 +2048,7 @@ function joinedUpdateError(error, bot) {
 }
 
 // src/client/team-actions.js
-function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards, heldCards, turnClock, panelFolded, openSession }) {
+function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards, heldCards, turnClock, panelFolded, openSession, sessionListed, refreshSessions }) {
   const reportError = (error, where = "action") => {
     noteClientError(where, error);
     ui2.set((state) => ({ ...state, toast: { text: error?.message ?? String(error), token: Date.now() } }));
@@ -2057,11 +2058,20 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
     const sessionId = bot?.sessionId;
     return typeof sessionId === "string" && sessionId !== "" && sessionId !== (bot.id ?? botId);
   };
+  const mirrorListed = async (botId) => {
+    if (typeof sessionListed !== "function") return true;
+    const sessionId = roster.getSnapshot().byId?.[botId]?.sessionId;
+    if (sessionListed(sessionId)) return true;
+    await refreshSessions?.();
+    return sessionListed(sessionId);
+  };
   const openJoinedHome = async (botId) => {
     try {
       if (!botHasHome(botId)) {
         await after(call2("joined-ensure", { botId }));
         if (!botHasHome(botId)) throw new Error("The Bot page is not ready yet. Try again in a moment.");
+      } else if (!await mirrorListed(botId)) {
+        throw new Error(t("The mirror conversation file of this remote Bot is damaged or cannot be read, so it cannot be opened here. The conversation on the node is not affected. Ask the maintainer to rebuild the mirror (the cause is in the DS Bot log)."));
       }
       openSession(botId);
     } catch (error) {
@@ -28028,7 +28038,7 @@ function apply(ctx) {
     }
   };
   const actions = {
-    ...teamActions({ call, after, partFor, roster, ui: ui2, live, cards, heldCards, turnClock, panelFolded, openSession: (id) => actions.openSession(id) }),
+    ...teamActions({ call, after, partFor, roster, ui: ui2, live, cards, heldCards, turnClock, panelFolded, openSession: (id) => actions.openSession(id), sessionListed: (id) => ctx.sessions.list.getSnapshot().byId?.[id] !== void 0, refreshSessions: () => Promise.resolve(ctx.sessions.refresh?.()).catch(quietly("refresh sessions")) }),
     learningAnswer: (id, approve) => after(call("learning-answer", { id, approve })),
     // The full-pane overlays sit above the conversation, so opening one must dismiss them
     // or the click appears to do nothing.

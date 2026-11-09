@@ -12,8 +12,12 @@
 //   · if someone wrapped on top of ours, their wrapper holds ours as its "original" and cannot be
 //     unlinked — ours is switched to a pass-through (`disposed`) so it does nothing any more.
 // Installing again after a dispose therefore never leaves two live layers.
+// Two of our own wrappers stacked and disposed outer-after-inner: the inner one was switched to
+// pass-through when it could not be removed, so when the outer one goes the restore skips over
+// every already-disposed wrapper of ours and lands on what was there before them.
 
 const ORIGINAL = Symbol.for('cordis.original')
+const WRAPPER = Symbol('ds-bot.controller-wrap')   // on our wrappers: { isDisposed(), before }
 
 /** The raw service behind a cordis view; a plain object is its own raw. */
 export function rawService(view) {
@@ -37,11 +41,14 @@ export function wrapControllerMethod(ctx, controller, name, make, label) {
   const intercepted = function (...args) { return (disposed ? original : inner).apply(this, args) }
   ctx.effect(() => {
     const raw = rawService(controller)
-    const before = Object.getOwnPropertyDescriptor(raw, name)
+    let before = Object.getOwnPropertyDescriptor(raw, name)
+    intercepted[WRAPPER] = { isDisposed: () => disposed, get before() { return before } }
     controller[name] = intercepted
     return () => {
       disposed = true
       if (raw[name] !== intercepted) return
+      // skip wrappers of ours that were already switched off underneath this one
+      while (before !== undefined && typeof before.value === 'function' && before.value[WRAPPER]?.isDisposed()) before = before.value[WRAPPER].before
       if (before !== undefined) Object.defineProperty(raw, name, before)
       else delete raw[name]
     }

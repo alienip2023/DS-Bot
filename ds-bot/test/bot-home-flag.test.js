@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { botRowClick } from '../src/client/row-actions.js'
 import { teamActions } from '../src/client/team-actions.js'
 import { realTeamActions, hostRoster, joinedRuntime } from './bot-home-fixtures.js'
+import { installLocale } from '../src/client/i18n.js'
 
 function spyActions() {
   const calls = []
@@ -51,7 +52,7 @@ describe('S23b: a joined Bot click opens its Bot page, never the dialog', () => 
 describe('S23b: openJoinedHome (real teamActions)', () => {
   // The real host shape: the roster comes from a real runtime's chatOf; `joined-ensure`
   // is answered like channel.js does, by giving the Bot its mirror sessionId.
-  function harness({ mirrorSessionId, ensure = 'ok', refresh = true } = {}) {
+  function harness({ mirrorSessionId, ensure = 'ok', refresh = true, listed } = {}) {
     const rt = joinedRuntime({ mirrorSessionId })
     let roster = hostRoster(rt)
     const calls = []
@@ -71,6 +72,11 @@ describe('S23b: openJoinedHome (real teamActions)', () => {
       live: { getSnapshot: () => ({}) }, cards: { getSnapshot: () => ({}) }, heldCards: { getSnapshot: () => ({}) },
       turnClock: { getSnapshot: () => ({}) }, panelFolded: () => false,
       openSession: id => calls.push(['openSession', id]),
+      // `listed`: undefined = no list wired; { now, afterRefresh } = what the core's session list holds
+      ...(listed === undefined ? {} : {
+        sessionListed: id => { calls.push(['listed?', id]); return listed.refreshed ? listed.afterRefresh : listed.now },
+        refreshSessions: async () => { calls.push(['refreshSessions']); listed.refreshed = true },
+      }),
     })
     return { actions, calls, ui }
   }
@@ -99,5 +105,59 @@ describe('S23b: openJoinedHome (real teamActions)', () => {
     await actions.openJoinedHome('bot-j1')
     assert.deepEqual(calls, [['joined-ensure', { botId: 'bot-j1' }]])
     assert.match(ui.state.toast?.text ?? '', /not ready/i)
+  })
+
+  // A mirror session whose stored log is damaged is dropped from DSH's session list; the core opener
+  // then waits for it forever. The click must say so (O10).
+  describe('S37: openJoinedHome reports a mirror session the core does not list', () => {
+    const sayings = (ui) => ui.state.toast?.text ?? ''
+
+    it('S37-listed: a mirror session that is listed opens at once, no refresh', async () => {
+      const { actions, calls, ui } = harness({ mirrorSessionId: 'sess-mirror', listed: { now: true, afterRefresh: true } })
+      await actions.openJoinedHome('bot-j1')
+      assert.deepEqual(calls, [['listed?', 'sess-mirror'], ['openSession', 'bot-j1']])
+      assert.equal(sayings(ui), '')
+    })
+
+    it('S37-late: not listed yet but listed after one refresh (cold start) opens, no toast', async () => {
+      const { actions, calls, ui } = harness({ mirrorSessionId: 'sess-mirror', listed: { now: false, afterRefresh: true } })
+      await actions.openJoinedHome('bot-j1')
+      assert.deepEqual(calls, [['listed?', 'sess-mirror'], ['refreshSessions'], ['listed?', 'sess-mirror'], ['openSession', 'bot-j1']])
+      assert.equal(sayings(ui), '')
+    })
+
+    it('S37-unreadable: still not listed after the refresh -> a toast that says the mirror file is damaged, the page is not opened', async () => {
+      const { actions, calls, ui } = harness({ mirrorSessionId: 'sess-mirror', listed: { now: false, afterRefresh: false } })
+      await actions.openJoinedHome('bot-j1')
+      assert.equal(calls.some(call => call[0] === 'openSession'), false, 'nothing opened')
+      assert.equal(calls.filter(call => call[0] === 'refreshSessions').length, 1, 'read the list again exactly once')
+      assert.match(sayings(ui), /mirror conversation file/)
+      assert.match(sayings(ui), /not affected/)
+    })
+
+    it('S37-unreadable-zh: in Chinese the toast names the damaged mirror and the next step', async () => {
+      const dicts = new Map()
+      const restore = installLocale({
+        register: (ns, locale, dict) => { dicts.set(`${ns}:${locale}`, dict); return () => dicts.delete(`${ns}:${locale}`) },
+        bind: ns => (key, params) => (dicts.get(`${ns}:zh`)?.[key] ?? key),
+        getLocale: () => ({ active: 'zh' }),
+      })
+      try {
+        const { actions, ui } = harness({ mirrorSessionId: 'sess-mirror', listed: { now: false, afterRefresh: false } })
+        await actions.openJoinedHome('bot-j1')
+        const text = sayings(ui)
+        assert.match(text, /镜像对话文件已损坏或无法读取/)
+        assert.match(text, /节点上的对话不受影响/)
+        assert.match(text, /联系维护者重建/)
+        assert.doesNotMatch(text, /mirror conversation file/)
+      } finally { restore?.() }
+    })
+
+    it('S37-fresh: a Bot that was just given its mirror session by the host is not judged by the list (the list catches up on its own)', async () => {
+      const { actions, calls, ui } = harness({ listed: { now: false, afterRefresh: false } })
+      await actions.openJoinedHome('bot-j1')
+      assert.deepEqual(calls, [['joined-ensure', { botId: 'bot-j1' }], ['openSession', 'bot-j1']])
+      assert.equal(sayings(ui), '')
+    })
   })
 })
