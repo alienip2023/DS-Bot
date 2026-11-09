@@ -525,3 +525,59 @@ export async function migrateLegacyJoined(rt, opts = {}) {
 **seq 字段实证**（2026-11-09 真机核实）：`seq` 在事件顶层（`{type, data, seq, time}`），不是 `data.seq`。`parts.js:1413-1415` 的 `stamp()` 把 `event.seq` 写到 chatPage item 上，迁移水位用 `item.seq` 可行。节点 `test5` 会话 212 事件、顶层 seq 0..211、turn 1..18；主机镜像 26 行、seq 0..24。
 
 **注**：此处「重建」指重建镜像 Session，不重写 DSH 事件格式（与此前「改而不重写」不冲突）。工程师已按重建口径追单。
+
+
+---
+
+## §S2-4 发送接管契约（Bot 页面输入框 → 远端节点）
+
+**基线声明**：以下 DSH 行号均为已装 DSH Desktop 0.13.2 的 app.asar（读自 `/tmp/dsh-asar/node_modules/@deepseek-ai/…`）；ds-bot 行号为本分支 `de38340f`。`allocateTurn` / `ensureMirrorSession` 在本 checkout 的 `src/host` 中**不存在**（grep 零命中），其实现属 fork.61 工程师分支，本节只约束其行为，不核对其代码。
+
+**问题**：镜像会话页发消息走 DSH 原生 prompt，进入本机 agent（`agent/inbox/spliced` + 本机模型），未发往节点。违反不变量 I2。
+
+### 1. prompt 的请求形状、返回值与客户端行为
+
+- 被包装对象是 `ctx.sessionController.prompt`，即 `SessionController.prompt(request, signal)`（`dsh-api-session-controller/lib/index.js:4413`），**第二参数是 AbortSignal，不是 source**；`commands.prompt(request, source)`（:897）是内部层，包装不到它。`turns.js:1128-1161` 的 `admitted(request, ...rest)` 透传 `rest`，写法正确。
+- request：`{ requestId:string, sessionId:string, mode:'queue'|'steer', content:Part[], clientTimeZone?:string }`（`typert.host.js:2434` jsonSchema）。`Part` = `{type:'text',text}` | `{type:'image',mediaType,data,name?}` | `{type:'file',receiptId}`。
+- **进程内调用者可能缺字段**：`executor.js` 的 `sendLocal` 调 `rt.sendUser({sessionId,content,requestId})`，无 `mode`。包装必须把 `mode===undefined` 当 `'queue'`，不得因缺字段抛错。
+- 成功返回值唯一形状：`{ accepted: true }`（:899、:937）。客户端 `ISession.prompt`（`client.js:2349-2394`）：resolve 且 `ok` → `acceptPrompt(requestId)`（:2403）→ 发布回显；reject/`!ok` → `retireFailedSubmission` 撤回回显 + 把 `error` 写入 `promptError`（错误条显示）。
+- **幂等**：原生在 `hasPromptRequest`（:1077）命中同 `requestId`（收件箱或日志 `user/message.source.rpcId`）时直接返回 `{accepted:true}`。包装必须做同一件事，否则客户端重试会重复投递到节点。
+- **回显 + rpcId（最易漏）**：客户端回显在 prompt resolve 后进入快照，**只有**收到 `source.kind==='user' && source.rpcId===requestId` 的 `user/message` 才会撤回（`client.js:2891-2913`，`observeSubmissionMessage`）。`mirror.js` 现写的 `source:{kind:'user'}` 无 `rpcId`，对页面发出的消息会导致回显永不撤回（重复气泡/悬挂）。**契约：页面来源的镜像 user/message 必须写 `source:{kind:'user', rpcId:request.requestId}`**；迁移导入的历史无 requestId，可省略。
+- 不会报错的返回：`{accepted:true}`。必须报错时抛**结构化 RemoteError**：`value.isDSHRemoteError===true && typeof value.code==='string'`（`dsh-typert-protocol/lib/index.js:36`）；`turns.js:1146` 注释确认裸 `Error` 会被网关改成 `gateway/internal`。可用码与 details：`session/agent-busy {reason}`、`session/attachment-invalid {reason}`、`session/not-found {sessionId}`、`session/model-unavailable {provider,model}`（`typert.host.js:3502`）。构造方式：`import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'`（ds-bot `package.json` 未声明该依赖，**真机运行时能否解析：未核实**）；回退为鸭子类型对象 `{name:'RemoteError', code, details, message, isDSHRemoteError:true}`（继承 Error）。
+
+### 2. 并发与停止
+
+- 判定：同一 Bot 同时只允许 1 个在途回合（键 `botId`，`sendUser` 拦截路径 `joined-turn.js:175-197` 与 prompt 包装**共用同一张在途表**，不得各开一张）。在途期间再来 prompt（含 `mode:'steer'`）→ 立即 reject `session/agent-busy {reason:'JOINED_TURN_IN_FLIGHT'}`，文案「副机 Bot 正在回复上一条，请稍候再发」。选拒绝而非排队：排队需要持久化，崩溃即丢；节点端是否串行处理 `bot/turn`：**未核实**。
+- 页面「运行中」状态：镜像会话没有本机回合，`agent.status` 恒 idle，客户端 `running`（`client.js:2316`）为 false，**v1 页面不显示停止按钮/转圈**：开放 turn 是否让页面呈现运行态：**未核实**，真机断言见 7-③。
+- 停止：协议无 bot 回合取消帧（ra `lib/protocol.js` 仅 `TASK_CANCEL`:48，`BOT_TURN`:59、`BOT_TURN_RESULT`:123）。v1 **不支持中止远端回合**；若 `session.cancel` 打到镜像会话，原生 `cancel`（:1026）对 idle agent 是无操作并返回 accepted，v1 接受该行为。P2 候选：新增 `bot/turn-cancel` 帧。
+- 超时终态：`executor` 120s → `E_TIMEOUT`。失败可见写法（回合已 resolve，不能再 reject）：追加一条 `assistant/message`（文案「⚠ 副机 120s 内无响应（E_TIMEOUT）」，source `{kind:'model',provider:'mirror',model:'mirror-proxy'}`）+ `step/end` + `turn/end{reason:{kind:'error',error:{message,code}}}`。页面是否单独渲染 turn/end 错误条：**未核实**，故必须同时写那条 assistant/message 作保底。迟到的节点结果：监听器已摘除，丢弃；节点历史更长，由 `mirrorWatermark < nodeMaxSeq` 条件在下次重建时补齐。
+
+### 3. 与 I1–I6 的关系：mirrorTurn 拆两段
+
+- `mirror.js` 新增 `mirrorTurnStart(session,{turn,step,userText,rpcId})`：`turn/start`+`step/start`+`user/message(source.rpcId)`；`mirrorTurnFinish(session,{turn,step,botText,nodeSeq,…})`：`assistant/message`+`step/end`+`turn/end{completed}`；`mirrorTurnFail(session,{turn,step,code,message})`：保底 `assistant/message`+`step/end`+`turn/end{error}`。**I6**：这三个是仅有的写入口，prompt 包装不得直接 `session.append`。
+- 顺序：Phase A（可同步 reject）= 判定镜像会话 → 在途表占位 → `ensureMirrorSession` → `registry.send` 返回 true；Phase B = 同步 `allocateTurn` + `mirrorTurnStart` → resolve `{accepted:true}`；Phase C = 异步等结果 → Finish/Fail。**先派发后写 Start**：派发失败仍可 reject 且页面无半截回合；派发成功后 Start 写入失败（会话被销毁）仅告警，由重建补齐。
+- `allocateTurn` 与 `mirrorTurnStart` 之间不得有 `await`（`Session.append` 同步、`seq=log.length`，`dsh-session/lib/index.js:1524-1541`），否则两个并发调用会分配同一 turn。
+- **I3**：`(botId,nodeSeq)` 仅在 Finish 时才知道（nodeSeq 来自结果帧）。Start 段靠 `requestId` 幂等（上述 rpcId 扫描），Finish 段检查 `seenKeys`；命中重复时**仍须关闭本回合**，故另设 `closedTurns:Set<turn>`，保证每个 Start 恰好一个 `turn/end`。`seenSteps(turn:step)` 在 Finish 成功后落。
+- 两段之间进程崩溃：日志里只剩 `turn/start…user/message` 无 `turn/end`。重启后会话冷读写打开时，agent-loop 调 `interruptedTurnClosers`（`dsh-agent-loop/lib/index.js:1739`；实现 `dsh-session/lib/index.js:750-930`，生成 `step/end` + `turn/end{reason:{kind:'interrupted'}}`）自动闭合，不调模型。节点可能已答复：此时 `mirrorWatermark < nodeMaxSeq`，由 §S2-3 重建条件下次触发时补齐真实历史。重建是否在崩溃重启后自动被调用：**未核实**（取决于 S2-3a 启动接线）。
+
+### 4. 写入通道
+
+- 在包装内经 `mirror.js` 调 `session.append` 是安全的：`append` 同步、无 await，`seq=log.length`，无并发冲突；唯一禁令是在 `session/event` 回调内重入（:1576-1578 抛错），包装在 prompt 调用栈内，不在该回调内。与 DSH 的 inbox/steer 写入无竞态——镜像 agent 不跑回合，且 `agent/status` 不变，memory/learning/images 的 `agent/status` 钩子（`memory.js:2104`、`learning.js:352`、`images.js:209`）不会被触发。
+- 实时推送：`Session.commit` 向 `session/event` 观察者发布（`dsh-session/lib/index.js:1585-1601`），流式接口按会话订阅同一事件（`dsh-api-session-controller/lib/index.js:1454`，`session.id!==target` 过滤）。**设计上外部 append 会实时到页面**；真机是否实时：**未核实**（见 7-③）。前提是镜像会话为 store-owned（经 `createSession`），独立 `Session` 无发布。
+
+### 5. v1 不支持项与判定
+
+- 附件/图片（`image`/`file` part）：reject `session/attachment-invalid {reason:'JOINED_ATTACHMENT_UNSUPPORTED'}`，文案「副机 Bot 暂不支持附件，请改为文字发送」。`@文件` 由客户端转成 `file` part（`receiptId`），同上。
+- 斜杠指令/语音/引用：客户端是否把它们作为 `session.prompt` 文本送入：**未核实**；到达包装的一律当普通文本转发给节点，不拦截（节点自行处理）。
+- 接管判定（全部满足才接管，否则原样透传）：`rt.bySessionId(request.sessionId)` 命中 Bot，且 `joinedShadow(bot)`，且 `bot.worker.home==='remote'`，且 `bot.sessionId===request.sessionId`。群聊（`rt.roomOf`）、普通 Bot（`rt.isBotSession` 但非 joined）、主 Bot 均不接管。接管**不受** `rt.botHomeEnabled` 控制：flag 只决定入口，任何进入镜像会话的 prompt 都不得到达本机模型（I2）。
+
+### 6. 模型切换
+
+- 页面模型选择器调用 `session.selectModel`（`index.js:4290` → `commands.selectModel`），写的是镜像会话上的 `model/selection` 事件——**纯本地字段，对节点无效**。joined Bot 真正的字段是 `bot.worker` 上的模型引用，经 `joinedUpdateBot`（`joined-page.js:140-186`，`bot/update{model}`）下发，节点端按 `modelRef.split('/')[0]` 取 provider id（`joined-page.js:194-204`）；在 P1 网关下该 provider 为 `gateway:true`、`baseURL=…/gw/{id}/v1`，切换 = 改 `modelRef` 后由 config-sync 带 `apiKeyEnv` 指纹重启生效。
+- **fork.61 不预留接口，模型切换留给 P3**。已知缺陷须记录：页面选择器对 joined Bot 目前是摆设；该选择器候选列表来自主机还是节点目录：**未核实**。用户要求「模型随意切换」仍为开放目标，不得因本节搁置而被遗忘。
+
+### 7. 最可能「单测全绿、真机无反应」的三点
+
+- **① 包装没挂到真实调用链**（单测直调包装函数；真机网关绑定的是别的引用，或 `ctx.effect` 未生效）。真机断言：镜像页输入 `S24-<随机串>` 回车，5s 内节点日志出现 `bot/turn` 且 text 含该串；同一 `sessionId` 在宿主日志**无** `agent/inbox/spliced`、本机 `llm/stream` 次数为 0。
+- **② 回显不撤回/重复气泡**（单测只断言事件写入，没断言 `source.rpcId`）。真机断言：回复到达后 DOM 中含该随机串的「用户」气泡恰好 1 个、无悬挂「发送中」行；经会话事件接口读到的该 `user/message.data.source.rpcId` 等于本次 `requestId`。
+- **③ 历史能读、实时不推 / 失败不可见**（单测用独立 `Session`，真机是 store-owned 且页面流订阅时机不同）。真机断言：页面保持打开且**不刷新**，节点回复后 3s 内气泡出现；再断节点网络发送一条，≤125s 内页面出现「⚠ …E_TIMEOUT 或 E_OFFLINE」行，且不刷新；二者都要同时检查页面不显示本机模型名。
