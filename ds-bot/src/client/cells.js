@@ -15,6 +15,7 @@ import { ConnectorToolCell, MailToolCell } from './connectors.js'
 import { HandoffCall } from './handoff-card.js'
 import { AppAccessCall, ComputerCallRow, ComputerHandoffCall } from './computer.js'
 import { t } from './i18n.js'
+import { botRowClick } from './row-actions.js'
 import { call } from './api.js'
 import { failureLabel } from './diagnostics.js'
 import { turnReasoning, thinkingStep, opensReply, stepActivity } from './turn-reasoning.js'
@@ -381,7 +382,7 @@ function GroupMessage({ bot, text, texts = [text], room, roster, actions, msgKey
     scheduleGroupChains(flow)
     return () => scheduleGroupChains(flow)
   }, [bot.id])
-  const lead = h('button', { type: 'button', className: 'bt-lead', 'aria-label': t("Open {name}'s chat", { name: bot.name }), onClick: () => { if (bot.origin === 'joined' && bot.worker?.home === 'remote') { if (actions.botHomeEnabled?.()) { actions.openBotHome?.(bot.id) } else { actions.openJoinedChat(bot.id) } } else { actions.openSession(bot.id) } } },
+  const lead = h('button', { type: 'button', className: 'bt-lead', 'aria-label': t("Open {name}'s chat", { name: bot.name }), onClick: () => botRowClick(bot.origin === 'joined' && bot.worker?.home === 'remote', bot.id, actions) },
     h(BotMark, { bot, size: 22 }))
   const flat = layoutOf(roster.prefs) === 'flat'
   const took = Number.isFinite(duration) && duration >= 1000 ? elapsedLabel(duration) : undefined

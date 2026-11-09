@@ -2200,14 +2200,10 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
     // Joined (remote) bot chat: open, close, send a message to remote session.
     openJoinedChat: (botId) => openJoinedChat(ui2, botId),
     botHomeEnabled: () => roster.getSnapshot().botHomeEnabled === true,
-    // Bot Home: navigate to the joined bot's mirror session directly in the main panel.
-    // Uses ui.set so the DSH renderer picks up the session change without going through
-    // the agents path (which would create a spurious sidebar Agent entry).
-    openBotHome: (botId) => {
-      const bot = roster.getSnapshot().byId?.[botId];
-      const sessionId = bot?.sessionId;
-      if (!sessionId) return;
-      ui2.set((state) => ({ ...state, details: sessionId, view: "side", side: null, joinedChat: null, menu: null, palette: null, newChat: null, exchange: null, renaming: false, tab: null }));
+    // Read-only: does this Bot already have a local mirror session to open?
+    botHasHome: (botId) => {
+      const sessionId = roster.getSnapshot().byId?.[botId]?.sessionId;
+      return typeof sessionId === "string" && sessionId !== "";
     },
     closeJoinedChat: () => {
       ui2.set((state) => state.joinedChat ? { ...state, joinedChat: null } : state);
@@ -12610,6 +12606,19 @@ var CONNECTOR_CSS = `
 .dv-q-textarea{field-sizing:content;min-height:66px;max-height:240px;overflow-y:auto;line-height:22px}
 `;
 
+// src/client/row-actions.js
+function botRowClick(joined, id, actions) {
+  if (joined) {
+    if (actions.botHomeEnabled?.() && actions.botHasHome?.(id)) {
+      actions.openSession(id);
+      return;
+    }
+    actions.openJoinedChat(id);
+    return;
+  }
+  actions.openSession(id);
+}
+
 // src/client/turn-reasoning.js
 function turnReasoning(steps, current) {
   const members = steps.length ? steps : [current];
@@ -13734,17 +13743,7 @@ function GroupMessage({ bot, text, texts: texts2 = [text], room: room2, roster, 
   }, [bot.id]);
   const lead = (0, import_react31.createElement)(
     "button",
-    { type: "button", className: "bt-lead", "aria-label": t("Open {name}'s chat", { name: bot.name }), onClick: () => {
-      if (bot.origin === "joined" && bot.worker?.home === "remote") {
-        if (actions.botHomeEnabled?.()) {
-          actions.openBotHome?.(bot.id);
-        } else {
-          actions.openJoinedChat(bot.id);
-        }
-      } else {
-        actions.openSession(bot.id);
-      }
-    } },
+    { type: "button", className: "bt-lead", "aria-label": t("Open {name}'s chat", { name: bot.name }), onClick: () => botRowClick(bot.origin === "joined" && bot.worker?.home === "remote", bot.id, actions) },
     (0, import_react31.createElement)(BotMark, { bot, size: 22 })
   );
   const flat = layoutOf(roster.prefs) === "flat";
@@ -14820,19 +14819,6 @@ function installFrameWatch(frame) {
     observer?.disconnect();
     window.removeEventListener("resize", schedule);
   };
-}
-
-// src/client/row-actions.js
-function botRowClick(joined, id, actions) {
-  if (joined) {
-    if (actions.botHomeEnabled?.()) {
-      actions.openBotHome?.(id);
-      return;
-    }
-    actions.openJoinedChat(id);
-    return;
-  }
-  actions.openSession(id);
 }
 
 // src/client/sidebar.js

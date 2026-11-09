@@ -171,14 +171,10 @@ export function teamActions({ call, after, partFor, roster, ui, live, cards, hel
     // Joined (remote) bot chat: open, close, send a message to remote session.
     openJoinedChat: (botId) => _openJoinedChat(ui, botId),
     botHomeEnabled: () => roster.getSnapshot().botHomeEnabled === true,
-    // Bot Home: navigate to the joined bot's mirror session directly in the main panel.
-    // Uses ui.set so the DSH renderer picks up the session change without going through
-    // the agents path (which would create a spurious sidebar Agent entry).
-    openBotHome: (botId) => {
-      const bot = roster.getSnapshot().byId?.[botId]
-      const sessionId = bot?.sessionId
-      if (!sessionId) return
-      ui.set(state => ({ ...state, details: sessionId, view: 'side', side: null, joinedChat: null, menu: null, palette: null, newChat: null, exchange: null, renaming: false, tab: null }))
+    // Read-only: does this Bot already have a local mirror session to open?
+    botHasHome: (botId) => {
+      const sessionId = roster.getSnapshot().byId?.[botId]?.sessionId
+      return typeof sessionId === 'string' && sessionId !== ''
     },
     closeJoinedChat: () => { ui.set(state => (state.joinedChat ? { ...state, joinedChat: null } : state)) },
     joinedChatView: (botId) => call('chat', { botId }),

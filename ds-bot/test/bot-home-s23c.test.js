@@ -6,7 +6,6 @@ import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import { createRuntime } from '../index.js'
 import { fakeContext } from './fake-ctx.js'
-import { botRowClick } from '../src/client/row-actions.js'
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
 
@@ -33,18 +32,4 @@ test('S23c-flag-on: createRuntime with features.botHome=true sets rt.botHomeEnab
 test('S23c-flag-default-off: absent or non-true features.botHome keeps rt.botHomeEnabled false', () => {
   assert.equal(runtime({}).botHomeEnabled, false)
   assert.equal(runtime({ features: { botHome: 'yes' } }).botHomeEnabled, false)
-})
-
-test('S23c-open-bot-home: row-actions calls openBotHome when flag=true, not openAgent', () => {
-  // Knife: change row-actions.js to call openAgent → openBotHome count stays 0 → RED
-  const calls = { openBotHome: 0, openJoinedChat: 0 }
-  const actions = {
-    botHomeEnabled: () => true,
-    openBotHome: (id) => { calls.openBotHome++; assert.equal(id, 'bot-j1') },
-    openJoinedChat: () => { calls.openJoinedChat++ },
-    openSession: () => {},
-  }
-  botRowClick(true, 'bot-j1', actions)
-  assert.equal(calls.openBotHome, 1, 'openBotHome must be called when flag=true')
-  assert.equal(calls.openJoinedChat, 0, 'openJoinedChat must NOT be called when flag=true')
 })
