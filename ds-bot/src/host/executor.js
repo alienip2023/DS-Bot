@@ -92,7 +92,7 @@ function prepareRemote({ bot, text, rt, tracker, timeoutOverride }) {
 
   const turnId = randomUUID()
   const timeoutMs = Number.isFinite(timeoutOverride) ? timeoutOverride : (rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS)
-  const { pending, cancel } = listenBotTurnResult(registry, turnId, nodeId, timeoutMs)
+  const { pending, cancel, received } = listenBotTurnResult(registry, turnId, nodeId, timeoutMs)
 
   tracker?.start(turnId, bot.id)
 
@@ -186,7 +186,7 @@ function prepareRemote({ bot, text, rt, tracker, timeoutOverride }) {
     registry.on?.('botTurnResult', onEvent)
     return end
   }
-  return { turnId, nodeId, remoteBotId, send, settle, cancel, abandon, stop, awaitLate }
+  return { turnId, nodeId, remoteBotId, send, settle, cancel, abandon, stop, received, awaitLate }
 }
 
 async function sendLocal({ bot, text, rt, tracker }) {
@@ -322,9 +322,13 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
   if (rt.joinedInFlight.has(bot.id)) throw new ExecutorError('E_BUSY', 'a turn for this Bot is still in flight')
   const claim = { requestId, abort: undefined }
   rt.joinedInFlight.set(bot.id, claim)
+  // The page shows the Bot as running (and offers Stop) from the moment the user's message is
+  // on the page until the slot is released (joined-running.js).
+  let announced = false
   const release = () => {
     if (rt.joinedInFlight.get(bot.id)?.requestId !== requestId) return
     rt.joinedInFlight.delete(bot.id)
+    if (announced) { announced = false; rt.joinedRunning?.(bot, false) }
     flushLateReplies(rt, bot.id)
   }
 
@@ -346,6 +350,8 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
     release()
     throw new ExecutorError('E_MIRROR_WRITE', `page turn not written: ${err?.message ?? err}`)
   }
+  announced = true
+  rt.joinedRunning?.(bot, true)
 
   const fail = (err) => mirrorTurnFail(session, { turn, step, code: err?.code, message: failureText(err), closedTurns })
 
@@ -354,7 +360,9 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
   // — if it still comes — is written like any late reply. False when the turn is already over.
   let over = false
   const abort = () => {
-    if (over) return false
+    // The node's answer has already reached the wait (its settle() just has not run yet): the
+    // answer is not thrown away — the turn is written as a normal one.
+    if (over || prepared.received()) return false
     over = true
     prepared.stop()
     mirrorTurnAbort(session, { turn, step, closedTurns })

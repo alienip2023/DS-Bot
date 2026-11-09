@@ -19,6 +19,7 @@ import { joinedShadow } from './roster-join.js'
 import { ensureMirrorSession, mirrorStateOf, hasPromptRequest } from './mirror.js'
 import { startPageTurn, stopPageTurn, failureText } from './executor.js'
 import { JOINED_TURN_TIMEOUT_MS } from './joined-turn.js'
+import { installRunning } from './joined-running.js'
 
 const BUSY = '副机 Bot 正在回复上一条，请稍候再发'
 const NO_ATTACHMENTS = '副机 Bot 暂不支持附件，请改为文字发送'
@@ -69,7 +70,10 @@ export function install(rt) {
     rt.joinedLateQueue?.clear()
   }, 'ds-bot: joined late reply listeners')
   const controller = ctx?.sessionController
+  // The phone's Stop (turns.js stopChat) ends a joined Bot's page turn through the same call.
+  rt.stopJoinedTurn = botId => stopPageTurn(rt, botId)
   installCancel(rt, controller)
+  installRunning(rt, controller, joinedBotOfSession)
   const original = controller?.prompt
   if (typeof original !== 'function') return
   rt.joinedPromptTasks = new Set()

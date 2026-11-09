@@ -29,6 +29,7 @@ function trimmed(value) {
 
 export function listenBotTurnResult(registry, exchangeId, nodeId, timeoutMs) {
   let settled = false
+  let received = false   // the node's answer for THIS exchange has arrived (not a cancel/timeout/offline)
   let resolve
   const pending = new Promise((res) => { resolve = res })
   const finish = (value) => {
@@ -41,6 +42,7 @@ export function listenBotTurnResult(registry, exchangeId, nodeId, timeoutMs) {
   }
   const onResult = (payload) => {
     if (payload?.exchangeId !== exchangeId) return
+    if (!settled) received = true
     finish(payload)
   }
   const onOffline = (payload) => {
@@ -51,7 +53,7 @@ export function listenBotTurnResult(registry, exchangeId, nodeId, timeoutMs) {
   timer.unref?.()
   registry.on?.('botTurnResult', onResult)
   registry.on?.('nodeOffline', onOffline)
-  return { pending, cancel: () => finish({ ok: false, error: 'bridge-down', exchangeId }) }
+  return { pending, cancel: () => finish({ ok: false, error: 'bridge-down', exchangeId }), received: () => received }
 }
 
 async function replyToSender(rt, { fromId, toId, exchangeId, work, text }) {

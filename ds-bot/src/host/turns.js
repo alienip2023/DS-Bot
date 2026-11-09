@@ -271,6 +271,9 @@ export function install(rt) {
   // The phone's Stop for a Bot's own-chat turn: the same cancel the group's
   // member stop uses — end the running turn and any subagents it spawned.
   async function stopChat(botId) {
+    // A joined Bot's page turn is a wait for the node, not a local Agent turn: Stop ends the wait
+    // (joined-prompt.js; false when this Bot has no page turn in flight).
+    if (rt.stopJoinedTurn?.(botId) === true) return true
     await rt.load()
     const sessionId = rt.chatOf(botId)
     if (sessionId === undefined) return false

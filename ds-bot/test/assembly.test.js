@@ -7,7 +7,7 @@ import EventEmitter from 'node:events'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, it } from 'node:test'
+import { describe, it, mock } from 'node:test'
 import { createRuntime, MODULES } from '../index.js'
 import * as turns from '../src/host/turns.js'
 import * as channel from '../src/host/channel.js'
@@ -17,6 +17,7 @@ import { realAgentWorld, REAL_AGENT_SKIP } from './real-agent.js'
 import { ROUTE } from '../src/host/constants.js'
 import { fakeContext } from './fake-ctx.js'
 import { JOINED_TURN_TIMEOUT_MS } from '../src/host/joined-turn.js'
+import { trackerSweepMs } from '../src/host/channel.js'
 
 const { Session } = await import('@deepseek-ai/dsh-session')
 
@@ -31,6 +32,9 @@ function world({ withPrompt = true, config = {} } = {}) {
   const ctx = fakeContext({ services: { 'remote-agent:registry': registry } })
   // Every ctx.on registration with its options, so a test can tell which listener is the prepended one.
   const registered = []
+  const emitted = []
+  const baseEmit = ctx.emit
+  ctx.emit = (name, ...args) => { emitted.push([name, ...args]); return baseEmit(name, args[0]) }
   const baseOn = ctx.on
   ctx.on = (name, listener, options) => { registered.push({ name, listener, options }); return baseOn(name, listener, options) }
   const originalCalls = []
@@ -39,6 +43,7 @@ function world({ withPrompt = true, config = {} } = {}) {
     ctx.sessionController = {
       prompt: async (...args) => { originalCalls.push(args); return { accepted: true, from: 'original' } },
       // like the core: a Session with no live Agent (a mirror Session) is not found
+      list: async () => ({ items: [{ sessionId: 'mirror-1', running: false }, { sessionId: 'ordinary-session', running: false }] }),
       cancel: async (request) => {
         cancelCalls.push(request)
         if (request.sessionId.startsWith('mirror')) throw Object.assign(new Error('session not found'), { code: 'session/not-found' })
@@ -71,7 +76,7 @@ function world({ withPrompt = true, config = {} } = {}) {
   }
   const prompt = request => ctx.sessionController.prompt(request, new AbortController().signal)
   const cancel = sessionId => ctx.sessionController.cancel({ sessionId })
-  return { ctx, rt, bot, registered, frames, originalCalls, cancelCalls, routes, created, sessionOf, mirror, call, prompt, cancel, emitter }
+  return { ctx, rt, bot, registered, emitted, frames, originalCalls, cancelCalls, routes, created, sessionOf, mirror, call, prompt, cancel, emitter }
 }
 
 const textRequest = (sessionId, text = 'hi', requestId = 'req-1') => ({ requestId, sessionId, mode: 'queue', content: [{ type: 'text', text }] })
@@ -240,5 +245,50 @@ describe('S30-asm: the page Stop is wired into the running chain', () => {
     await new Promise(resolve => setTimeout(resolve, 20))
     const texts = w.sessionOf('mirror-1').log.filter(event => event.type === 'assistant/message').map(event => event.data.message.content[0].text)
     assert.equal(texts.some(text => text.includes('answer to stopped')), false)
+  })
+})
+
+describe('S33-asm: the running bit, the phone Stop and the sweep are wired into the running chain', () => {
+  const statuses = w => w.emitted.filter(args => args[0] === 'api-session/status').map(args => [args[1], args[2]])
+
+  it('S33-asm-running: on the real chain a joined page turn emits running:true, the session list says running for it only, and the end emits false', async () => {
+    const w = world()
+    await w.mirror()
+    assert.ok(w.registered.some(entry => entry.name === 'api-session/added'), 'the added listener is registered')
+    await w.prompt(textRequest('mirror-1', 'x', 'req-1'))
+    assert.deepEqual(statuses(w), [['mirror-1', true]])
+    const list = await w.ctx.sessionController.list({}, new AbortController().signal)
+    assert.deepEqual(list.items.map(item => [item.sessionId, item.running]), [['mirror-1', true], ['ordinary-session', false]])
+    w.emitter.emit('botTurnResult', { exchangeId: w.frames[0].payload.exchangeId, ok: true, text: 'done', seq: 0 })
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.deepEqual(statuses(w), [['mirror-1', true], ['mirror-1', false]])
+    const after = await w.ctx.sessionController.list({}, new AbortController().signal)
+    assert.deepEqual(after.items.map(item => item.running), [false, false])
+  })
+
+  it('S33-asm-phone: the real stopChat (turns.js) ends a joined Bot\'s page turn; with nothing in flight it falls through to its own path and says false', async () => {
+    const w = world()
+    await w.mirror()
+    assert.equal(await w.rt.stopChat(w.bot.id), false, 'nothing in flight: the original path, no local turn')
+    await w.prompt(textRequest('mirror-1', 'x', 'req-1'))
+    assert.equal(await w.rt.stopChat(w.bot.id), true)
+    assert.equal(w.sessionOf('mirror-1').log.at(-1).data.reason.kind, 'aborted')
+    assert.equal(w.rt.joinedInFlight.has(w.bot.id), false)
+    assert.equal(w.cancelCalls.length, 0)
+    assert.equal(await w.rt.stopChat(w.bot.id), false, 'already stopped')
+  })
+
+  it('S33-asm-sweep: the tracker sweep waits as long as the page turn does — a pending turn 5 minutes old is not marked timed out by the running interval, one past the limit is', async () => {
+    mock.timers.enable({ apis: ['setInterval', 'Date'], now: 1_000_000 })
+    try {
+      const w = world()
+      assert.equal(trackerSweepMs(w.rt), JOINED_TURN_TIMEOUT_MS + 60_000)
+      assert.equal(trackerSweepMs({ joinedTurnTimeoutMs: 45_000 }), 105_000)
+      w.rt.turnTracker.start('t-long', w.bot.id)
+      mock.timers.tick(300_000)            // ten sweeps, the turn is 5 minutes old
+      assert.equal(w.rt.turnTracker.get('t-long').status, 'pending')
+      mock.timers.tick(JOINED_TURN_TIMEOUT_MS)
+      assert.equal(w.rt.turnTracker.get('t-long').status, 'timeout', 'the backstop still works once the turn is past its limit')
+    } finally { mock.timers.reset() }
   })
 })

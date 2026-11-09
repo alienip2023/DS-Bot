@@ -33,6 +33,16 @@ export function errorCode(error) {
 }
 
 /**
+ * How old a still-pending turn must be before the tracker sweep calls it timed out: the page
+ * turn's own wait (rt.joinedTurnTimeoutMs, default JOINED_TURN_TIMEOUT_MS) plus a minute. The
+ * turn finishes itself at its timeout; the sweep is only the backstop, so it must not fire first
+ * (a 120s sweep marked every long node turn "timeout" while it was still being waited for).
+ */
+export function trackerSweepMs(rt) {
+  return (rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS) + 60_000
+}
+
+/**
  * Create the sendUser function for a given rt.
  * Exported for testing; install() consumes it via Object.assign(rt, { sendUser }).
  * @param {object} rt
@@ -910,9 +920,9 @@ export function install(rt) {
 
   Object.assign(rt, { sendUser, answerQuestion })
 
-  // Wire turn-tracker for joined shadow timeout sweep (120s)
+  // Wire turn-tracker for joined shadow timeout sweep (a backstop beyond the turn's own timeout)
   rt.turnTracker = createTurnTracker()
-  const sweepTimer = setInterval(() => rt.turnTracker.sweep(Date.now(), 120_000), 30_000)
+  const sweepTimer = setInterval(() => rt.turnTracker.sweep(Date.now(), trackerSweepMs(rt)), 30_000)
   sweepTimer.unref?.()
 
   // An exact Fetch route on the shared /api channel; the browser authenticates with its session cookie.
