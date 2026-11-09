@@ -466,3 +466,139 @@ Hub 侧的 API key 通过 DSH CredentialsController 管理：
 1. **（DEFER → S1 实测）** hub 网关最小请求字段集：本文档基于 `COMPLETIONS_COMPAT_GATE` 推导。pi-ai 实际发送的 HTTP 请求体需在 S1 中用网络抓包确认，特别是 `reasoning_effort`、`stream_options`、`tools` 的确切格式。
 2. **（DEFER → S1 实测）** 节点配置 hub gateway provider 后，主控 `modelCatalog` API 是否正确返回 hub provider 的模型列表（供建 Bot 时选型用）。
 3. **（P1 实现，P2 扩展）** hub 网关 `/v1/models` 端点：P1 实现只读版本（读 `profile.models` 返回静态列表），动态发现（调上游 `/v1/models`）留 P2。
+
+
+---
+
+## §P1b 全量模型配置同步（主控配好的模型，节点 Bot 在节点上自己跑）
+
+**状态**：设计稿（2026-11-09），待司令复核。**口径**：节点 Bot 的 agent loop / 工具 / 文件都在节点，模型调用由节点直发上游；主控只负责把「已配置好的模型配置」同步到节点。**作废**此前「hub 代跑」两版口径（用户原话「也不是由主控代跑」）。`/gw` 网关只保留给「模型物理上只在主控」的情形（§P1b.4 的 xdpool 账号池、本机 LM Studio piion）。
+
+**基线声明**：DSH 行号为已装 DSH Desktop 0.13.2 app.asar（包版本 0.2.2-alpha.2）；ra 行号为 dsh-remote-agent `0.10.1-fork.53`（`/tmp/ra-pkg53/lib/…`）；ds-bot 行号为本分支（base `e27166f0`）。节点实测对象：`dshtest-1`（linux/x64，DSH 0.2.2-alpha.2，systemd `dsh-worker`）。
+
+### P1b.0 先纠正三个会误导实现的事实
+
+1. **节点已装且已启用 `llm-deepseek-api-key`**（节点 `profiles/web/node_modules/@deepseek-ai/dsh-llm-deepseek-api-key` 存在；节点模型探测日志已列出 `deepseek-official/deepseek-flash`、`deepseek-v4-pro`）。节点 Bot 报 `no API key for provider route "deepseek-official"`（`dsh-llm-deepseek-api-key/lib/index.js:68`）缺的**只有凭据 `DEEPSEEK_API_KEY`**：节点 `.credentials.yaml` refs 现有 `JINA_API_KEY / SILICONFLOW_API_KEY / CCMAX_API_KEY / GATEWAY_TOKEN_dshtest_1`，没有 `DEEPSEEK_API_KEY`、`XAI_API_KEY`。主控 `.credentials.yaml` refs 里三者齐全（只核名称，未核值）。
+2. **xdpool 不是 API-key 型 provider**：它是「本机 WorkBuddy 桌面 App 登录态」账号池，token 由腾讯 SSO 铸造并与设备绑定（dsh-xdpool 2.5.1 README「已知限制」第一条），账号存 `~/.dsh/.xdpool/accounts.json`。**不存在可同步的 key**。
+3. **FallbacksChain/Auto 在主控当前是空链**：主控 `llm-fallbacks` 条目只有 `roles`，没有 `rootChain`，实测 `FallbacksChain/Auto` 返回 `EMPTY_EFFECTIVE_CHAIN`（主控 xdpool 网关 `127.0.0.1:8326` 502）。链配置本身需先在主控补齐，同步才有意义。
+
+### P1b.1 照搬 vs 我们独有（避免假装有现成实现）
+
+| 项 | 来源 | 内容 |
+|---|---|---|
+| 跨机共享模型清单 | **我们独有** | OpenMausBot 文档原话 "There is no shared provider list that configures every engine"，其多机是「整台 host 拥有全部 agent/凭据/模型，client 只是 UI」。「主控配好、节点自己跑」没有可抄实现 |
+| 清单来自实际执行端 + Re-detect/Refresh，失败保留上次成功目录 | 照搬 | 节点 `model-catalog.js` 已按此做（缓存 + 刷新器）；本方案补「失败保留上次」与 UI 刷新按钮 |
+| 每个 openai-compat 端点 = 实例 `{name, baseURL, apiKeyEnv, model}`，key 只发往该 baseURL | 照搬 | 即现有 pi-ai provider 条目；同步只写 `apiKeyEnv` ref 名，值进 `.credentials.yaml` |
+| 跨引擎剥离其它引擎 key | 照搬（**已有**） | `ds-bot/src/host/local-agents/discover.js:11-14` `DROP_EXACT` 含 `XAI_API_KEY/OPENAI_API_KEY/ANTHROPIC_*`，CLI 子进程不继承同步下来的 key |
+| 实例错误不拖垮其它实例；界面「不可用 + 具体原因」（缺 key / 网络 / HTTP 状态 / 空清单分别提示） | 照搬 | 见 P1b.7 |
+| Bot 默认模型与单会话覆盖分开保存，「Agent default」 | 照搬 | 现状：`bot/update{model}` 直接改会话模型（`models.js:234-250`）；本方案不动存储结构，只在 P1b.8 加语义约束，分开保存留 P3 |
+| 进程型依赖节点本机已登录 CLI，提示去终端登录，**不同步登录态** | 照搬 | P1b.5 |
+| config 0600、key 不进命令行参数 | 照搬（**已有**） | ra `atomicWriteSecure`（`config-sync.js` 写 0600）；CLI 子进程 key 不走 argv |
+| 同步 provider 配置 + key 到节点、节点按指纹重启 | **我们独有**（已有 M2 实现） | 本方案在其上扩展 |
+| 插件条目（llm-deepseek / llm-fallbacks）同步、凭据所有权与撤销、CLI 期望清单 | **我们独有**（新增） | P1b.2 / P1b.5 |
+
+### P1b.2 同步载荷 v2（`hub/config-push`，向后兼容）
+
+现状：载荷 `{revision, providers[{id,baseURL,apiKey,apiKeyEnv,api,models[{id,name}]}], defaultModel}`；节点 `mergePatch`（ra `lib/node/config-sync.js:208-231`）**只替换 `- id: llm-pi-ai` 条目**，模型被裁成 `{id,name}`（:220），整张 providers 表每次整体替换。
+
+新增字段（均可缺；旧节点按未知字段忽略，旧 hub 不发）：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `schema` | `2` | 载荷版本；节点回执 `hub/config-ack` 增 `schema`，hub 据此判断节点是否理解 v2 |
+| `providers[].models[]` | `{id,name,contextWindow?,maxTokens?,input?,reasoningEfforts?}` | **补全**每模型字段（今天被裁掉，导致节点上下文窗口/思考档/图片能力全靠默认值） |
+| `providers[].compat / displayName / streamIdleTimeoutMs / headers?` | 对象/标量 | pi-ai profile 的同名字段（`dsh-llm-pi-ai/lib/index.js:1050-1082`）；`headers` 若含密钥则**不同步**并在 UI 标「含自定义头，需节点手配」 |
+| `providers[].catalog` | `true` | pi-ai 内置目录 provider（如 `xai`，主控 patch 里没有 `api/baseURL`）：只下发 `apiKeyEnv`+key+模型覆盖，节点走 `reuseCatalogProvider`（`dsh-llm-pi-ai/lib/index.js:909-919`）。**此项属 fork.64 范围，本方案不重复实现，只约束字段名** |
+| `plugins[]` | `[{entryId, name, config, credentialRefs:[{ref, apiKey}]}]` | **新增**：非 pi-ai 的插件配置条目，见 P1b.3/4。`entryId` 白名单仅 `llm-deepseek`（第 1 片）、`llm-fallbacks`（第 4 片）；其它 id 节点一律拒收 `plugin-not-allowed` |
+| `cliExpect[]` | `string[]` | 主控期望存在的进程型路由，如 `["claude-code","codex-cli"]`；**只用于界面比对，不触发安装** |
+
+**版本兼容**：节点在 `hello/node` 的 `caps` 增 `config-sync/2`（现 `CAPS = ['fs','exec','artifact','agent']`，ra `lib/node/index.js:103`，hello 追加项见 `:389`、`:1268`）。hub 仅对带该 cap 的节点发 `schema:2`；其余节点继续发 v1。`BOT_UPDATE`、`BOT_CREATE` 帧不变。`CONFIG_PUSH` 已在 E2E 必加密集合（§3.2），含 key 的新字段随同一帧，**无需新增明文帧**。
+
+**配置来源（hub 侧，`config-source.js`）**：`buildConfigPayload(rt,…)`（:93）今天遍历 `ctx.llm.listConfigurableProviders()`，并要求 `profile.api` 为字符串、`apiKeyEnv` 合法、key 在 refs 里（:112）；因此 `deepseek-official`（其 `llm-deepseek-api-key` 配置无 `api` 字段）被整类跳过，`LOCAL_CLI_PREFIX`（:102）跳过进程型。v2 新增并列分支：对白名单 `entryId`，从 `settings.describe({redactSecrets:true})` 取该条目配置并**按字段白名单裁剪**（见下），key 由 `.credentials.yaml` refs 取，沿用现有 `readRefsFile`。
+
+### P1b.3 逐类实现方案
+
+| 类 | 主控配置位置 | 节点现状 | 同步什么 | 节点怎么落 | 缺口与补法 |
+|---|---|---|---|---|---|
+| **pi-ai 各 provider**（jina/siliconflow/ccmax/xai；piion 走网关） | `llm-pi-ai.config.providers` | 已有 4 个，key 已同步；缺 `XAI_API_KEY` | 现有字段 + 补全模型字段/compat；xai 为 catalog 型 | 沿用 `mergePatch` 的 pi-ai 条目；buildPatchEntry（:242）扩写补全字段 | 模型字段补全靠 ra 改（:220），第 2 片；`piion` 仍 `gateway:true` 走 `/gw`（物理在主控） |
+| **deepseek-official** | `llm-deepseek` 条目（`name: @deepseek-ai/dsh-llm-deepseek-api-key`），key 为 ref `DEEPSEEK_API_KEY` | 插件已装已启用；缺 key；节点 patch 无该条目（用包默认） | 条目 `config` 白名单：`models[]`、`thinking`、`reasoningEffort`、`maxTokens`、`defaultContextWindow`、`streamIdleTimeoutMs`、`retryPolicy`；`baseURL` **仅当非官方源时**同步；凭据 ref `DEEPSEEK_API_KEY` | 新增通用「受管条目替换」：只替换同 `entryId` 条目（保留其它条目与注释），不再只认 `llm-pi-ai` | **第 1 片**。仅缺 key + 可选配置，节点无需装新插件 |
+| **xdpool / xdpool-global（账号池）** | `llm-xdpool`（含 `automation*` 签到/收益账本） | 未装 `dsh-xdpool`；节点是无桌面 Linux，无法登录 WorkBuddy 桌面 App | **不同步任何 xdpool 配置**（`automation`、`automationEarnings` 是主控独有的账号积分状态，含账号 id，绝不下发） | 走 `/gw`：节点登记合成 provider `xdpool-hub`（`api: openai-completions`，`baseURL: http://<gwHost>:<port>/gw/xdpool-hub/v1`，`apiKeyEnv` 为节点网关 token） | 这是「物理上只在主控」的**唯一正当例外**：设备绑定 SSO，无可迁移凭据。网关上游指向主控 xdpool 本地网关 `127.0.0.1:8326`（OpenAI 兼容，实测 SSE/`tool_calls`/`usage` 齐全）。网关须补：①按 `body.model` 前缀白名单（`xdpool/`、`xdpool-global/`、`xdpool-aggregate/`、`xdpool-free/`）②上游 502+`code` 归一化（`QUOTA→402`，`session_dead→503`）③审计行（节点、模型、状态、首包耗时、token 数，不含内容）④并发上限。**上游 key 文件** `…/harness/openai-gateway/api-key`（0600）只由主控网关读取，绝不下发。路径解析方式 未核实 |
+| **xdpool-aggregate / xdpool-free（聚合渠道）** | `~/.dsh/.xdpool` 下各厂商 API key，仅「填了 key 才启用」 | 无 | 优先同走上面的 `/gw/xdpool-hub`（同一 8326 网关已含这些前缀，零额外工作）；纯 API-key 厂商后续可改为「实例同步」让节点直连 | 第 3 片先走网关；直连实例化需读 `.xdpool` 存储格式（**未核实**），列后续片 | 无 |
+| **FallbacksChain/Auto** | `llm-fallbacks`（现仅 `roles`，**无 `rootChain`**） | 节点**未装** `dsh-llm-fallbacks` | `plugins[]` 条目 `llm-fallbacks` 的 `rootChain/timeSlots/roles/rules` | **不展开成 provider，也不在网关里解析**：链是插件行为（失败时沿链切换并继续当前 step），必须在发起调用的那一侧，即节点。网关解析会让链在主控跑、占主控额度，违背「节点自己调上游」 | ①主控先配 `rootChain`（尾项须恰为一个官方模型）；②节点缺插件 → ra 目前无「装插件」帧，**补法二选一**：人工 `dsh plugin add dsh-llm-fallbacks`（界面给命令与「复制」），或 P2 新增 `plugin/install` 白名单帧；③链成员只有节点也有 provider+key 才可走，同步时由 hub 计算「链成员在节点是否齐备」，缺哪个在界面点名 |
+| **claude-code / codex-cli** | 主控本机 CLI，`local-agents` 适配器（`ctx.llm.registerAdapter`，仅对找到的 CLI 注册路由，`local-agents/index.js:104-115`） | 节点未装 `claude`/`codex` | 不同步登录态与 key；只同步 `cliExpect[]` | 节点装 CLI 后，`local-agents` 的 `scan()` 自动注册路由，无需同步任何东西 | P1b.5 |
+
+**`deepseek-official` 条目裁剪原则**：只同步「模型怎么用」类字段（白名单，见上表）；图片卸载配额、文件 API 超时等调参项（`dsh-llm-deepseek/lib/index.js:334-342`）不同步，节点用包默认，避免主控/节点版本差异下发不兼容字段。白名单外字段一律丢弃并在日志里只记数量。
+
+### P1b.4 节点落地（ra `lib/node/config-sync.js` 改造）
+
+对账现状与改法（行号为 fork.53）：
+
+| 位置 | 现状 | 改法 |
+|---|---|---|
+| `mergePatch` :208-231 | 正则只认 `llm-pi-ai`，其它条目原样保留 | 抽成 `replaceManagedEntry(existing, entryId, yaml)`，对白名单 `entryId` 逐条替换/追加；**只动自己管的条目**，其它（`remote-agent` 等）不碰 |
+| `buildPatchEntry` :242-275 | 仅写 `apiKeyEnv/api/baseURL/models{id,name}` | 补全模型字段与 compat；标量一律 `JSON.stringify`（沿用防注入写法）；新增 `buildPluginEntry(entry)` |
+| `mergeCredentials` :118 | 只增/覆盖 refs，**从不删除** | 在 `config-sync.json` 记 `ownedRefs:[…]`（本机由同步写入的 ref 名）；推送后凡在 `ownedRefs` 而不在新载荷者**删除并从 `ownedRefs` 移除**。节点自配的 ref（不在 `ownedRefs`）永不动 |
+| `handleConfigPush` :346-478 | 先写 revision 再写 creds/patch，失败回滚 | 流程不变；回滚快照范围不变（credentials + patch）；新增校验 `plugin-not-allowed / plugin-config-invalid`，校验失败在写盘**之前**返回，不产生半截状态 |
+| `scheduleRestart` :319-335 | `systemctl restart --no-block dsh-worker`，仅 Linux/systemd | 抽成 `restartStrategy`：systemd → 现状；非 systemd → **不重启，回执 `shouldRestart:true, restartMode:'manual'`**，界面提示「请重启节点 DSH」。执行机需覆盖 Win/Linux/macOS，这是该项的硬约束 |
+| `extractProviderFingerprints` :55 | 指纹含 id+baseURL+apiKeyEnv+keyDigest | 指纹并入 `plugins[]`：`entryId + sha256(白名单 config)[:16] + 各 ref keyDigest` |
+| 节点模型上报 `model-catalog.js:6-10` | `MAX_MODELS=64`、每 provider 24、provider 数 8 | 主控清单 65 项，**同步全量后必然被截断**：上限提到 `256 / 64 / 16`，并在上报里加 `truncated:true`（否则界面看到「少了」却不知为什么）。第 2 片随带 |
+
+**重启是否必需（核心未决项）**：ra 注释称「DSH worker 启动时读一次 credentials」，但 `llm-deepseek-api-key` 的 `resolveApiKey`（:60-70）每次请求调 `credentials.resolve(ref)`，节点 profile `patchReload: "live"`。因此「只换 key / 模型清单」**可能不需要重启**，两者矛盾，**未核实**。第 1 片出口判据含一条探针：在 `dshtest-1` 上写入新 key 后不重启直接发一轮，判断热生效边界；若热生效，则 `shouldRestart` 的判定要收窄为「新增/删除 provider 或改 baseURL」。
+
+### P1b.5 进程型 claude-code / codex-cli：节点装 CLI、节点自己登录
+
+结论：**可行但靠节点本机准备**，界面给可执行提示，不静默灰显。
+
+- **节点上报**：复用现有周期帧 `node/resource`（ra `protocol.js:88` `RESOURCE`；字段可缺、旧 hub 忽略；该帧今天已携带 `models`，`node/index.js:734`），增 `cli:[{route, installed:boolean, version:string|null, signedIn:true|false|null, checkedAt:number}]`。数据源是节点 ds-bot 的 `local-agents` `detected()`（`local-agents/index.js:185` 起使用，已含 `route/name/path/version/signIn`）；节点侧通过 `ctx.provide('ds-bot:cli-report')` 暴露，ra 与 `readDefaultModel` 同样用 `ctx.get` 读取，**ra 不探测 CLI**。
+- **`signedIn` 取值**：目前没有登录态探针，适配器只会在首次调用时抛 `LOCAL_AGENT_SIGNIN`（`local-agents/adapter.js:520`）。故 `signedIn=null`（未知）直到出现过一次 `LOCAL_AGENT_SIGNIN`，此后置 `false` 并保持到下次成功回合；是否存在可无副作用查询登录态的 CLI 子命令，**未核实**，不编造。
+- **版本兼容**：新 hub + 旧节点 → 帧里无 `cli` 字段 → 界面显示「节点 ra 版本过低，未上报 CLI 状态（需 ≥ 本方案版本）」，与「未安装」是不同文案；旧 hub + 新节点 → 多余字段被忽略。
+- **界面文案（可执行）**：`未安装` →「节点 <名> 还没装 claude-code。点此查看安装步骤」（点开：安装命令 + 复制按钮 + 「装完后点『重新检测』」，检测即触发节点 `local-agent-refresh`，`local-agents/index.js:187`）；`已装未登录` →「在节点终端运行 `<signIn 命令>` 完成登录」（命令取 `SIGN_IN` 表，`local-agents/index.js:18-29`，如 codex/claude）；`已装已登录` → 可选。安装命令文案表维护在 ds-bot，**具体包名与版本以官方文档为准，实现时核对，此处未核实**。
+- **限制（须对用户可见）**：进程型自带 agent 循环：其内置 `bash/edit` 由 CLI 自己在节点 `cwd` 内执行，只有 DS Bot 团队工具经 LoopbackMcp 桥接（`local-agents/mcp.js`、`toolsFor` `local-agents/index.js:96-101`）。这与「节点 Bot 的工具」不是一套，节点 Bot 选进程型模型时，工具行为以 CLI 为准；这是进程型本身的特性，不是同步缺陷。节点 `cwd` 取会话 header/Bot workDir（`cwdFor`，:87-95），不会指向主控路径。
+- **登录态不同步**（照搬 OpenMausBot）：理由 ①设备绑定 ②同步登录态等于搬运凭据。
+
+### P1b.6 凭据传输与生命周期
+
+- **传输**：`hub/config-push` 在 E2E 必加密集合（§3.2）；无 E2E 不发、不重试明文；E2E 建立后补推（ra fork.50/51 已修，`1A-7`）。
+- **日志**：hub/节点日志只记 `provider id` 与数量、`entryId`、`revision`、`keyDigest` 前 16 位（现已如此）；错误文案过 `sanitizeError`（ra `config-sync.js:97`，去 `sk-…` 与 URL）。新增字段不得进错误文案。
+- **落盘**：`.credentials.yaml` 0600（`atomicWriteSecure`），原子 rename；revision 文件 0600。key 不进 argv、不进子进程环境（`cleanEnv` 剥离，`discover.js:11-19`）。
+- **轮换**：主控 key 变 → 载荷内容哈希变 → revision 变 → 节点覆盖 ref → `keyDigest` 变 → 重启/热生效（见 P1b.4 未决项）。
+- **撤销**：当前**缺口**——`mergeCredentials` 永不删 ref，主控删 key 后节点仍留旧 key。补法：`ownedRefs` 所有权表（P1b.4），撤销 = 从载荷里去掉该 ref，节点删除；节点下线时撤销在重连的 `config-sync-request` 流程里补上。**节点本地自配的 ref 永不被同步删除**。
+- **网关 token**（`GATEWAY_TOKEN_<node>`）不属于本方案的「模型 key」，沿用 §4，轮换仍属 P2。
+
+### P1b.7 推送时机、生效与界面可见
+
+- **何时推**：①节点上线/重连（现有 `pushOnline`、`config-sync-request`）；②主控配置内容哈希变化（现已按内容哈希算 revision；触发点用「设置变更事件」优先，**事件名未核实**，兜底每 60s 重算一次，哈希未变不发）；③界面「同步到节点」按钮（手动，等同 Refresh）。
+- **何时生效**：回执 `ok:true` 后，若 `shouldRestart` 且 systemd → 300ms 后重启（也会终止在途回合，故 hub 在推送前若节点有在途回合，**延后到回合结束**，见 P1b.8 在途表）；非 systemd → `restartMode:'manual'`，界面提示手动重启；热生效见 P1b.4 未决项。
+- **失败可见**：hub 为每节点保存 `configSync:{revision, status:'ok'|'pending'|'failed'|'needs-restart', errorCode?, at}`（`errorCode` 取 `snapshot-failed / merge-failed / credentials-write-failed / patch-write-failed / plugin-not-allowed / plugin-config-invalid / e2e-required` 等**代码**，不含任何值），显示在节点行与建 Bot/换模型抽屉顶部：「该节点模型配置未同步成功（原因代码），[重试]」。现状 hub 如何消费 `hub/config-ack` 的失败，**未核实**，第 1 片先核后改。
+- **回滚**：沿用写盘前快照 `config-sync.bak/` 与 revision 回退（`rollback` :481）；本方案不改快照范围。校验失败发生在写盘前，不需要回滚。
+- **模型清单不一致的呈现**（照搬 a/c）：以节点实际上报为准（`RESOURCE.models`）；hub 端对照主控清单，逐模型给原因：缺 key / 节点缺插件 / 网关未开放 / 空清单 / 节点未上报（旧版）——**不再用单一「不可用」**。清单刷新失败保留上次成功目录并标「X 分钟前」。
+
+### P1b.8 对话中途换模型
+
+- `bot/update{model}` 在节点最终走 `models.js:234-250 applyModel → selectSessionModel`，**立即写会话的模型选择，哪怕回合在途**。`dsh-agent-loop/lib/index.js:671` 的 `preStep` **每个 step** 读 `model.current()`，所以在途回合的**下一步**就会换模型，而不是「下一回合」。原生**不保证**「在途不受影响」。
+- v1 约束：hub 在途表（§S2-4 的单 Bot 单在途表）命中时，`bot/update{model}` 直接拒绝 `bot-update-busy`（文案「该 Bot 正在回复，回复结束后再切换模型」）；节点端再校验一道 `live.get(chatOf).turn !== undefined` 防竞态。保证「下一回合起生效、在途回合不受影响」**成立**。
+- 校验补强：`joined-page.js:202-211` 目前只验 `modelRef` 的 provider ∈ `listProviders`，不验 model id。同步落地后 provider 集合变大，补验 `model ∈ listModels(provider)`，否则「选了存在但无该模型的 provider」要到发消息才报错。
+- 提示缓存：provider/model 切换后上游提示缓存必然失效（整段历史重发）；跨 provider 历史消息格式兼容（如 `reasoning` 块、工具调用 id），**未核实**，真机验收含「同一会话 deepseek→siliconflow→deepseek 各答一轮」。
+
+### P1b.9 分片（风险最大者在前）
+
+| 片 | 改谁 | 做什么 | 完成判据 |
+|---|---|---|---|
+| **P1b-1（第一片）** | ra + ds-bot | 载荷 v2 骨架 + `plugins[]` 白名单仅 `llm-deepseek` + `replaceManagedEntry` + `ownedRefs` 凭据所有权/撤销 + `caps:config-sync/2` 协商 + 热生效探针 | `dshtest-1` 上建 `deepseek-official/deepseek-flash` 的 Bot，发消息得到回复（不再报缺 key）；节点 `.credentials.yaml` 出现 `DEEPSEEK_API_KEY` 且权限 0600；主控删该 key → 节点 ref 被删；原 4 个 pi-ai provider 不受影响；校验失败路径**必须红**：`plugin-not-allowed`、截断的 YAML 不落盘、写盘失败恢复快照；旧节点（无 cap）收到 v1 载荷行为不变 |
+| P1b-2 | ra + ds-bot | pi-ai 模型字段补全（:220）；`compat/displayName/streamIdleTimeoutMs`；节点上报上限提升 + `truncated`；`xai` 与 fork.64 对齐 | 主控 65 项模型在节点清单中按 provider 逐项对得上；`xai` 带 `reasoningEfforts` 的节点 Bot 可选思考档；清单被截断时界面显示 |
+| P1b-3 | ds-bot（网关） | `/gw/xdpool-hub`：白名单、错误归一化、审计、并发上限；节点登记合成 provider | 节点 Bot 选 `xdpool/deepseek-v4.1-flash` 得到回复；越权前缀 → 403；上游 `QUOTA` → 402；断开客户端后上游连接关闭（取消）——**上游取消行为 未核实，须真测** |
+| P1b-4 | ra + ds-bot | `llm-fallbacks` 条目同步 + 节点装插件的补法（人工命令或 `plugin/install` 帧）+ 链成员齐备度计算 | 主控配好 `rootChain` 后，节点 `FallbacksChain/Auto` 可选；故意让首链路失败 → 节点沿链切到下一个并继续本 step |
+| P1b-5 | ra（字段）+ ds-bot（探测与界面） | `node/resource.cli[]` 上报；`cliExpect[]`；界面可执行提示；「重新检测」 | 节点未装 → 显示安装步骤；装好未登录 → 显示登录命令；登录后 → 可选并跑通一轮；旧节点显示「版本过低」而非「未安装」 |
+| P1b-6 | ds-bot | `bot-update-busy`、`model ∈ listModels` 校验、`configSync` 状态展示、失败原因文案、`同步到节点` 按钮 | 在途时换模型被拒且文案可读；同步失败在界面看到代码化原因与重试 |
+
+**为什么 P1b-1 排第一、且风险最大**：①它是节点 Bot **当下就报错**的那条（缺 `DEEPSEEK_API_KEY`），价值最高；②它第一次让 ra 的配置合并**脱离「只改 llm-pi-ai」**，改的是整个 `cordis.patch.yml` 的写入逻辑，写坏会让节点 DSH 起不来，所以要把「受管条目替换 + 快照回滚 + 白名单」一次做对，并用必须红的测试钉住；③后续各片复用这套机制。`fork.64`（工程师在做的抽屉/灰显/错误可读/xai 补全）只触及 UI 与 xai，与 P1b-1 无文件冲突，可并行；唯一重叠是 `xai` 的 catalog 字段名，以 P1b.2 表为准。
+
+### P1b.10 本节未核实项
+
+1. 节点热生效边界（P1b.4）：只换 key/模型清单是否无需重启。
+2. hub 当前如何展示 `hub/config-ack` 失败；「设置变更事件」名称与触发时机。
+3. 主控 xdpool 网关 key 文件路径在 ds-bot 内的解析方式；`.xdpool` 聚合渠道的 key 存储格式。
+4. 进程型是否有无副作用的登录态查询命令；各 CLI 官方安装命令的现行写法。
+5. 网关取消语义：客户端断开后主控 xdpool 网关是否停止上游生成。
+6. 跨 provider 同会话切换的历史兼容。
+7. 节点非 systemd 平台（macOS/Windows）重启与热加载的实际行为：本节点实测只覆盖 Linux。
