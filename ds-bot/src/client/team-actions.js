@@ -8,7 +8,7 @@ import { t } from './i18n.js'
 // source), requests to the host, and the notes the transcript keeps. The shell around the
 // views adds navigation and its own panels. `after` reads the team again once a request
 // is done; `partFor` maps a Bot id, or any part of its chat, to its current part.
-export function teamActions({ call, after, partFor, roster, ui, live, cards, heldCards, turnClock, panelFolded, openSession, sessionListed, refreshSessions }) {
+export function teamActions({ call, after, partFor, roster, ui, live, cards, heldCards, turnClock, panelFolded, openSession, sessionListed, refreshSessions, hostHasSession }) {
   // A failed action away from any form (a menu, the palette) shows as a toast.
   const reportError = (error, where = 'action') => {
     noteClientError(where, error)
@@ -30,14 +30,26 @@ export function teamActions({ call, after, partFor, roster, ui, live, cards, hel
   // cannot be read (a damaged log is dropped from the list with only a line in the host log).
   // The core's opener then waits for a session that never comes and the click does nothing, so
   // the list is read again once and a session still missing is reported.
-  // Answers 'listed', 'missing' (the list was read again and still lacks it), or 'unknown' (the
-  // list could not be read again, so nothing can be said about the session).
+  // Answers 'listed', 'missing' (the Host's own list lacks it) or 'unknown' (the list could not be
+  // read, so nothing can be said about the session).
+  // The core's refresh() RESOLVES when session.list fails — it only sets its internal list state to
+  // 'error', which its public list snapshot does not carry — so a resolved refresh says nothing about
+  // success. After it, a session still missing from the client list is put to the Host directly
+  // (`hostHasSession`: true, false, or undefined when that read fails too).
   const mirrorState = async (botId) => {
     if (typeof sessionListed !== 'function') return 'listed'
     const sessionId = roster.getSnapshot().byId?.[botId]?.sessionId
     if (sessionListed(sessionId)) return 'listed'
-    if (await refreshSessions?.() === false) return 'unknown'
-    return sessionListed(sessionId) ? 'listed' : 'missing'
+    if (await refreshSessions?.() === false) return 'unknown'   // the refresh itself was rejected
+    if (sessionListed(sessionId)) return 'listed'
+    if (typeof hostHasSession === 'function') {
+      const verdict = await hostHasSession(sessionId)
+      if (verdict === true) return 'listed'                      // the Host has it; the client list catches up on its own
+      if (verdict === false) return 'missing'
+      if (verdict === undefined) return 'unknown'                // the Host's list could not be read
+      // null: no way to ask — fall through to the old verdict
+    }
+    return 'missing'                                             // no direct read available: the old verdict
   }
   const openJoinedHome = async (botId) => {
     try {

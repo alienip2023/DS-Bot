@@ -2049,7 +2049,7 @@ function joinedUpdateError(error, bot) {
 }
 
 // src/client/team-actions.js
-function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards, heldCards, turnClock, panelFolded, openSession, sessionListed, refreshSessions }) {
+function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards, heldCards, turnClock, panelFolded, openSession, sessionListed, refreshSessions, hostHasSession: hostHasSession2 }) {
   const reportError = (error, where = "action") => {
     noteClientError(where, error);
     ui2.set((state) => ({ ...state, toast: { text: error?.message ?? String(error), token: Date.now() } }));
@@ -2064,7 +2064,14 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
     const sessionId = roster.getSnapshot().byId?.[botId]?.sessionId;
     if (sessionListed(sessionId)) return "listed";
     if (await refreshSessions?.() === false) return "unknown";
-    return sessionListed(sessionId) ? "listed" : "missing";
+    if (sessionListed(sessionId)) return "listed";
+    if (typeof hostHasSession2 === "function") {
+      const verdict = await hostHasSession2(sessionId);
+      if (verdict === true) return "listed";
+      if (verdict === false) return "missing";
+      if (verdict === void 0) return "unknown";
+    }
+    return "missing";
   };
   const openJoinedHome = async (botId) => {
     try {
@@ -27631,6 +27638,31 @@ function listedOpener({ list, open, refresh, current }) {
   };
 }
 
+// src/client/host-session.js
+async function hostHasSession(remote, sessionId, note = () => {
+}) {
+  if (typeof remote?.list !== "function") return null;
+  try {
+    const result = await remote.list({});
+    if (result?.ok !== true || !Array.isArray(result.value?.items)) return void 0;
+    return result.value.items.some((item) => item?.sessionId === sessionId);
+  } catch (error) {
+    note(error);
+    return void 0;
+  }
+}
+function sessionProbes(ctx, note = () => () => {
+}) {
+  return {
+    sessionListed: (id) => ctx.sessions.list.getSnapshot().byId?.[id] !== void 0,
+    refreshSessions: () => Promise.resolve(ctx.sessions.refresh?.()).then(() => true, (error) => {
+      note("refresh sessions")(error);
+      return false;
+    }),
+    hostHasSession: (id) => hostHasSession(ctx.get("remote.session"), id, note("read session list"))
+  };
+}
+
 // src/client/index.js
 var inject = ["sessions", "uiWorkspace", "uiConversation", "slots", "theme", "layout"];
 function apply(ctx) {
@@ -28041,10 +28073,7 @@ function apply(ctx) {
     }
   };
   const actions = {
-    ...teamActions({ call, after, partFor, roster, ui: ui2, live, cards, heldCards, turnClock, panelFolded, openSession: (id) => actions.openSession(id), sessionListed: (id) => ctx.sessions.list.getSnapshot().byId?.[id] !== void 0, refreshSessions: () => Promise.resolve(ctx.sessions.refresh?.()).then(() => true, (error) => {
-      quietly("refresh sessions")(error);
-      return false;
-    }) }),
+    ...teamActions({ call, after, partFor, roster, ui: ui2, live, cards, heldCards, turnClock, panelFolded, openSession: (id) => actions.openSession(id), ...sessionProbes(ctx, quietly) }),
     learningAnswer: (id, approve) => after(call("learning-answer", { id, approve })),
     // The full-pane overlays sit above the conversation, so opening one must dismiss them
     // or the click appears to do nothing.
