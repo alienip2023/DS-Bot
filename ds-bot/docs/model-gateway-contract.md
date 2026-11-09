@@ -549,7 +549,7 @@ Hub 侧的 API key 通过 DSH CredentialsController 管理：
 
 结论：**可行但靠节点本机准备**，界面给可执行提示，不静默灰显。
 
-- **节点上报**：复用现有周期帧 `node/resource`（ra `protocol.js:88` `RESOURCE`；字段可缺、旧 hub 忽略；该帧今天已携带 `models`，`node/index.js:734`），增 `cli:[{route, installed:boolean, version:string|null, signedIn:true|false|null, checkedAt:number}]`。数据源是节点 ds-bot 的 `local-agents` `detected()`（`local-agents/index.js:185` 起使用，已含 `route/name/path/version/signIn`）；节点侧通过 `ctx.provide('ds-bot:cli-report')` 暴露，ra 与 `readDefaultModel` 同样用 `ctx.get` 读取，**ra 不探测 CLI**。
+- **节点上报**：复用现有周期帧 `node/resource`（ra `protocol.js:88` `RESOURCE`；字段可缺、旧 hub 忽略；该帧今天已携带 `models`，`node/index.js:734`），增 `cli:[{route, installed:boolean, version:string|null, signedIn:true|false|null, checkedAt:number}]`。数据源是节点 ds-bot 的 `local-agents` `detected()`（`local-agents/index.js:177` 定义，已含 `route/name/path/version/signIn`）；节点侧通过 `ctx.provide('ds-bot:cli-report')` 暴露，ra 与 `readDefaultModel` 同样用 `ctx.get` 读取，**ra 不探测 CLI**。
 - **`signedIn` 取值**：目前没有登录态探针，适配器只会在首次调用时抛 `LOCAL_AGENT_SIGNIN`（`local-agents/adapter.js:520`）。故 `signedIn=null`（未知）直到出现过一次 `LOCAL_AGENT_SIGNIN`，此后置 `false` 并保持到下次成功回合；是否存在可无副作用查询登录态的 CLI 子命令，**未核实**，不编造。
 - **版本兼容**：新 hub + 旧节点 → 帧里无 `cli` 字段 → 界面显示「节点 ra 版本过低，未上报 CLI 状态（需 ≥ 本方案版本）」，与「未安装」是不同文案；旧 hub + 新节点 → 多余字段被忽略。
 - **界面文案（可执行）**：`未安装` →「节点 <名> 还没装 claude-code。点此查看安装步骤」（点开：安装命令 + 复制按钮 + 「装完后点『重新检测』」，检测即触发节点 `local-agent-refresh`，`local-agents/index.js:187`）；`已装未登录` →「在节点终端运行 `<signIn 命令>` 完成登录」（命令取 `SIGN_IN` 表，`local-agents/index.js:18-29`，如 codex/claude）；`已装已登录` → 可选。安装命令文案表维护在 ds-bot，**具体包名与版本以官方文档为准，实现时核对，此处未核实**。
