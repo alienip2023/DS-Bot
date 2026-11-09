@@ -4,19 +4,23 @@ import assert from 'node:assert/strict'
 import { describe, it, mock } from 'node:test'
 import EventEmitter from 'node:events'
 import { install } from '../src/host/joined-prompt.js'
-import { mirrorTurnStart, mirrorTurnFinish, mirrorTurnFail, LATE_REPLY_MARK, mirrorStateOf } from '../src/host/mirror.js'
+import { mirrorTurnStart, mirrorTurnFinish, mirrorTurnFail, mirrorLateReply, importHistory, LATE_REPLY_MARK, STOPPED_TEXT, mirrorStateOf } from '../src/host/mirror.js'
+import { stopPageTurn } from '../src/host/executor.js'
+import { createTurnTracker } from '../src/host/turn-tracker.js'
 import { JOINED_TURN_TIMEOUT_MS } from '../src/host/joined-turn.js'
 import { createJoinedEnsureRoute } from '../src/host/channel.js'
 
 const { Session } = await import('@deepseek-ai/dsh-session')
 
-function makeWorld({ sessionId = 'mirror-1', bot: botOverrides = {}, sendResult = true, sendThrows = false, noRegistry = false, failAppendOn, timeoutMs, botHomeEnabled } = {}) {
+function makeWorld({ sessionId = 'mirror-1', bot: botOverrides = {}, sendResult = true, sendThrows = false, noRegistry = false, failAppendOn, timeoutMs, botHomeEnabled, tracker = false } = {}) {
   const emitter = new EventEmitter()
   const frames = []
   const sessions = new Map()
   const created = []
   const bySession = new Map()
   const originalCalls = []
+  const cancelCalls = []
+  const warnings = []
   let seq = 0
   const registry = {
     send: (nodeId, type, payload) => {
@@ -52,7 +56,11 @@ function makeWorld({ sessionId = 'mirror-1', bot: botOverrides = {}, sendResult 
     ...(botHomeEnabled === undefined ? {} : { botHomeEnabled }),
     ctx: {
       get: key => (key === 'remote-agent:registry' && !noRegistry ? registry : undefined),
-      sessionController: { prompt: async (...args) => { originalCalls.push(args); return originalResult } },
+      sessionController: {
+        prompt: async (...args) => { originalCalls.push(args); return originalResult },
+        // the core's cancel throws session/not-found for a Session with no live Agent (a mirror Session)
+        cancel: async (...args) => { cancelCalls.push(args); return { accepted: true, from: 'original-cancel' } },
+      },
       effect: (fn) => { const dispose = fn(); if (typeof dispose === 'function') disposers.push(dispose) },
     },
     state: { revision: 1, bots: { [bot.id]: bot } },
@@ -64,14 +72,16 @@ function makeWorld({ sessionId = 'mirror-1', bot: botOverrides = {}, sendResult 
     resolveAgent: async sid => ({ session: sessionOf(sid) }),
     load: async () => {},
     save: async () => {},
-    warn: () => {},
+    warn: (...args) => { warnings.push(args) },
+    ...(tracker ? { turnTracker: createTurnTracker() } : {}),
     ...(timeoutMs === undefined ? {} : { joinedTurnTimeoutMs: timeoutMs }),
   }
   install(rt)
   const reply = (index, patch = {}) => emitter.emit('botTurnResult', { exchangeId: frames[index].payload.exchangeId, ok: true, text: 'node says hi', seq: seq++, ...patch })
   const idle = () => Promise.all([...(rt.joinedPromptTasks ?? [])])
   const prompt = (request, signal = new AbortController().signal) => rt.ctx.sessionController.prompt(request, signal)
-  return { rt, bot, frames, created, originalCalls, originalResult, reply, idle, prompt, sessionOf, emitter, disposers }
+  const cancel = (sessionId = 'mirror-1') => rt.ctx.sessionController.cancel({ sessionId })
+  return { rt, bot, frames, created, originalCalls, originalResult, cancelCalls, warnings, reply, idle, prompt, cancel, sessionOf, emitter, disposers }
 }
 
 const textRequest = (text, requestId = 'req-1', sessionId = 'mirror-1') => ({ requestId, sessionId, mode: 'queue', content: [{ type: 'text', text }] })
@@ -475,5 +485,234 @@ describe('S27-timeout: the wait is long enough for a tool turn and configurable'
       assert.equal(session.log.at(-1).data.reason.error.code, 'E_TIMEOUT')
       assert.ok(JOINED_TURN_TIMEOUT_MS >= 600_000, 'covers a tool turn of several minutes')
     } finally { mock.timers.reset() }
+  })
+})
+
+// ── fork.69 ─────────────────────────────────────────────────────────────────────────────────
+const lateTurns = session => session.log.filter(event => event.type === 'turn/end').map(event => [event.data.turn, event.data.reason.kind])
+
+describe('S30-late: a late listener only follows a timeout', () => {
+  it('S30-late-a: a node rejection, a result without seq and a node that went offline end the turn with their own code and leave NO listener — a later result for the exchange writes nothing', async () => {
+    for (const [name, trigger, code] of [
+      ['rejected', w => w.reply(0, { ok: false, text: undefined, error: 'bot-busy-on-node' }), 'E_REJECTED'],
+      ['no-seq', w => w.reply(0, { seq: undefined }), 'E_REJECTED'],
+      ['bridge-down', w => w.emitter.emit('nodeOffline', { nodeId: 'n1' }), 'E_OFFLINE'],
+    ]) {
+      const w = makeWorld()
+      await w.prompt(textRequest('hi'))
+      trigger(w)
+      await w.idle()
+      const session = w.sessionOf('mirror-1')
+      assert.equal(session.log.at(-1).data.reason.error.code, code, name)
+      assert.equal(w.emitter.listenerCount('botTurnResult'), 0, `${name}: nobody waits for a late reply`)
+      const before = session.log.length
+      w.reply(0, { text: 'too late', seq: 11 })
+      assert.equal(session.log.length, before, `${name}: a result after a non-timeout failure writes nothing`)
+    }
+  })
+
+  it('S30-late-a2: the same turn that DOES time out keeps one listener (the contrast the test above relies on)', async () => {
+    const w = makeWorld({ timeoutMs: 20 })
+    await w.prompt(textRequest('slow'))
+    await w.idle()
+    assert.equal(w.emitter.listenerCount('botTurnResult'), 1)
+  })
+})
+
+describe('S30-seen: a late write is remembered by (bot, nodeSeq)', () => {
+  const lateBy = async (seq) => {
+    const w = makeWorld({ timeoutMs: 20 })
+    await w.prompt(textRequest('slow'))
+    await w.idle()
+    w.reply(0, { text: 'finally', seq })
+    return w
+  }
+
+  it('S30-seen-a: after the late write the Bot\'s state holds the key in seenKeys AND closedKeys', async () => {
+    const w = await lateBy(7)
+    const state = mirrorStateOf(w.rt, w.bot.id)
+    assert.equal(state.seenKeys.has(`${w.bot.id}:7`), true)
+    assert.equal(state.closedKeys.has(`${w.bot.id}:7`), true)
+  })
+
+  it('S30-seen-b: a writer that only has seenKeys (the older deliverTurn path) writes the node turn once — the second delivery is skipped', () => {
+    const session = new Session('s')
+    const seenKeys = new Set()
+    const first = mirrorLateReply(session, { botText: 'a', botId: 'b1', nodeSeq: 4, seenKeys })
+    const written = session.log.length
+    const second = mirrorLateReply(session, { botText: 'a', botId: 'b1', nodeSeq: 4, seenKeys })
+    assert.equal(first.skipped, false)
+    assert.deepEqual(second, { skipped: true, reason: 'already-written:nodeSeq' })
+    assert.equal(session.log.length, written)
+    assert.equal(seenKeys.has('b1:4'), true)
+  })
+
+  it('S30-seen-c: the history import does not write that node turn again — through seenKeys alone and through closedKeys alone', async () => {
+    const w = await lateBy(7)
+    const state = mirrorStateOf(w.rt, w.bot.id)
+    const session = w.sessionOf('mirror-1')
+    const item = { userText: 'slow', botText: 'finally', turn: 1, seq: 7 }
+    const before = session.log.length
+    const bySeen = await importHistory(session, [item], { seenKeys: state.seenKeys, botId: w.bot.id, gapMode: 'none' })
+    assert.deepEqual([bySeen.imported, bySeen.skipped], [0, 1], 'seenKeys alone')
+    const byClosed = await importHistory(session, [item], { seenKeys: new Set(), closedKeys: state.closedKeys, botId: w.bot.id, gapMode: 'none' })
+    assert.deepEqual([byClosed.imported, byClosed.skipped], [0, 1], 'closedKeys alone')
+    assert.equal(session.log.length, before)
+  })
+
+  it('S30-seen-d: and the other way round — a seq the import wrote first is not written again as a late reply (seen via the real state)', async () => {
+    const w = makeWorld({ timeoutMs: 20 })
+    await w.prompt(textRequest('slow'))
+    await w.idle()
+    const state = mirrorStateOf(w.rt, w.bot.id)
+    const session = w.sessionOf('mirror-1')
+    await importHistory(session, [{ userText: 'u', botText: 'b', turn: 9, seq: 5 }], { ...state, botId: w.bot.id, gapMode: 'none' })
+    const before = session.log.length
+    w.reply(0, { text: 'dup', seq: 5 })
+    assert.equal(session.log.length, before)
+  })
+})
+
+describe('S30-unload: unloading the plugin ends everything late', () => {
+  it('S30-unload-a: a late reply waiting for an open page turn is dropped on unload — the turn ends afterwards and nothing late is written', async () => {
+    const w = makeWorld({ timeoutMs: 20 })
+    await w.prompt(textRequest('first (slow)', 'req-1'))
+    await w.idle()
+    w.rt.joinedTurnTimeoutMs = 5000
+    await w.prompt(textRequest('second', 'req-2'))
+    w.reply(0, { text: 'answer to first', seq: 1 })
+    assert.equal(w.rt.joinedLateQueue.get(w.bot.id).length, 1, 'queued behind the open turn')
+    for (const dispose of w.disposers) dispose()
+    w.reply(1, { text: 'answer to second', seq: 2 })
+    await w.idle()
+    const session = w.sessionOf('mirror-1')
+    assert.equal(assistantTexts(session).some(text => text.includes('answer to first')), false)
+    assert.equal(assistantTexts(session).some(text => text.startsWith(LATE_REPLY_MARK)), false)
+    assert.deepEqual(lateTurns(session), [[1, 'error'], [2, 'completed']])
+  })
+
+  it('S30-unload-b: after unload a page turn that times out arms no new late listener', async () => {
+    const w = makeWorld({ timeoutMs: 20 })
+    await w.prompt(textRequest('slow'))
+    for (const dispose of w.disposers) dispose()
+    await w.idle()
+    assert.equal(w.emitter.listenerCount('botTurnResult'), 0)
+    const before = w.sessionOf('mirror-1').log.length
+    w.reply(0, { seq: 3 })
+    assert.equal(w.sessionOf('mirror-1').log.length, before)
+  })
+})
+
+describe('S30-stop: the page\'s Stop ends the wait and frees the Bot', () => {
+  it('S30-stop-a: Stop on an open page turn — the core cancel is not called, the page shows one "已停止等待节点" line and the turn ends aborted, once', async () => {
+    const w = makeWorld()
+    await w.prompt(textRequest('slow tool run'))
+    const ack = await w.cancel()
+    assert.deepEqual(ack, { accepted: true })
+    assert.equal(w.cancelCalls.length, 0, 'the core cancel would throw session/not-found on a mirror Session')
+    const session = w.sessionOf('mirror-1')
+    assert.deepEqual(types(session), ['turn/start', 'step/start', 'user/message', 'assistant/message', 'step/end', 'turn/end'])
+    assert.ok(assistantTexts(session)[0].includes(STOPPED_TEXT), assistantTexts(session)[0])
+    assert.equal(session.log.at(-1).data.reason.kind, 'aborted')
+    assert.deepEqual(session.log.find(event => event.type === 'assistant/message').data.stream, [])
+    await w.idle()
+    assert.equal(types(session).filter(type => type === 'turn/end').length, 1, 'still one turn/end after the wait settled')
+    assert.equal(w.warnings.length, 0, 'a stop is not a failure')
+  })
+
+  it('S30-stop-b: the slot is free at once — the next message goes out (no agent-busy), as turn 2 on the page', async () => {
+    const w = makeWorld()
+    await w.prompt(textRequest('stuck', 'req-1'))
+    await w.cancel()
+    const ack = await w.prompt(textRequest('again', 'req-2'))
+    assert.deepEqual(ack, { accepted: true })
+    assert.equal(w.frames.filter(f => f.type === 'bot/turn').length, 2)
+    assert.equal(w.frames[1].payload.text, 'again')
+    assert.deepEqual(turnsOf(w.sessionOf('mirror-1')), [1, 2])
+  })
+
+  it('S30-stop-b2: released synchronously — stopPageTurn frees the in-flight table before it returns', async () => {
+    const w = makeWorld()
+    await w.prompt(textRequest('stuck'))
+    assert.equal(w.rt.joinedInFlight.has(w.bot.id), true)
+    assert.equal(stopPageTurn(w.rt, w.bot.id), true)
+    assert.equal(w.rt.joinedInFlight.has(w.bot.id), false)
+    assert.equal(stopPageTurn(w.rt, w.bot.id), false, 'nothing left to stop')
+  })
+
+  it('S30-stop-c: the node answers after the Stop — written as a late reply (new turn, marked, no user message); with a newer turn open it waits for it', async () => {
+    const w = makeWorld()
+    await w.prompt(textRequest('stuck', 'req-1'))
+    await w.cancel()
+    const session = w.sessionOf('mirror-1')
+    const stopped = session.log.length
+    w.reply(0, { text: 'finally done', seq: 4 })
+    const late = session.log.slice(stopped)
+    assert.deepEqual(late.map(event => event.type), ['turn/start', 'step/start', 'assistant/message', 'step/end', 'turn/end'])
+    assert.ok(late[2].data.message.content[0].text.startsWith(LATE_REPLY_MARK))
+    assert.ok(late[2].data.message.content[0].text.includes('finally done'))
+    assert.equal(late.some(event => event.type === 'user/message'), false)
+
+    const w2 = makeWorld()
+    await w2.prompt(textRequest('stuck', 'req-1'))
+    await w2.cancel()
+    await w2.prompt(textRequest('second', 'req-2'))
+    const s2 = w2.sessionOf('mirror-1')
+    const open = s2.log.length
+    w2.reply(0, { text: 'answer to stopped', seq: 1 })
+    assert.equal(s2.log.length, open, 'turn 2 is open: not closed under it')
+    w2.reply(1, { text: 'answer to second', seq: 2 })
+    await w2.idle()
+    assert.deepEqual(lateTurns(s2), [[1, 'aborted'], [2, 'completed'], [3, 'completed']])
+    assert.ok(assistantTexts(s2).at(-1).includes('answer to stopped'))
+  })
+
+  it('S30-stop-d: Stop with nothing in flight (never sent, already finished, pressed twice) is acknowledged and writes nothing', async () => {
+    const w = makeWorld()
+    assert.deepEqual(await w.cancel(), { accepted: true })
+    await w.prompt(textRequest('hi'))
+    w.reply(0)
+    await w.idle()
+    const done = w.sessionOf('mirror-1').log.length
+    assert.deepEqual(await w.cancel(), { accepted: true })
+    assert.equal(w.sessionOf('mirror-1').log.length, done, 'a finished turn is not touched')
+    await w.prompt(textRequest('again', 'req-2'))
+    await w.cancel()
+    const stopped = w.sessionOf('mirror-1').log.length
+    await w.cancel()
+    assert.equal(w.sessionOf('mirror-1').log.length, stopped, 'the second Stop adds nothing')
+    assert.equal(w.cancelCalls.length, 0)
+  })
+
+  it('S30-stop-e: any other Session\'s cancel goes to the original cancel untouched', async () => {
+    const w = makeWorld()
+    const request = { sessionId: 'ordinary-session' }
+    const result = await w.rt.ctx.sessionController.cancel(request)
+    assert.equal(result.from, 'original-cancel')
+    assert.equal(w.cancelCalls.length, 1)
+    assert.equal(w.cancelCalls[0][0], request)
+  })
+
+  it('S30-stop-f: the stopped wait leaves exactly one listener (the late one), no timeout line later, and the tracker says stopped — not offline', async () => {
+    const w = makeWorld({ timeoutMs: 30, tracker: true })
+    await w.prompt(textRequest('stuck'))
+    await w.cancel()
+    assert.equal(w.emitter.listenerCount('botTurnResult'), 1, 'only the late listener')
+    await wait(90)
+    await w.idle()
+    const session = w.sessionOf('mirror-1')
+    assert.equal(assistantTexts(session).some(text => text.includes('E_TIMEOUT')), false, 'the 30ms timer is gone')
+    assert.equal(types(session).filter(type => type === 'turn/end').length, 1)
+    assert.equal(w.warnings.length, 0)
+    assert.equal(w.rt.turnTracker.get(w.frames[0].payload.exchangeId).error, 'E_ABORTED')
+  })
+
+  it('S30-stop-g: the late listener of a stopped turn ends with the plugin', async () => {
+    const w = makeWorld()
+    await w.prompt(textRequest('stuck'))
+    await w.cancel()
+    assert.equal(w.emitter.listenerCount('botTurnResult'), 1)
+    for (const dispose of w.disposers) dispose()
+    assert.equal(w.emitter.listenerCount('botTurnResult'), 0)
   })
 })

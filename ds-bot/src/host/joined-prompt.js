@@ -17,7 +17,7 @@
 // is `${message} (${code})` except for the two attachment-invalid codes.
 import { joinedShadow } from './roster-join.js'
 import { ensureMirrorSession, mirrorStateOf, hasPromptRequest } from './mirror.js'
-import { startPageTurn, failureText } from './executor.js'
+import { startPageTurn, stopPageTurn, failureText } from './executor.js'
 import { JOINED_TURN_TIMEOUT_MS } from './joined-turn.js'
 
 const BUSY = '副机 Bot 正在回复上一条，请稍候再发'
@@ -60,11 +60,16 @@ export async function promptText(content) {
 export function install(rt) {
   const { ctx } = rt
   // Late-reply listeners (executor.js armLateReply) end with the plugin.
+  // Unloading also drops the replies still waiting for an open page turn to end, and nothing
+  // new is armed afterwards: a page turn that ends later writes no late reply.
   ctx?.effect?.(() => () => {
+    rt.joinedLateClosed = true
     for (const dispose of rt.joinedLate ?? []) dispose()
     rt.joinedLate?.clear()
+    rt.joinedLateQueue?.clear()
   }, 'ds-bot: joined late reply listeners')
   const controller = ctx?.sessionController
+  installCancel(rt, controller)
   const original = controller?.prompt
   if (typeof original !== 'function') return
   rt.joinedPromptTasks = new Set()
@@ -102,4 +107,26 @@ export function install(rt) {
     controller.prompt = intercepted
     return () => { if (controller.prompt === intercepted) controller.prompt = original }
   }, 'ds-bot: joined Bot prompt takeover')
+}
+
+// The page's Stop button: client.js (dsh-api-session-controller) cancel() → remote.session.cancel
+// → ctx.sessionController.cancel(request) (index.js :4448) → commands.cancel (:1026), which
+// looks the Session up in ctx.agents and throws 'session/not-found' for a mirror Session (no
+// local Agent lives there). For a joined Bot's mirror Session the Stop ends the page turn
+// instead: the wait for the node stops, the in-flight slot is released and the turn closes as
+// aborted (startPageTurn's abort). Idempotent — a Stop with nothing in flight is acknowledged.
+// Every other Session goes to the original cancel untouched. The node is not told to stop.
+function installCancel(rt, controller) {
+  const original = controller?.cancel
+  if (typeof original !== 'function') return
+  const intercepted = async function (request, ...rest) {
+    const bot = joinedBotOfSession(rt, request?.sessionId)
+    if (bot === undefined) return original.call(this, request, ...rest)
+    stopPageTurn(rt, bot.id)
+    return { accepted: true }
+  }
+  rt.ctx.effect(() => {
+    controller.cancel = intercepted
+    return () => { if (controller.cancel === intercepted) controller.cancel = original }
+  }, 'ds-bot: joined Bot cancel takeover')
 }

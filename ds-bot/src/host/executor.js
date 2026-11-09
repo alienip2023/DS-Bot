@@ -13,13 +13,14 @@
 import { randomUUID } from 'node:crypto'
 import { joinedShadow } from './roster-join.js'
 import { listenBotTurnResult, JOINED_TURN_TIMEOUT_MS, JOINED_LATE_WINDOW_MS } from './joined-turn.js'
-import { mirrorTurn, allocateTurn, mirrorTurnStart, mirrorTurnFinish, mirrorTurnFail, mirrorLateReply } from './mirror.js'
+import { mirrorTurn, allocateTurn, mirrorTurnStart, mirrorTurnFinish, mirrorTurnFail, mirrorTurnAbort, mirrorLateReply } from './mirror.js'
 
 /**
  * Error codes thrown by send() / deliverTurn():
  *   E_NOT_FOUND — bot not registered or missing worker config
  *   E_OFFLINE   — remote node is not reachable or registry unavailable
- *   E_TIMEOUT   — no result within timeout (default 120s)
+ *   E_TIMEOUT   — no result within timeout (default JOINED_TURN_TIMEOUT_MS = 600s; config.joinedTurnTimeoutMs)
+ *   E_ABORTED   — the page's Stop ended the wait (startPageTurn only; never thrown to a caller of send())
  *   E_REJECTED  — node explicitly rejected the turn (ok:false with error code)
  */
 export class ExecutorError extends Error {
@@ -96,6 +97,8 @@ function prepareRemote({ bot, text, rt, tracker, timeoutOverride }) {
   tracker?.start(turnId, bot.id)
 
   let sendCalled = false
+  // The page's Stop: the wait ends without the failure bookkeeping a cancel() would do.
+  let stopped = false
   const send = () => {
     if (sendCalled) return
     sendCalled = true
@@ -128,6 +131,7 @@ function prepareRemote({ bot, text, rt, tracker, timeoutOverride }) {
       tracker?.finish(turnId, { status: 'failed', error: 'E_OFFLINE' })
       throw new ExecutorError('E_OFFLINE', 'listener error')
     }
+    if (stopped) throw new ExecutorError('E_ABORTED', 'stopped waiting for the node')
 
     if (result === undefined) {
       tracker?.finish(turnId, { status: 'timeout', error: 'E_TIMEOUT' })
@@ -153,6 +157,14 @@ function prepareRemote({ bot, text, rt, tracker, timeoutOverride }) {
   }
   // A prepared turn that is dropped before send(): drop the listener and close the tracker.
   const abandon = () => { cancel(); tracker?.finish(turnId, { status: 'failed', error: 'E_ABANDONED' }) }
+  // The user stopped waiting: drop the listener, make a pending settle() throw E_ABORTED (and
+  // leave the tracker alone), close the tracker entry as stopped. The frame is already out —
+  // the node is not told, and its answer can still come (awaitLate).
+  const stop = () => {
+    stopped = true
+    cancel()
+    tracker?.finish(turnId, { status: 'failed', error: 'E_ABORTED' })
+  }
   // After settle() threw E_TIMEOUT the listener is gone, but the node may still finish and send
   // its bot/turn-result. This keeps listening for THIS exchange only, once, for `windowMs`;
   // `onResult(payload)` gets that result. Returns the disposer (also called by the window's end).
@@ -174,7 +186,7 @@ function prepareRemote({ bot, text, rt, tracker, timeoutOverride }) {
     registry.on?.('botTurnResult', onEvent)
     return end
   }
-  return { turnId, nodeId, remoteBotId, send, settle, cancel, abandon, awaitLate }
+  return { turnId, nodeId, remoteBotId, send, settle, cancel, abandon, stop, awaitLate }
 }
 
 async function sendLocal({ bot, text, rt, tracker }) {
@@ -255,6 +267,7 @@ export function failureText(err) {
 // turn's number comes from allocateTurn, which would close that open turn as aborted.
 function armLateReply({ rt, bot, session, state, prepared }) {
   if (typeof prepared.awaitLate !== 'function') return
+  if (rt.joinedLateClosed === true) return   // the plugin was unloaded: nothing new is armed
   const windowMs = Number.isFinite(rt.joinedLateWindowMs) ? rt.joinedLateWindowMs : JOINED_LATE_WINDOW_MS
   const dispose = prepared.awaitLate((payload) => {
     rt.joinedLate?.delete(dispose)
@@ -307,7 +320,8 @@ function flushLateReplies(rt, botId) {
 export function startPageTurn({ rt, bot, text, requestId, session, step = 1, state = {}, tracker, timeoutMs }) {
   if (!rt.joinedInFlight) rt.joinedInFlight = new Map()
   if (rt.joinedInFlight.has(bot.id)) throw new ExecutorError('E_BUSY', 'a turn for this Bot is still in flight')
-  rt.joinedInFlight.set(bot.id, { requestId })
+  const claim = { requestId, abort: undefined }
+  rt.joinedInFlight.set(bot.id, claim)
   const release = () => {
     if (rt.joinedInFlight.get(bot.id)?.requestId !== requestId) return
     rt.joinedInFlight.delete(bot.id)
@@ -335,11 +349,27 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
 
   const fail = (err) => mirrorTurnFail(session, { turn, step, code: err?.code, message: failureText(err), closedTurns })
 
+  // The page's Stop (stopPageTurn): the turn ends as aborted with a line saying so, the
+  // in-flight claim is released so the next message can go out at once, and the node's answer
+  // — if it still comes — is written like any late reply. False when the turn is already over.
+  let over = false
+  const abort = () => {
+    if (over) return false
+    over = true
+    prepared.stop()
+    mirrorTurnAbort(session, { turn, step, closedTurns })
+    armLateReply({ rt, bot, session, state, prepared })
+    release()
+    return true
+  }
+  claim.abort = abort
+
   const done = (async () => {
     try {
       try {
         prepared.send()
       } catch (err) {
+        over = true
         fail(err)
         throw err
       }
@@ -347,10 +377,13 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
       try {
         result = await prepared.settle()
       } catch (err) {
+        if (err?.code === 'E_ABORTED') return { ok: false, aborted: true, turnId: prepared.turnId }
+        over = true
         fail(err)
         if (err?.code === 'E_TIMEOUT') armLateReply({ rt, bot, session, state, prepared })
         throw err
       }
+      over = true
       const mirrorResult = mirrorTurnFinish(session, { turn, step, botText: result.text, botId: bot.id, nodeSeq: result.seq, seenKeys, closedKeys, seenSteps, closedTurns })
       return { ok: true, turnId: prepared.turnId, mirrorResult }
     } finally {
@@ -358,4 +391,12 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
     }
   })()
   return { turn, turnId: prepared.turnId, done }
+}
+
+/**
+ * The page's Stop on a joined Bot: end the open page turn (if any) so the Bot's next message
+ * is not refused as in flight. Returns whether a turn was stopped.
+ */
+export function stopPageTurn(rt, botId) {
+  return rt.joinedInFlight?.get(botId)?.abort?.() === true
 }

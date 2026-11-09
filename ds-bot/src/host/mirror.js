@@ -193,6 +193,23 @@ export function mirrorTurnFail(session, { turn, step = 1, code, message, visible
   return { skipped: false }
 }
 
+/** What the page says when the user stopped waiting for the node. */
+export const STOPPED_TEXT = '已停止等待节点'
+
+/**
+ * The user pressed Stop on a turn still waiting for the node: one visible assistant line
+ * "⏹ 已停止等待节点（…）", step/end, turn/end {kind:'aborted'}. `closedTurns` keeps it to one
+ * turn/end per Start, whichever of Finish / Fail / Abort comes first.
+ */
+export function mirrorTurnAbort(session, { turn, step = 1, closedTurns } = {}) {
+  if (closedTurns instanceof Set && closedTurns.has(turn)) return { skipped: true, reason: 'already-closed:turn' }
+  try { appendAssistant(session, turn, step, `⏹ ${STOPPED_TEXT}（节点之后若回复，会补在这里）`) } catch {}
+  try { session.append('step/end', { turn, step }) } catch {}
+  try { session.append('turn/end', { turn, reason: { kind: 'aborted' } }) } catch {}
+  if (closedTurns instanceof Set) closedTurns.add(turn)
+  return { skipped: false }
+}
+
 /** The line a late reply starts with: the page shows which message it answers is already behind it. */
 export const LATE_REPLY_MARK = '↩ 节点迟到回复'
 

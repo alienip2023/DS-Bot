@@ -34,7 +34,18 @@ function world({ withPrompt = true, config = {} } = {}) {
   const baseOn = ctx.on
   ctx.on = (name, listener, options) => { registered.push({ name, listener, options }); return baseOn(name, listener, options) }
   const originalCalls = []
-  if (withPrompt) ctx.sessionController = { prompt: async (...args) => { originalCalls.push(args); return { accepted: true, from: 'original' } } }
+  const cancelCalls = []
+  if (withPrompt) {
+    ctx.sessionController = {
+      prompt: async (...args) => { originalCalls.push(args); return { accepted: true, from: 'original' } },
+      // like the core: a Session with no live Agent (a mirror Session) is not found
+      cancel: async (request) => {
+        cancelCalls.push(request)
+        if (request.sessionId.startsWith('mirror')) throw Object.assign(new Error('session not found'), { code: 'session/not-found' })
+        return { accepted: true, from: 'original-cancel' }
+      },
+    }
+  }
   const routes = []
   ctx.connection.fetch.register = route => { routes.push(route); return () => {} }
   const home = mkdtempSync(join(tmpdir(), 'ds-bot-assembly-'))
@@ -59,7 +70,8 @@ function world({ withPrompt = true, config = {} } = {}) {
     return JSON.parse(await response.text())
   }
   const prompt = request => ctx.sessionController.prompt(request, new AbortController().signal)
-  return { ctx, rt, bot, registered, frames, originalCalls, routes, created, sessionOf, mirror, call, prompt, emitter }
+  const cancel = sessionId => ctx.sessionController.cancel({ sessionId })
+  return { ctx, rt, bot, registered, frames, originalCalls, cancelCalls, routes, created, sessionOf, mirror, call, prompt, cancel, emitter }
 }
 
 const textRequest = (sessionId, text = 'hi', requestId = 'req-1') => ({ requestId, sessionId, mode: 'queue', content: [{ type: 'text', text }] })
@@ -193,5 +205,40 @@ describe('S27-asm-timeout: config.joinedTurnTimeoutMs reaches the running page t
     while (!ended() && Date.now() - started < 3000) await new Promise(resolve => setTimeout(resolve, 50))
     assert.equal(session.log.at(-1).data.reason.error.code, 'E_TIMEOUT')
     assert.ok(Date.now() - started >= 950, 'and not earlier than the configured second')
+  })
+})
+
+describe('S30-asm: the page Stop is wired into the running chain', () => {
+  it('S30-asm-cancel: on the real chain a Stop on a joined mirror Session ends the page turn (the core cancel would throw not-found), frees the Bot, and an ordinary Session\'s cancel reaches the original once, unchanged', async () => {
+    const w = world()
+    await w.mirror()
+    await w.prompt(textRequest('mirror-1', 'stuck', 'req-1'))
+    const ack = await w.cancel('mirror-1')
+    assert.deepEqual(ack, { accepted: true })
+    assert.equal(w.cancelCalls.length, 0, 'never reaches the core')
+    const session = w.sessionOf('mirror-1')
+    assert.equal(session.log.at(-1).type, 'turn/end')
+    assert.equal(session.log.at(-1).data.reason.kind, 'aborted')
+    await w.prompt(textRequest('mirror-1', 'again', 'req-2'))   // not agent-busy
+    assert.equal(w.frames.filter(f => f.type === 'bot/turn').length, 2)
+
+    const result = await w.cancel('ordinary-session')
+    assert.equal(result.from, 'original-cancel')
+    assert.deepEqual(w.cancelCalls, [{ sessionId: 'ordinary-session' }])
+  })
+
+  it('S30-asm-late-unload: a late reply queued behind an open page turn is not written once the real runtime\'s effects are disposed', async () => {
+    const w = world({ config: { joinedTurnTimeoutMs: 1000 } })
+    await w.mirror()
+    await w.prompt(textRequest('mirror-1', 'stuck', 'req-1'))
+    await w.cancel('mirror-1')                                     // stopped: a late listener is armed
+    await w.prompt(textRequest('mirror-1', 'second', 'req-2'))     // a newer turn is open
+    w.emitter.emit('botTurnResult', { exchangeId: w.frames[0].payload.exchangeId, ok: true, text: 'answer to stopped', seq: 1 })
+    assert.equal(w.rt.joinedLateQueue.get(w.bot.id).length, 1)
+    await w.ctx.dispose()                                          // the plugin unloads
+    w.emitter.emit('botTurnResult', { exchangeId: w.frames[1].payload.exchangeId, ok: true, text: 'answer to second', seq: 2 })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    const texts = w.sessionOf('mirror-1').log.filter(event => event.type === 'assistant/message').map(event => event.data.message.content[0].text)
+    assert.equal(texts.some(text => text.includes('answer to stopped')), false)
   })
 })
