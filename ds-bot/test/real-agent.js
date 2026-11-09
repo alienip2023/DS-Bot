@@ -40,3 +40,9 @@ export async function realAgentWorld() {
     dispose: () => ctx.fiber.dispose(),
   }
 }
+
+/** The cordis the production services run on — { Context, Service } from the same testkit. */
+export async function realCordis() {
+  const { Context, Service } = await imp(join(KIT_MODULES, 'cordis/lib/index.js'))
+  return { Context, Service }
+}

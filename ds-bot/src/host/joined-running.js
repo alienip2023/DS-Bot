@@ -16,6 +16,7 @@
 //   · an 'api-session/added' for that Session (the core re-sends the summary when an Agent
 //     appears or goes) re-asserts the bit, so a stray running:false cannot hide the button.
 // No Agent is faked. Only a joined mirror Session with its page turn in flight is touched.
+import { wrapControllerMethod } from './controller-wrap.js'
 
 /** The in-flight joined Bot of this Session, or undefined. */
 export function runningJoinedBot(rt, sessionId, joinedBotOf) {
@@ -37,9 +38,7 @@ export function installRunning(rt, controller, joinedBotOf) {
     if (bot !== undefined && summary.running !== true) rt.joinedRunning(bot, true)
   })
 
-  const original = controller?.list
-  if (typeof original !== 'function') return
-  const intercepted = async function (...args) {
+  wrapControllerMethod(ctx, controller, 'list', original => async function (...args) {
     const result = await original.apply(this, args)
     const items = result?.items
     if (!Array.isArray(items) || !(rt.joinedInFlight?.size > 0)) return result
@@ -50,9 +49,5 @@ export function installRunning(rt, controller, joinedBotOf) {
       return { ...item, running: true }
     })
     return changed ? { ...result, items: next } : result
-  }
-  ctx.effect(() => {
-    controller.list = intercepted
-    return () => { if (controller.list === intercepted) controller.list = original }
   }, 'ds-bot: joined Bot running state in the session list')
 }

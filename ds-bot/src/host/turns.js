@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto'
 import { carrierKeyOf } from '@deepseek-ai/dsh-scope'
 import { HANDOFF_ACK, MESSAGE_INLINE_MAX, REFERENCE_KIND, REPLY_KIND, SOURCE_KIND, STEER_CUT } from './constants.js'
 import { cleanText } from './diagnostics.js'
+import { wrapControllerMethod } from './controller-wrap.js'
 import { absoluteLinks } from './links.js'
 import { splitRef, textOf } from './text.js'
 import { viaOf } from '../shared/im-platforms.js'
@@ -1125,10 +1126,8 @@ export function install(rt) {
   // keeps the real cause in details.reason, which the window never shows and the log
   // never saw (#424). For a Session this team owns, the reason is written to the
   // diagnostics and put into the error the user reads.
-  const prompt = ctx.sessionController?.prompt
-  if (typeof prompt === 'function') {
-    const controller = ctx.sessionController
-    const admitted = async function (request, ...rest) {
+  {
+    wrapControllerMethod(ctx, ctx.sessionController, 'prompt', prompt => async function (request, ...rest) {
       try {
         return await prompt.call(this, request, ...rest)
       } catch (error) {
@@ -1155,10 +1154,6 @@ export function install(rt) {
         }
         throw error
       }
-    }
-    ctx.effect(() => {
-      controller.prompt = admitted
-      return () => { if (controller.prompt === admitted) controller.prompt = prompt }
     }, 'ds-bot: prompt rejection reasons')
   }
 

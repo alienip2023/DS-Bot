@@ -233,3 +233,132 @@ describe('S33-phone: the phone\'s Stop reaches a joined Bot\'s page turn', () =>
     assert.equal(w.rt.joinedInFlight.has(w.bot.id), true, 'the joined turn is still in flight')
   })
 })
+
+describe('S36-e4: another exchange\'s result is not "my answer has arrived"', () => {
+  const OTHER = 'someone-elses-exchange'
+
+  it('S36-e4-a: a result for a DIFFERENT exchange (same node, another Bot) arrives, then Stop — the wait is stopped, "已停止" is written, no answer is invented', async () => {
+    const w = makeWorld()
+    await w.prompt(textRequest('x'))
+    w.emitter.emit('botTurnResult', { exchangeId: OTHER, ok: true, text: 'for another Bot', seq: 9 })
+    assert.deepEqual(await w.cancel(), { accepted: true })
+    await w.idle()
+    const session = w.sessionOf(MIRROR)
+    assert.equal(session.log.at(-1).data.reason.kind, 'aborted')
+    assert.equal(assistantTexts(session).some(text => text.includes(STOPPED_TEXT)), true)
+    assert.equal(assistantTexts(session).includes('for another Bot'), false)
+    assert.equal(w.rt.joinedInFlight.has(w.bot.id), false)
+  })
+
+  it('S36-e4-b: the node answers two Bots; the answer for Bot 2 arrives first and Stop on Bot 1 still stops Bot 1 (and only Bot 1)', async () => {
+    const w = makeWorld({ otherBots: [{}] })
+    const [first, second] = w.bots
+    await w.prompt(textRequest('one', 'r1', first.sessionId))
+    await w.prompt(textRequest('two', 'r2', second.sessionId))
+    assert.equal(w.frames.length, 2)
+    w.reply(1, { text: 'answer two', seq: 1 })
+    await w.cancel(first.sessionId)
+    await w.idle()
+    assert.equal(w.sessionOf(first.sessionId).log.at(-1).data.reason.kind, 'aborted', 'Bot 1 stopped')
+    assert.deepEqual(assistantTexts(w.sessionOf(second.sessionId)), ['answer two'], 'Bot 2 got its own answer')
+    assert.equal(w.rt.joinedInFlight.size, 0)
+  })
+
+  it('S36-e4-c: once the real answer HAS arrived, a result for another exchange that follows changes nothing — the answer is kept', async () => {
+    const w = makeWorld()
+    await w.prompt(textRequest('x'))
+    w.reply(0, { text: 'mine', seq: 3 })
+    w.emitter.emit('botTurnResult', { exchangeId: OTHER, ok: true, text: 'other', seq: 4 })
+    await w.cancel()
+    await w.idle()
+    assert.deepEqual(assistantTexts(w.sessionOf(MIRROR)), ['mine'])
+  })
+})
+
+describe('S36-j4: two joined Bots, one in flight and one idle', () => {
+  it('S36-j4-a: the session list marks only the Bot that is in flight — the idle Bot\'s row is the same object and stays running:false', async () => {
+    const w = makeWorld({
+      otherBots: [{}],
+      listItems: [{ sessionId: 'mirror-1', running: false }, { sessionId: 'mirror-2', running: false }, { sessionId: 'ordinary-1', running: false }],
+    })
+    await w.prompt(textRequest('x', 'r1', 'mirror-1'))
+    const busy = await w.controller.list({}, new AbortController().signal)
+    assert.deepEqual(busy.items.map(item => [item.sessionId, item.running]), [['mirror-1', true], ['mirror-2', false], ['ordinary-1', false]])
+    assert.equal(busy.items[1], w.listItems[1])
+    await w.prompt(textRequest('y', 'r2', 'mirror-2'))
+    const both = await w.controller.list({}, new AbortController().signal)
+    assert.deepEqual(both.items.map(item => item.running), [true, true, false])
+    w.reply(0)
+    await new Promise(resolve => setTimeout(resolve, 20))   // Bot 2 is still in flight: idle() would wait for it
+    const after = await w.controller.list({}, new AbortController().signal)
+    assert.deepEqual(after.items.map(item => item.running), [false, true, false], 'Bot 1 is idle again, Bot 2 still running')
+  })
+
+  it('S36-j4-b: status events and re-assertions are per Bot — an added summary for the idle Bot is left alone', async () => {
+    const w = makeWorld({ otherBots: [{}] })
+    await w.prompt(textRequest('x', 'r1', 'mirror-1'))
+    const before = w.statuses().length
+    w.added({ sessionId: 'mirror-2', running: false })
+    assert.equal(w.statuses().length, before, 'the idle Bot is not asserted running')
+    assert.deepEqual(w.statuses(), [['mirror-1', true]])
+    w.reply(0)
+    await w.idle()
+    assert.deepEqual(w.statuses(), [['mirror-1', true], ['mirror-1', false]])
+  })
+})
+
+describe('S36-e9: what happens at the moment the slot is released', () => {
+  // a first turn times out (its late reply is armed), a second turn is in flight, the late reply
+  // arrives and waits, then the second turn ends: running goes false, THEN the late reply is written
+  async function lateWorld() {
+    const w = makeWorld({ timeoutMs: 20 })
+    await w.prompt(textRequest('first (slow)', 'req-1'))
+    await w.idle()
+    w.rt.joinedTurnTimeoutMs = 5000
+    await w.prompt(textRequest('second', 'req-2'))
+    const session = w.sessionOf(MIRROR)
+    const timeline = []
+    const append = session.append.bind(session)
+    session.append = (type, ...rest) => { timeline.push(`append:${type}`); return append(type, ...rest) }
+    const emit = w.rt.ctx.emit
+    w.rt.ctx.emit = (name, ...args) => {
+      if (name === 'api-session/status') timeline.push(`status:${args[1]}:slot=${w.rt.joinedInFlight.has(w.bot.id) ? 'held' : 'free'}`)
+      return emit(name, ...args)
+    }
+    return { w, session, timeline, append }
+  }
+
+  it('S36-e9-a: running:false goes out after the turn\'s own turn/end and BEFORE the late reply is written; the late reply is written after', async () => {
+    const { w, timeline } = await lateWorld()
+    w.reply(0, { text: 'late answer', seq: 1 })
+    w.reply(1, { text: 'second answer', seq: 2 })
+    await w.idle()
+    const falseAt = timeline.findIndex(entry => entry.startsWith('status:false'))
+    const turnEnds = timeline.reduce((acc, entry, index) => (entry === 'append:turn/end' ? [...acc, index] : acc), [])
+    assert.ok(falseAt > turnEnds[0], `after the page turn closed: ${timeline}`)
+    assert.ok(falseAt < turnEnds[1], `before the late turn closed: ${timeline}`)
+    assert.equal(timeline[falseAt + 1], 'append:turn/start', `the late reply starts right after: ${timeline}`)
+  })
+
+  it('S36-e9-b: when running:false is sent the slot is already free — a list read at that moment says "not running", and a new message is accepted', async () => {
+    const { w, timeline } = await lateWorld()
+    w.reply(1, { text: 'second answer', seq: 2 })
+    await w.idle()
+    assert.ok(timeline.includes('status:false:slot=free'), timeline.join(','))
+    assert.equal(timeline.some(entry => entry === 'status:false:slot=held'), false)
+  })
+
+  it('S36-e9-c: the late write failing does not lose running:false (it went out first) and does not leave the slot held', async () => {
+    const { w, session, timeline } = await lateWorld()
+    const original = session.append.bind(session)
+    let armed = false
+    session.append = (type, ...rest) => { if (armed && type === 'turn/start') throw new Error('disk full'); return original(type, ...rest) }
+    w.reply(0, { text: 'late answer', seq: 1 })
+    armed = true
+    w.reply(1, { text: 'second answer', seq: 2 })
+    await w.idle()
+    assert.ok(timeline.some(entry => entry.startsWith('status:false')), timeline.join(','))
+    assert.equal(w.rt.joinedInFlight.has(w.bot.id), false)
+    assert.deepEqual(w.statuses().at(-1), [MIRROR, false])
+  })
+})

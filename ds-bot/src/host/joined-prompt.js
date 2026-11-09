@@ -20,6 +20,7 @@ import { ensureMirrorSession, mirrorStateOf, hasPromptRequest } from './mirror.j
 import { startPageTurn, stopPageTurn, failureText } from './executor.js'
 import { JOINED_TURN_TIMEOUT_MS } from './joined-turn.js'
 import { installRunning } from './joined-running.js'
+import { wrapControllerMethod } from './controller-wrap.js'
 
 const BUSY = '副机 Bot 正在回复上一条，请稍候再发'
 const NO_ATTACHMENTS = '副机 Bot 暂不支持附件，请改为文字发送'
@@ -74,11 +75,10 @@ export function install(rt) {
   rt.stopJoinedTurn = botId => stopPageTurn(rt, botId)
   installCancel(rt, controller)
   installRunning(rt, controller, joinedBotOfSession)
-  const original = controller?.prompt
-  if (typeof original !== 'function') return
+  if (typeof controller?.prompt !== 'function') return
   rt.joinedPromptTasks = new Set()
 
-  const intercepted = async function (request, ...rest) {
+  wrapControllerMethod(ctx, controller, 'prompt', original => async function (request, ...rest) {
     const bot = joinedBotOfSession(rt, request?.sessionId)
     if (bot === undefined) return original.call(this, request, ...rest)
 
@@ -105,11 +105,6 @@ export function install(rt) {
       .finally(() => { rt.joinedPromptTasks.delete(task) })
     rt.joinedPromptTasks.add(task)
     return { accepted: true }
-  }
-
-  ctx.effect(() => {
-    controller.prompt = intercepted
-    return () => { if (controller.prompt === intercepted) controller.prompt = original }
   }, 'ds-bot: joined Bot prompt takeover')
 }
 
@@ -121,16 +116,10 @@ export function install(rt) {
 // aborted (startPageTurn's abort). Idempotent — a Stop with nothing in flight is acknowledged.
 // Every other Session goes to the original cancel untouched. The node is not told to stop.
 function installCancel(rt, controller) {
-  const original = controller?.cancel
-  if (typeof original !== 'function') return
-  const intercepted = async function (request, ...rest) {
+  wrapControllerMethod(rt.ctx, controller, 'cancel', original => async function (request, ...rest) {
     const bot = joinedBotOfSession(rt, request?.sessionId)
     if (bot === undefined) return original.call(this, request, ...rest)
     stopPageTurn(rt, bot.id)
     return { accepted: true }
-  }
-  rt.ctx.effect(() => {
-    controller.cancel = intercepted
-    return () => { if (controller.cancel === intercepted) controller.cancel = original }
   }, 'ds-bot: joined Bot cancel takeover')
 }
