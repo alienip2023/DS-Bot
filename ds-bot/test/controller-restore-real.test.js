@@ -26,7 +26,11 @@ async function world() {
     constructor(ctx) { super(ctx, 'sessionController') }
     // Like the core's methods these read `this` — the per-call context the gateway put its
     // invocation on (dsh-api-gateway lib/index.js:1242). A wrapper that drops `this` breaks here.
-    async prompt(request) { calls.invocations.push(this.ctx.invocation); calls.prompt.push(request); return { accepted: true, from: 'core-prompt' } }
+    async prompt(request) {
+      calls.invocations.push(this.ctx.invocation); calls.prompt.push(request)
+      if (calls.failPrompt) throw Object.assign(new Error('core refused'), { code: 'session/x', details: { reason: 'because' } })
+      return { accepted: true, from: 'core-prompt' }
+    }
     async cancel(request) { calls.invocations.push(this.ctx.invocation); calls.cancel.push(request); return { accepted: true, from: 'core-cancel' } }
     async list() { calls.invocations.push(this.ctx.invocation); calls.list.push(1); return listResult }
   }
@@ -44,9 +48,11 @@ async function world() {
     return root.plugin({ name: 'ds-bot-under-test', inject: ['sessionController'], apply(ctx) { install(rtFor(ctx)) } })
   }
   /** the turns.js site (prompt rejection reasons) on its own */
-  const loadTurns = () => root.plugin({
+  const loadTurns = (notes) => root.plugin({
     name: 'ds-bot-turns-under-test', inject: ['sessionController'],
-    apply(ctx) { installPromptReasons({ ctx, roomOf: () => undefined, isBotSession: () => false, noteFailure() {}, redactSecrets: undefined }, id => id) },
+    // With `notes` the plugin treats every Session as a Bot's and records what it reports — the
+    // visible sign that its prompt wrapper is live.
+    apply(ctx) { installPromptReasons({ ctx, roomOf: () => undefined, isBotSession: () => notes !== undefined, noteFailure: note => notes?.push(note), redactSecrets: undefined }, id => id) },
   })
   return { root, raw: () => raw, calls, listResult, gateway, load, loadTurns }
 }
@@ -171,5 +177,27 @@ describe('S36-real: the controller methods come back after the plugin is dispose
       assert.equal((await w.gateway().prompt({ sessionId: MIRROR, requestId: 'r' })).from, 'core-prompt', order)
       await w.root.fiber.dispose()
     }
+  })
+
+  it('S38-wrap-live: taking the OUTER wrapper off leaves the inner one of ours working (only wrappers already switched off are skipped)', async () => {
+    const w = await world()
+    const notes = []
+    const turns = w.loadTurns(notes)       // installed first: the inner layer
+    const joined = w.load()                // on top of it: the outer layer
+    await tick()
+    w.calls.failPrompt = true
+    await assert.rejects(w.gateway().prompt({ sessionId: 'ordinary-1', requestId: 'r0' }), error => error.message.endsWith('— because'))
+    assert.equal(notes.length, 1, 'both layers loaded: the inner one reports')
+    joined.dispose()                       // outer off first: the restore must land on the INNER wrapper, not under it
+    await tick()
+    assert.equal(Object.hasOwn(w.raw(), 'prompt'), true, 'the inner wrapper is still on the service')
+    await assert.rejects(w.gateway().prompt({ sessionId: 'ordinary-1', requestId: 'r1' }), error => error.message.endsWith('— because'))
+    assert.equal(notes.length, 2, 'the inner wrapper still reports after the outer one was removed')
+    turns.dispose()
+    await tick()
+    assert.equal(Object.hasOwn(w.raw(), 'prompt'), false)
+    await assert.rejects(w.gateway().prompt({ sessionId: 'ordinary-1', requestId: 'r2' }), error => error.message === 'core refused')
+    assert.equal(notes.length, 2, 'nothing reports after the inner one is gone too')
+    await w.root.fiber.dispose()
   })
 })

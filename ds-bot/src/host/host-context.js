@@ -16,7 +16,11 @@ import { dshVersion } from './diagnostics.js'
 //    dir, credentials path, environment variables, IP/MAC, tokens, full shell path (I3).
 //  - the same bytes on every turn: no uptime, free memory, load, time (I4).
 //  - `auto` switches the text on only where the node-policy service exists, so a hub's own prompt
-//    is byte for byte what it was before this module (I5).
+//    is byte for byte what it was before this module (I5). What counts is the SERVICE, not its roots:
+//    ra registers `remote-agent:node-policy` also when the node has no roots (it only warns, then
+//    provides `{ roots: [] }`, dsh-remote-agent lib/node/index.js:664-677), so such a worker still gets
+//    the text — only the "Writable workspace roots" line is missing. A process without the service at
+//    all (a hub) gets nothing.
 //  - a field that cannot be read is left out, never written as "unknown".
 
 export const CONTEXT_NAME = 'ds-bot:host-environment'
@@ -147,20 +151,23 @@ export function renderHostContext(facts = {}, { policy, fields = FIELDS } = {}) 
   return [HEADER, ...lines, FOOTER].join('\n')
 }
 
+// A bad value must not stop ds-bot from starting: this is an extra line of prompt, not something
+// the rest depends on. Anything not understood reads as `off` ({ invalid: true } lets install say so).
 function modeAndFields(config) {
-  const value = config.hostContext
+  const value = config.hostContext ?? undefined
+  if (value !== undefined && typeof value !== 'string' && (typeof value !== 'object' || Array.isArray(value))) return { mode: 'off', invalid: true }
   const mode = typeof value === 'string' ? value : value?.mode ?? 'auto'
-  if (!MODES.includes(mode)) throw new TypeError('hostContext must be "auto", "on" or "off"')
+  if (!MODES.includes(mode)) return { mode: 'off', invalid: true }
   const list = typeof value === 'object' && value !== null ? value.fields : undefined
-  if (list !== undefined && (!Array.isArray(list) || list.some(name => !FIELDS.includes(name)))) {
-    throw new TypeError(`hostContext.fields must be a list of: ${FIELDS.join(', ')}`)
-  }
+  if (list !== undefined && (!Array.isArray(list) || list.some(name => !FIELDS.includes(name)))) return { mode: 'off', invalid: true }
   return { mode, fields: list ?? FIELDS }
 }
 
 export function install(rt) {
   const { ctx, config } = rt
-  const { mode, fields } = modeAndFields(config)
+  const { mode, fields, invalid } = modeAndFields(config)
+  // Said once, without the value (a config can hold anything, a secret included).
+  if (invalid) ctx.logger?.warn?.('ds-bot: hostContext is not valid (mode auto, on or off; fields from the documented list): the host environment is off')
   if (mode === 'off') return
   // `config.hostProbe` is a test seam (a YAML config cannot carry functions); the real machine otherwise.
   const probe = typeof config.hostProbe === 'object' && config.hostProbe !== null ? config.hostProbe : realProbe

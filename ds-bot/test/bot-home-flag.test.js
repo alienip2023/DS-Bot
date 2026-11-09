@@ -75,7 +75,7 @@ describe('S23b: openJoinedHome (real teamActions)', () => {
       // `listed`: undefined = no list wired; { now, afterRefresh } = what the core's session list holds
       ...(listed === undefined ? {} : {
         sessionListed: id => { calls.push(['listed?', id]); return listed.refreshed ? listed.afterRefresh : listed.now },
-        refreshSessions: async () => { calls.push(['refreshSessions']); listed.refreshed = true },
+        refreshSessions: async () => { calls.push(['refreshSessions']); if (listed.refreshFails) return false; listed.refreshed = true; return true },
       }),
     })
     return { actions, calls, ui }
@@ -150,6 +150,31 @@ describe('S23b: openJoinedHome (real teamActions)', () => {
         assert.match(text, /节点上的对话不受影响/)
         assert.match(text, /联系维护者重建/)
         assert.doesNotMatch(text, /mirror conversation file/)
+      } finally { restore?.() }
+    })
+
+    it('S38-refresh-failed: when the list cannot be read again the toast says THAT — it does not call the mirror damaged', async () => {
+      const { actions, calls, ui } = harness({ mirrorSessionId: 'sess-mirror', listed: { now: false, afterRefresh: true, refreshFails: true } })
+      await actions.openJoinedHome('bot-j1')
+      assert.equal(calls.some(call => call[0] === 'openSession'), false, 'nothing opened')
+      assert.deepEqual(calls, [['listed?', 'sess-mirror'], ['refreshSessions']], 'the list is not asked again after a failed refresh')
+      assert.match(sayings(ui), /conversation list could not be refreshed/)
+      assert.doesNotMatch(sayings(ui), /damaged|mirror conversation file/)
+    })
+
+    it('S38-refresh-failed-zh: in Chinese it names the failed refresh, not a damaged file', async () => {
+      const dicts = new Map()
+      const restore = installLocale({
+        register: (ns, locale, dict) => { dicts.set(`${ns}:${locale}`, dict); return () => dicts.delete(`${ns}:${locale}`) },
+        bind: ns => (key, params) => (dicts.get(`${ns}:zh`)?.[key] ?? key),
+        getLocale: () => ({ active: 'zh' }),
+      })
+      try {
+        const { actions, ui } = harness({ mirrorSessionId: 'sess-mirror', listed: { now: false, afterRefresh: true, refreshFails: true } })
+        await actions.openJoinedHome('bot-j1')
+        assert.match(sayings(ui), /会话列表刷新失败/)
+        assert.match(sayings(ui), /稍后再试/)
+        assert.doesNotMatch(sayings(ui), /损坏/)
       } finally { restore?.() }
     })
 

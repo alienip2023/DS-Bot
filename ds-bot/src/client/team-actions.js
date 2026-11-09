@@ -30,20 +30,25 @@ export function teamActions({ call, after, partFor, roster, ui, live, cards, hel
   // cannot be read (a damaged log is dropped from the list with only a line in the host log).
   // The core's opener then waits for a session that never comes and the click does nothing, so
   // the list is read again once and a session still missing is reported.
-  const mirrorListed = async (botId) => {
-    if (typeof sessionListed !== 'function') return true
+  // Answers 'listed', 'missing' (the list was read again and still lacks it), or 'unknown' (the
+  // list could not be read again, so nothing can be said about the session).
+  const mirrorState = async (botId) => {
+    if (typeof sessionListed !== 'function') return 'listed'
     const sessionId = roster.getSnapshot().byId?.[botId]?.sessionId
-    if (sessionListed(sessionId)) return true
-    await refreshSessions?.()
-    return sessionListed(sessionId)
+    if (sessionListed(sessionId)) return 'listed'
+    if (await refreshSessions?.() === false) return 'unknown'
+    return sessionListed(sessionId) ? 'listed' : 'missing'
   }
   const openJoinedHome = async (botId) => {
     try {
       if (!botHasHome(botId)) {
         await after(call('joined-ensure', { botId }))
         if (!botHasHome(botId)) throw new Error('The Bot page is not ready yet. Try again in a moment.')
-      } else if (!await mirrorListed(botId)) {
-        throw new Error(t('The mirror conversation file of this remote Bot is damaged or cannot be read, so it cannot be opened here. The conversation on the node is not affected. Ask the maintainer to rebuild the mirror (the cause is in the DS Bot log).'))
+      } else {
+        const state = await mirrorState(botId)
+        // A list that could not be read is not evidence of a damaged file: say that instead.
+        if (state === 'unknown') throw new Error(t('The conversation list could not be refreshed, so the mirror conversation of this remote Bot could not be checked. Try again in a moment.'))
+        if (state === 'missing') throw new Error(t('The mirror conversation file of this remote Bot is damaged or cannot be read, so it cannot be opened here. The conversation on the node is not affected. Ask the maintainer to rebuild the mirror (the cause is in the DS Bot log).'))
       }
       openSession(botId)
     } catch (error) {

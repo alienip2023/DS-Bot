@@ -467,7 +467,7 @@ export function apply(ctx) {
     }
   }
   const actions = {
-    ...teamActions({ call, after, partFor, roster, ui, live, cards, heldCards, turnClock, panelFolded, openSession: id => actions.openSession(id), sessionListed: id => ctx.sessions.list.getSnapshot().byId?.[id] !== undefined, refreshSessions: () => Promise.resolve(ctx.sessions.refresh?.()).catch(quietly('refresh sessions')) }),
+    ...teamActions({ call, after, partFor, roster, ui, live, cards, heldCards, turnClock, panelFolded, openSession: id => actions.openSession(id), sessionListed: id => ctx.sessions.list.getSnapshot().byId?.[id] !== undefined, refreshSessions: () => Promise.resolve(ctx.sessions.refresh?.()).then(() => true, error => { quietly('refresh sessions')(error); return false }) }),
     learningAnswer: (id, approve) => after(call('learning-answer', { id, approve })),
     // The full-pane overlays sit above the conversation, so opening one must dismiss them
     // or the click appears to do nothing.
