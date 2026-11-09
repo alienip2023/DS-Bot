@@ -2200,10 +2200,14 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
     // Joined (remote) bot chat: open, close, send a message to remote session.
     openJoinedChat: (botId) => openJoinedChat(ui2, botId),
     botHomeEnabled: () => roster.getSnapshot().botHomeEnabled === true,
-    // Read-only: does this Bot already have a local mirror session to open?
+    // Read-only: does this Bot already have a local mirror session to open? The host
+    // always sends `sessionId` (channel.js view(): rt.chatOf(bot.id)), and chatOf falls
+    // back to the Bot's own id until the mirror session is created on the first send,
+    // so only a sessionId different from the Bot's id means a session exists.
     botHasHome: (botId) => {
-      const sessionId = roster.getSnapshot().byId?.[botId]?.sessionId;
-      return typeof sessionId === "string" && sessionId !== "";
+      const bot = roster.getSnapshot().byId?.[botId];
+      const sessionId = bot?.sessionId;
+      return typeof sessionId === "string" && sessionId !== "" && sessionId !== (bot.id ?? botId);
     },
     closeJoinedChat: () => {
       ui2.set((state) => state.joinedChat ? { ...state, joinedChat: null } : state);
