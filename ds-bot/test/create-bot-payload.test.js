@@ -37,6 +37,7 @@ runInNewContext(outputFiles[0].text, {
   module, exports: module.exports,
   require: name => (name === 'react' ? react : name === 'react-dom' ? { createPortal: node => node } : {}),
   window: { innerWidth: 1280, addEventListener() {}, removeEventListener() {} }, document: { body: {} }, navigator: {}, Element: class {},
+  btoa: text => Buffer.from(text, 'binary').toString('base64'), unescape, encodeURIComponent,
 })
 const { CreateBot } = module.exports
 
@@ -137,4 +138,62 @@ test('M-create-worker: a Worker Bot (remote machine type) keeps its hub fields i
   assert.equal(body.type, 'remote-worker')
   assert.deepEqual(plain(body.worker), { hubUrl: 'https://hub.example.com', remotePort: 19387 })
   assert.deepEqual(plain(body.memoryConfig), { backend: 'auto' })
+})
+
+// ---- s50 M5b: upstream's "what does it run on" switch (a model, or a local agent = a CLI on THIS machine) next to
+// this fork's Machine and Worker choices. A CLI of this machine cannot serve a Bot created on a node or a Worker Bot.
+const named = (tree, name) => find(tree, n => typeof n.type === 'function' && n.type.name === name)
+
+test('M-create-modeswitch: the switch is there on this machine, and gone for a node and for a Worker Bot', async () => {
+  const m = await mount()
+  assert.equal(named(m.view(), 'RunModeSwitch').length, 1, 'this machine: the switch')
+  await m.act(tree => m.select(tree, 'Machine').props.onChange({ target: { value: 'n1' } }))
+  assert.equal(named(m.view(), 'RunModeSwitch').length, 0, 'a node: no switch')
+  await m.act(tree => m.select(tree, 'Machine').props.onChange({ target: { value: '' } }))
+  assert.equal(named(m.view(), 'RunModeSwitch').length, 1, 'back on this machine: the switch again')
+  await m.act(tree => m.select(tree, 'Bot type').props.onChange({ target: { value: 'remote-worker' } }))
+  assert.equal(named(m.view(), 'RunModeSwitch').length, 0, 'a Worker Bot: no switch')
+})
+
+test('M-create-local-agent: a local agent is created with its route, no effort, and still carries memoryConfig', async () => {
+  const m = await mount()
+  // a thinking level picked on the model first must not follow the Bot onto a CLI
+  await m.act(tree => named(tree, 'ModelMenu')[0].props.onPickEffort('high'))
+  await m.act(tree => named(tree, 'RunModeSwitch')[0].props.setMode('local'))
+  assert.equal(named(m.view(), 'CliList').length, 1, 'the local agent list is shown')
+  await m.act(tree => named(tree, 'CliList')[0].props.onPick({ route: 'local-claude-code' }))
+  await m.act(tree => m.createButton(tree).props.onClick())
+  const body = m.created[0]
+  assert.equal(body.model, 'local-claude-code/default')
+  assert.equal('effort' in body, false)
+  assert.deepEqual(plain(body.memoryConfig), { backend: 'auto' })
+  assert.equal(body.nodeId, undefined)
+})
+
+test('M-create-local-then-node: switching the Machine to a node after choosing a local agent creates on the NODE with a model, not the CLI', async () => {
+  const m = await mount()
+  await m.act(tree => named(tree, 'RunModeSwitch')[0].props.setMode('local'))
+  await m.act(tree => named(tree, 'CliList')[0].props.onPick({ route: 'local-claude-code' }))
+  await m.act(tree => m.select(tree, 'Machine').props.onChange({ target: { value: 'n1' } }))
+  assert.equal(named(m.view(), 'ModelMenu')[0].props.bot.model, 'piion/m1', 'the node picker shows the model, not the CLI choice')
+  await m.act(tree => m.createButton(tree).props.onClick())
+  const body = m.created[0]
+  assert.equal(body.nodeId, 'n1')
+  assert.equal(body.model, 'piion/m1')
+  assert.equal(String(body.model).startsWith('local-'), false)
+})
+
+test('M-create-node-picker: the picker of a node-side Bot is the NODE catalog as reported — local- names of either spelling included', async () => {
+  const targets = [{ nodeId: 'n1', hostname: 'node-1', online: true, defaultModel: null, models: [
+    NODE_MODEL,
+    { ref: 'local-claude-code/sonnet', provider: 'local-claude-code', id: 'sonnet', name: 'Sonnet' },
+    { ref: 'claude-code/opus', provider: 'claude-code', id: 'opus', name: 'Opus' },
+  ] }]
+  const m = await mount({ targets })
+  await m.act(tree => m.select(tree, 'Machine').props.onChange({ target: { value: 'n1' } }))
+  const menu = named(m.view(), 'ModelMenu')[0]
+  assert.ok(menu, 'a model picker')
+  assert.deepEqual(menu.props.roster.models.map(model => model.ref).sort(), ['ccmax/claude-sonnet-5-5', 'claude-code/opus', 'local-claude-code/sonnet'])
+  assert.equal(menu.props.bot.origin, 'joined')
+  assert.equal(menu.props.bot.worker.home, 'remote', 'it is the picker of a remote Bot, so no local-agent routing of this machine')
 })
