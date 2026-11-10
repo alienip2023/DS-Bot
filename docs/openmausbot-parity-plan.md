@@ -84,7 +84,7 @@ bot.threadIds: string[]     // 至少一条（Main）
 |---|---|---|---|---|---|
 | T1 | state.threads + 迁移 + bySessionId/joined 路由 | `store.js`, `bot-store.js`, `joined-prompt.js`, `test/thread-migrate.test.js` | — | 迁移 3 刀 + 旧 state 副本实跑；`bySessionIdFull` 返回 `{botId,threadId}`，`joinedBotOfSession` 按 thread.sessionId 判定，旧 `bySessionId` 仍返回 botId | 1.0 |
 | T2 | host API + 串行队列 | `channel.js`, `roster.js`, `turns.js`, `test/thread-api.test.js` | T1 | 创建/切换/队列/取消 API 测试 | 1.0 |
-| T3a | 客户端切换器（P1 必做） | `sidebar.js`, `index.js`, `styles.js` | T2 | 真机点通：建/切/改名/归档；侧栏线程行可点 | 1.0 |
+| T3a | 客户端切换器（P1 必做） | `sidebar.js`, `index.js`, `styles.js` | T2 | 真机点通：侧栏线程行、点击切换 Session、新建线程按钮 | 1.5 |
 | T3b | 切换器打磨（P1.5） | `cells.js`, `styles.js`, `i18n.js` | T3a | 未读/运行/排队标记、右键菜单、composer 排队条幅 | — |
 | T4 | 线程级 model/effort/workDir（含 joined 模型） | `roster.js`, `model-menu.js`, `node-models.js`, `joined-page.js` | T2 | 两条线程不同模型，节点 state 双份正确 | 1.0 |
 | T5 | ra 协议 + 节点线程注册表 | `ra/lib/protocol.js`, `ra/lib/node/index.js`, `ra/lib/hub/index.js` | T2 | 3 刀 + 真 hub/node 建线程 | 2.0 |
@@ -92,9 +92,9 @@ bot.threadIds: string[]     // 至少一条（Main）
 | T7 | 迁移演练 + 旧节点/旧客户端降级 | 测试与兼容代码 | T5,T6 | 旧节点混跑、旧 state 迁移、回滚演练 | 0.5 |
 | T8 | 收口：测试、刀、文档 | 全量 | 全部 | 红集合 diff 为空；P1 验收剧本全过 | 1.0 |
 
-P1 合计 **9.0 工程日**（T3b 移入 P1.5）；加上验收官/测试员各一轮（约 2–3 天）与返工缓冲，**单工程师日历约 10–11 个工作日**。
+P1 合计 **9.5 工程日**（T3b 的改名/归档/标记/菜单移入 P1.5，不计入）；加上验收官/测试员各一轮（约 2 天）与返工缓冲，**单工程师日历按 12–14 个工作日算**。
 
-若临时把 T3a 也收窄成“只做头部下拉、不做侧栏线程行”，可再省约 0.5 天，但不再单独列一档。
+若把 T3a 收窄成“只做头部下拉、不做侧栏线程行”，可省约 1 天、日历压到 10–11 天，但线程发现性明显变差；默认不这样做。
 
 ## 4. 验收剧本（可直接照做）
 
@@ -138,7 +138,7 @@ node --test --test-timeout=120000 test/thread-*.test.js
 ## 6. 当前状态与下一步
 
 - **已完成**：设计文档（`docs/thread-model.md`）、s59 收口（fork.4/fork.66，只测试与改名，未装机）。
-- **进行中**：P1b-1 的 ds-bot 测试重写（首版是内联自证，已退回）；线程模型文档 v3（三个开工阻塞项已排除，两处设计约束待落文）。
+- **进行中**：P1b-1 的 ds-bot 测试重写（首版是内联自证，已退回）；线程模型文档 v3 已交（`7d1a59c7`），待一处措辞修正。
 - **下一步**：P1b-1 验收 → 开 T1；T1/T2 完成后 T3a/T4 与 T5 并行。
 - **未做**：tag/Release、并行线程、审批、收件箱、计算机、语音、移动端。
 
