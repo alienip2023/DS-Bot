@@ -1,3 +1,14 @@
+/** Map a raw node model entry from onlineNodes() into the bot-create-targets shape. */
+export function mapNodeModel(m) {
+  return {
+    ref: m.ref ?? `${m.provider ?? ''}/${m.id ?? ''}`,
+    provider: m.provider,
+    id: m.id,
+    name: m.name,
+    efforts: Array.isArray(m.efforts) ? m.efforts.map(e => ({ id: e.id, name: e.name ?? e.id })) : [],
+  }
+}
+
 // Client channel: the team view the browser renders, and the POST /api/bot endpoints.
 import { randomUUID } from 'node:crypto'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -437,7 +448,7 @@ export function install(rt) {
                 nodeId: n.nodeId,
                 hostname: n.hostname ?? n.nodeId,
                 online: true,
-                models: Array.isArray(n.models) ? n.models.map(m => ({ ref: m.ref ?? `${m.provider ?? ''}/${m.id ?? ''}`, provider: m.provider, id: m.id, name: m.name, efforts: Array.isArray(m.efforts) ? m.efforts.map(e => ({ id: e.id, name: e.name ?? e.id })) : [] })) : [],
+                models: Array.isArray(n.models) ? n.models.map(mapNodeModel) : [],
                 defaultModel: mapDefaultModel(n.defaultModel),
               }))
             }
