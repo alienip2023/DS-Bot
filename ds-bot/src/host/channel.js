@@ -437,7 +437,7 @@ export function install(rt) {
                 nodeId: n.nodeId,
                 hostname: n.hostname ?? n.nodeId,
                 online: true,
-                models: Array.isArray(n.models) ? n.models.map(m => ({ ref: m.ref ?? `${m.provider ?? ''}/${m.id ?? ''}`, provider: m.provider, id: m.id, name: m.name })) : [],
+                models: Array.isArray(n.models) ? n.models.map(m => ({ ref: m.ref ?? `${m.provider ?? ''}/${m.id ?? ''}`, provider: m.provider, id: m.id, name: m.name, efforts: Array.isArray(m.efforts) ? m.efforts.map(e => ({ id: e.id, name: e.name ?? e.id })) : [] })) : [],
                 defaultModel: mapDefaultModel(n.defaultModel),
               }))
             }

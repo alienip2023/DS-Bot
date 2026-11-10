@@ -175,11 +175,12 @@ export async function joinedUpdateBot(rt, botId, patch) {
   const result = await waiter.pending
   if (!result?.ok) return { ok: false, error: result?.error ?? 'bot-update-failed' }
 
-  // Sync shadow row — write both bot.model (what UI reads via modelOf) and bot.worker.model
+  // Sync shadow row — write bot.model, bot.appliedModel, and bot.worker.model
   if (result.model !== undefined && result.model !== null) {
     if (!bot.worker) bot.worker = {}
     bot.worker.model = result.model
     bot.model = result.model
+    bot.appliedModel = result.model
   }
   if (result.effort !== undefined) bot.effort = result.effort
   await rt.save?.()
@@ -202,15 +203,23 @@ export function createBotUpdateReceiver(rt) {
       if (wdErr) return { ok: false, error: 'bot-update-workdir-denied' }
     }
 
-    // model validation against node catalog (if llm available)
+    // model validation against node catalog — check the full ref, not just the provider
     if (modelRef !== null) {
-      const providerId = modelRef.includes('/') ? modelRef.split('/')[0] : modelRef
-      const llm = rt.ctx?.get?.('llm') ?? rt.ctx?.llm
-      if (!llm || typeof llm.listProviders !== 'function') {
-        return { ok: false, error: 'bot-update-model-unknown' }
+      const nodePolicy = rt.ctx?.get?.('remote-agent:node-policy')
+      const knownRefs = Array.isArray(nodePolicy?.models) ? new Set(nodePolicy.models.map(m => m.ref ?? `${m.provider ?? ''}/${m.id ?? ''}`)) : null
+      if (knownRefs !== null && !knownRefs.has(modelRef)) {
+        return { ok: false, error: 'bot-update-model-not-on-node' }
       }
-      const providerIds = llm.listProviders().map(p => typeof p === 'string' ? p : p.id)
-      if (!providerIds.includes(providerId)) return { ok: false, error: 'bot-update-model-unknown' }
+      // Fallback: if no node-policy models available, check at least the provider via llm
+      if (knownRefs === null) {
+        const providerId = modelRef.includes('/') ? modelRef.split('/')[0] : modelRef
+        const llm = rt.ctx?.get?.('llm') ?? rt.ctx?.llm
+        if (!llm || typeof llm.listProviders !== 'function') {
+          return { ok: false, error: 'bot-update-model-unknown' }
+        }
+        const providerIds = llm.listProviders().map(p => typeof p === 'string' ? p : p.id)
+        if (!providerIds.includes(providerId)) return { ok: false, error: 'bot-update-model-unknown' }
+      }
     }
 
     try {
