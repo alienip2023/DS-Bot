@@ -82,16 +82,19 @@ bot.threadIds: string[]     // 至少一条（Main）
 
 | 片 | 内容 | 主要文件 | 依赖 | 验收 | 工程日 |
 |---|---|---|---|---|---|
-| T1 | state.threads + 迁移 + bySessionId | `store.js`, `bot-store.js`, `test/thread-migrate.test.js` | — | 迁移 3 刀 + 旧 state 副本实跑 | 1.0 |
+| T1 | state.threads + 迁移 + bySessionId/joined 路由 | `store.js`, `bot-store.js`, `joined-prompt.js`, `test/thread-migrate.test.js` | — | 迁移 3 刀 + 旧 state 副本实跑；`bySessionIdFull` 返回 `{botId,threadId}`，`joinedBotOfSession` 按 thread.sessionId 判定，旧 `bySessionId` 仍返回 botId | 1.0 |
 | T2 | host API + 串行队列 | `channel.js`, `roster.js`, `turns.js`, `test/thread-api.test.js` | T1 | 创建/切换/队列/取消 API 测试 | 1.0 |
-| T3 | 客户端最小 UI | `sidebar.js`, `cells.js`, `index.js`, `styles.js` | T2 | 真机点通：建/切/改名/归档 | 1.5 |
+| T3a | 客户端切换器（P1 必做） | `sidebar.js`, `index.js`, `styles.js` | T2 | 真机点通：建/切/改名/归档；侧栏线程行可点 | 1.0 |
+| T3b | 切换器打磨（P1.5） | `cells.js`, `styles.js`, `i18n.js` | T3a | 未读/运行/排队标记、右键菜单、composer 排队条幅 | — |
 | T4 | 线程级 model/effort/workDir（含 joined 模型） | `roster.js`, `model-menu.js`, `node-models.js`, `joined-page.js` | T2 | 两条线程不同模型，节点 state 双份正确 | 1.0 |
 | T5 | ra 协议 + 节点线程注册表 | `ra/lib/protocol.js`, `ra/lib/node/index.js`, `ra/lib/hub/index.js` | T2 | 3 刀 + 真 hub/node 建线程 | 2.0 |
 | T6 | 镜像隔离 + 重连续读 | `mirror.js`, `joined-turn.js`, `executor.js`, `roster-join.js` | T5 | 两线程上下文隔离；断网 10s 后续读 | 1.5 |
 | T7 | 迁移演练 + 旧节点/旧客户端降级 | 测试与兼容代码 | T5,T6 | 旧节点混跑、旧 state 迁移、回滚演练 | 0.5 |
 | T8 | 收口：测试、刀、文档 | 全量 | 全部 | 红集合 diff 为空；P1 验收剧本全过 | 1.0 |
 
-合计 **9.5 工程日**；加上验收官/测试员各一轮（约 2–3 天）与返工缓冲，**单工程师日历约 12–14 个工作日**。若 T3（UI）只做头部下拉、侧栏线程行延后，可压到 **10–11 天**。
+P1 合计 **9.0 工程日**（T3b 移入 P1.5）；加上验收官/测试员各一轮（约 2–3 天）与返工缓冲，**单工程师日历约 10–11 个工作日**。
+
+若临时把 T3a 也收窄成“只做头部下拉、不做侧栏线程行”，可再省约 0.5 天，但不再单独列一档。
 
 ## 4. 验收剧本（可直接照做）
 
@@ -126,8 +129,8 @@ node --test --test-timeout=120000 test/thread-*.test.js
 | 风险 | 处理 |
 |---|---|
 | `state.version 2` 不可逆 | 迁移前强制备份；回滚只恢复 state.json，会话文件不动 |
-| 同 Bot 多 Session 是否被 sessionController 允许（**未核实**） | T1 开工前只读验证；不允许则改「一条 Session + threadId 事件」方案，工期 +2 天 |
-| `controller-wrap`/`mirror-guard` 是否按 Session 隔离（**未核实**） | 同上，T5 前验证 |
+| 同 Bot 多 Session 是否被 sessionController 允许 | **已核实：允许。** `dsh-api-session-controller` 的 `create(request)` 只按 workspaceId/cwd 建 Session，无 per-bot 约束，每次返回新 sessionId |
+| `controller-wrap`/`mirror-guard` 是否按 Session 隔离 | **已核实：按 Session 隔离**，但 `joinedBotOfSession`（`joined-prompt.js:33-37`）当前只认 `bot.sessionId`，必须随 T1 的 `bySessionIdFull` 一起改，否则非 Main 线程的 joined 路由失效 |
 | 多线程争用工作目录 | P1 明确串行；同 workDir 并发不做保证 |
 | 旧节点收到新帧 | dispatch default 分支；真机混跑验证 |
 | 线程数膨胀 | 每 Bot 上限 10 条（可调），归档不删历史 |
@@ -135,8 +138,8 @@ node --test --test-timeout=120000 test/thread-*.test.js
 ## 6. 当前状态与下一步
 
 - **已完成**：设计文档（`docs/thread-model.md`）、s59 收口（fork.4/fork.66，只测试与改名，未装机）。
-- **进行中**：P1b-1（主控给 joined Bot 选模型，工程师）；架构师核实 3 个阻塞 API。
-- **下一步**：P1b-1 交回并验收 → 开 T1；T1/T2 完成后 T3/T4 与 T5 并行。
+- **进行中**：P1b-1 的 ds-bot 测试重写（首版是内联自证，已退回）；线程模型文档 v3（三个开工阻塞项已排除，两处设计约束待落文）。
+- **下一步**：P1b-1 验收 → 开 T1；T1/T2 完成后 T3a/T4 与 T5 并行。
 - **未做**：tag/Release、并行线程、审批、收件箱、计算机、语音、移动端。
 
 ## 7. 后续阶段（范围，不给日期）
