@@ -48,4 +48,11 @@ describe('S50-recover: adopting the work dsh still runs', () => {
     assert.equal(rt.live.get('mirror-1'), undefined, 'the shadow has no live entry made for it')
     assert.equal(rt.live.get('sess-a')?.turn, -1, 'the local Bot beside it is adopted')
   })
+
+  it('R3-startup: createRuntime itself adopts the running work (the call in index.js is wired), no explicit call', async () => {
+    const { rt } = world([running('sess-a'), running('mirror-1')])
+    for (let i = 0; i < 50 && rt.live.get('sess-a') === undefined; i += 1) await new Promise(resolve => setTimeout(resolve, 20))
+    assert.equal(rt.live.get('sess-a')?.turn, -1, 'the local Bot was adopted by the start-up call')
+    assert.equal(rt.live.get('mirror-1'), undefined, 'and the joined shadow was not')
+  })
 })
