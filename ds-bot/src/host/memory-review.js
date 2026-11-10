@@ -22,7 +22,7 @@ const REVIEW_PASSES_MAX = 4
 
 export function installReview(rt, memory) {
   const { ctx, config } = rt
-  const { root, reviewOn, mainLimit, TEAM, ownScope, groupScope, keeperOf, writesTeam, labelOf, fileName, today, writeText, settled, loadScope, addEntry, replaceEntry, removeEntry, entryProblem, secretEntry, botShot, languageNow } = memory
+  const { backendOf, root, reviewOn, mainLimit, TEAM, ownScope, groupScope, keeperOf, writesTeam, labelOf, fileName, today, writeText, settled, loadScope, addEntry, replaceEntry, removeEntry, entryProblem, secretEntry, botShot, languageNow } = memory
 
   const cursorsPath = join(root, 'reviewed.json')
   /** @type {Record<string, number> | undefined} */
@@ -232,6 +232,8 @@ export function installReview(rt, memory) {
   async function reviewChat(seen) {
     const bot = rt.botOf(reviewOf(seen.sessionId)?.botId ?? seen.botId)
     if (bot === undefined) return
+    // 15a0fd1：只复盘用 ds-bot 文件记忆的 Bot（dsh-mneme 自己管它的复盘，关掉记忆的不复盘）。
+    if (backendOf(bot) !== 'file') return
     const since = cursorsNow()[seen.key]
     await reviewBatch({
       key: seen.key, since, batch: await chatBatch(seen.sessionId, bot, since),
@@ -251,6 +253,8 @@ export function installReview(rt, memory) {
     const live = rt.roomOf(seen.roomId)
     const keeper = live === undefined ? undefined : keeperOf(live)
     if (keeper === undefined) return
+    // 15a0fd1：群复盘也算这个 Bot 的记忆，由它自己的后端决定做不做。
+    if (backendOf(keeper) !== 'file') return
     const since = cursorsNow()[seen.key]
     const room = withKeptLines(joinLogs(seen.room, live), await rt.groupLinesAfter(live.id, since).catch((error) => {
       rt.warn('ds-bot: the log of group "%s" could not be read: %s', live.name, error?.message ?? error)

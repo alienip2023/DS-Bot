@@ -186,3 +186,26 @@ test('M-mem-tools: the file-memory tools and the prompt section stay with the fi
   assert.equal(w.section('b4'), '')
   await assert.rejects(w.tool('remember', { text: 'x' }, 'b4'), /keeps its memory in dsh-mneme/)
 })
+
+// What the pre-step puts in front of a Session's step: the group memory snapshot, the memory update and the
+// automatic recall are all ds-bot FILE memory. A Bot that moved to dsh-mneme / none gets none of them.
+const textOf = message => (message?.content ?? []).map(block => block.text).join('')
+async function frontOf(ctx, sessionId) {
+  const step = ctx.listeners.get('agent/pre-step').find(listener => /isGroupMemory|memoryUpdate/.test(String(listener)))
+  const agent = { id: sessionId, session: { deriveMessages: () => [] } }
+  const decision = await step({ agent, messages: [], step: 1, signal: AbortSignal.timeout(10_000) }, async () => ({ kind: 'enter', messages: [] }))
+  return decision.messages
+}
+
+for (const backend of ['none', 'mneme']) {
+  test(`M-mem-prestep-${backend}: the pre-step puts no ds-bot memory in front of a Bot that moved to ${backend} — decided at use time`, async (t) => {
+    const w = world({ b3: 'file' })
+    t.after(() => w.stop())
+    await w.call('state', {})
+    await w.tool('remember', { text: 'Ship on Friday' }, 'g3')
+    assert.match(textOf((await frontOf(w.ctx, 'g3'))[0]), /Group memory/, 'on the file backend the snapshot is there')
+    assert.equal((await w.call('update-bot', { id: 'b3', memoryConfig: { backend } })).ok, true)
+    assert.deepEqual(await frontOf(w.ctx, 'g3'), [], 'moved off the file backend: nothing is put in front of the step')
+    assert.equal(w.section('b3'), '', 'and nothing in the prompt section either')
+  })
+}
