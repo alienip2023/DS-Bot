@@ -106,6 +106,7 @@ function page({ nodeModels = NODE_MODELS, targetsFail = false, targets = null, b
   Object.assign(rt.state.bots['bot-j1'], botPatch)
   rt.state.bots['bot-local'] = { id: 'bot-local', name: 'Local', type: 'bot', model: 'piion/m1' }
   const calls = []
+  const effortCalls = []
   const roster = { ...hostRoster(rt), models: MAIN_MODELS, ready: true }
   const actions = {
     ...realTeamActions(roster, {
@@ -116,9 +117,10 @@ function page({ nodeModels = NODE_MODELS, targetsFail = false, targets = null, b
         return {}
       },
     }),
-    closeOverlay() {}, refreshModels: async () => {}, efforts: async () => ({}),
+    closeOverlay() {}, refreshModels: async () => {},
+    efforts: async (ref) => { effortCalls.push(ref); return {} },
   }
-  return { calls, roster, actions, bot: id => roster.byId[id] }
+  return { calls, roster, actions, effortCalls, bot: id => roster.byId[id] }
 }
 
 const drawerProps = (p, sessionId) => ({
@@ -130,7 +132,7 @@ const drawerProps = (p, sessionId) => ({
 
 // The open menu of the Bot's model picker, as rendered by the drawer: BotModelMenu (fetches the
 // node catalog) -> NodeModelMenu -> ModelMenu, whose popup is opened by seeding its `place` state.
-async function openDrawerMenu(p, sessionId) {
+async function openDrawerMenu(p, sessionId, { menuEffects = false } = {}) {
   const { tree, sets } = await render(DetailsDrawer, drawerProps(p, sessionId), { effects: false })
   const [bm] = find(tree, n => n.type?.name === 'BotModelMenu')
   assert.ok(bm, 'the drawer must render BotModelMenu for the Bot model')
@@ -140,11 +142,11 @@ async function openDrawerMenu(p, sessionId) {
   const { tree: nm } = await render(nmEl.type, nmEl.props, { effects: false })
   const [menuEl] = find(nm, n => n.type === ModelMenu)
   assert.ok(menuEl, 'BotModelMenu must render ModelMenu')
-  const { tree: opened } = await render(ModelMenu, menuEl.props, { effects: false, seed: { 1: { left: 0, width: 240, top: 0, maxHeight: 400 } } })
+  const { tree: opened } = await render(ModelMenu, menuEl.props, { effects: menuEffects, seed: { 1: { left: 0, width: 240, top: 0, maxHeight: 400 } } })
   const open = expand(opened)
   const items = find(open, n => n.type === 'button' && /^menuitem/.test(n.props.role ?? ''))
   return {
-    props: menuEl.props, drawerSets: sets,
+    props: menuEl.props, drawerSets: sets, tree: open,
     pickable: items.filter(n => n.props.role === 'menuitemradio'),
     off: items.filter(n => n.props.className === 'bt-model-off'),
     text: textOf(open),
@@ -324,4 +326,31 @@ test('M5-f: in Chinese the group, the reasons, the notice and the refusals read 
     const f = await refusedUpdate(page(), 'bot-update-failed: disk full')('bot-j1', { model: 'x/y' }).then(() => null, error => error)
     assert.equal(f.message, '节点拒绝了这次修改：disk full')
   } finally { offBundle(); offHere() }
+})
+
+
+// ── s60-C: a node model's thinking levels come from the node's own catalog ──────
+// The node reports levels as `models[].efforts`; the picker reads `reasoning.efforts`.
+// Before s60 the picker saw no levels (no bar) AND asked the host over RPC for nothing.
+const WITH_EFFORTS = NODE_MODELS.map(model => model.ref === 'piion/m1'
+  ? { ...model, efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }] }
+  : model)
+
+test('s60-C: a node model that reports thinking levels shows the level bar, and is not re-asked over RPC', async () => {
+  const p = page({ nodeModels: WITH_EFFORTS, bot: { model: 'piion/m1' } })
+  const m = await openDrawerMenu(p, 'bot-j1', { menuEffects: true })
+  const [barEl] = find(m.tree, n => n.type?.name === 'EffortBar')
+  assert.ok(barEl, 'the levels the node reported must reach the picker (a Thinking section is built)')
+  // Render the bar itself and read its stops: the node's own names, in order, after a Default stop.
+  hooks = { i: 0, slots: {}, effects: [], seed: {}, sets: [] }
+  const bar = barEl.type(barEl.props)
+  assert.equal(find(bar, n => n.props?.className === 'bt-effort-bar').length, 1)
+  assert.deepEqual(find(bar, n => n.props?.className === 'bt-effort-dot').map(n => n.props.title), ['Default', 'Low', 'High'])
+  assert.deepEqual(p.effortCalls, [], 'the node already said its levels: no efforts RPC')
+})
+
+test('s60-C: a node model without levels shows no level bar', async () => {
+  const p = page({ bot: { model: 'piion/m1' } })
+  const m = await openDrawerMenu(p, 'bot-j1', { menuEffects: true })
+  assert.equal(find(m.tree, n => n.type?.name === 'EffortBar').length, 0)
 })

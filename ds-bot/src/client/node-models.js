@@ -34,7 +34,10 @@ export function joinedModelView(bot, roster, nodeModels) {
   // model is one of those, so the trigger and the greyed row call the same model by the same name.
   const labels = Object.fromEntries(unavailable.map(model => [model.ref, { name: model.name, providerName: model.providerName }]))
   return {
-    roster: { ...roster, models: nodeModels.map(model => ({ ref: model.ref, provider: model.provider, name: model.name, providerName: model.provider, ...(Array.isArray(model.efforts) && model.efforts.length > 0 ? { efforts: model.efforts } : {}) })), labels },
+    // The picker reads a model's thinking levels from `reasoning.efforts` (what the host's own catalog gives it),
+    // so a node model's `efforts` is normalized to that same shape here, at the boundary. Only when the node
+    // actually reported levels: a model without them keeps asking the host, as before.
+    roster: { ...roster, models: nodeModels.map(model => ({ ref: model.ref, provider: model.provider, name: model.name, providerName: model.provider, ...(Array.isArray(model.efforts) && model.efforts.length > 0 ? { reasoning: { efforts: model.efforts } } : {}) })), labels },
     unavailable, notice: null,
   }
 }
