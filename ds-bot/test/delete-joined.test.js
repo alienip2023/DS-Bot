@@ -108,3 +108,70 @@ describe('S23c: delete joined bot + roster recreate protection', () => {
   })
 })
 
+
+// ── S58-D1: deleteBot sends bot/delete frame through real roster layer ──────
+
+import EventEmitter from 'node:events'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { createRuntime } from '../index.js'
+import { fakeContext } from './fake-ctx.js'
+
+function deleteWorld({ online = true } = {}) {
+  const emitter = new EventEmitter()
+  const frames = []
+  const registry = {
+    send: (nodeId, type, payload) => { frames.push({ nodeId, type, payload }); return true },
+    on: (ev, fn) => emitter.on(ev, fn),
+    off: (ev, fn) => emitter.off(ev, fn),
+    onlineNodes: () => online ? [{ nodeId: 'n1' }] : [],
+  }
+  const ctx = fakeContext({ services: { 'remote-agent:registry': registry } })
+  ctx.sessionController = {
+    prompt: async () => ({ accepted: true }),
+    list: async () => ({ items: [] }),
+    cancel: async () => ({ accepted: true }),
+  }
+  ctx.connection.fetch.register = () => () => {}
+  const home = mkdtempSync(join(tmpdir(), 'ds-bot-d1-'))
+  const rt = createRuntime(ctx, { home })
+  const bot = {
+    id: 'joined:n1:rb1', name: 'Joined', origin: 'joined', type: 'remote-worker',
+    worker: { nodeId: 'n1', remoteBotId: 'rb1', home: 'remote', online: true },
+  }
+  rt.state.bots[bot.id] = bot
+  return { rt, bot, frames, registry, home }
+}
+
+describe('S58-D1: deleteBot sends bot/delete through real roster layer', () => {
+  it('S58-D1-send: deleting a joined Bot dispatches bot/delete to the node', async () => {
+    // Knife: revert joinedDeleteBot to take id (not bot) → rt.botOf returns undefined after delete → bot-not-joined → no send → RED
+    const { rt, bot, frames } = deleteWorld({ online: true })
+    await rt.deleteBot(bot.id)
+
+    const delFrame = frames.find(f => f.type === 'bot/delete')
+    assert.ok(delFrame, 'must have sent a bot/delete frame')
+    assert.equal(delFrame.nodeId, 'n1', 'frame must target the correct node')
+    assert.equal(delFrame.payload.remoteBotId, 'rb1', 'payload must carry remoteBotId')
+    assert.ok(delFrame.payload.requestId, 'payload must carry a requestId')
+
+    // Tombstone must be written regardless of send success
+    assert.ok(rt.state.deletedJoinedIds?.includes(bot.id), 'tombstone must be in deletedJoinedIds')
+    assert.equal(rt.state.bots[bot.id], undefined, 'bot must be removed from state.bots')
+  })
+
+  it('S58-D1-offline: node offline still writes tombstone and does not throw', async () => {
+    // Knife: remove tombstone write → deletedJoinedIds empty → RED
+    const { rt, bot, frames } = deleteWorld({ online: false })
+    await rt.deleteBot(bot.id)
+
+    // No frame sent (node offline)
+    const delFrame = frames.find(f => f.type === 'bot/delete')
+    assert.equal(delFrame, undefined, 'must NOT send bot/delete when node is offline')
+
+    // Tombstone still written
+    assert.ok(rt.state.deletedJoinedIds?.includes(bot.id), 'tombstone must still be written when node offline')
+    assert.equal(rt.state.bots[bot.id], undefined, 'bot must be removed from state.bots')
+  })
+})

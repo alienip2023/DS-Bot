@@ -939,8 +939,10 @@ export function install(rt) {
       if (!state.deletedJoinedIds.includes(id)) state.deletedJoinedIds.push(id)
       // Best-effort: notify the node to delete its local Bot; failures are logged but do not
       // block the host-side delete (the tombstone in deletedJoinedIds prevents re-import).
+      // Pass the captured bot object (not the id) — by this point state.bots[id] is already
+      // gone, so rt.botOf(id) would return undefined.
       if (typeof rt.joinedDeleteBot === 'function') {
-        rt.joinedDeleteBot(id).then((result) => {
+        rt.joinedDeleteBot(bot).then((result) => {
           if (!result?.ok) rt.warn?.('ds-bot: node delete for joined Bot %s failed: %s', id, result?.error ?? 'unknown')
         }).catch((err) => {
           rt.warn?.('ds-bot: node delete for joined Bot %s threw: %s', id, err?.message ?? String(err))

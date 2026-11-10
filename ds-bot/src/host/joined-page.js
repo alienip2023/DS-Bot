@@ -259,8 +259,11 @@ function listenBotDeleteResult(registry, requestId, timeoutMs) {
  * this call is best-effort: a node offline / timeout is logged but doesn't block the
  * host-side delete.
  */
-export async function joinedDeleteBot(rt, botId) {
-  const bot = rt.botOf?.(botId)
+export async function joinedDeleteBot(rt, botIdOrBot) {
+  // Accept either a botId string (looked up via rt.botOf) or a pre-captured bot object.
+  // The pre-captured form is required when deleteBot has already removed the row from
+  // state.bots before calling us — rt.botOf would return undefined after that.
+  const bot = typeof botIdOrBot === 'string' ? rt.botOf?.(botIdOrBot) : botIdOrBot
   if (!bot || bot.origin !== 'joined' || bot.worker?.home !== 'remote') return { ok: false, error: 'bot-not-joined' }
   const { nodeId, remoteBotId } = bot.worker ?? {}
   if (!nodeId || !remoteBotId) return { ok: false, error: 'bot-delete-missing-worker' }
