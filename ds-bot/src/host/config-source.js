@@ -131,7 +131,9 @@ export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRef
   if (settings && entries.length > 0) {
     const sections = new Map(settings.describe({ redactSecrets: true }).map(section => [section.ns, section]))
     const refs = readRefs(rt)
-    const LOCAL_CLI_PREFIX = /^(claude-code|codex-cli)(\/|$)/
+    // The main's local CLI routes are never pushed to a node. Upstream v0.3.2 moved them under `local-`
+    // (local-claude-code/...); a main before the move (or a saved ref) still says claude-code/..., so both count.
+    const LOCAL_CLI_PREFIX = /^(?:local-)?(claude-code|codex-cli)(\/|$)/
     let gwFallbackCount = 0
     let gwTokenMissingCount = 0
     for (const entry of entries) {
@@ -236,7 +238,7 @@ export function listGatewayProviders(rt) {
   const refs = (() => {
     return readRefsFile(rt)
   })()
-  const CLI_PREFIX = /^(claude-code|codex-cli)(\/|$)/
+  const CLI_PREFIX = /^(?:local-)?(claude-code|codex-cli)(\/|$)/
   const result = []
   for (const entry of entries) {
     if (CLI_PREFIX.test(entry.provider)) continue

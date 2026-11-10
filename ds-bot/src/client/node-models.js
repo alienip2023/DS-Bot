@@ -8,7 +8,8 @@ import { t } from './i18n.js'
 // reported catalog. Models of the main DSH that the node cannot run yet are not hidden; they are
 // listed apart, greyed out, each with the reason. When the node reports no catalog the picker
 // falls back to the main list, says so, and the node may still refuse a pick.
-const CLI_PROVIDER = /^(claude-code|codex-cli)(\/|$)/
+// Both spellings: upstream v0.3.2 routes live under `local-`, a node of an older build still reports the bare names.
+const CLI_PROVIDER = /^(?:local-)?(claude-code|codex-cli)(\/|$)/
 
 // The reason a model is greyed out, in one place so the wording is easy to change.
 export const NODE_REASONS = Object.freeze({
