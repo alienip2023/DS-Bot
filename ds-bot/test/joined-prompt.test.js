@@ -391,6 +391,54 @@ describe('S27-late: the node answers after the page turn timed out', () => {
     await w.idle()
     assert.match(assistantTexts(w.sessionOf('mirror-1'))[0], /回复会补到这里/)
   })
+
+  it('S57-late-abort: an unusable payload (abort receipt with ok:false) keeps the listener alive; the real result that follows is written', async () => {
+    const w = makeWorld({ timeoutMs: 20 })
+    await w.prompt(textRequest('slow'))
+    await w.idle()
+    assert.equal(w.emitter.listenerCount('botTurnResult'), 1, 'listener armed after timeout')
+
+    // First delivery: abort receipt (ok:false) — must NOT remove the listener
+    w.reply(0, { ok: false, error: 'abort-receipt', seq: undefined, text: undefined })
+    assert.equal(w.emitter.listenerCount('botTurnResult'), 1, 'listener still alive after unusable payload')
+
+    // Second delivery: the real result — must be written
+    const before = w.sessionOf('mirror-1').log.length
+    w.reply(0, { text: 'finally here', seq: 5 })
+    assert.ok(w.sessionOf('mirror-1').log.length > before, 'real result is written')
+    assert.equal(w.emitter.listenerCount('botTurnResult'), 0, 'listener ended after usable payload')
+    const texts = assistantTexts(w.sessionOf('mirror-1'))
+    assert.ok(texts.some(t => t.startsWith(LATE_REPLY_MARK) && t.includes('finally here')), 'late reply written with LATE_REPLY_MARK')
+  })
+
+  it('S57-late-abort-b: without the fix, unusable payload removes the listener — going back to end-on-first-call makes this test red', async () => {
+    // Regression knife: awaitLate's onEvent calls end() BEFORE onResult; the listener is removed
+    // even on unusable payload. The only way to prove this behaviour is to verify the listener
+    // count after an unusable payload: it must still be 1 (not 0) with the fix applied.
+    const w = makeWorld({ timeoutMs: 20 })
+    await w.prompt(textRequest('slow'))
+    await w.idle()
+    // Send unusable payload
+    w.reply(0, { ok: false, error: 'abort-receipt' })
+    // With fix: listener survives; without fix: listener gone → test fails here
+    assert.equal(w.emitter.listenerCount('botTurnResult'), 1, 'listener must survive unusable payload')
+  })
+
+  it('S57-late-abort-c: the window timer still closes the listener — unusable payloads do not reset it', async () => {
+    const w = makeWorld({ timeoutMs: 20 })
+    w.rt.joinedLateWindowMs = 60
+    await w.prompt(textRequest('slow'))
+    await w.idle()
+    // Deliver an unusable payload (listener must stay)
+    w.reply(0, { ok: false, error: 'abort-receipt' })
+    assert.equal(w.emitter.listenerCount('botTurnResult'), 1)
+    // Wait for the late window to expire
+    await wait(120)
+    assert.equal(w.emitter.listenerCount('botTurnResult'), 0, 'window closed listener after expiry')
+    // No result should have been written
+    const texts = assistantTexts(w.sessionOf('mirror-1'))
+    assert.ok(!texts.some(t => t.startsWith(LATE_REPLY_MARK)), 'no late reply after window expiry')
+  })
 })
 
 describe('S27-timeout: the wait is long enough for a tool turn and configurable', () => {

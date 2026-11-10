@@ -167,7 +167,9 @@ function prepareRemote({ bot, text, rt, tracker, timeoutOverride }) {
   }
   // After settle() threw E_TIMEOUT the listener is gone, but the node may still finish and send
   // its bot/turn-result. This keeps listening for THIS exchange only, once, for `windowMs`;
-  // `onResult(payload)` gets that result. Returns the disposer (also called by the window's end).
+  // `onResult(payload)` gets that result. If `onResult` returns `false` the payload was not
+  // usable (e.g. an abort receipt with ok:false) and the listener stays open for the real
+  // result that may arrive later. Returns the disposer (also called by the window's end).
   const awaitLate = (onResult, windowMs) => {
     let ended = false
     const end = () => {
@@ -178,8 +180,8 @@ function prepareRemote({ bot, text, rt, tracker, timeoutOverride }) {
     }
     const onEvent = (payload) => {
       if (payload?.exchangeId !== turnId) return
+      if (onResult(payload) === false) return   // not usable — keep listening
       end()
-      onResult(payload)
     }
     const timer = setTimeout(end, windowMs)
     timer.unref?.()
@@ -270,11 +272,11 @@ function armLateReply({ rt, bot, session, state, prepared }) {
   if (rt.joinedLateClosed === true) return   // the plugin was unloaded: nothing new is armed
   const windowMs = Number.isFinite(rt.joinedLateWindowMs) ? rt.joinedLateWindowMs : JOINED_LATE_WINDOW_MS
   const dispose = prepared.awaitLate((payload) => {
-    rt.joinedLate?.delete(dispose)
     if (payload?.ok === false || !Number.isInteger(payload?.seq) || payload.seq < 0 || typeof payload?.text !== 'string') {
       rt.warn?.('ds-bot: a late node result for Bot %s was not written (no usable reply or seq)', bot.id)
-      return
+      return false   // keep listening — the real result may arrive later
     }
+    rt.joinedLate?.delete(dispose)
     const write = () => {
       try {
         mirrorLateReply(session, { botText: payload.text, botId: bot.id, nodeSeq: payload.seq, ...state })
