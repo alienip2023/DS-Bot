@@ -76,10 +76,13 @@ const walk = (node, visit) => {
   walk(node.props?.children, visit)
 }
 // Components without hooks that make up the menu body are rendered in place (ModelChoices, ModelRows).
-const INLINE = new Set(['ModelChoices', 'ModelRows'])
+const INLINE = new Set(['ModelChoices', 'ModelRows', 'ModelGroupList'])
 const expand = (node) => {
   if (Array.isArray(node)) return node.map(expand)
   if (!node || typeof node !== 'object' || node.props === undefined) return node
+  // Upstream v0.3.2 folds a provider's models under its heading (only the current model's provider starts open).
+  // These tests are about WHICH models the list holds, so every group is expanded here.
+  if (typeof node.type === 'function' && node.type.name === 'ModelGroupList') return expand(node.type({ ...node.props, manual: new Proxy({}, { get: () => true }) }))
   if (typeof node.type === 'function' && INLINE.has(node.type.name)) return expand(node.type(node.props))
   return { ...node, props: { ...node.props, children: expand(node.props.children) } }
 }

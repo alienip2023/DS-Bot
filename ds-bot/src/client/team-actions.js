@@ -81,7 +81,8 @@ export function teamActions({ call, after, partFor, roster, ui, live, cards, hel
   // `id` opens one Bot (page 'bots') or one group chat (page 'groups').
   const openSettings = (page = 'general', id = null) => { ui.set(state => ({ ...state, settings: { page, id }, menu: null, palette: null, newChat: null })) }
   return {
-    openNewChat: (mode) => { ui.set(state => ({ ...state, newChat: mode, menu: null, palette: null })) },
+    // The pane starts at the rail's edge, so a floating drawer would stick out from under it.
+    openNewChat: (mode, sectionId = null) => { ui.set(state => ({ ...state, newChat: mode, newChatSection: sectionId ?? null, menu: null, palette: null, leftDrawer: false })) },
     openPalette: (query = '') => { ui.set(state => ({ ...state, palette: { query, token: Date.now() }, newChat: null, menu: null })) },
     // The token keeps a late exit timer from closing a palette opened again since.
     closePalette: (token) => { ui.set(state => (state.palette && (token === undefined || state.palette.token === token) ? { ...state, palette: null } : state)) },
@@ -145,10 +146,15 @@ export function teamActions({ call, after, partFor, roster, ui, live, cards, hel
     quote: (sessionId, text) => ui.set(state => ({ ...state, quote: { sessionId, text, token: Date.now() } })),
     clearQuote: token => ui.set(state => (state.quote?.token === token ? { ...state, quote: null } : state)),
     setFlags: (id, flags) => after(call('set-flags', { id, ...flags })),
+    saveSection: payload => after(call('section-save', payload)),
+    reorderSections: ids => after(call('section-order', { ids })),
+    deleteSection: id => after(call('section-delete', { id })),
+    beginSectionRename: id => ui.set(state => ({ ...state, renameSection: id })),
+    endSectionRename: () => ui.set(state => (state.renameSection ? { ...state, renameSection: null } : state)),
     deleteRoom: id => after(call('delete-room', { id })),
     openMenu: (menu) => { ui.set(state => ({ ...state, menu, palette: null })) },
     closeMenu: () => { ui.set(state => (state.menu ? { ...state, menu: null } : state)) },
-    closeOverlay: () => { ui.set(state => ({ ...state, newChat: null, exchange: null, details: state.newChat || state.exchange ? state.details : null })) },
+    closeOverlay: () => { ui.set(state => ({ ...state, newChat: null, newChatSection: null, exchange: null, details: state.newChat || state.exchange ? state.details : null })) },
     createBot: payload => after(call('create-bot', payload)),
     botCreateTargets: () => call('bot-create-targets', {}),
     // The avatar library: photos the user imported once, kept by the host.
@@ -158,7 +164,11 @@ export function teamActions({ call, after, partFor, roster, ui, live, cards, hel
     createRoom: (members, options = {}) => after(call('create-room', { members, ...options })),
     // A remote Bot's node can refuse a change with its own reason code; the user reads a sentence.
     updateBot: (id, patch) => after(call('update-bot', { id, ...patch })).catch((error) => { throw joinedUpdateError(error, roster.getSnapshot().byId?.[id]) }),
+    // Give up one wait the Bot has on a hand-off that will not come back.
+    abandonWork: id => after(call('abandon-work', { id })),
     refreshModels: () => after(call('models')).catch(() => {}),
+    // One local agent's models: the first look starts its CLI, later ones read what it said.
+    agentModels: route => after(call('local-agent-models', { route })).catch(() => {}),
     efforts: ref => call('efforts', { ref }),
     // Model providers and their API keys; DSH keeps them, and a key only travels to the host.
     providers: () => call('providers'),
@@ -271,6 +281,10 @@ export function teamActions({ call, after, partFor, roster, ui, live, cards, hel
     // `summarize` starts a summary when the entries changed; `regenerate` always does.
     memoryView: (id, flags = {}) => call('memory-view', { ...memoryOf(id), ...flags }),
     memoryAsk: (id, text) => call('memory-ask', { ...memoryOf(id), text }),
+    memoryLayer: (id, entry, always) => call('memory-layer', { ...memoryOf(id), topic: entry.topic, text: entry.text, always }),
+    memoryMove: (id, entry, to) => call('memory-move', { ...memoryOf(id), scope: entry.scope, topic: entry.topic, text: entry.text, to }),
+    memoryTidyUndo: (id, scope, batch) => call('memory-tidy-undo', { ...memoryOf(id), scope, batch }),
+    memoryPin: (id, entry, pin) => call('memory-pin', { ...memoryOf(id), scope: entry.scope, topic: entry.topic, text: entry.text, pin }),
     memoryForget: (id, entry) => call('memory-forget', { ...memoryOf(id), scope: entry.scope, topic: entry.topic, text: entry.text }),
     memoryHistory: (id, before) => call('memory-history', { ...memoryOf(id), ...(before === undefined ? {} : { before }) }),
     memoryRestore: (id, rowId) => call('memory-restore', { ...memoryOf(id), id: rowId }),
