@@ -160,7 +160,7 @@ test('M-mem-host-default-mneme: a Bot with no choice follows the host default â€
   assert.equal(w.requests.length, 0)
 })
 
-test('M-mem-group-keeper: a group is reviewed by what its KEEPER (the admin) keeps memory in', async (t) => {
+test('M-mem-group-keeper: a group is reviewed by what its KEEPER (the admin) keeps memory in', async () => {
   // Group r1 is administered by b3 (Coder). b3 on `none` / `mneme`: no group review. b3 on `file`: reviewed.
   for (const [backend, expected] of [['none', 0], ['mneme', 0], ['file', 1]]) {
     const w = world({ b3: backend })

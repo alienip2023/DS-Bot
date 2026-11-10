@@ -50,7 +50,7 @@ runInNewContext(outputFiles[0].text, {
   navigator: {},
   Element: class {},
 })
-const { ModelMenu, installLocale } = module.exports
+const { ModelMenu } = module.exports
 
 const settle = () => new Promise(resolve => setTimeout(resolve, 5))
 // Render a component as a function; run its effects once, let the promises settle, render again.
@@ -84,7 +84,6 @@ const expand = (node) => {
   return { ...node, props: { ...node.props, children: expand(node.props.children) } }
 }
 const find = (tree, match) => { const hits = []; walk(tree, node => { if (match(node)) hits.push(node) }); return hits }
-const textOf = node => { const parts = []; walk(node, n => { for (const c of [n.props?.children].flat()) if (typeof c === 'string') parts.push(c) }); return parts.join('|') }
 
 
 const OPEN = { 1: { left: 0, width: 240, top: 0, maxHeight: 400 } }
