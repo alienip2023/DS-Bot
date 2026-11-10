@@ -175,3 +175,79 @@ describe('S58-D1: deleteBot sends bot/delete through real roster layer', () => {
     assert.equal(rt.state.bots[bot.id], undefined, 'bot must be removed from state.bots')
   })
 })
+
+// ── S59: blind-spot tests + naming cleanup ─────────────────────────────────
+
+describe('S59: joinedDeleteBot blind spots', () => {
+  it('S59-timeout: node does not ack → result returns bot-delete-timeout, no throw', async () => {
+    // Knife: change timeout resolve to reject → unhandledRejection → RED
+    const registry = {
+      send: () => true,
+      on: () => {},
+      off: () => {},
+      onlineNodes: () => [{ nodeId: 'n1' }],
+    }
+    const rt = {
+      botOf: (id) => ({ id, origin: 'joined', worker: { nodeId: 'n1', remoteBotId: 'rb1', home: 'remote' } }),
+      ctx: { get: (key) => key === 'remote-agent:registry' ? registry : undefined },
+      botDeleteTimeoutMs: 50,
+    }
+    const result = await joinedDeleteBot(rt, 'joined:n1:rb1')
+    assert.equal(result.ok, false)
+    assert.equal(result.error, 'bot-delete-timeout')
+  })
+
+  it('S59-send-false: registry.send returns false → warn, no throw, returns bridge-down', async () => {
+    // Knife: remove sent !== true check → await pending forever → timeout → different error → RED
+    const registry = {
+      send: () => false,
+      on: () => {},
+      off: () => {},
+      onlineNodes: () => [{ nodeId: 'n1' }],
+    }
+    const rt = {
+      botOf: (id) => ({ id, origin: 'joined', worker: { nodeId: 'n1', remoteBotId: 'rb1', home: 'remote' } }),
+      ctx: { get: (key) => key === 'remote-agent:registry' ? registry : undefined },
+      botDeleteTimeoutMs: 50,
+    }
+    const result = await joinedDeleteBot(rt, 'joined:n1:rb1')
+    assert.equal(result.ok, false)
+    assert.equal(result.error, 'bridge-down')
+  })
+
+  it('S59-concurrent: two joined Bots deleted same tick → both frames sent, different requestIds, both tombstones', async () => {
+    // Knife: share a single requestId → requestId equality → RED
+    const sends = []
+    const registry = {
+      send: (nodeId, type, payload) => { sends.push({ nodeId, type, payload }); return true },
+      on: (ev, fn) => {},
+      off: () => {},
+      onlineNodes: () => [{ nodeId: 'n1' }],
+    }
+    const rt = {
+      botOf: (id) => {
+        const map = {
+          'joined:n1:rb1': { id: 'joined:n1:rb1', origin: 'joined', worker: { nodeId: 'n1', remoteBotId: 'rb1', home: 'remote' } },
+          'joined:n1:rb2': { id: 'joined:n1:rb2', origin: 'joined', worker: { nodeId: 'n1', remoteBotId: 'rb2', home: 'remote' } },
+        }
+        return map[id]
+      },
+      ctx: { get: (key) => key === 'remote-agent:registry' ? registry : undefined },
+      botDeleteTimeoutMs: 50,
+    }
+    // Fire both concurrently
+    const [r1, r2] = await Promise.allSettled([
+      joinedDeleteBot(rt, 'joined:n1:rb1'),
+      joinedDeleteBot(rt, 'joined:n1:rb2'),
+    ])
+    // Both will timeout (no result listener), but we check sends happened
+    const delSends = sends.filter(s => s.type === 'bot/delete')
+    assert.equal(delSends.length, 2, 'must have sent two bot/delete frames')
+    assert.notEqual(delSends[0].payload.requestId, delSends[1].payload.requestId, 'requestIds must differ')
+    assert.deepEqual(
+      delSends.map(s => s.payload.remoteBotId).sort(),
+      ['rb1', 'rb2'],
+      'both remoteBotIds must be present'
+    )
+  })
+})

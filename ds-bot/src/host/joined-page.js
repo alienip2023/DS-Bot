@@ -110,7 +110,7 @@ export function exposeBotPageReceiver(ctx, accept) {
 export function install(rt) {
   rt.joinedChatPage = (botId, cursor) => joinedChatPage(rt, botId, cursor)
   rt.joinedUpdateBot = (botId, patch) => joinedUpdateBot(rt, botId, patch)
-  rt.joinedDeleteBot = (botId) => joinedDeleteBot(rt, botId)
+  rt.joinedDeleteBot = (botIdOrBot) => joinedDeleteBot(rt, botIdOrBot)
   const pageAccept = createBotPageReceiver(rt)
   exposeBotPageReceiver(rt.ctx, pageAccept)
   const updateAccept = createBotUpdateReceiver(rt)
