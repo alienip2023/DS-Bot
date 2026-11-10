@@ -37,12 +37,14 @@ export function applyRosterReport(state, report, now = Date.now()) {
   const online = report?.online !== false
   const bots = Array.isArray(report?.bots) ? report.bots : []
   const seen = []
+  const seenIds = new Set()
   for (const bot of bots) {
     if (!bot || typeof bot !== 'object' || bot.type === 'remote-worker') continue
     const remoteBotId = typeof bot.id === 'string' ? bot.id.trim() : ''
     if (remoteBotId === '') continue
     const id = shadowId(nodeId, remoteBotId)
     if (Array.isArray(state.deletedJoinedIds) && state.deletedJoinedIds.includes(id)) continue
+    seenIds.add(id)
     const existing = state.bots[id]
     const row = {
       ...(existing ?? {}),
@@ -65,6 +67,16 @@ export function applyRosterReport(state, report, now = Date.now()) {
     }
     state.bots[id] = row
     seen.push(row)
+  }
+  // Mark joined bots from this node that are no longer in the report as missing.
+  // They are NOT auto-deleted (the host-side tombstone is the authoritative delete action);
+  // the missing flag lets the UI surface a warning so the user can delete explicitly.
+  for (const bot of Object.values(state.bots)) {
+    if (bot?.origin !== 'joined' || bot?.worker?.nodeId !== nodeId || bot?.worker?.home !== 'remote') continue
+    if (seenIds.has(bot.id)) continue
+    if (!bot.worker) bot.worker = {}
+    bot.worker.missingFromReport = true
+    bot.worker.lastSeen = bot.worker.lastSeen ?? now
   }
   return seen
 }

@@ -110,10 +110,13 @@ export function exposeBotPageReceiver(ctx, accept) {
 export function install(rt) {
   rt.joinedChatPage = (botId, cursor) => joinedChatPage(rt, botId, cursor)
   rt.joinedUpdateBot = (botId, patch) => joinedUpdateBot(rt, botId, patch)
+  rt.joinedDeleteBot = (botId) => joinedDeleteBot(rt, botId)
   const pageAccept = createBotPageReceiver(rt)
   exposeBotPageReceiver(rt.ctx, pageAccept)
   const updateAccept = createBotUpdateReceiver(rt)
   exposeBotUpdateReceiver(rt.ctx, updateAccept)
+  const deleteAccept = createBotDeleteReceiver(rt)
+  exposeBotDeleteReceiver(rt.ctx, deleteAccept)
 }
 // ── bot/update hub side ───────────────────────────────────────────────────────
 const BOT_UPDATE_TIMEOUT_MS = 30000
@@ -227,5 +230,78 @@ export function createBotUpdateReceiver(rt) {
 
 export function exposeBotUpdateReceiver(ctx, accept) {
   try { ctx?.provide?.('remote-agent:bot-update', accept) } catch { /* registry plugin may be absent */ }
+}
+
+// ── bot/delete hub side ───────────────────────────────────────────────────────
+const BOT_DELETE_TIMEOUT_MS = 30000
+
+function listenBotDeleteResult(registry, requestId, timeoutMs) {
+  let finish
+  const pending = new Promise((resolve) => { finish = { resolve } })
+  const onResult = (r) => {
+    if (r?.requestId !== requestId) return
+    registry.off?.('botDeleteResult', onResult)
+    clearTimeout(timer)
+    finish.resolve(r)
+  }
+  registry.on?.('botDeleteResult', onResult)
+  const timer = setTimeout(() => {
+    registry.off?.('botDeleteResult', onResult)
+    finish.resolve({ requestId, ok: false, error: 'bot-delete-timeout' })
+  }, timeoutMs)
+  if (timer.unref) timer.unref()
+  return { pending, cancel: () => { clearTimeout(timer); registry.off?.('botDeleteResult', onResult); finish.resolve({ requestId, ok: false, error: 'bridge-down' }) } }
+}
+
+/**
+ * Hub side: send bot/delete to the node and await the result.
+ * On success the caller (deleteBot) has already removed the shadow row from state;
+ * this call is best-effort: a node offline / timeout is logged but doesn't block the
+ * host-side delete.
+ */
+export async function joinedDeleteBot(rt, botId) {
+  const bot = rt.botOf?.(botId)
+  if (!bot || bot.origin !== 'joined' || bot.worker?.home !== 'remote') return { ok: false, error: 'bot-not-joined' }
+  const { nodeId, remoteBotId } = bot.worker ?? {}
+  if (!nodeId || !remoteBotId) return { ok: false, error: 'bot-delete-missing-worker' }
+
+  let registry
+  try { registry = rt.ctx?.get?.('remote-agent:registry') } catch { registry = undefined }
+  if (!registry || typeof registry.send !== 'function') return { ok: false, error: 'bridge-down' }
+
+  const online = typeof registry.onlineNodes === 'function' ? registry.onlineNodes() : []
+  if (!online.some(n => n.nodeId === nodeId)) return { ok: false, error: 'node-offline' }
+
+  const requestId = crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)
+  const timeoutMs = rt.botDeleteTimeoutMs ?? BOT_DELETE_TIMEOUT_MS
+  const waiter = listenBotDeleteResult(registry, requestId, timeoutMs)
+
+  const sent = registry.send(nodeId, 'bot/delete', { nodeId, requestId, remoteBotId })
+  if (sent !== true) {
+    waiter.cancel()
+    return { ok: false, error: 'bridge-down' }
+  }
+
+  const result = await waiter.pending
+  return result?.ok === true ? { ok: true } : { ok: false, error: result?.error ?? 'bot-delete-failed' }
+}
+
+// ── bot/delete node side ──────────────────────────────────────────────────────
+export function createBotDeleteReceiver(rt) {
+  return async function acceptBotDelete(spec) {
+    const remoteBotId = typeof spec?.remoteBotId === 'string' ? spec.remoteBotId.trim() : ''
+    if (!remoteBotId) return { ok: false, error: 'bot-delete-remoteBotId-missing' }
+    if (typeof rt.deleteBot !== 'function') return { ok: false, error: 'bot-delete-no-roster' }
+    try {
+      await rt.deleteBot(remoteBotId)
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: 'bot-delete-failed: ' + (err?.message ?? String(err)) }
+    }
+  }
+}
+
+export function exposeBotDeleteReceiver(ctx, accept) {
+  try { ctx?.provide?.('remote-agent:bot-delete', accept) } catch { /* registry plugin may be absent */ }
 }
 

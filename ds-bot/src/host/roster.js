@@ -934,7 +934,19 @@ export function install(rt) {
     await rt.releaseBot(id, [...parts, ...rt.groupSessionsOf(id)])
     if (closedArchive !== undefined) state.privateArchives = [...(state.privateArchives ?? []).filter(entry => entry.id !== id), closedArchive]
     delete state.bots[id]
-    if (bot.origin === 'joined') { if (!Array.isArray(state.deletedJoinedIds)) state.deletedJoinedIds = []; if (!state.deletedJoinedIds.includes(id)) state.deletedJoinedIds.push(id) }
+    if (bot.origin === 'joined') {
+      if (!Array.isArray(state.deletedJoinedIds)) state.deletedJoinedIds = []
+      if (!state.deletedJoinedIds.includes(id)) state.deletedJoinedIds.push(id)
+      // Best-effort: notify the node to delete its local Bot; failures are logged but do not
+      // block the host-side delete (the tombstone in deletedJoinedIds prevents re-import).
+      if (typeof rt.joinedDeleteBot === 'function') {
+        rt.joinedDeleteBot(id).then((result) => {
+          if (!result?.ok) rt.warn?.('ds-bot: node delete for joined Bot %s failed: %s', id, result?.error ?? 'unknown')
+        }).catch((err) => {
+          rt.warn?.('ds-bot: node delete for joined Bot %s threw: %s', id, err?.message ?? String(err))
+        })
+      }
+    }
     // The shared capability list is the user's and keeps its items; only a
     // still-unapproved local MCP this Bot alone asked for leaves with it.
     rt.dropOrphanCapabilities?.(bot)
