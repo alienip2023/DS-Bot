@@ -1,14 +1,14 @@
 // Store: the saved team (state.json), its migrations, the lock that keeps a second dsh
 // host on the same data from writing it, and the indexes that map a Session to the Bot
 // or group chat it belongs to.
-import { copyFileSync, mkdirSync, readFileSync, statSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
 import { mkdir, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { LEGACY_THEMES, MAX_EXCHANGES, ROOM_MODES, SECTION_COLORS, SECTION_NAME_MAX, TEXT_KEPT } from './constants.js'
+import { LEGACY_THEMES, MAX_EXCHANGES, ROOM_MODES, SECTION_COLORS, SECTION_NAME_MAX, STATE_V1_BACKUP, STATE_VERSION, TEXT_KEPT } from './constants.js'
 import { replaceFile } from './files.js'
 import { homeLock } from './home-lock.js'
 import { currentColor, headOf, normalize, unquote } from './text.js'
-import { updateBySessionId } from './bot-store.js'
+import { mainThreadId, mainThreadOf, newMainThread, saveThread, threadOf, threadsOfBot, updateBySessionId, updateBySessionIdFull } from './bot-store.js'
 import { joinedShadow } from './roster-join.js'
 import { AMBIGUOUS_OLD_ROUTES, legacyRoute } from './local-agents/engines.js'
 
@@ -21,8 +21,8 @@ export const own = (table, key) => (table != null && Object.hasOwn(table, key) ?
 export function install(rt) {
   const { ctx, home, statePath } = rt
 
-  /** @type {{version:1, workspaceId?:string, mainBotIds:string[], bots:Record<string,any>, privateArchives:any[], rooms:Record<string,any>, agents:Record<string,any>, sections:any[], capabilities:{items:Record<string,any>}, exchanges:any[], exchangeTurns:Record<string,number[]>, revision:number}} */
-  const state = { version: 1, mainBotIds: [], bots: {}, privateArchives: [], rooms: {}, agents: {}, sections: [], capabilities: { items: {} }, exchanges: [], exchangeTurns: {}, works: {}, requests: {}, questions: {}, views: {}, closedCards: {}, closedViews: {}, prefs: {}, switching: {}, revision: 0 }
+  /** @type {{version:2, workspaceId?:string, mainBotIds:string[], bots:Record<string,any>, threads:Record<string,any>, privateArchives:any[], rooms:Record<string,any>, agents:Record<string,any>, sections:any[], capabilities:{items:Record<string,any>}, exchanges:any[], exchangeTurns:Record<string,number[]>, revision:number}} */
+  const state = { version: STATE_VERSION, mainBotIds: [], bots: {}, threads: {}, privateArchives: [], rooms: {}, agents: {}, sections: [], capabilities: { items: {} }, exchanges: [], exchangeTurns: {}, works: {}, requests: {}, questions: {}, views: {}, closedCards: {}, closedViews: {}, prefs: {}, switching: {}, revision: 0 }
   let loaded = null
   let writing = Promise.resolve()
   const { warn } = rt
@@ -69,6 +69,17 @@ export function install(rt) {
     return `The Bot team in ${home} is open in another dsh (Web or Desktop, ${where}). This window shows the team but cannot change it; close the other one and reload.`
   }
 
+  // Before the v1 → v2 migration changes the file's shape, keep the v1 file once. A first
+  // upgrade copies; later loads find the backup and leave it as it was.
+  const backupV1 = () => {
+    const backup = `${statePath}${STATE_V1_BACKUP}`
+    try {
+      if (!existsSync(backup)) copyFileSync(statePath, backup)
+    } catch (error) {
+      warn('ds-bot: could not keep the v1 Bot team as %s: %s', backup, error)
+    }
+  }
+
   // Synchronous on purpose: the saved team and the session indexes built from it
   // exist before the first tool or shell env call can resolve a Session.
   const readFileState = () => {
@@ -101,7 +112,7 @@ export function install(rt) {
       }
       return undefined
     }
-    if (parsed?.version === 1) {
+    if (parsed?.version === 1 || parsed?.version === STATE_VERSION) {
       stuck = undefined
       return parsed
     }
@@ -151,6 +162,10 @@ export function install(rt) {
         migrated = true
       }
     }
+    const savedVersion = parsed?.version
+    if (migrateThreads(state)) migrated = true
+    // Keep the v1 team file once, beside it, before the migrated shape is saved.
+    if (savedVersion === 1) backupV1()
     if (migrateLocalRoutes(state)) migrated = true
     // A team from before several Main Bots were allowed names a single one.
     if (!Array.isArray(state.mainBotIds)) state.mainBotIds = []
@@ -465,6 +480,8 @@ export function install(rt) {
   const pastOwners = new Map()
   /** @type {Map<string, object>} sessionId → raw bot for joined-shadow lookup via bySessionId */
   const bySessionIdMap = new Map()
+  /** @type {Map<string, {botId:string, threadId:string}>} sessionId → the Thread it runs in (docs/thread-model.md §1.2) */
+  const bySessionIdFullMap = new Map()
   const chatOf = botId => botOf(botId)?.sessionId ?? botId
   const sessionOfRoom = room => (room === undefined ? undefined : room.sessionId ?? room.id)
   // DSH turns away every step of an archived Session and every task aimed at it, so a
@@ -497,14 +514,31 @@ export function install(rt) {
     roomOwners.clear()
     pastOwners.clear()
     bySessionIdMap.clear()
+    bySessionIdFullMap.clear()
     for (const bot of Object.values(state.bots)) {
       for (const segment of bot.segments ?? []) pastOwners.set(segment.sessionId, { botId: bot.id })
       chatOwners.set(chatOf(bot.id), bot.id)
       // Maintain bySessionId reverse index for mirror session lookup
-      if (typeof bot.sessionId === 'string' && bot.sessionId !== '') bySessionIdMap.set(bot.sessionId, bot)
-      for (const segment of bot.segments ?? []) {
-        if (segment.sessionId) bySessionIdMap.set(segment.sessionId, bot)
+      if (typeof bot.sessionId === 'string' && bot.sessionId !== '') {
+        bySessionIdMap.set(bot.sessionId, bot)
+        bySessionIdFullMap.set(bot.sessionId, { botId: bot.id, threadId: mainThreadId(bot.id) })
       }
+      for (const segment of bot.segments ?? []) {
+        if (segment.sessionId) {
+          bySessionIdMap.set(segment.sessionId, bot)
+          bySessionIdFullMap.set(segment.sessionId, { botId: bot.id, threadId: mainThreadId(bot.id) })
+        }
+      }
+    }
+    // Every Thread's Session resolves to that Thread, including a thread beyond Main and a
+    // Main thread whose Session was replaced after the Bot row was written.
+    for (const [threadId, thread] of Object.entries(state.threads ?? {})) {
+      const sessionId = thread?.sessionId
+      if (typeof sessionId !== 'string' || sessionId === '') continue
+      const bot = thread.botId === undefined ? undefined : own(state.bots, thread.botId)
+      if (bot === undefined) continue
+      bySessionIdMap.set(sessionId, bot)
+      bySessionIdFullMap.set(sessionId, { botId: bot.id, threadId })
     }
     for (const room of Object.values(state.rooms)) {
       const sessionId = sessionOfRoom(room)
@@ -596,8 +630,68 @@ export function install(rt) {
     chatOwners, groupOwners, roomOwners, pastOwners,
     groupSessionsOf, dropGroupSession, retireGroupSession, findBot, findRooms, isAdminOf,
     bySessionId: sid => bySessionIdMap.get(sid),
-    updateBySessionId: (botId, oldSessionId, newSessionId) => updateBySessionId(bySessionIdMap, botId, oldSessionId, newSessionId),
+    bySessionIdFull: sid => bySessionIdFullMap.get(sid),
+    threadOf: id => threadOf(state, id),
+    threadsOfBot: botId => threadsOfBot(state, botId),
+    mainThreadOf: botId => mainThreadOf(state, botId),
+    updateBySessionId: (botId, oldSessionId, newSessionId) => {
+      updateBySessionId(bySessionIdMap, botId, oldSessionId, newSessionId)
+      // A mirror Session belongs to the Bot's Main thread: keep both the full index and the
+      // Thread row on it, so a re-keyed Session still routes to the same thread (A2).
+      const threadId = mainThreadOf(state, botId)?.id ?? mainThreadId(botId)
+      updateBySessionIdFull(bySessionIdFullMap, botId, oldSessionId, newSessionId, threadId)
+      const main = threadOf(state, threadId)
+      if (main !== undefined) {
+        main.sessionId = typeof newSessionId === 'string' && newSessionId !== '' ? newSessionId : null
+        main.updatedAt = Date.now()
+      }
+    },
   })
+}
+
+// v1 → v2 (docs/thread-model.md §1.3): every Bot gets its default Main thread, and
+// `bot.threadIds` names it. The version guard makes this run once per loaded file; the Main
+// id is derived from the Bot id, so running it again finds that thread and adds nothing —
+// a half-migrated state cannot grow a second Main. Returns whether the state changed.
+export function migrateThreads(state, now = Date.now()) {
+  let changed = false
+  // Always an object: code reads `state.threads[session]` and JSON round-trips must not
+  // turn an empty team into `threads: null`.
+  if (state.threads === null || typeof state.threads !== 'object' || Array.isArray(state.threads)) {
+    state.threads = {}
+    changed = true
+  }
+  // Threads already saved per Bot, read once: a team with many Bots must not rescan the
+  // whole Thread table for each of them.
+  const savedThreadIds = new Map()
+  for (const row of Object.values(state.threads)) {
+    if (row === null || typeof row !== 'object' || typeof row.botId !== 'string' || typeof row.id !== 'string') continue
+    if (!savedThreadIds.has(row.botId)) savedThreadIds.set(row.botId, [])
+    savedThreadIds.get(row.botId).push(row.id)
+  }
+  for (const bot of Object.values(state.bots ?? {})) {
+    if (bot === null || typeof bot !== 'object' || typeof bot.id !== 'string' || bot.id === '') continue
+    const id = mainThreadId(bot.id)
+    if (threadOf(state, id) === undefined) {
+      saveThread(state, newMainThread(bot, now))
+      changed = true
+    }
+    // Main first, then any thread the Bot already had. A hand-edited or half-migrated team
+    // therefore keeps its other threads listed instead of losing them to `[main]`.
+    const extras = (savedThreadIds.get(bot.id) ?? []).filter(threadId => threadId !== id)
+    const listed = Array.isArray(bot.threadIds) ? bot.threadIds.filter(threadId => typeof threadId === 'string' && threadId !== '') : []
+    const next = [id, ...listed.filter(threadId => threadId !== id), ...extras.filter(threadId => !listed.includes(threadId))]
+    if (!Array.isArray(bot.threadIds) || next.length !== bot.threadIds.length || next.some((threadId, index) => threadId !== bot.threadIds[index])) {
+      bot.threadIds = next
+      changed = true
+    }
+  }
+  const version = Number.isInteger(state.version) ? state.version : 1
+  if (version < STATE_VERSION) {
+    state.version = STATE_VERSION
+    changed = true
+  }
+  return changed
 }
 
 // LEGACY: local-agent routes moved under the `local-` prefix (see engines.js).

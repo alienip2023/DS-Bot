@@ -202,10 +202,11 @@ test('a saved card rides the current part\'s view, whole and read-only', async (
   assert.equal(view.ok, true, view.error?.message)
   assert.equal(view.value.btwCards.b1.length, 2)
   assert.equal(view.value.btwCards.b1[0].id, 'first')
-  // Read-only: no model call, no Session write, no state revision.
+  // Read-only: no model call, no Session write, no further state revision (the setup
+  // already wrote the v2 threads once, as a v1 team is read).
   assert.equal(env.requests.length, 0)
   assert.equal(env.session.writes, 0)
-  assert.equal(saved.revision, 3)
+  assert.equal(saved.revision, 4)
 })
 
 test('a user deletes saved cards from current and earlier parts', async (t) => {
@@ -293,7 +294,8 @@ test('a restart marks an aside that was still answering as failed', async (t) =>
   assert.equal(file[1].status, 'done')
   const saved = JSON.parse(readFileSync(join(env.home, 'state.json'), 'utf8'))
   assert.equal('btwCards' in saved, false)
-  assert.equal(saved.revision, 3)
+  // P1-T1: the first read of a v1 team writes the v2 threads once, and nothing else saves here.
+  assert.equal(saved.revision, 4)
 })
 
 test('a second host does not fail an aside the writer is still answering', async (t) => {
@@ -321,6 +323,7 @@ test('a second host does not fail an aside the writer is still answering', async
   assert.equal(file[1].status, 'done')
   const saved = JSON.parse(readFileSync(join(env.home, 'state.json'), 'utf8'))
   assert.equal('btwCards' in saved, false)
+  // The other host owns the team, so this read does not migrate or save anything.
   assert.equal(saved.revision, 3)
   assert.equal(env.rt.state.revision, 3)
   assert.equal(env.notices(), 0)

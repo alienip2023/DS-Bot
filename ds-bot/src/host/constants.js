@@ -10,6 +10,16 @@ export const LEGACY_COLORS = { kimi: 'charcoal', zai: 'graphite', minimax: 'rose
 // Renamed theme ids, so a saved choice keeps its look (LEGACY: old id → new id).
 export const LEGACY_THEMES = { grok: 'mono' }
 
+// Threads: one Bot can keep several saved conversations (docs/thread-model.md). The team
+// file calls the schema version that introduced `state.threads` 2. A Bot's default Main
+// thread has an id derived from the Bot id, so a re-run migration finds that thread again
+// instead of making a second one, and the id stays readable in state.json by hand.
+export const STATE_VERSION = 2
+export const MAIN_THREAD_ID = 'main'
+export const MAIN_THREAD_TITLE = 'Main'
+// Where the v1 team file is copied once, before the first save that adds threads.
+export const STATE_V1_BACKUP = '.v1.bak'
+
 export const OCR_PROMPT = [
   'Transcribe all text in this image exactly, in its original language, keeping line breaks and reading order; use Markdown tables for tables.',
   'Then add a line starting with "Image:" that describes in one to three sentences what is not text (photo, chart, diagram, screen layout).',

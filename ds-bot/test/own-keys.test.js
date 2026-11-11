@@ -76,7 +76,7 @@ function start() {
     await ctx.dispose()
     rmSync(home, { recursive: true, force: true, maxRetries: 5 })
   }
-  return { ctx, call, tool, state, stop }
+  return { ctx, call, tool, state, stop, rt }
 }
 
 // Each endpoint's answer for an inherited name must be the same as for an id that is
@@ -112,8 +112,11 @@ const ENDPOINTS = [
 ]
 
 test('api endpoints answer an inherited name like any unknown id and never write through it', async (t) => {
-  const { call, state, stop } = start()
+  const { call, state, stop, rt } = start()
   t.after(stop)
+  // The v1 team becomes a v2 team on the first load; let that one write land before
+  // taking the reference the bad ids must leave untouched.
+  await rt.load()
   const prototypeNames = Object.getOwnPropertyNames(Object.prototype)
   const before = state()
   for (const [endpoint, payload] of ENDPOINTS) {
@@ -133,8 +136,10 @@ test('api endpoints answer an inherited name like any unknown id and never write
 })
 
 test('tools answer an inherited Bot name like any unknown name', async (t) => {
-  const { tool, state, stop } = start()
+  const { tool, state, stop, rt } = start()
   t.after(stop)
+  // Same one-time v1 -> v2 migration write as above.
+  await rt.load()
   const prototypeNames = Object.getOwnPropertyNames(Object.prototype)
   const before = state()
   for (const id of BAD) {

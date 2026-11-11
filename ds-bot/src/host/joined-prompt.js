@@ -26,12 +26,26 @@ const BUSY = '副机 Bot 正在回复上一条，请稍候再发'
 const NO_ATTACHMENTS = '副机 Bot 暂不支持附件，请改为文字发送'
 
 /**
- * The joined Bot whose mirror Session this is. All four must hold, else undefined and the
- * prompt passes through: bySessionId hits a Bot, it is a joined shadow living on a remote
- * node, and the Session is its current mirror Session.
+ * The joined Bot whose Session this is. The Session resolves through the full index to the
+ * Thread it runs in; that Thread must itself be the Session, and its Bot must be a joined
+ * shadow living on a remote node (docs/thread-model.md §10 A2). A runtime without the
+ * thread index (an older host, a test double) falls back to the Bot's current mirror
+ * Session, so the prompt path keeps working there.
  */
 export function joinedBotOfSession(rt, sessionId) {
   if (typeof sessionId !== 'string' || sessionId === '') return undefined
+  if (typeof rt.bySessionIdFull === 'function' && typeof rt.threadOf === 'function') {
+    const owner = rt.bySessionIdFull(sessionId)
+    const bot = owner === undefined ? undefined : rt.botOf?.(owner.botId)
+    const thread = owner === undefined ? undefined : rt.threadOf(owner.threadId)
+    if (thread !== undefined) {
+      return joinedShadow(bot) && bot.worker?.home === 'remote' && thread.sessionId === sessionId ? bot : undefined
+    }
+    // A Bot created after this file was loaded has no Thread row yet (T2 creates one as the
+    // Bot is created). Its own Session is still its Main thread's Session, so it keeps
+    // routing as before instead of losing its page until the next load.
+    return joinedShadow(bot) && bot.worker?.home === 'remote' && bot.sessionId === sessionId ? bot : undefined
+  }
   const bot = rt.bySessionId?.(sessionId)
   return joinedShadow(bot) && bot.worker?.home === 'remote' && bot.sessionId === sessionId ? bot : undefined
 }

@@ -496,7 +496,8 @@ test('a restart marks an entry that was still answering as failed', async (t) =>
   assert.equal(file[0].entries[1].status, 'done')
   const saved = JSON.parse(readFileSync(join(env.home, 'state.json'), 'utf8'))
   assert.equal('sideChats' in saved, false)
-  assert.equal(saved.revision, 3)
+  // P1-T1: the first read of a v1 team writes the v2 threads once, and nothing else saves here.
+  assert.equal(saved.revision, 4)
 })
 
 test('a tool call is asked again once, then the entry fails if it calls a tool again', async (t) => {
