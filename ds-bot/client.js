@@ -29826,15 +29826,16 @@ function admitThreadPage(sessions, storage = globalThis.localStorage) {
   add.call(sessions, { agentAvailable: true, sessionId: page.sessionId, updatedAt: Date.now(), running: false, blank: true });
   return page;
 }
-async function restoreThreadPage({ page, open, ownerOf, forget }) {
+async function restoreThreadPage({ page, open, ownerOf, forget, home, alreadyOpen = false }) {
   if (page === void 0) return "none";
   const owner = await Promise.resolve(ownerOf(page.sessionId)).catch(() => void 0);
   if (owner === null) {
     forget?.();
+    home?.();
     return "gone";
   }
   if (owner === void 0) return "unknown";
-  open?.(page.sessionId);
+  if (!alreadyOpen) open?.(page.sessionId);
   return "opened";
 }
 
@@ -30296,21 +30297,30 @@ function apply(ctx) {
     const settle = async () => {
       const list = ctx.sessions.list.getSnapshot();
       const main = mainView();
-      if (main === page.sessionId) return;
       const snapshot = roster.getSnapshot();
+      if (main === page.sessionId) {
+        await restoreThreadPage({
+          page,
+          ownerOf: (sessionId) => threadOwnerOf(sessionId),
+          forget: forgetThreadPage,
+          home: () => actions.openSession(snapshot.mainBotId),
+          alreadyOpen: true
+        });
+        return;
+      }
       const row = main === void 0 ? void 0 : list.byId?.[main];
       const borrowed = main === void 0 || row?.blank === true && snapshot.byId[main] === void 0 && snapshot.roomsById[main] === void 0 && !isAgentSessionId(main) && threadSessionBot(main) === void 0;
       if (!borrowed) {
         forgetThreadPage();
         return;
       }
-      const verdict = await restoreThreadPage({
+      await restoreThreadPage({
         page,
         open: (sessionId) => openThreadSession(sessionId),
         ownerOf: (sessionId) => threadOwnerOf(sessionId),
-        forget: forgetThreadPage
+        forget: forgetThreadPage,
+        home: () => actions.openSession(snapshot.mainBotId)
       });
-      if (verdict === "gone" && snapshot.mainBotId !== void 0) actions.openSession(snapshot.mainBotId);
     };
     const tick = () => {
       if (done) return;
@@ -31036,10 +31046,12 @@ function apply(ctx) {
     };
     const offList = ctx.sessions.list.subscribe(sync);
     const offRoster = roster.subscribe(sync);
+    const offThreads = threadsStore.subscribe(sync);
     sync();
     return () => {
       offList();
       offRoster();
+      offThreads();
     };
   }, "ds-bot: agent surface");
   ctx.effect(() => {

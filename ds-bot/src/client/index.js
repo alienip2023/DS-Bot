@@ -515,9 +515,21 @@ export function apply(ctx) {
     const settle = async () => {
       const list = ctx.sessions.list.getSnapshot()
       const main = mainView()
-      // The restore kept the Thread page: nothing to correct.
-      if (main === page.sessionId) return
       const snapshot = roster.getSnapshot()
+      // The restore kept the Thread page. Still ask the Host once: the answer
+      // teaches the Thread cache its owner (so `plain` follows the page without
+      // waiting for the next list change), and a Thread the Host no longer knows
+      // must not leave the page behind.
+      if (main === page.sessionId) {
+        await restoreThreadPage({
+          page,
+          ownerOf: (sessionId) => threadOwnerOf(sessionId),
+          forget: forgetThreadPage,
+          home: () => actions.openSession(snapshot.mainBotId),
+          alreadyOpen: true,
+        })
+        return
+      }
       const row = main === undefined ? undefined : list.byId?.[main]
       const borrowed = main === undefined
         || (row?.blank === true
@@ -531,13 +543,13 @@ export function apply(ctx) {
         forgetThreadPage()
         return
       }
-      const verdict = await restoreThreadPage({
+      await restoreThreadPage({
         page,
         open: (sessionId) => openThreadSession(sessionId),
         ownerOf: (sessionId) => threadOwnerOf(sessionId),
         forget: forgetThreadPage,
+        home: () => actions.openSession(snapshot.mainBotId),
       })
-      if (verdict === 'gone' && snapshot.mainBotId !== undefined) actions.openSession(snapshot.mainBotId)
     }
     const tick = () => {
       if (done) return
@@ -1302,8 +1314,11 @@ export function apply(ctx) {
     }
     const offList = ctx.sessions.list.subscribe(sync)
     const offRoster = roster.subscribe(sync)
+    // `plain` reads the Thread cache; teaching it (or a Thread list load) must
+    // recompute the surface without waiting for the next Session or roster change.
+    const offThreads = threadsStore.subscribe(sync)
     sync()
-    return () => { offList(); offRoster() }
+    return () => { offList(); offRoster(); offThreads() }
   }, 'ds-bot: agent surface')
 
   ctx.effect(() => {

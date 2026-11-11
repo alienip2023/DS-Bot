@@ -17,6 +17,8 @@ import {
   restoreThreadPage,
 } from '../src/client/thread-restore.js'
 import { threadHomeGuard } from '../src/client/thread-home.js'
+import { createThreadsStore } from '../src/client/threads.js'
+import { threadOwnerResolver } from '../src/client/thread-owner.js'
 
 const store = () => {
   const values = new Map()
@@ -125,6 +127,44 @@ test('a Thread the Host no longer knows is forgotten instead of reopened', async
   assert.equal(verdict, 'gone')
   assert.deepEqual(opened, [])
   assert.deepEqual(forgotten, [true])
+})
+
+test('the restore kept the page: the Host answer still teaches the Thread cache', async () => {
+  const threads = createThreadsStore({ request: async () => ({ threads: [] }) })
+  const resolver = threadOwnerResolver({
+    request: async () => ({ botId: 'secretary', threadId: 't5' }),
+    remember: (sessionId, botId) => threads.remember(sessionId, botId),
+  })
+  const opened = []
+  const verdict = await restoreThreadPage({
+    page: PAGE,
+    open: id => opened.push(id),
+    ownerOf: id => resolver(id),
+    forget: () => assert.fail('a confirmed page must not be forgotten'),
+    alreadyOpen: true,
+  })
+  assert.equal(verdict, 'opened')
+  assert.deepEqual(opened, [])
+  // `plain` reads this cache, so the surface recomputes without a list change.
+  assert.equal(threads.botOfSession('session-5'), 'secretary')
+})
+
+test('a Thread the Host no longer knows returns the restored page to its Bot', async () => {
+  const opened = []
+  const forgotten = []
+  const home = []
+  const verdict = await restoreThreadPage({
+    page: PAGE,
+    open: id => opened.push(id),
+    ownerOf: async () => null,
+    forget: () => forgotten.push(true),
+    home: () => home.push('chief'),
+    alreadyOpen: true,
+  })
+  assert.equal(verdict, 'gone')
+  assert.deepEqual(opened, [])
+  assert.deepEqual(forgotten, [true])
+  assert.deepEqual(home, ['chief'])
 })
 
 test('a Host that cannot answer leaves the remembered page alone', async () => {
