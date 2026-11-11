@@ -1491,6 +1491,11 @@ export function useLandOnMainBot(roster, useSessions, actions) {
       lastBot.current = null
       return undefined
     }
+    // A Thread page this plugin saved is still waiting to be restored: the restore
+    // pass owns the decision, so the landing check must not go home first — not on an
+    // empty main view, and not on the blank Session the core's own restore left
+    // behind. It is asked again when the timer fires, in case the page is gone.
+    if (actions.hasThreadPage?.() === true) return undefined
     // Nothing here knows the Session: after a reload or a restart the Thread cache is
     // empty, so the Host is asked before the view goes home. A question that could not
     // be asked is not an answer — the view stays rather than bouncing on a guess.
@@ -1499,6 +1504,7 @@ export function useLandOnMainBot(roster, useSessions, actions) {
     const ask = id === '' ? undefined : actions.threadOwnerOf
     let live = true
     const timer = setTimeout(() => {
+      if (actions.hasThreadPage?.() === true) return
       if (typeof ask !== 'function') { home(); return }
       Promise.resolve(ask(id)).then((owner) => {
         if (!live || owner === undefined) return

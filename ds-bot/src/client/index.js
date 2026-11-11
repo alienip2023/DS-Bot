@@ -499,6 +499,8 @@ export function apply(ctx) {
     mainView,
     threadBotOfSession: threadSessionBot,
     threadOwnerOf: (sessionId) => threadOwnerOf(sessionId),
+    // Read-only: the landing check yields while a Thread page waits to be restored.
+    hasThreadPage: () => readThreadPage() !== undefined,
     threadPage: () => readThreadPage(),
     openSession: (id) => actions.openSession(id),
   })
@@ -553,14 +555,18 @@ export function apply(ctx) {
     }
     const tick = () => {
       if (done) return
+      clearTimeout(timer)
       const list = ctx.sessions.list.getSnapshot()
-      if (list.phase !== 'ready') { timer = setTimeout(tick, 100); return }
+      // The list subscription below calls again when it becomes ready, so waiting
+      // here costs nothing and the restore pass starts on the same tick it does.
+      if (list.phase !== 'ready') return
       if (mainView() === undefined && tries < 20) { tries += 1; timer = setTimeout(tick, 100); return }
       done = true
       void settle()
     }
-    timer = setTimeout(tick, 150)
-    return () => { done = true; clearTimeout(timer) }
+    const offList = ctx.sessions.list.subscribe(tick)
+    timer = setTimeout(tick, 0)
+    return () => { done = true; offList(); clearTimeout(timer) }
   }, 'ds-bot: restore the last Thread page')
   const actions = {
     ...teamActions({ call, after, partFor, roster, ui, live, cards, heldCards, turnClock, panelFolded, openSession: id => actions.openSession(id), ...sessionProbes(ctx, quietly) }),

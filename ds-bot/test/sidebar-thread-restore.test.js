@@ -181,7 +181,7 @@ test('a Host that cannot answer leaves the remembered page alone', async () => {
   assert.deepEqual(forgotten, [])
 })
 
-test('cold start with a restored blank workspace Session: the landing check stays, then the Thread page returns', async () => {
+async function sidebarFixture() {
   const { outputFiles } = await build({
     stdin: {
       contents: [
@@ -197,6 +197,7 @@ test('cold start with a restored blank workspace Session: the landing check stay
     external: ['react', 'react-dom', '@deepseek-ai/dsh-client-ui-primitives'],
   })
   const effects = []
+  const timers = []
   const react = {
     createContext: initial => { const ctx = { value: initial }; ctx.Provider = ({ value, children }) => { ctx.value = value; return children }; return ctx },
     useContext: ctx => ctx.value,
@@ -211,9 +212,7 @@ test('cold start with a restored blank workspace Session: the landing check stay
     createElement: (type, props, ...children) => ({ type, props: { ...props, children } }),
     Fragment: Symbol('Fragment'),
   }
-  let timers = []
   const storage = store()
-  const local = { localStorage: storage }
   const module = { exports: {} }
   runInNewContext(outputFiles[0].text, {
     module, exports: module.exports,
@@ -221,41 +220,95 @@ test('cold start with a restored blank workspace Session: the landing check stay
     window: { innerWidth: 1280 },
     setTimeout: fn => { timers.push(fn); return timers.length },
     clearTimeout: () => {},
-    ...local,
+    localStorage: storage,
   })
-  const { useLandOnMainBot, threadHomeGuard: Guard, createThreadsStore, threadOwnerResolver: Resolver, readThreadPage: read, restoreThreadPage: restore } = module.exports
+  return { m: module.exports, storage, effects, timers }
+}
 
-  rememberThreadPage(PAGE, storage)
-  const roster = { ready: true, mainBotId: 'chief', byId: { chief: { id: 'chief', sessionId: 'chief' } }, roomsById: {}, agentOf: {} }
+const runEffects = (fixture) => { for (const effect of fixture.effects) effect() }
+const runTimers = (fixture) => { for (const run of fixture.timers) run() }
+const flush = async () => { for (let round = 0; round < 6; round += 1) await Promise.resolve() }
+
+const ROSTER = { ready: true, mainBotId: 'chief', byId: { chief: { id: 'chief', sessionId: 'chief' } }, roomsById: {}, agentOf: {} }
+
+test('cold start with a restored blank workspace Session: the landing check stays, then the Thread page returns', async () => {
+  const fixture = await sidebarFixture()
+  const { useLandOnMainBot: Hook, threadHomeGuard: Guard, createThreadsStore, threadOwnerResolver: Resolver, readThreadPage: read, restoreThreadPage: restore } = fixture.m
+  rememberThreadPage(PAGE, fixture.storage)
   const rows = { 'workspace-blank': { id: 'workspace-blank', blank: true, retainedBy: { mainView: 1 } } }
   const mainView = () => 'workspace-blank'
   const threadStore = createThreadsStore({ request: async () => ({ threads: [] }) })
   const resolver = Resolver({ request: async () => ({ botId: 'secretary', threadId: 't5' }), remember: (id, bot) => threadStore.remember(id, bot) })
   const calls = []
   const home = Guard({
-    roster: { getSnapshot: () => roster },
+    roster: { getSnapshot: () => ROSTER },
     mainView,
     threadBotOfSession: id => threadStore.botOfSession(id),
     threadOwnerOf: id => resolver(id),
-    threadPage: () => read(storage),
+    threadPage: () => read(fixture.storage),
     openSession: id => calls.push(['openSession', id]),
   })
   const actions = {
+    hasThreadPage: () => read(fixture.storage) !== undefined,
     isAgentSession: () => false,
     threadBotOfSession: id => threadStore.botOfSession(id),
     threadOwnerOf: id => resolver(id),
     landOn: (bot, last) => calls.push(['landOn', bot, last]),
     openSession: id => calls.push(['openSession', id]),
   }
-  useLandOnMainBot(roster, selector => selector({ byId: rows }), actions)
+  Hook(ROSTER, selector => selector({ byId: rows }), actions)
   await home()
-  for (const effect of effects) effect()
-  for (const run of timers) run()
-  await Promise.resolve().then(() => Promise.resolve())
+  runEffects(fixture)
+  runTimers(fixture)
+  await flush()
   assert.deepEqual(calls, [])
   // The fallback pass puts the remembered page back, and its owner is taught to the cache.
-  const verdict = await restore({ page: read(storage), open: id => calls.push(['thread', id]), ownerOf: id => resolver(id), forget: () => forgetThreadPage(storage) })
+  const verdict = await restore({ page: read(fixture.storage), open: id => calls.push(['thread', id]), ownerOf: id => resolver(id), forget: () => forgetThreadPage(fixture.storage) })
   assert.equal(verdict, 'opened')
   assert.deepEqual(calls, [['thread', 'session-5']])
   assert.equal(threadStore.botOfSession('session-5'), 'secretary')
+})
+
+test('an empty main view with a pending Thread page never lands on the Main Bot', async () => {
+  const fixture = await sidebarFixture()
+  rememberThreadPage(PAGE, fixture.storage)
+  const calls = []
+  const actions = {
+    hasThreadPage: () => fixture.m.readThreadPage(fixture.storage) !== undefined,
+    isAgentSession: () => false,
+    threadBotOfSession: () => undefined,
+    threadOwnerOf: async () => ({ botId: 'secretary', threadId: 't5' }),
+    landOn: (bot, last) => calls.push(['landOn', bot, last]),
+    openSession: id => calls.push(['openSession', id]),
+  }
+  fixture.m.useLandOnMainBot(ROSTER, selector => selector({ byId: {} }), actions)
+  runEffects(fixture)
+  runTimers(fixture)
+  await flush()
+  assert.deepEqual(calls, [])
+})
+
+test('an unowned blank Session yields to the pending Thread page, which then opens', async () => {
+  const fixture = await sidebarFixture()
+  rememberThreadPage(PAGE, fixture.storage)
+  const rows = { 'workspace-blank': { id: 'workspace-blank', blank: true, retainedBy: { mainView: 1 } } }
+  const threadStore = fixture.m.createThreadsStore({ request: async () => ({ threads: [] }) })
+  const resolver = fixture.m.threadOwnerResolver({ request: async () => ({ botId: 'secretary', threadId: 't5' }), remember: (id, bot) => threadStore.remember(id, bot) })
+  const calls = []
+  const actions = {
+    hasThreadPage: () => fixture.m.readThreadPage(fixture.storage) !== undefined,
+    isAgentSession: () => false,
+    threadBotOfSession: id => threadStore.botOfSession(id),
+    threadOwnerOf: id => resolver(id),
+    landOn: (bot, last) => calls.push(['landOn', bot, last]),
+    openSession: id => calls.push(['openSession', id]),
+  }
+  fixture.m.useLandOnMainBot(ROSTER, selector => selector({ byId: rows }), actions)
+  runEffects(fixture)
+  runTimers(fixture)
+  await flush()
+  assert.deepEqual(calls, [])
+  const verdict = await fixture.m.restoreThreadPage({ page: fixture.m.readThreadPage(fixture.storage), open: id => calls.push(['thread', id]), ownerOf: id => resolver(id), forget: () => {} })
+  assert.equal(verdict, 'opened')
+  assert.deepEqual(calls, [['thread', 'session-5']])
 })

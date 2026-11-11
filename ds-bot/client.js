@@ -17333,11 +17333,13 @@ function useLandOnMainBot(roster, useSessions, actions) {
       lastBot.current = null;
       return void 0;
     }
+    if (actions.hasThreadPage?.() === true) return void 0;
     const last = lastBot.current;
     const home = () => actions.landOn(roster.mainBotId, last);
     const ask = id === "" ? void 0 : actions.threadOwnerOf;
     let live = true;
     const timer = setTimeout(() => {
+      if (actions.hasThreadPage?.() === true) return;
       if (typeof ask !== "function") {
         home();
         return;
@@ -30285,6 +30287,8 @@ function apply(ctx) {
     mainView,
     threadBotOfSession: threadSessionBot,
     threadOwnerOf: (sessionId) => threadOwnerOf(sessionId),
+    // Read-only: the landing check yields while a Thread page waits to be restored.
+    hasThreadPage: () => readThreadPage() !== void 0,
     threadPage: () => readThreadPage(),
     openSession: (id) => actions.openSession(id)
   });
@@ -30324,11 +30328,9 @@ function apply(ctx) {
     };
     const tick = () => {
       if (done) return;
+      clearTimeout(timer);
       const list = ctx.sessions.list.getSnapshot();
-      if (list.phase !== "ready") {
-        timer = setTimeout(tick, 100);
-        return;
-      }
+      if (list.phase !== "ready") return;
       if (mainView() === void 0 && tries < 20) {
         tries += 1;
         timer = setTimeout(tick, 100);
@@ -30337,9 +30339,11 @@ function apply(ctx) {
       done = true;
       void settle();
     };
-    timer = setTimeout(tick, 150);
+    const offList = ctx.sessions.list.subscribe(tick);
+    timer = setTimeout(tick, 0);
     return () => {
       done = true;
+      offList();
       clearTimeout(timer);
     };
   }, "ds-bot: restore the last Thread page");
