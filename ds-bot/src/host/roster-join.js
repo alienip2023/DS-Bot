@@ -1,5 +1,6 @@
 // Step 1: a remote DS-Bot roster becomes shadow rows in the controller sidebar.
 // No turn is started here, and no local session is created.
+import { ensureMainThread } from './bot-store.js'
 
 export function joinedShadow(bot) {
   return Boolean(bot && bot.origin === 'joined' && bot.worker && bot.worker.home === 'remote')
@@ -66,6 +67,8 @@ export function applyRosterReport(state, report, now = Date.now()) {
       },
     }
     state.bots[id] = row
+    // A shadow row without a Main Thread would route its messages to nowhere.
+    ensureMainThread(state, row)
     seen.push(row)
   }
   // Mark joined bots from this node that are no longer in the report as missing.

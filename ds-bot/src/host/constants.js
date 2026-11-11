@@ -19,6 +19,10 @@ export const MAIN_THREAD_ID = 'main'
 export const MAIN_THREAD_TITLE = 'Main'
 // Where the v1 team file is copied once, before the first save that adds threads.
 export const STATE_V1_BACKUP = '.v1.bak'
+// One Bot keeps at most this many Threads, Main included (docs/thread-model.md §5).
+export const MAX_THREADS_PER_BOT = 10
+// A Thread title is shown in a switcher and saved whole in state.json.
+export const THREAD_TITLE_MAX = 80
 
 export const OCR_PROMPT = [
   'Transcribe all text in this image exactly, in its original language, keeping line breaks and reading order; use Markdown tables for tables.',

@@ -2,7 +2,8 @@
 // the first Main Bot of a new team.
 import { randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
-import { MAX_AVATAR_IMAGE, MEMORY_BACKENDS, ROOM_MAX_MEMBERS, ROOM_MODES, ROOM_NAME_MAX, ROOM_NOTICE_MAX, SECTION_COLORS, SECTION_NAME_MAX } from './constants.js'
+import { MAX_AVATAR_IMAGE, MAX_THREADS_PER_BOT, MEMORY_BACKENDS, ROOM_MAX_MEMBERS, ROOM_MODES, ROOM_NAME_MAX, ROOM_NOTICE_MAX, SECTION_COLORS, SECTION_NAME_MAX, THREAD_TITLE_MAX } from './constants.js'
+import { ensureMainThread, threadsOfBot } from './bot-store.js'
 import { currentColor, isColor, normalize, splitRef, unquote } from './text.js'
 import { nameProblem } from '../shared/mentions.js'
 
@@ -19,6 +20,13 @@ const AFTER_USER = 'You were just set up as the user\'s Main Bot. The user wrote
 function cleanMemoryConfig(input) {
   if (input === null || typeof input !== 'object') return undefined
   return MEMORY_BACKENDS.includes(input.backend) ? { backend: input.backend } : undefined
+}
+
+// Errors the host API turns into `bot/*` codes keep that code on the Error.
+function codedError(code, message) {
+  const error = new Error(message)
+  error.code = code
+  return error
 }
 
 function cleanBrowserGrants(input) {
@@ -247,6 +255,8 @@ export function install(rt) {
         // the settings screen reads back what the user picked ('auto' included).
         ...(memory === undefined ? {} : { memoryConfig: memory }),
       }
+      // Every Bot owns a Main Thread row from the moment it exists (docs/thread-model.md §1.2).
+      ensureMainThread(state, state.bots[id])
       if (main) state.mainBotIds.push(id)
 
       // Phase 4: auto-create "执行机" group on first Worker Bot creation.
@@ -302,6 +312,7 @@ export function install(rt) {
     } catch (error) {
       // The Bot's Session was already made: archive it instead of leaving an orphan.
       delete state.bots[id]
+      for (const thread of threadsOfBot(state, id)) delete state.threads[thread.id]
       state.mainBotIds = state.mainBotIds.filter(other => other !== id)
       rt.chatOwners.delete(id)
       // A save that another change queued meanwhile still carries this Bot; a later
@@ -311,6 +322,71 @@ export function install(rt) {
         .catch(archiveError => rt.warn('ds-bot: archiving the Session for %s failed: %s', cleanName, archiveError))
       throw error
     }
+  }
+
+  // A Thread inside one Bot: its own Session and its own part of the history
+  // (docs/thread-model.md §1.2). The id is random and is never derived from a title or a
+  // count, so an archived Thread's id cannot come back on a later one (§1.1).
+  async function createThread({ botId, title, model, effort, workDir } = {}) {
+    await rt.load()
+    const bot = rt.botOf(botId)
+    if (bot === undefined) throw codedError('bot/not-found', 'Unknown Bot')
+    const rows = threadsOfBot(state, bot.id)
+    if (rows.length >= MAX_THREADS_PER_BOT) {
+      throw codedError('bot/refused', `A Bot keeps at most ${MAX_THREADS_PER_BOT} threads`)
+    }
+    const raw = title === undefined || title === null || String(title).trim() === '' ? `Thread ${rows.length + 1}` : String(title)
+    // Control characters would break the sidebar line; a title is 1–80 characters.
+    const cleanTitle = raw.replace(/[\u0000-\u001f\u007f]/g, '').trim()
+    if (cleanTitle === '' || cleanTitle.length > THREAD_TITLE_MAX) {
+      throw codedError('bot/invalid', `A thread title is 1–${THREAD_TITLE_MAX} characters`)
+    }
+    const modelRef = model === undefined || model === null || model === '' ? undefined : await rt.resolveModel(model)
+    const baseModel = modelRef ?? bot.model
+    if (effort !== undefined && effort !== null && effort !== '' && baseModel === undefined) {
+      throw codedError('bot/invalid', 'Pick a model before choosing a thinking level')
+    }
+    const effortId = effort === undefined || effort === null || effort === ''
+      ? undefined
+      : (await rt.resolveEffort(baseModel, effort)) ?? await rt.defaultEffort(baseModel)
+    const dir = workDir === undefined || workDir === null || workDir === '' ? undefined : await rt.cleanWorkDir(workDir)
+    const clash = dir === undefined ? undefined : await rt.privateClash(dir)
+    if (clash) throw codedError('bot/refused', `${dir} is in or around the folder of ${clash.name}, a private Bot`)
+    // Session first, row second: a failure before the row exists leaves no half thread.
+    const sessionId = await createSession(cleanTitle, { dir })
+    const now = Date.now()
+    const id = randomUUID()
+    const thread = {
+      id,
+      botId: bot.id,
+      title: cleanTitle,
+      createdAt: now,
+      updatedAt: now,
+      archived: false,
+      model: modelRef ?? null,
+      effort: effortId ?? null,
+      workDir: dir ?? null,
+      sessionId,
+      parentThreadId: null,
+      parentTurn: null,
+      lastSeq: 0,
+      unread: 0,
+      running: false,
+      queued: 0,
+    }
+    state.threads[id] = thread
+    bot.threadIds = [...(Array.isArray(bot.threadIds) ? bot.threadIds : []), id]
+    try {
+      await rt.save()
+    } catch (error) {
+      // One save covers the row and threadIds; undo both so the next read cannot see a Thread
+      // whose Session nothing points at.
+      delete state.threads[id]
+      bot.threadIds = bot.threadIds.filter(other => other !== id)
+      await ctx.workspaceRegistry.archiveSession(sessionId).catch(() => {})
+      throw error
+    }
+    return { thread, sessionId }
   }
 
   // Greetings sent, by Bot: one whose turn a key, a sign-in or a balance stops is held
@@ -920,8 +996,14 @@ export function install(rt) {
     // Before the Bot and its group Sessions leave the state, which the archive reads.
     const archived = rt.archiveBotMemory(id)
     const current = rt.chatOf(id)
+    // Every Thread of the Bot goes with it: its Session must be released and archived too,
+    // or a thread part would stay armed and invisible (docs/thread-model.md §1.2).
+    const threadRows = threadsOfBot(state, id)
     // Questions and exchange turns are kept per Session, so every part of the chat is cleared.
     const parts = new Set([id, current, ...(bot.segments ?? []).map(segment => segment.sessionId)])
+    for (const thread of threadRows) {
+      if (typeof thread.sessionId === 'string' && thread.sessionId !== '') parts.add(thread.sessionId)
+    }
     // `archiving` stands until the archive's path is known: the memory may already be
     // there, and no region of its own closes it yet.
     const closedArchive = bot.private === true ? {
@@ -934,6 +1016,10 @@ export function install(rt) {
     await rt.releaseBot(id, [...parts, ...rt.groupSessionsOf(id)])
     if (closedArchive !== undefined) state.privateArchives = [...(state.privateArchives ?? []).filter(entry => entry.id !== id), closedArchive]
     delete state.bots[id]
+    // Same synchronous change as the Bot row: one save leaves neither a Bot without
+    // Threads nor Threads without a Bot. Nothing queued for it may run after the delete.
+    for (const thread of threadRows) delete state.threads[thread.id]
+    rt.dropThreadQueue?.(id)
     if (bot.origin === 'joined') {
       if (!Array.isArray(state.deletedJoinedIds)) state.deletedJoinedIds = []
       if (!state.deletedJoinedIds.includes(id)) state.deletedJoinedIds.push(id)
@@ -1015,6 +1101,7 @@ export function install(rt) {
 
   Object.assign(rt, {
     ensureWorkspace, keepTeamFolder, createSession, createBot, duplicateBot, updateBot, setFlags,
+    createThread,
     saveSection, reorderSections, deleteSection,
     roomBusy, autoRoomName, retitleRoom, createRoom, updateRoom, deleteRoom,
     setMain, deleteBot, bootstrap, releaseKickoff, greetingOut, holdKickoffAgain, userWrote, userAnswered,

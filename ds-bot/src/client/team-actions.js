@@ -157,6 +157,13 @@ export function teamActions({ call, after, partFor, roster, ui, live, cards, hel
     closeOverlay: () => { ui.set(state => ({ ...state, newChat: null, newChatSection: null, exchange: null, details: state.newChat || state.exchange ? state.details : null })) },
     createBot: payload => after(call('create-bot', payload)),
     botCreateTargets: () => call('bot-create-targets', {}),
+    // Threads inside one Bot (P1-T2): thin host calls; the switcher renders them.
+    threads: botId => call('threads', { botId }),
+    createThread: payload => after(call('thread-create', payload)),
+    renameThread: (threadId, title) => after(call('thread-rename', { threadId, title })),
+    archiveThread: (threadId, archived = true) => after(call('thread-archive', { threadId, archived })),
+    threadQueue: botId => call('thread-queue', { botId }),
+    cancelQueued: (botId, queueId) => after(call('thread-queue-cancel', { botId, queueId })),
     // The avatar library: photos the user imported once, kept by the host.
     avatarLibrary: (options = {}) => call('avatar-library', options),
     importAvatars: items => call('avatar-import', { items }),

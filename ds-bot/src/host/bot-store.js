@@ -180,6 +180,35 @@ export function newMainThread(bot, now = Date.now()) {
 }
 
 /**
+ * Give a Bot its Main thread, once. Called wherever a Bot row is written without going
+ * through createBot (a joined shadow's first upsert, a roster report) so the Thread table
+ * never lags behind the Bot. Idempotent: a second call finds the saved row and only
+ * restores a missing `threadIds` entry or a Session the Bot moved to.
+ * @param {object} state
+ * @param {object} bot   raw state.bots[id] row
+ * @param {number} [now]
+ * @returns {ThreadRecord | undefined}
+ */
+export function ensureMainThread(state, bot, now = Date.now()) {
+  if (bot === null || typeof bot !== 'object' || typeof bot.id !== 'string' || bot.id === '') return undefined
+  if (state.threads === null || typeof state.threads !== 'object') state.threads = {}
+  const id = mainThreadId(bot.id)
+  const sessionId = typeof bot.sessionId === 'string' && bot.sessionId !== '' ? bot.sessionId : null
+  let thread = threadOf(state, id)
+  if (thread === undefined) {
+    thread = newMainThread(bot, now)
+    saveThread(state, thread)
+  } else if (thread.sessionId !== sessionId) {
+    // A mirror Session re-keyed or a fresh part made: the Main row follows the Bot.
+    thread.sessionId = sessionId
+    thread.updatedAt = now
+  }
+  if (!Array.isArray(bot.threadIds)) bot.threadIds = [id]
+  else if (!bot.threadIds.includes(id)) bot.threadIds = [id, ...bot.threadIds]
+  return thread
+}
+
+/**
  * Keep the full session index ({botId, threadId}) in step when a Bot's current Session
  * is replaced: the old id leaves the index, the new one points at the same thread.
  * @param {Map<string, {botId: string, threadId: string}>} index
@@ -195,4 +224,21 @@ export function updateBySessionIdFull(index, botId, oldSessionId, newSessionId, 
   if (typeof newSessionId === 'string' && newSessionId !== '' && typeof threadId === 'string' && threadId !== '') {
     index.set(newSessionId, { botId, threadId })
   }
+}
+
+/**
+ * Which Bot and Thread a Session belongs to, for the serial gate. A local Bot's current
+ * chat Session is not in the full index until its Main row carries it, so the Bot's own
+ * chat is resolved through `chatOf`/Main row.
+ * @param {object} rt
+ * @param {string} sessionId
+ * @returns {{botId: string, threadId: string} | undefined}
+ */
+export function ownerOfSession(rt, sessionId) {
+  if (typeof sessionId !== 'string' || sessionId === '') return undefined
+  const full = rt.bySessionIdFull?.(sessionId)
+  if (full !== undefined) return full
+  const bot = rt.botOf?.(sessionId)
+  if (bot === undefined) return undefined
+  return { botId: bot.id, threadId: rt.mainThreadOf?.(bot.id)?.id ?? mainThreadId(bot.id) }
 }

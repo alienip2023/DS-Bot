@@ -36,8 +36,10 @@ function scan() {
 }
 
 // Measured on fa93fd30 (fork.76): page 4, create 2, selectModel 1, resolveAgent 1, prompt 1, projections 1, list 1 (the wrapped cancel is no direct call).
+// P1-T2 adds one direct page read: channel.js serves a non-Main Thread's own Session history.
 const DIRECT = {
   'src/host/agents.js create': 1,
+  'src/host/channel.js page': 1,
   'src/host/channel.js prompt': 1,
   'src/host/chat-index.js page': 1,
   'src/host/delivery.js resolveAgent': 1,

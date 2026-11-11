@@ -16,7 +16,8 @@ import { install as installBtw } from './btw.js'
 import { install as installSide } from './side.js'
 import { handoffReply, questionReply, viewReply } from './parts.js'
 import { validateViewAnswer } from 'deep-view/core'
-import { COLORS, EXTRA_COLORS, ROUTE } from './constants.js'
+import { COLORS, EXTRA_COLORS, HISTORY_TIMEOUT_MS, ROUTE, THREAD_TITLE_MAX } from './constants.js'
+import { mainThreadId, ownerOfSession, threadOf, threadsOfBot } from './bot-store.js'
 import { joinedShadow } from './roster-join.js'
 import { ensureMirrorSession, mirrorStateOf } from './mirror.js'
 import { startPageTurn } from './executor.js'
@@ -148,6 +149,54 @@ export function createChatPageRoute(rt) {
   }
 }
 
+/**
+ * One Thread row as the Thread list reads it. `running` and `queued` are live figures
+ * from the serial gate, never values stored in state.json.
+ * @param {object} thread
+ * @param {{running: object|null, queued: object[]} | undefined} live
+ */
+export function threadView(thread, live) {
+  return {
+    id: thread.id,
+    botId: thread.botId,
+    title: thread.title,
+    createdAt: thread.createdAt,
+    updatedAt: thread.updatedAt,
+    archived: thread.archived === true,
+    model: thread.model ?? null,
+    effort: thread.effort ?? null,
+    workDir: thread.workDir ?? null,
+    sessionId: thread.sessionId ?? null,
+    parentThreadId: thread.parentThreadId ?? null,
+    parentTurn: thread.parentTurn ?? null,
+    lastSeq: thread.lastSeq ?? 0,
+    unread: thread.unread ?? 0,
+    running: live?.running?.threadId === thread.id ? 1 : 0,
+    queued: (live?.queued ?? []).filter(item => item.threadId === thread.id).length,
+    isMain: thread.id === mainThreadId(thread.botId),
+  }
+}
+
+// The history of a Thread that is not its Bot's Main one. The address is the Thread's
+// own Session; nothing here reads or writes the Bot's current part.
+async function threadPage(rt, ctx, thread, cursor) {
+  const signal = AbortSignal.timeout(HISTORY_TIMEOUT_MS)
+  // An archived Thread may have no live agent left; its stored events still page fine.
+  const agent = await rt.resolveAgent(thread.sessionId).catch(() => undefined)
+  const page = await ctx.sessionController.page({
+    address: { kind: 'session', sessionId: thread.sessionId },
+    ...(agent ? { throughSeq: Number(agent.session.seq) - 1 } : {}),
+    ...(Number.isInteger(cursor?.beforeSeq) ? { beforeSeq: cursor.beforeSeq } : {}),
+    maxMessages: 60,
+  }, signal)
+  const events = page.records.map(record => record.event)
+  return {
+    sessionId: thread.sessionId,
+    items: rt.displayItems(thread.sessionId, events, agent?.session),
+    cursor: page.hasMore && events.length > 0 ? { beforeSeq: events[0].seq } : null,
+  }
+}
+
 export function install(rt) {
   installBtw(rt)
   installSide(rt)
@@ -268,7 +317,7 @@ export function install(rt) {
   }
   // What a host that only reads the team may still answer.
   // Updates change the dsh profile, not the team, so a reading host may run them too.
-  const READS = new Set(['state', 'models', 'efforts', 'providers', 'provider-models', 'earlier', 'chat', 'run-stats', 'room-progress', 'exchange', 'exchange-text', 'file-text', 'usage', 'schedules', 'memory-view', 'browser-wait', 'browser-result', 'diagnostics', 'diagnostics-log', 'diagnostics-clear', 'update-check', 'update-install', 'dsh-update-install', 'repo-stars', 'approval-answer', 'thinking', 'avatar-library', 'computer-system-status', 'computer-shot', 'local-agents', 'local-agent-models'])
+  const READS = new Set(['state', 'models', 'efforts', 'providers', 'provider-models', 'earlier', 'chat', 'run-stats', 'room-progress', 'exchange', 'exchange-text', 'file-text', 'usage', 'schedules', 'memory-view', 'browser-wait', 'browser-result', 'diagnostics', 'diagnostics-log', 'diagnostics-clear', 'update-check', 'update-install', 'dsh-update-install', 'repo-stars', 'approval-answer', 'thinking', 'avatar-library', 'computer-system-status', 'computer-shot', 'local-agents', 'local-agent-models', 'threads', 'thread-queue'])
 
   async function setPrefs(body) {
     if (body.theme !== undefined) {
@@ -404,6 +453,18 @@ export function install(rt) {
           await rt.load()
           return ok(await rt.earlierPage(String(body.sessionId ?? ''), body.cursor ?? undefined))
         case 'chat': {
+          await rt.load()
+          // A Thread other than Main reads its own Session; Main keeps the Bot's chat page.
+          if (typeof body.threadId === 'string' && body.threadId !== '') {
+            const bot = rt.botOf(String(body.botId ?? ''))
+            if (bot === undefined) return fail('Unknown Bot', 'bot/not-found')
+            const thread = threadOf(state, body.threadId)
+            if (thread === undefined || thread.botId !== bot.id) return fail('Unknown thread', 'bot/not-found')
+            if (typeof thread.sessionId !== 'string' || thread.sessionId === '') {
+              return ok({ sessionId: null, items: [], cursor: null })
+            }
+            if (thread.id !== mainThreadId(bot.id)) return ok(await threadPage(rt, ctx, thread, body.cursor))
+          }
           const chatPageRoute = createChatPageRoute(rt)
           return ok(await chatPageRoute(body))
         }
@@ -493,6 +554,61 @@ export function install(rt) {
           await rt.load()
           await rt.deleteBot(body.id)
           return ok(view())
+        // Threads inside one Bot: each has its own Session, history and place in the queue.
+        case 'threads': {
+          await rt.load()
+          const bot = rt.botOf(String(body.botId ?? ''))
+          if (bot === undefined) return fail('Unknown Bot', 'bot/not-found')
+          const live = rt.threadQueueLive?.(bot.id) ?? { running: null, queued: [] }
+          return ok({ botId: bot.id, threads: threadsOfBot(state, bot.id).map(thread => threadView(thread, live)) })
+        }
+        case 'thread-create': {
+          await rt.load()
+          const created = await rt.createThread({ botId: body.botId, title: body.title, model: body.model, effort: body.effort, workDir: body.workDir })
+          const live = rt.threadQueueLive?.(created.thread.botId) ?? { running: null, queued: [] }
+          return ok({ thread: threadView(created.thread, live), sessionId: created.sessionId })
+        }
+        case 'thread-rename': {
+          await rt.load()
+          const thread = threadOf(state, String(body.threadId ?? ''))
+          if (thread === undefined) return fail('Unknown thread', 'bot/not-found')
+          const clean = String(body.title ?? '').replace(/[\u0000-\u001f\u007f]/g, '').trim()
+          if (clean === '' || clean.length > THREAD_TITLE_MAX) {
+            return fail(`A thread title is 1–${THREAD_TITLE_MAX} characters`, 'bot/invalid')
+          }
+          thread.title = clean
+          thread.updatedAt = Date.now()
+          await rt.save()
+          return ok({ thread: threadView(thread, rt.threadQueueLive?.(thread.botId)) })
+        }
+        case 'thread-archive': {
+          await rt.load()
+          const thread = threadOf(state, String(body.threadId ?? ''))
+          if (thread === undefined) return fail('Unknown thread', 'bot/not-found')
+          if (thread.id === mainThreadId(thread.botId)) return fail('The Main thread cannot be archived', 'bot/refused')
+          const live = rt.threadQueueLive?.(thread.botId) ?? { running: null, queued: [] }
+          if (live.running !== null || live.queued.length > 0) {
+            return fail('This Bot is still answering; wait for it to finish', 'bot/busy')
+          }
+          thread.archived = body.archived !== false
+          thread.updatedAt = Date.now()
+          await rt.save()
+          return ok({ thread: threadView(thread, live) })
+        }
+        case 'thread-queue': {
+          await rt.load()
+          const bot = rt.botOf(String(body.botId ?? ''))
+          if (bot === undefined) return fail('Unknown Bot', 'bot/not-found')
+          const live = rt.threadQueueLive?.(bot.id) ?? { running: null, queued: [] }
+          return ok({ botId: bot.id, items: live.queued })
+        }
+        case 'thread-queue-cancel': {
+          await rt.load()
+          const bot = rt.botOf(String(body.botId ?? ''))
+          if (bot === undefined) return fail('Unknown Bot', 'bot/not-found')
+          const outcome = rt.threadQueueCancel?.(bot.id, String(body.queueId ?? '')) ?? { cancelled: false, remaining: 0 }
+          return ok(outcome)
+        }
         case 'private-release':
           await rt.load()
           await rt.releaseArchive(String(body.id ?? ''))
@@ -755,9 +871,44 @@ export function install(rt) {
         case 'joined-ensure': return await createJoinedEnsureRoute(rt)(body)
         case 'send': {
           const text = String(body.text ?? '').trim()
-          if (text === '' || typeof body.sessionId !== 'string') return fail('Nothing to send', 'bot/invalid')
+          if (text === '') return fail('Nothing to send', 'bot/invalid')
           await rt.load()
-          await rt.sendUser({ sessionId: body.sessionId, content: [{ type: 'text', text }] })
+          let thread
+          let sessionId
+          if (typeof body.threadId === 'string' && body.threadId !== '') {
+            thread = threadOf(state, body.threadId)
+            if (thread === undefined) return fail('Unknown thread', 'bot/not-found')
+            if (thread.archived === true) return fail('This thread is archived', 'bot/thread-archived')
+            sessionId = thread.sessionId
+            // A local Bot's Main thread keeps its conversation in the Bot's chat Session.
+            if ((typeof sessionId !== 'string' || sessionId === '') && thread.id === mainThreadId(thread.botId)) {
+              sessionId = rt.chatOf?.(thread.botId)
+            }
+            if (typeof sessionId !== 'string' || sessionId === '') return fail('This thread has no session yet', 'bot/invalid')
+          } else {
+            if (typeof body.sessionId !== 'string' || body.sessionId === '') return fail('Nothing to send', 'bot/invalid')
+            sessionId = body.sessionId
+            const owner = rt.bySessionIdFull?.(sessionId)
+            thread = owner === undefined ? undefined : threadOf(state, owner.threadId)
+            if (thread?.archived === true) return fail('This thread is archived', 'bot/thread-archived')
+          }
+          const owner = thread === undefined ? ownerOfSession(rt, sessionId) : { botId: thread.botId, threadId: thread.id }
+          const requestId = randomUUID()
+          const payload = { sessionId, content: [{ type: 'text', text }], requestId }
+          // One turn per Bot: a second message waits for the running one (thread-model §4.5).
+          if (typeof rt.sendThreadTurn === 'function') {
+            await rt.sendThreadTurn({
+              botId: owner?.botId,
+              threadId: owner?.threadId,
+              sessionId,
+              requestId,
+              kind: 'send',
+              preview: text,
+              run: () => rt.sendUser(payload),
+            })
+          } else {
+            await rt.sendUser(payload)
+          }
           return ok(true)
         }
         case 'btw-delete': {

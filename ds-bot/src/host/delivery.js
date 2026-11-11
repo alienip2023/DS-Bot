@@ -117,14 +117,12 @@ export function install(rt) {
       ],
       source,
     })
-    if (steer) agent.steer(message)
-    else agent.followup(message)
-    await ctx.sessions.flush(agent.session)
-    if (recordExchange && EXCHANGE_ROLES.has(role) && !deferred && !resumed && !retried) {
-      // Recorded once the message is in the Session: an earlier record would show
-      // a failed delivery as delivered. The whole text is in its file, or in the
-      // Session it goes to; exchangeText reads it back there. Resends keep any
-      // existing record; only a merged request replaces it with its added text.
+    // Recorded once the message is in the Session: an earlier record would show
+    // a failed delivery as delivered. The whole text is in its file, or in the
+    // Session it goes to; exchangeText reads it back there. Resends keep any
+    // existing record; only a merged request replaces it with its added text.
+    const recordExchangeEntry = () => {
+      if (!(recordExchange && EXCHANGE_ROLES.has(role) && !deferred && !resumed && !retried)) return
       const kept = headOf(text, TEXT_KEPT)
       const whole = length !== undefined ? { length, files } : kept.length < text.length ? { length: text.length, sessionId: targetSessionId } : {}
       const entry = { id: exchangeId, from: fromId, to: toId, text: kept, ...whole, role, time: Date.now(), ...(replyTo ? { replyTo } : {}), ...(audience === 'user' ? { audience } : {}) }
@@ -132,6 +130,30 @@ export function install(rt) {
       if (earlier === -1) state.exchanges.push(entry)
       else if (merged) state.exchanges[earlier] = entry
       void rt.save().catch(() => {})
+    }
+    // A steered message cuts into a running turn at its next step; it must not wait
+    // behind that turn, so it never goes through the serial gate.
+    if (steer) {
+      agent.steer(message)
+      await ctx.sessions.flush(agent.session)
+      recordExchangeEntry()
+      return exchangeId
+    }
+    // Everything else waits for the Bot's running turn (thread-model §4.5): a queued
+    // delivery is written to the Session and recorded only when its turn starts.
+    const run = async () => {
+      agent.followup(message)
+      await ctx.sessions.flush(agent.session)
+      recordExchangeEntry()
+    }
+    if (typeof rt.sendThreadTurn === 'function') {
+      // The Session decides the Bot; a group's own Session has no Bot and stays ungated.
+      const full = rt.bySessionIdFull?.(targetSessionId)
+      const bot = full === undefined ? (targetSessionId === rt.chatOf(toId) ? to : undefined) : undefined
+      const threadId = full?.threadId ?? (bot === undefined ? undefined : rt.mainThreadOf?.(bot.id)?.id)
+      await rt.sendThreadTurn({ botId: full?.botId ?? bot?.id, threadId, sessionId: targetSessionId, kind: 'dispatch', preview: text, run })
+    } else {
+      await run()
     }
     return exchangeId
   }

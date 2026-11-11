@@ -2287,6 +2287,13 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
     },
     createBot: (payload) => after(call2("create-bot", payload)),
     botCreateTargets: () => call2("bot-create-targets", {}),
+    // Threads inside one Bot (P1-T2): thin host calls; the switcher renders them.
+    threads: (botId) => call2("threads", { botId }),
+    createThread: (payload) => after(call2("thread-create", payload)),
+    renameThread: (threadId, title) => after(call2("thread-rename", { threadId, title })),
+    archiveThread: (threadId, archived = true) => after(call2("thread-archive", { threadId, archived })),
+    threadQueue: (botId) => call2("thread-queue", { botId }),
+    cancelQueued: (botId, queueId) => after(call2("thread-queue-cancel", { botId, queueId })),
     // The avatar library: photos the user imported once, kept by the host.
     avatarLibrary: (options = {}) => call2("avatar-library", options),
     importAvatars: (items) => call2("avatar-import", { items }),

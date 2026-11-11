@@ -2,6 +2,7 @@
 // No local session is created. No handleRemoteTurn, no mode:'agent', no task/start.
 import { randomUUID } from 'node:crypto'
 import { resolve as pathResolve, sep as pathSep } from 'node:path'
+import { ensureMainThread } from './bot-store.js'
 import { shadowId } from './roster-join.js'
 import { isInsideRoot } from './path-guard.js'
 
@@ -171,6 +172,8 @@ export async function createBotOnNode(rt, { nodeId, name, role, modelRef = null,
       lastSeen: now,
     },
   }
+  // A joined shadow owns its Main Thread from its first save, without a local Session.
+  ensureMainThread(rt.state, rt.state.bots[shadowBotId])
   void rt.save?.()
   return { ok: true, id: shadowBotId, remoteBotId, name: rt.state.bots[shadowBotId].name }
 }

@@ -196,14 +196,31 @@ async function sendLocal({ bot, text, rt, tracker }) {
   const sessionId = rt.chatOf?.(bot.id) ?? bot.id
   const turnId = randomUUID()
   tracker?.start(turnId, bot.id)
-  try {
-    await rt.sendUser({ sessionId, content: [{ type: 'text', text: text ?? '' }], requestId: turnId })
-    tracker?.finish(turnId, { status: 'done' })
-    return { ok: true, turnId, text: text ?? '' }
-  } catch (err) {
-    tracker?.finish(turnId, { status: 'failed', error: String(err?.code ?? err?.message ?? err) })
-    throw err
+  const run = async () => {
+    try {
+      await rt.sendUser({ sessionId, content: [{ type: 'text', text: text ?? '' }], requestId: turnId })
+      tracker?.finish(turnId, { status: 'done' })
+    } catch (err) {
+      tracker?.finish(turnId, { status: 'failed', error: String(err?.code ?? err?.message ?? err) })
+      throw err
+    }
   }
+  // One turn per Bot: a dispatch waits behind whatever that Bot is running (thread-model §4.5).
+  if (typeof rt.sendThreadTurn === 'function') {
+    const outcome = await rt.sendThreadTurn({
+      botId: bot.id,
+      sessionId,
+      requestId: turnId,
+      kind: 'send',
+      preview: text ?? '',
+      releaseOn: bot.origin === 'joined' ? 'run' : undefined,
+      run,
+    })
+    if (outcome?.queued === true) return { ok: true, turnId, text: text ?? '', queued: true, position: outcome.position }
+  } else {
+    await run()
+  }
+  return { ok: true, turnId, text: text ?? '' }
 }
 
 /**
