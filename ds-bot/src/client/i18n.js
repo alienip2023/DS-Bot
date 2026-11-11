@@ -99,6 +99,12 @@ const ZH = {
   'No connected remote machines yet.': '还没有连上的远程机器。',
   'More actions': '更多操作',
 
+  // Threads in the sidebar
+  Threads: '线程',
+  'New thread': '新建线程',
+  'Thread limit reached': '线程数已达上限',
+  'Could not load threads. Retry': '无法加载线程，请重试',
+
   // Sidebar and account menu
   'Bot list': 'Bot 列表',
   'Setting up your Main Bot…': '正在设置你的主 Bot…',

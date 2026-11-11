@@ -4,6 +4,8 @@
 // real thread queue; only the Session host is a recorder.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import EventEmitter from 'node:events'
+import { ensureMainThread } from '../src/host/bot-store.js'
 import { threadWorld, makeBot } from './thread-t2-world.js'
 
 const tick = () => new Promise(resolve => setImmediate(resolve))
@@ -123,4 +125,55 @@ test('stopping a Session clears its queued prompt and still reports the stop', a
   const result = await w.ctx.sessionController.cancel({ sessionId: threadSession })
   assert.deepEqual(result, { accepted: true })
   assert.equal(w.rt.threadQueueLive(bot.id).queued.length, 0)
+})
+
+// A joined Bot's page is its mirror Session, which the full index resolves to the Bot's
+// Main Thread. Its prompt belongs to the node, not to the Bot's local turn queue: the
+// queue's one-slot invariant is about turns this host starts, and a joined turn's `done`
+// has no local `turn/end` to release the slot. Removing the joined bypass in
+// thread-prompt.js therefore leaves the slot running forever and parks the next message.
+test('a joined Bot prompt goes to its node and never takes the Thread gate', async () => {
+  const w = threadWorld()
+  await w.rt.load()
+  const { Session } = await import('@deepseek-ai/dsh-session')
+  const sessionId = 'mirror-beta'
+  const session = new Session(sessionId)
+  const joined = {
+    id: 'joined:n1:rb1', name: 'Joined beta', role: 'Worker', type: 'remote-worker', origin: 'joined',
+    createdAt: Date.now(), capabilities: [], sessionId,
+    worker: { nodeId: 'n1', remoteBotId: 'rb1', home: 'remote', online: true },
+  }
+  w.rt.state.bots[joined.id] = joined
+  ensureMainThread(w.rt.state, joined)
+  await w.rt.save()
+  assert.deepEqual(w.rt.bySessionIdFull(sessionId), { botId: joined.id, threadId: `${joined.id}:main` })
+
+  const emitter = new EventEmitter()
+  const frames = []
+  w.ctx.get = name => name === 'remote-agent:registry'
+    ? {
+        send: (nodeId, type, payload) => { frames.push({ nodeId, type, payload }); return true },
+        on: (event, listener) => emitter.on(event, listener),
+        off: (event, listener) => emitter.off(event, listener),
+      }
+    : undefined
+  const originalResolve = w.ctx.sessionController.resolveAgent
+  w.ctx.sessionController.resolveAgent = async (id) => id === sessionId
+    ? { agent: { session, status: 'idle', ctx: { tools: { register: () => () => {} } }, followup() {}, steer() {} } }
+    : originalResolve(id)
+
+  const result = await prompt(w, sessionId, 'hello node')
+  assert.deepEqual(result, { accepted: true })
+  assert.equal(w.prompts.length, 0, 'the node path took the message, not the local prompt')
+  assert.equal(frames.length, 1)
+  assert.equal(frames[0].nodeId, 'n1')
+  assert.equal(frames[0].type, 'bot/turn')
+  assert.equal(frames[0].payload.remoteBotId, 'rb1')
+  assert.equal(frames[0].payload.text, 'hello node')
+  assert.deepEqual(w.rt.threadQueueLive(joined.id), { running: null, queued: [] },
+    'a joined turn is not a local turn: it must not hold the Bot\'s one slot')
+
+  emitter.emit('botTurnResult', { exchangeId: frames[0].payload.exchangeId, nodeId: 'n1', ok: true, text: 'hi', seq: 0 })
+  await tick()
+  await Promise.all([...w.rt.joinedPromptTasks])
 })
