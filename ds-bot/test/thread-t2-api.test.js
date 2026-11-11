@@ -163,3 +163,21 @@ test('T2-thread ids are never reused', async () => {
   assert.equal(w.rt.state.threads[firstId].archived, true)
   assert.equal(w.rt.state.threads[secondId].archived, false)
 })
+
+test('T3a-thread-owner names the Bot and Thread of a Thread Session', async () => {
+  const w = threadWorld()
+  const bot = await makeBot(w)
+  const created = await w.call('thread-create', { botId: bot.id, title: 'Research' })
+  const { thread, sessionId } = created.value
+  const owner = await w.call('thread-owner', { sessionId })
+  assert.equal(owner.ok, true, JSON.stringify(owner))
+  assert.deepEqual(owner.value, { botId: bot.id, threadId: thread.id })
+})
+
+test('T3a-thread-owner answers null for a Session no Thread owns', async () => {
+  const w = threadWorld()
+  await makeBot(w)
+  assert.equal((await w.call('thread-owner', { sessionId: 'no-such-session' })).value, null)
+  assert.equal((await w.call('thread-owner', { sessionId: '' })).value, null)
+  assert.equal((await w.call('thread-owner', {})).value, null)
+})

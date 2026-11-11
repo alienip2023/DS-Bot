@@ -18,17 +18,11 @@ export function createThreadsStore({ request = call } = {}) {
   const listeners = new Set()
   let version = 0
 
+  // Session ids are never reused (a deleted Thread keeps its id), so an entry that a
+  // later list no longer mentions cannot mislabel a different Session: nothing to prune.
   const index = (botId, threads) => {
-    const live = new Set()
     for (const thread of threads) {
-      if (typeof thread?.sessionId === 'string' && thread.sessionId !== '') {
-        bySession.set(thread.sessionId, botId)
-        live.add(thread.sessionId)
-      }
-    }
-    // A list that no longer holds a Thread must not keep its Session an inside one.
-    for (const [sessionId, owner] of bySession) {
-      if (owner === botId && !live.has(sessionId)) bySession.delete(sessionId)
+      if (typeof thread?.sessionId === 'string' && thread.sessionId !== '') bySession.set(thread.sessionId, botId)
     }
   }
 
@@ -104,6 +98,18 @@ export function createThreadsStore({ request = call } = {}) {
   /** The Bot a Thread Session belongs to, or undefined for any other Session. */
   const botOfSession = (sessionId) => (typeof sessionId === 'string' ? bySession.get(sessionId) : undefined)
 
+  /**
+   * Records an owner the Host reported for a Session this cache has not loaded yet —
+   * after a reload or a restart the landing check learns it this way.
+   */
+  const remember = (sessionId, botId) => {
+    if (typeof sessionId !== 'string' || sessionId === '' || typeof botId !== 'string' || botId === '') return
+    if (bySession.get(sessionId) === botId) return
+    bySession.set(sessionId, botId)
+    version += 1
+    for (const fn of listeners) fn()
+  }
+
   const reset = () => {
     byBot.clear()
     bySession.clear()
@@ -112,7 +118,7 @@ export function createThreadsStore({ request = call } = {}) {
     for (const fn of listeners) fn()
   }
 
-  return { subscribe, getSnapshot, slot, load, create, get, botOfSession, reset }
+  return { subscribe, getSnapshot, slot, load, create, get, botOfSession, remember, reset }
 }
 
 export const threadsStore = createThreadsStore()

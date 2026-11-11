@@ -59,6 +59,7 @@ import { QueueDock, QUEUE_CSS } from './queue-dock.js'
 import { noticeApprovals } from './approval-notices.js'
 import { listedOpener } from './open-listed.js'
 import { threadSessionOpener } from './thread-open.js'
+import { threadOwnerResolver } from './thread-owner.js'
 import { sessionProbes } from './host-session.js'
 
 export const inject = ['sessions', 'uiWorkspace', 'uiConversation', 'slots', 'theme', 'layout']
@@ -492,6 +493,11 @@ export function apply(ctx) {
     open: sessionId => actions.openAgentSession(sessionId),
     report: error => actions.reportError(error, 'thread-open'),
   })
+  // A Session the Thread cache has not loaded yet — after a reload or a restart — is
+  // still a Thread page as far as the Host is concerned; it answers and the cache learns.
+  const threadOwnerOf = threadOwnerResolver({
+    remember: (sessionId, botId) => threadsStore.remember(sessionId, botId),
+  })
   const actions = {
     ...teamActions({ call, after, partFor, roster, ui, live, cards, heldCards, turnClock, panelFolded, openSession: id => actions.openSession(id), ...sessionProbes(ctx, quietly) }),
     learningAnswer: (id, approve) => after(call('learning-answer', { id, approve })),
@@ -501,6 +507,8 @@ export function apply(ctx) {
     // The Bot a Thread Session belongs to; the sidebar's landing check asks this so a
     // blank Thread page is not mistaken for an empty Session.
     threadBotOfSession: id => threadSessionBot(id),
+    // Asked only when neither the roster nor the cache recognizes a blank Session.
+    threadOwnerOf: sessionId => threadOwnerOf(sessionId),
     openSession: (id) => {
       // A DSH Agent Session id, and a Thread Session id, land on the plain surface.
       if (isAgentSessionId(id) || threadSessionBot(id) !== undefined) return actions.openAgentSession(id)

@@ -321,7 +321,7 @@ export function install(rt) {
   }
   // What a host that only reads the team may still answer.
   // Updates change the dsh profile, not the team, so a reading host may run them too.
-  const READS = new Set(['state', 'models', 'efforts', 'providers', 'provider-models', 'earlier', 'chat', 'run-stats', 'room-progress', 'exchange', 'exchange-text', 'file-text', 'usage', 'schedules', 'memory-view', 'browser-wait', 'browser-result', 'diagnostics', 'diagnostics-log', 'diagnostics-clear', 'update-check', 'update-install', 'dsh-update-install', 'repo-stars', 'approval-answer', 'thinking', 'avatar-library', 'computer-system-status', 'computer-shot', 'local-agents', 'local-agent-models', 'threads', 'thread-queue'])
+  const READS = new Set(['state', 'models', 'efforts', 'providers', 'provider-models', 'earlier', 'chat', 'run-stats', 'room-progress', 'exchange', 'exchange-text', 'file-text', 'usage', 'schedules', 'memory-view', 'browser-wait', 'browser-result', 'diagnostics', 'diagnostics-log', 'diagnostics-clear', 'update-check', 'update-install', 'dsh-update-install', 'repo-stars', 'approval-answer', 'thinking', 'avatar-library', 'computer-system-status', 'computer-shot', 'local-agents', 'local-agent-models', 'threads', 'thread-queue', 'thread-owner'])
 
   async function setPrefs(body) {
     if (body.theme !== undefined) {
@@ -565,6 +565,16 @@ export function install(rt) {
           if (bot === undefined) return fail('Unknown Bot', 'bot/not-found')
           const live = rt.threadQueueLive?.(bot.id) ?? { running: null, queued: [] }
           return ok({ botId: bot.id, threads: threadsOfBot(state, bot.id).map(thread => threadView(thread, live)) })
+        }
+        // Which Bot a Session belongs to, by Thread session: after a reload the client
+        // cache has not loaded any Thread list yet, and the landing check must not send
+        // a Thread page home just because it is still blank.
+        case 'thread-owner': {
+          await rt.load()
+          const sessionId = typeof body.sessionId === 'string' ? body.sessionId : ''
+          if (sessionId === '') return ok(null)
+          const full = rt.bySessionIdFull?.(sessionId)
+          return ok(full === undefined ? null : { botId: full.botId, threadId: full.threadId })
         }
         case 'thread-create': {
           await rt.load()

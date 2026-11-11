@@ -15614,15 +15614,8 @@ function createThreadsStore({ request = call } = {}) {
   const listeners2 = /* @__PURE__ */ new Set();
   let version = 0;
   const index = (botId, threads) => {
-    const live = /* @__PURE__ */ new Set();
     for (const thread of threads) {
-      if (typeof thread?.sessionId === "string" && thread.sessionId !== "") {
-        bySession.set(thread.sessionId, botId);
-        live.add(thread.sessionId);
-      }
-    }
-    for (const [sessionId, owner] of bySession) {
-      if (owner === botId && !live.has(sessionId)) bySession.delete(sessionId);
+      if (typeof thread?.sessionId === "string" && thread.sessionId !== "") bySession.set(thread.sessionId, botId);
     }
   };
   const slotOf = (botId) => {
@@ -15687,6 +15680,13 @@ function createThreadsStore({ request = call } = {}) {
     return void 0;
   };
   const botOfSession = (sessionId) => typeof sessionId === "string" ? bySession.get(sessionId) : void 0;
+  const remember = (sessionId, botId) => {
+    if (typeof sessionId !== "string" || sessionId === "" || typeof botId !== "string" || botId === "") return;
+    if (bySession.get(sessionId) === botId) return;
+    bySession.set(sessionId, botId);
+    version += 1;
+    for (const fn of listeners2) fn();
+  };
   const reset = () => {
     byBot.clear();
     bySession.clear();
@@ -15694,7 +15694,7 @@ function createThreadsStore({ request = call } = {}) {
     version += 1;
     for (const fn of listeners2) fn();
   };
-  return { subscribe, getSnapshot, slot, load, create, get, botOfSession, reset };
+  return { subscribe, getSnapshot, slot, load, create, get, botOfSession, remember, reset };
 }
 var threadsStore = createThreadsStore();
 
@@ -17334,8 +17334,25 @@ function useLandOnMainBot(roster, useSessions, actions) {
       return void 0;
     }
     const last = lastBot.current;
-    const timer = setTimeout(() => actions.landOn(roster.mainBotId, last), last ? 0 : 400);
-    return () => clearTimeout(timer);
+    const home = () => actions.landOn(roster.mainBotId, last);
+    const ask = id === "" ? void 0 : actions.threadOwnerOf;
+    let live = true;
+    const timer = setTimeout(() => {
+      if (typeof ask !== "function") {
+        home();
+        return;
+      }
+      Promise.resolve(ask(id)).then((owner) => {
+        if (!live || owner === void 0) return;
+        if (owner !== null) return;
+        home();
+      }, () => {
+      });
+    }, last ? 0 : 400);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
   }, [mainView, roster]);
 }
 function FooterAccount(props) {
@@ -29733,6 +29750,24 @@ function threadSessionOpener({ sessions, open, report }) {
   };
 }
 
+// src/client/thread-owner.js
+function threadOwnerResolver({ request = call, remember = () => {
+} } = {}) {
+  return async function threadOwnerOfSession(sessionId) {
+    if (typeof sessionId !== "string" || sessionId === "") return null;
+    let result;
+    try {
+      result = await request("thread-owner", { sessionId });
+    } catch {
+      return void 0;
+    }
+    const botId = result?.botId;
+    if (typeof botId !== "string" || botId === "") return null;
+    remember(sessionId, botId, result?.threadId);
+    return { botId, threadId: typeof result.threadId === "string" ? result.threadId : null };
+  };
+}
+
 // src/client/host-session.js
 async function hostHasSession(remote, sessionId, note = () => {
 }) {
@@ -30179,6 +30214,9 @@ function apply(ctx) {
     open: (sessionId) => actions.openAgentSession(sessionId),
     report: (error) => actions.reportError(error, "thread-open")
   });
+  const threadOwnerOf = threadOwnerResolver({
+    remember: (sessionId, botId) => threadsStore.remember(sessionId, botId)
+  });
   const actions = {
     ...teamActions({ call, after, partFor, roster, ui: ui2, live, cards, heldCards, turnClock, panelFolded, openSession: (id) => actions.openSession(id), ...sessionProbes(ctx, quietly) }),
     learningAnswer: (id, approve) => after(call("learning-answer", { id, approve })),
@@ -30188,6 +30226,8 @@ function apply(ctx) {
     // The Bot a Thread Session belongs to; the sidebar's landing check asks this so a
     // blank Thread page is not mistaken for an empty Session.
     threadBotOfSession: (id) => threadSessionBot(id),
+    // Asked only when neither the roster nor the cache recognizes a blank Session.
+    threadOwnerOf: (sessionId) => threadOwnerOf(sessionId),
     openSession: (id) => {
       if (isAgentSessionId(id) || threadSessionBot(id) !== void 0) return actions.openAgentSession(id);
       ui2.set((state) => state.newChat || state.exchange || state.menu || state.palette ? { ...state, newChat: null, exchange: null, menu: null, palette: null } : state);

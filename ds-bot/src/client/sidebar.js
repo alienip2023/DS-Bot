@@ -1491,9 +1491,22 @@ export function useLandOnMainBot(roster, useSessions, actions) {
       lastBot.current = null
       return undefined
     }
+    // Nothing here knows the Session: after a reload or a restart the Thread cache is
+    // empty, so the Host is asked before the view goes home. A question that could not
+    // be asked is not an answer — the view stays rather than bouncing on a guess.
     const last = lastBot.current
-    const timer = setTimeout(() => actions.landOn(roster.mainBotId, last), last ? 0 : 400)
-    return () => clearTimeout(timer)
+    const home = () => actions.landOn(roster.mainBotId, last)
+    const ask = id === '' ? undefined : actions.threadOwnerOf
+    let live = true
+    const timer = setTimeout(() => {
+      if (typeof ask !== 'function') { home(); return }
+      Promise.resolve(ask(id)).then((owner) => {
+        if (!live || owner === undefined) return
+        if (owner !== null) return
+        home()
+      }, () => {})
+    }, last ? 0 : 400)
+    return () => { live = false; clearTimeout(timer) }
   }, [mainView, roster])
 }
 
