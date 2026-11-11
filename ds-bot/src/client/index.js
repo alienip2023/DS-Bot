@@ -10,6 +10,7 @@ import { lookOf } from './mark.js'
 import { TeamSidebar, YouAvatar, AccountLauncher, FooterAccount, BrandMark, BrandName, BotReturn, SIDEBAR_CSS, RETURN_CSS, holdShellShortcuts } from './sidebar.js'
 import { threadsStore } from './threads.js'
 import { threadTargetOf } from './thread-target.js'
+import { threadHomeGuard } from './thread-home.js'
 import { installSettingsShell, SETTINGS_SHELL_CSS } from './settings-shell.js'
 import { frameLayout, readSidebar, writeSidebar, toggledPref, DSH_NARROW } from './frame-layout.js'
 import { installFrameWatch } from './frame-watch.js'
@@ -461,27 +462,13 @@ export function apply(ctx) {
     return frameLayout({ viewport: f.viewport, sidebarWidth: f.sidebarWidth, pref: sidebarPref.getSnapshot(), drawer: state.leftDrawer, panel: { view: view ?? state.view, yielded: state.panelYield === true } }).panel === 'folded'
   }
   const yieldBrowser = state => state.panelYield === true || panelFolded('browser')
-  // Bot mode's view must hold a team conversation; an outside Session wears the
-  // Bot skin without one. Runs whenever the surface is (or stays) Bot mode —
-  // including a cold start, where no setSurface call ever fires.
-  const homeToMainBot = () => {
-    const snapshot = roster.getSnapshot()
-    if (!snapshot.ready || !snapshot.mainBotId) return
-    const main = mainView()
-    // A Thread page belongs to a Bot: it is a team conversation, never an outside
-    // Session the Bot surface would be wrong for.
-    if (threadSessionBot(main) !== undefined) return
-    if (main !== undefined && snapshot.byId[main] === undefined && snapshot.roomsById[main] === undefined) {
-      actions.openSession(snapshot.mainBotId)
-    }
-  }
   const ensureBotHome = () => {
-    if (roster.getSnapshot().ready) homeToMainBot()
+    if (roster.getSnapshot().ready) void homeToMainBot()
     else {
       const off = roster.subscribe(() => {
         if (!roster.getSnapshot().ready) return
         off()
-        homeToMainBot()
+        void homeToMainBot()
       })
     }
   }
@@ -497,6 +484,16 @@ export function apply(ctx) {
   // still a Thread page as far as the Host is concerned; it answers and the cache learns.
   const threadOwnerOf = threadOwnerResolver({
     remember: (sessionId, botId) => threadsStore.remember(sessionId, botId),
+  })
+  // Bot mode's view must hold a team conversation; an outside Session wears the
+  // Bot skin without one. Runs whenever the surface is (or stays) Bot mode —
+  // including a cold start, where no setSurface call ever fires.
+  const homeToMainBot = threadHomeGuard({
+    roster,
+    mainView,
+    threadBotOfSession: threadSessionBot,
+    threadOwnerOf: (sessionId) => threadOwnerOf(sessionId),
+    openSession: (id) => actions.openSession(id),
   })
   const actions = {
     ...teamActions({ call, after, partFor, roster, ui, live, cards, heldCards, turnClock, panelFolded, openSession: id => actions.openSession(id), ...sessionProbes(ctx, quietly) }),

@@ -17530,6 +17530,22 @@ var SIDEBAR_CSS = `
 @media (prefers-reduced-motion:reduce){.bt-sec-body,.bt-sec-chev,.bt-sec-act,.bt-rail-folder{transition:none}.bt-sec-pile{animation:none}}
 `;
 
+// src/client/thread-home.js
+function threadHomeGuard({ roster, mainView, threadBotOfSession, threadOwnerOf, openSession }) {
+  return async function homeToMainBot() {
+    const snapshot = roster.getSnapshot();
+    if (!snapshot.ready || !snapshot.mainBotId) return;
+    const main = mainView();
+    if (threadBotOfSession(main) !== void 0) return;
+    if (main === void 0) return;
+    if (snapshot.byId[main] !== void 0 || snapshot.roomsById[main] !== void 0) return;
+    const owner = await Promise.resolve(threadOwnerOf(main)).catch(() => void 0);
+    if (owner !== null) return;
+    if (mainView() !== main) return;
+    openSession(snapshot.mainBotId);
+  };
+}
+
 // src/client/permission-picker.js
 var import_react36 = require("react");
 var LABELS = { "read-only": "Read only", "workspace-write": "Workspace", "danger-full-access": "Full access" };
@@ -30190,22 +30206,13 @@ function apply(ctx) {
     return frameLayout({ viewport: f.viewport, sidebarWidth: f.sidebarWidth, pref: sidebarPref.getSnapshot(), drawer: state.leftDrawer, panel: { view: view ?? state.view, yielded: state.panelYield === true } }).panel === "folded";
   };
   const yieldBrowser = (state) => state.panelYield === true || panelFolded("browser");
-  const homeToMainBot = () => {
-    const snapshot = roster.getSnapshot();
-    if (!snapshot.ready || !snapshot.mainBotId) return;
-    const main = mainView();
-    if (threadSessionBot(main) !== void 0) return;
-    if (main !== void 0 && snapshot.byId[main] === void 0 && snapshot.roomsById[main] === void 0) {
-      actions.openSession(snapshot.mainBotId);
-    }
-  };
   const ensureBotHome = () => {
-    if (roster.getSnapshot().ready) homeToMainBot();
+    if (roster.getSnapshot().ready) void homeToMainBot();
     else {
       const off = roster.subscribe(() => {
         if (!roster.getSnapshot().ready) return;
         off();
-        homeToMainBot();
+        void homeToMainBot();
       });
     }
   };
@@ -30216,6 +30223,13 @@ function apply(ctx) {
   });
   const threadOwnerOf = threadOwnerResolver({
     remember: (sessionId, botId) => threadsStore.remember(sessionId, botId)
+  });
+  const homeToMainBot = threadHomeGuard({
+    roster,
+    mainView,
+    threadBotOfSession: threadSessionBot,
+    threadOwnerOf: (sessionId) => threadOwnerOf(sessionId),
+    openSession: (id) => actions.openSession(id)
   });
   const actions = {
     ...teamActions({ call, after, partFor, roster, ui: ui2, live, cards, heldCards, turnClock, panelFolded, openSession: (id) => actions.openSession(id), ...sessionProbes(ctx, quietly) }),
