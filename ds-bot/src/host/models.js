@@ -1,6 +1,7 @@
 // Models. Every Bot runs on one model of its own, fixed when it is created and changed
 // only in its settings or by a Main Bot. The team's first Main Bot has none until the
 // user picks one in its chat. The Session keeps the selection durably.
+import { threadsOfBot } from './bot-store.js'
 import { normalize, splitRef } from './text.js'
 
 const CATALOG_TTL_MS = 10_000
@@ -245,6 +246,18 @@ export function install(rt) {
 
   const sameSelection = (a, b) => a.provider === b.provider && a.model === b.model && a.reasoningEffort === b.reasoningEffort
 
+  // A Thread's Session is made without a model — the core's create carries none — so its
+  // selection is made right after: the Thread's own model and level when the create named
+  // them, else the Bot's current route, in the same shape Main uses.
+  async function applyThreadModel(bot, sessionId, { model, effort } = {}) {
+    const ref = model ?? await desiredModel(bot)
+    if (ref === undefined) return undefined
+    const level = effort ?? (model === undefined ? await desiredEffort(bot, ref) : undefined)
+    const route = { ...splitRef(ref), ...(level === undefined ? {} : { reasoningEffort: level }) }
+    await selectSessionModel(sessionId, route)
+    return ref
+  }
+
   // `force` re-selects even when the record says it is applied: the composer's own
   // model picker can move the Session without telling this plugin.
   async function applyModel(bot, { force = false } = {}) {
@@ -259,6 +272,16 @@ export function install(rt) {
       if (!force && applied !== undefined && sameSelection(applied, route)) continue
       await selectSessionModel(sessionId, route)
         .catch(error => rt.warn('ds-bot: model for %s in a group not applied: %s', bot.name, error))
+    }
+    // P1 has no Thread-level model: a row whose `model` is null follows the Bot, and a new
+    // Thread Session starts on the Bot's route rather than DSH's profile default.
+    for (const thread of threadsOfBot(state, bot.id)) {
+      if (thread.sessionId === null || thread.sessionId === undefined) continue
+      if (thread.model !== null && thread.model !== undefined) continue
+      const applied = sessionSelections.get(thread.sessionId)
+      if (!force && applied !== undefined && sameSelection(applied, route)) continue
+      await selectSessionModel(thread.sessionId, route)
+        .catch(error => rt.warn('ds-bot: model for %s in a Thread not applied: %s', bot.name, error))
     }
     if (!ownChanged) return ref
     bot.appliedModel = ref
@@ -325,6 +348,6 @@ export function install(rt) {
   Object.assign(rt, {
     catalog, cachedCatalog: () => answerable(catalogCache.value), cachedDefault: () => pickDefault(catalogCache.value),
     defaultRef, defaultModel, defaultBotModel, defaultEffort, isUsable, resolveModel, desiredModel, reasoningOf, resolveEffort, desiredEffort,
-    selectSessionModel, applyModel, waitForModel, syncModels, routeRefused, dropCatalog,
+    selectSessionModel, applyModel, applyThreadModel, waitForModel, syncModels, routeRefused, dropCatalog,
   })
 }

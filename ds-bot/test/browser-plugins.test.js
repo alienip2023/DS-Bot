@@ -278,8 +278,11 @@ test('user takeover refuses a browser call before opening or connecting', async 
   assert.equal(connectCalls, 0)
 })
 
-test('no browser plugin is mounted unless one is selected for the team', (t) => {
+test('no browser plugin is mounted unless one is selected for the team', async (t) => {
   const { ctx, stop } = start({})
+  // The first load migrates the v1 team and saves it; let that write finish before the
+  // teardown removes the temp home (otherwise save and rmSync race).
+  await rt.load()
   t.after(stop)
   assert.equal(ctx.calls.includes('effect ds-bot: browser plugin'), false)
   assert.equal(rt.teamTools.some(d => d.name === 'browser_open'), false)

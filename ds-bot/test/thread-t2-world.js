@@ -20,6 +20,7 @@ export function threadWorld({ home: givenHome } = {}) {
   const archivedSessions = []
   const agents = new Map()
   const createdOptions = []
+  const selections = []
   let nextSession = 1
   const agentOf = (sessionId) => {
     if (!agents.has(sessionId)) {
@@ -36,6 +37,10 @@ export function threadWorld({ home: givenHome } = {}) {
   ctx.sessionController = {
     async create(options) { const sessionId = `session-${nextSession++}`; createdOptions.push({ sessionId, options }); return { sessionId } },
     async resolveAgent(sessionId) { return { agent: agentOf(sessionId) } },
+    async selectModel(request) {
+      selections.push(request)
+      return { selected: { provider: request.provider, model: request.model, ...(request.reasoningEffort === undefined ? {} : { reasoningEffort: request.reasoningEffort }) } }
+    },
     async prompt(request, signal) { prompts.push({ request, signal }); return { accepted: true } },
     async page(request) { pageCalls.push(request); return { records: [], hasMore: false } },
     async list() { return { items: [] } },
@@ -66,7 +71,7 @@ export function threadWorld({ home: givenHome } = {}) {
     return JSON.parse(await response.text())
   }
   const sessionEvent = (sessionId, event) => ctx.emit('session/event', { id: sessionId }, event)
-  return { home, ctx, rt, call, sessionEvent, prompts, followups, steers, flushes, titles, pageCalls, archivedSessions, agents, agentOf, createdOptions }
+  return { home, ctx, rt, call, sessionEvent, prompts, followups, steers, flushes, titles, pageCalls, archivedSessions, agents, agentOf, createdOptions, selections }
 }
 
 /** A local Bot with a working model pick (no model call is made). */

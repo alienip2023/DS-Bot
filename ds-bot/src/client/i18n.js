@@ -104,6 +104,7 @@ const ZH = {
   'New thread': '新建线程',
   'Thread limit reached': '线程数已达上限',
   'Could not load threads. Retry': '无法加载线程，请重试',
+  'Could not open this Thread’s conversation. Try again in a moment.': '打不开这个线程的对话，请稍后再试。',
 
   // Sidebar and account menu
   'Bot list': 'Bot 列表',
@@ -1562,6 +1563,7 @@ const HOST_ERRORS = [
   [/^Another section is already called "(.+)"$/, '已经有叫「$1」的分组了'],
   [/^Enter a section name$/, '请输入分组名称'],
   [/^A group chat holds at most (\d+) Bots$/, '一个群聊最多 $1 个 Bot'],
+  [/^A Bot keeps at most (\d+) threads$/, '线程数已达上限'],
   [/^Reply mode must be one of (.+)$/, '回复模式只能是 $1'],
   [/^Only the user, a Main Bot, or the admin of "(.+)" can change it$/, '只有你、主 Bot 或「$1」的管理员可以修改'],
   [/^A key must have at least (\d+) characters$/, '密钥至少 $1 个字符'],

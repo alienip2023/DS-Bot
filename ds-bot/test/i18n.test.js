@@ -37,6 +37,7 @@ test('copy follows the DSH language and stays English without a locale service',
     assert.equal(t('Message {name}', { name: 'Chief' }), '给 Chief 发消息')
     assert.equal(t('Model'), '模型')
     assert.equal(hostText('A Bot named Writer already exists'), '已经有叫 Writer 的 Bot 了')
+    assert.equal(hostText('A Bot keeps at most 10 threads'), '线程数已达上限')
     assert.equal(hostText('The team needs at least one Main Bot'), '团队至少要有一个主 Bot')
     assert.equal(hostText('Something new'), 'Something new')
     // Whole memory messages, not only their first words, become Chinese.

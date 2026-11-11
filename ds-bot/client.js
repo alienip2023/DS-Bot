@@ -140,6 +140,7 @@ var ZH = {
   "New thread": "新建线程",
   "Thread limit reached": "线程数已达上限",
   "Could not load threads. Retry": "无法加载线程，请重试",
+  "Could not open this Thread’s conversation. Try again in a moment.": "打不开这个线程的对话，请稍后再试。",
   // Sidebar and account menu
   "Bot list": "Bot 列表",
   "Setting up your Main Bot…": "正在设置你的主 Bot…",
@@ -1604,6 +1605,7 @@ var HOST_ERRORS = [
   [/^Another section is already called "(.+)"$/, "已经有叫「$1」的分组了"],
   [/^Enter a section name$/, "请输入分组名称"],
   [/^A group chat holds at most (\d+) Bots$/, "一个群聊最多 $1 个 Bot"],
+  [/^A Bot keeps at most (\d+) threads$/, "线程数已达上限"],
   [/^Reply mode must be one of (.+)$/, "回复模式只能是 $1"],
   [/^Only the user, a Main Bot, or the admin of "(.+)" can change it$/, "只有你、主 Bot 或「$1」的管理员可以修改"],
   [/^A key must have at least (\d+) characters$/, "密钥至少 $1 个字符"],
@@ -15929,7 +15931,10 @@ function ThreadList({ bot, threads, status, actions, useSessionRetainInfo, botAc
     if (!canCreate) return;
     try {
       const result = await actions.createThread(bot.id);
-      if (result?.sessionId !== void 0 && result?.sessionId !== null) {
+      if (result?.thread?.id !== void 0) {
+        openThreadBots.add(bot.id);
+        await actions.openThread(bot.id, result.thread.id);
+      } else if (result?.sessionId !== void 0 && result?.sessionId !== null) {
         openThreadBots.add(bot.id);
         actions.openAgentSession(result.sessionId);
       }
@@ -29686,6 +29691,28 @@ function listedOpener({ list, open, refresh, current }) {
   };
 }
 
+// src/client/thread-open.js
+var threadOpenFailure = () => new Error(t("Could not open this Thread’s conversation. Try again in a moment."));
+function threadSessionOpener({ sessions, open, report }) {
+  const listed = (sessionId) => sessions.list.getSnapshot().byId?.[sessionId] !== void 0;
+  const admit = (sessionId) => {
+    const add = sessions.handleSessionAdded;
+    if (typeof add !== "function") return;
+    add.call(sessions, { agentAvailable: true, sessionId, updatedAt: Date.now(), running: false, blank: true });
+  };
+  const refresh = () => Promise.resolve(sessions.refresh?.()).then(() => true, () => false);
+  return async function openThreadSession(sessionId) {
+    if (!listed(sessionId)) admit(sessionId);
+    if (!listed(sessionId)) await refresh();
+    if (!listed(sessionId)) {
+      report(threadOpenFailure());
+      return false;
+    }
+    open(sessionId);
+    return true;
+  };
+}
+
 // src/client/host-session.js
 async function hostHasSession(remote, sessionId, note = () => {
 }) {
@@ -30122,6 +30149,11 @@ function apply(ctx) {
       });
     }
   };
+  const openThreadSession = threadSessionOpener({
+    sessions: ctx.sessions,
+    open: (sessionId) => actions.openAgentSession(sessionId),
+    report: (error) => actions.reportError(error, "thread-open")
+  });
   const actions = {
     ...teamActions({ call, after, partFor, roster, ui: ui2, live, cards, heldCards, turnClock, panelFolded, openSession: (id) => actions.openSession(id), ...sessionProbes(ctx, quietly) }),
     learningAnswer: (id, approve) => after(call("learning-answer", { id, approve })),
@@ -30148,7 +30180,7 @@ function apply(ctx) {
     openThread: (botId, threadId) => {
       const thread = threadsStore.get(threadId);
       const target = threadTargetOf(thread, botId);
-      if (target.kind === "session") return actions.openAgentSession(target.id);
+      if (target.kind === "session") return openThreadSession(target.id);
       return actions.openSession(botId);
     },
     loadThreads: (botId, force = false) => threadsStore.load(botId, { force: force === true }),

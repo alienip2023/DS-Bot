@@ -354,6 +354,14 @@ export function install(rt) {
     if (clash) throw codedError('bot/refused', `${dir} is in or around the folder of ${clash.name}, a private Bot`)
     // Session first, row second: a failure before the row exists leaves no half thread.
     const sessionId = await createSession(cleanTitle, { dir })
+    try {
+      // The core's create takes no model, so the Thread would otherwise run on DSH's
+      // profile default. The selection is set here, before the row, in Main's shape.
+      await rt.applyThreadModel(bot, sessionId, { model: modelRef, effort: effortId })
+    } catch (error) {
+      await ctx.workspaceRegistry.archiveSession(sessionId).catch(() => {})
+      throw error
+    }
     const now = Date.now()
     const id = randomUUID()
     const thread = {

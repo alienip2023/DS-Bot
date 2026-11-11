@@ -232,7 +232,12 @@ export function ThreadList({ bot, threads, status, actions, useSessionRetainInfo
     if (!canCreate) return
     try {
       const result = await actions.createThread(bot.id)
-      if (result?.sessionId !== undefined && result?.sessionId !== null) {
+      if (result?.thread?.id !== undefined) {
+        openThreadBots.add(bot.id)
+        // Through the row, so a blank Thread Session is admitted to the client list first;
+        // opening it straight from the Host's id finds nothing to open.
+        await actions.openThread(bot.id, result.thread.id)
+      } else if (result?.sessionId !== undefined && result?.sessionId !== null) {
         openThreadBots.add(bot.id)
         actions.openAgentSession(result.sessionId)
       }

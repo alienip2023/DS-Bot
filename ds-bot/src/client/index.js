@@ -58,6 +58,7 @@ import { USER_MESSAGE_CSS, UserMessageCell, canDrawUserMessages } from './user-m
 import { QueueDock, QUEUE_CSS } from './queue-dock.js'
 import { noticeApprovals } from './approval-notices.js'
 import { listedOpener } from './open-listed.js'
+import { threadSessionOpener } from './thread-open.js'
 import { sessionProbes } from './host-session.js'
 
 export const inject = ['sessions', 'uiWorkspace', 'uiConversation', 'slots', 'theme', 'layout']
@@ -474,6 +475,14 @@ export function apply(ctx) {
       })
     }
   }
+  // Threads are made by the Host as blank Sessions, and DSH's list shows a Session only
+  // once it has a message; the opener admits the Host's own record before it opens, and
+  // reports a Session it still cannot address instead of leaving a click with no effect.
+  const openThreadSession = threadSessionOpener({
+    sessions: ctx.sessions,
+    open: sessionId => actions.openAgentSession(sessionId),
+    report: error => actions.reportError(error, 'thread-open'),
+  })
   const actions = {
     ...teamActions({ call, after, partFor, roster, ui, live, cards, heldCards, turnClock, panelFolded, openSession: id => actions.openSession(id), ...sessionProbes(ctx, quietly) }),
     learningAnswer: (id, approve) => after(call('learning-answer', { id, approve })),
@@ -501,7 +510,7 @@ export function apply(ctx) {
     openThread: (botId, threadId) => {
       const thread = threadsStore.get(threadId)
       const target = threadTargetOf(thread, botId)
-      if (target.kind === 'session') return actions.openAgentSession(target.id)
+      if (target.kind === 'session') return openThreadSession(target.id)
       return actions.openSession(botId)
     },
     loadThreads: (botId, force = false) => threadsStore.load(botId, { force: force === true }),

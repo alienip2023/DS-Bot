@@ -124,7 +124,8 @@ test('creating a Thread opens its new Session', async () => {
   create.props.onClick()
   await new Promise(resolve => setImmediate(resolve))
   assert.deepEqual(calls[0], ['createThread', 'writer'])
-  assert.deepEqual(calls[1], ['openAgentSession', 'session-3'])
+  // Through the row: a blank Thread Session must be admitted to the list before it is opened.
+  assert.deepEqual(calls[1], ['openThread', 'writer', 't3'])
 })
 
 test('the new-Thread row is disabled at the host limit', () => {
