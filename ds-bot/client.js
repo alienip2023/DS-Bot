@@ -1743,7 +1743,7 @@ var HOST_ZH = {
   "{name} waits for the computer": "{name} 等你停手"
 };
 Object.assign(ZH, HOST_ZH);
-var fill = (text, params) => params ? text.replace(/\{(\w+)\}/g, (match, name) => name in params ? String(params[name]) : match) : text;
+var fill = (text2, params) => params ? text2.replace(/\{(\w+)\}/g, (match, name) => name in params ? String(params[name]) : match) : text2;
 var service = null;
 var bound = null;
 function installLocale(locale) {
@@ -1794,15 +1794,15 @@ function noteClientError(where, error) {
   }
   const message = String(error?.message ?? error ?? "error").slice(0, 300);
   const code = typeof error?.code === "string" ? error.code : void 0;
-  const text = `${where}: ${message}`;
+  const text2 = `${where}: ${message}`;
   const now = Date.now();
   const last = entries.at(-1);
-  if (last && last.text === text && now - last.time < REPEAT_MS) {
+  if (last && last.text === text2 && now - last.time < REPEAT_MS) {
     last.time = now;
     last.count = (last.count ?? 1) + 1;
     return;
   }
-  entries.push({ time: now, level: "error", text, ...code ? { code } : {} });
+  entries.push({ time: now, level: "error", text: text2, ...code ? { code } : {} });
   if (entries.length > MAX) entries.splice(0, entries.length - MAX);
 }
 var quietly = (where) => (error) => noteClientError(where, error);
@@ -1844,9 +1844,9 @@ var WHAT_MAX = 2e3;
 var PASTE_NOTE = "DS Bot copied the diagnostics to the clipboard. Paste them here.";
 var REST_NOTE = "The recent errors do not fit in the link. DS Bot copied the diagnostics to the clipboard: paste them below this line.";
 function issueUrl(base, { what = "", diagnostics }) {
-  const text = what.trim().slice(0, WHAT_MAX);
-  const title = text.split("\n")[0].slice(0, 80);
-  const build = (body) => `${base}?${new URLSearchParams({ template: "bug.yml", ...title ? { title } : {}, ...text ? { what: text } : {}, diagnostics: body })}`;
+  const text2 = what.trim().slice(0, WHAT_MAX);
+  const title = text2.split("\n")[0].slice(0, 80);
+  const build = (body) => `${base}?${new URLSearchParams({ template: "bug.yml", ...title ? { title } : {}, ...text2 ? { what: text2 } : {}, diagnostics: body })}`;
   const full2 = build(diagnostics);
   if (full2.length <= URL_LIMIT) return { url: full2, inline: true };
   const facts = build(`${diagnostics.split("\n\n")[0]}
@@ -1955,9 +1955,9 @@ var MAIN_LOOK = Object.freeze({ shape: "whale", color: "deepseek" });
 var CHARACTER_COLORS = ["black", "brown", "red", "orange", "yellow", "green", "cyan", "blue", "violet", "magenta", "gray", "aurora"];
 var DEFAULT_COLORS = CHARACTER_COLORS.filter((color) => !["black", "gray", "brown"].includes(color) && !GRADIENTS[color]);
 var isColor = (color) => isHex(color) || Object.hasOwn(INKS, color);
-function fnv1a(text) {
+function fnv1a(text2) {
   let value = 2166136261;
-  for (let index = 0; index < text.length; index += 1) value = Math.imul(value ^ text.charCodeAt(index), 16777619);
+  for (let index = 0; index < text2.length; index += 1) value = Math.imul(value ^ text2.charCodeAt(index), 16777619);
   return value >>> 0;
 }
 function defaultColor(id) {
@@ -2104,11 +2104,11 @@ function classifyItem(item) {
   }
   return item.kind === "user" ? "mine" : "theirs";
 }
-function sendJoined(call2, botId, text) {
-  return call2("send", { sessionId: botId, text });
+function sendJoined(call2, botId, text2) {
+  return call2("send", { sessionId: botId, text: text2 });
 }
-async function sendFromDialog(actions, botId, text, fallback = "Failed to send") {
-  const result = await actions.sendJoined(botId, text);
+async function sendFromDialog(actions, botId, text2, fallback = "Failed to send") {
+  const result = await actions.sendJoined(botId, text2);
   if (result?.ok === false) {
     const err = result.error;
     throw new Error((err && err.message) ?? err ?? fallback);
@@ -2265,7 +2265,7 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
       return value;
     },
     sideCall: (name, body) => after(call2(name, body)),
-    askSide: (sessionId, chatId, text) => after(call2("side-ask", { sessionId, chatId, text })),
+    askSide: (sessionId, chatId, text2) => after(call2("side-ask", { sessionId, chatId, text: text2 })),
     cancelSide: (chatId, entryId) => after(call2("side-cancel", { chatId, entryId })),
     closeSideChat: (chatId) => {
       ui2.set((state) => state.details && state.view === "side" && state.side === chatId ? { ...state, view: "details", side: null } : state);
@@ -2274,7 +2274,7 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
     closePanel: () => {
       ui2.set((state) => state.details ? { ...state, details: null, view: "details", renaming: false, tab: null, side: null } : state);
     },
-    quote: (sessionId, text) => ui2.set((state) => ({ ...state, quote: { sessionId, text, token: Date.now() } })),
+    quote: (sessionId, text2) => ui2.set((state) => ({ ...state, quote: { sessionId, text: text2, token: Date.now() } })),
     clearQuote: (token) => ui2.set((state) => state.quote?.token === token ? { ...state, quote: null } : state),
     setFlags: (id, flags) => after(call2("set-flags", { id, ...flags })),
     saveSection: (payload) => after(call2("section-save", payload)),
@@ -2341,7 +2341,7 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
     setPrefs: (prefs) => after(call2("set-prefs", prefs)),
     setMain: (id, main = true, options = {}) => after(call2("set-main", { id, main, ...options })),
     updateRoom: (id, patch) => after(call2("update-room", { id, ...patch })),
-    send: (sessionId, text) => after(call2("send", { sessionId: partFor(sessionId), text })),
+    send: (sessionId, text2) => after(call2("send", { sessionId: partFor(sessionId), text: text2 })),
     answerQuestion: (sessionId, questionId, answer) => after(call2("answer-question", { sessionId: partFor(sessionId), questionId, answer })),
     dismissQuestion: (sessionId) => after(call2("dismiss-question", { sessionId })),
     answerView: (sessionId, viewId, action, values) => after(call2("view-reply", { sessionId: partFor(sessionId), viewId, action, values })),
@@ -2364,7 +2364,7 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
     computerUserActive: (idleSeconds) => call2("computer-user-active", { idleSeconds }),
     stopMemberWork: (roomId, botId) => after(call2("stop-member-work", { roomId, botId })),
     stopRoomWork: (roomId) => after(call2("stop-room-work", { roomId })),
-    goalDraft: (roomId, text) => after(call2("goal-draft", { roomId, text })),
+    goalDraft: (roomId, text2) => after(call2("goal-draft", { roomId, text: text2 })),
     goalControl: (roomId, goalId, action, stopWork) => after(call2("goal-control", { roomId, goalId, action, ...stopWork ? { stopWork: true } : {} })),
     // The goal island: `goalCompose` holds the room whose draft form is open,
     // `goalOpen` the room whose panel is open.
@@ -2396,7 +2396,7 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
       ui2.set((state) => state.joinedChat ? { ...state, joinedChat: null } : state);
     },
     joinedChatView: (botId) => call2("chat", { botId }),
-    sendJoined: (botId, text) => sendJoined(call2, botId, text),
+    sendJoined: (botId, text2) => sendJoined(call2, botId, text2),
     connectorImportScan: () => call2("connector-import-scan", {}),
     connectorImport: (items) => after(call2("connector-import", { items })),
     connectorRequestCancel: (requestId) => after(call2("connector-request-cancel", { requestId })),
@@ -2430,7 +2430,7 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
     usage: () => call2("usage", { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
     // `summarize` starts a summary when the entries changed; `regenerate` always does.
     memoryView: (id, flags = {}) => call2("memory-view", { ...memoryOf(id), ...flags }),
-    memoryAsk: (id, text) => call2("memory-ask", { ...memoryOf(id), text }),
+    memoryAsk: (id, text2) => call2("memory-ask", { ...memoryOf(id), text: text2 }),
     memoryLayer: (id, entry, always) => call2("memory-layer", { ...memoryOf(id), topic: entry.topic, text: entry.text, always }),
     memoryMove: (id, entry, to) => call2("memory-move", { ...memoryOf(id), scope: entry.scope, topic: entry.topic, text: entry.text, to }),
     memoryTidyUndo: (id, scope, batch) => call2("memory-tidy-undo", { ...memoryOf(id), scope, batch }),
@@ -2614,31 +2614,31 @@ var speakerOf = (line) => line.botId !== void 0 && USER_NAMES.includes(String(li
 var NAME_GOES_ON = /^(?:[a-z0-9_\-/\\]|\.[a-z0-9_-])/i;
 var ADDRESS_BEFORE = /[a-z0-9_./]/i;
 var LITERAL = /```[\s\S]*?(?:```|$)|`[^`\n]*`|\[[^\]\n]*\]\([^)\s]*(?:\s+(?:"[^"\n]*"|'[^'\n]*'))?\)/g;
-var fitsAt = (text, at, word) => text.slice(at, at + word.length).toLowerCase() === word.toLowerCase() && !NAME_GOES_ON.test(text.slice(at + word.length));
+var fitsAt = (text2, at, word) => text2.slice(at, at + word.length).toLowerCase() === word.toLowerCase() && !NAME_GOES_ON.test(text2.slice(at + word.length));
 var overlaps = (spans, start, end) => spans.some((span) => start < span.end && span.start < end);
 function nameProblem(name) {
-  const text = String(name ?? "").trim();
-  if (text === "") return "A Bot needs a name";
-  if (/[@`\r\n]/.test(text)) return "A Bot name cannot contain @, ` or a line break";
-  if (ALL_WORDS.includes(text.toLowerCase())) return `"${text}" calls everyone in a group, so it cannot be a Bot name`;
-  if (USER_NAMES.includes(text.toLowerCase())) return `"${text}" stands for the user in a chat, so it cannot be a Bot name`;
+  const text2 = String(name ?? "").trim();
+  if (text2 === "") return "A Bot needs a name";
+  if (/[@`\r\n]/.test(text2)) return "A Bot name cannot contain @, ` or a line break";
+  if (ALL_WORDS.includes(text2.toLowerCase())) return `"${text2}" calls everyone in a group, so it cannot be a Bot name`;
+  if (USER_NAMES.includes(text2.toLowerCase())) return `"${text2}" stands for the user in a chat, so it cannot be a Bot name`;
   return void 0;
 }
-function referenceSpans(text, labels = []) {
+function referenceSpans(text2, labels = []) {
   const spans = [];
   for (const label of [...labels].sort((a, b) => b.length - a.length)) {
     const mention = `@${label}`;
-    for (let at = text.indexOf(mention); at !== -1; at = text.indexOf(mention, at + 1)) {
+    for (let at = text2.indexOf(mention); at !== -1; at = text2.indexOf(mention, at + 1)) {
       const end = at + mention.length;
-      if (at > 0 && ADDRESS_BEFORE.test(text[at - 1]) || NAME_GOES_ON.test(text.slice(end)) || overlaps(spans, at, end)) continue;
+      if (at > 0 && ADDRESS_BEFORE.test(text2[at - 1]) || NAME_GOES_ON.test(text2.slice(end)) || overlaps(spans, at, end)) continue;
       spans.push({ start: at, end, label });
       break;
     }
   }
   return spans.sort((a, b) => a.start - b.start);
 }
-function mentionSpans(text, bots, { references = [] } = {}) {
-  const value = String(text ?? "");
+function mentionSpans(text2, bots, { references = [] } = {}) {
+  const value = String(text2 ?? "");
   const skip = [
     ...[...value.matchAll(LITERAL)].map((match) => ({ start: match.index, end: match.index + match[0].length })),
     ...referenceSpans(value, references)
@@ -2659,16 +2659,16 @@ function mentionSpans(text, bots, { references = [] } = {}) {
 
 // src/client/text.js
 var MENTION_ORIGIN = "https://bots.local/";
-function linkMentions(text, bots, selfId) {
-  if (!text || !text.includes("@")) return text;
+function linkMentions(text2, bots, selfId) {
+  if (!text2 || !text2.includes("@")) return text2;
   let out = "";
   let cursor = 0;
-  for (const span of mentionSpans(text, bots)) {
+  for (const span of mentionSpans(text2, bots)) {
     if (!span.bot || span.bot.id === selfId) continue;
-    out += `${text.slice(cursor, span.start)}[${text.slice(span.start + 1, span.end).replace(/[[\]\\]/g, "\\$&")}](${MENTION_ORIGIN}${span.bot.id})`;
+    out += `${text2.slice(cursor, span.start)}[${text2.slice(span.start + 1, span.end).replace(/[[\]\\]/g, "\\$&")}](${MENTION_ORIGIN}${span.bot.id})`;
     cursor = span.end;
   }
-  return cursor === 0 ? text : out + text.slice(cursor);
+  return cursor === 0 ? text2 : out + text2.slice(cursor);
 }
 function mentionTarget(event) {
   const anchor = event.target instanceof Element ? event.target.closest(`a[href^="${MENTION_ORIGIN}"]`) : null;
@@ -2713,9 +2713,9 @@ function elapsedLabel(ms) {
 var contentText = (content) => (content ?? []).filter((block) => block?.type === "text").map((block) => block.text).join("\n");
 var HEADER = /^\[(Message from|Reply from|Group chat|Group post from|Bot team setup|Handoff · part|Secret card)(?:[^\r\n]*\]\r?\n|[^\]\r\n]*\])/;
 var currentPart = (bot) => bot.sessionId ?? bot.id;
-function reminderPrompts(text) {
-  const one = /^reminder_prompt_json: (.*)$/m.exec(text);
-  const batch = /^reminders_json: (.*)$/m.exec(text);
+function reminderPrompts(text2) {
+  const one = /^reminder_prompt_json: (.*)$/m.exec(text2);
+  const batch = /^reminders_json: (.*)$/m.exec(text2);
   try {
     const prompts = [...one ? [JSON.parse(one[1])] : [], ...batch ? JSON.parse(batch[1]).map((entry) => entry.reminder_prompt) : []];
     return prompts.filter((prompt) => typeof prompt === "string" && prompt.trim() !== "");
@@ -2723,19 +2723,19 @@ function reminderPrompts(text) {
     return [];
   }
 }
-var stripHeader = (text) => text.replace(HEADER, "");
+var stripHeader = (text2) => text2.replace(HEADER, "");
 function latestMemoryChange(news, ids) {
   const at = (id) => news?.[id]?.seen ? news[id].at ?? 0 : 0;
   return ids.reduce((best, id) => at(id) > at(best) ? id : best, ids[0] ?? null);
 }
-function summaryBlocks(text) {
+function summaryBlocks(text2) {
   const blocks = [];
   let paragraph = [];
   const flush = () => {
     if (paragraph.length > 0) blocks.push({ kind: "p", text: paragraph.join(" ") });
     paragraph = [];
   };
-  for (const raw of String(text ?? "").split("\n")) {
+  for (const raw of String(text2 ?? "").split("\n")) {
     const line = raw.trim().replace(/\*\*|__/g, "");
     const heading = /^#{1,6}\s+(.+)$/.exec(line);
     if (heading) {
@@ -2832,8 +2832,8 @@ function previewOf(list, id, hiddenTurns = []) {
   for (let index = outline.length - 1; index >= 0; index -= 1) {
     const entry = outline[index];
     if (hiddenTurns.includes(entry.turn)) continue;
-    const text = entry.response || entry.prompt || "";
-    if (text !== "") return stripHeader(text).replace(/\s+/g, " ").trim();
+    const text2 = entry.response || entry.prompt || "";
+    if (text2 !== "") return stripHeader(text2).replace(/\s+/g, " ").trim();
   }
   return "";
 }
@@ -2856,8 +2856,8 @@ function usageOf(list, ids) {
 function percentText(part, whole) {
   if (part >= whole) return "100";
   for (let places = 0; places < 3; places += 1) {
-    const text = (part / whole * 100).toFixed(places);
-    if (Number(text) < 100) return text;
+    const text2 = (part / whole * 100).toFixed(places);
+    if (Number(text2) < 100) return text2;
   }
   return "99.99";
 }
@@ -4577,20 +4577,20 @@ div:has(> nav [class*="_marks"]){display:none!important}
 var PLUGIN_ID = "ds-bot";
 var ROOT_SELECTOR = /^(?:html\s+)?(?:body|:root)(?:\[[^\]]*\])*$/;
 var ownSelector = (selector) => selector.includes(".bt-") && !/\[class[*^$]?=/.test(selector);
-function splitTopLevel(text, separator) {
+function splitTopLevel(text2, separator) {
   const parts = [];
   let depth = 0;
   let start = 0;
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index];
+  for (let index = 0; index < text2.length; index += 1) {
+    const char = text2[index];
     if (char === "(" || char === "[") depth += 1;
     else if (char === ")" || char === "]") depth -= 1;
     else if (char === separator && depth === 0) {
-      parts.push(text.slice(start, index));
+      parts.push(text2.slice(start, index));
       start = index + 1;
     }
   }
-  parts.push(text.slice(start));
+  parts.push(text2.slice(start));
   return parts;
 }
 function botOwnCss(css) {
@@ -4633,11 +4633,11 @@ function botOwnCss(css) {
   }
   return out;
 }
-function installStyles(text, tag) {
+function installStyles(text2, tag) {
   const style = document.createElement("style");
   style.dataset.dshBot = tag;
   style.dataset.plugin = PLUGIN_ID;
-  style.textContent = text;
+  style.textContent = text2;
   document.head.appendChild(style);
   return style;
 }
@@ -4657,9 +4657,9 @@ function sheetClassNames(sheet) {
   }
   return names;
 }
-function compileFragmentSelectors(text, names) {
+function compileFragmentSelectors(text2, names) {
   const compiled2 = /* @__PURE__ */ new Map();
-  return text.replace(FRAGMENT_SELECTOR, (whole, fragment) => {
+  return text2.replace(FRAGMENT_SELECTOR, (whole, fragment) => {
     if (!compiled2.has(fragment)) {
       const exact = [];
       for (const name of names) if (name.includes(fragment)) exact.push(`.${name}`);
@@ -4668,7 +4668,7 @@ function compileFragmentSelectors(text, names) {
     return compiled2.get(fragment);
   });
 }
-function installCompiledStyles(text, tag) {
+function installCompiledStyles(text2, tag) {
   const style = installStyles("", tag);
   let disposed = false;
   const cache = /* @__PURE__ */ new WeakMap();
@@ -4685,7 +4685,7 @@ function installCompiledStyles(text, tag) {
       }
       for (const name of list) names.add(name);
     }
-    const next = compileFragmentSelectors(text, names);
+    const next = compileFragmentSelectors(text2, names);
     if (style.textContent !== next) style.textContent = next;
   };
   render();
@@ -5390,7 +5390,7 @@ function GoalPanel({ goal, view, room: room2, roster, actions, working }) {
   );
 }
 function GoalCompose({ room: room2, roster, actions }) {
-  const [text, setText] = (0, import_react6.useState)("");
+  const [text2, setText] = (0, import_react6.useState)("");
   const [sending, setSending] = (0, import_react6.useState)(false);
   const admin = roster.byId?.[room2.admin]?.name ?? t("a Bot");
   const close = () => {
@@ -5398,7 +5398,7 @@ function GoalCompose({ room: room2, roster, actions }) {
     actions.closeGoal();
   };
   const submit = () => {
-    const brief = text.trim();
+    const brief = text2.trim();
     if (brief === "" || sending) return;
     setSending(true);
     void Promise.resolve(actions.goalDraft(room2.id, brief)).then(
@@ -5420,7 +5420,7 @@ function GoalCompose({ room: room2, roster, actions }) {
       id: "bt-goal-brief",
       className: "bt-input bt-input-area bt-goal-input",
       rows: 2,
-      value: text,
+      value: text2,
       onChange: (event) => {
         setText(event.target.value);
         const box = event.currentTarget;
@@ -5445,7 +5445,7 @@ function GoalCompose({ room: room2, roster, actions }) {
       "div",
       { className: "bt-goal-cbtns" },
       (0, import_react6.createElement)("button", { type: "button", className: "bt-soft bt-soft-sm", onClick: close }, t("Cancel")),
-      (0, import_react6.createElement)("button", { type: "button", className: "bt-send bt-soft-sm", disabled: text.trim() === "" || sending, onClick: submit }, t("Start"))
+      (0, import_react6.createElement)("button", { type: "button", className: "bt-send bt-soft-sm", disabled: text2.trim() === "" || sending, onClick: submit }, t("Start"))
     )
   );
 }
@@ -6503,7 +6503,7 @@ var COMPUTER_CSS = `
 
 // node_modules/deep-view/src/react/ui.js
 var import_react12 = require("react");
-var FallbackMarkdown = ({ text }) => (0, import_react12.createElement)("span", null, String(text ?? ""));
+var FallbackMarkdown = ({ text: text2 }) => (0, import_react12.createElement)("span", null, String(text2 ?? ""));
 var ViewUi = (0, import_react12.createContext)({ t: (key) => key, Markdown: FallbackMarkdown });
 var useViewUi = () => (0, import_react12.useContext)(ViewUi);
 var lineIcon2 = (paths) => function LineIcon() {
@@ -6639,18 +6639,18 @@ function tokenize(source) {
     }
     if (char === '"' || char === "'") {
       let end = at + 1;
-      let text = "";
+      let text2 = "";
       while (end < source.length && source[end] !== char) {
         if (source[end] === "\\" && end + 1 < source.length) {
-          text += source[end + 1];
+          text2 += source[end + 1];
           end += 2;
           continue;
         }
-        text += source[end];
+        text2 += source[end];
         end += 1;
       }
       if (end >= source.length) fail(`unclosed string at ${at + 1}`);
-      tokens.push({ kind: "string", value: text, at });
+      tokens.push({ kind: "string", value: text2, at });
       at = end + 1;
       continue;
     }
@@ -7059,8 +7059,8 @@ function checkTable(node, path2, ctx) {
         ctx.formulas.push({ source: cells[column]["="], path: at, kind: "scalar" });
         continue;
       }
-      const text = cellText(cells[column]);
-      if (text.length > MAX_CELL) return `${at}: ${text.length} characters exceeds the limit of ${MAX_CELL}`;
+      const text2 = cellText(cells[column]);
+      if (text2.length > MAX_CELL) return `${at}: ${text2.length} characters exceeds the limit of ${MAX_CELL}`;
     }
   }
   return void 0;
@@ -7289,8 +7289,8 @@ function kindProblem(value, kind) {
 }
 function cellText(value) {
   if (typeof value === "string") return value;
-  const text = JSON.stringify(value);
-  return typeof text === "string" ? text : "";
+  const text2 = JSON.stringify(value);
+  return typeof text2 === "string" ? text2 : "";
 }
 var compiled = /* @__PURE__ */ new WeakMap();
 var treeOf = (formula) => {
@@ -7338,8 +7338,8 @@ function resolve(value, lookup, fallback = void 0) {
   return result.error === void 0 ? result.value : fallback;
 }
 var asText = (value) => value === void 0 || value === null ? "" : show(value);
-function clip(text) {
-  const flat = String(text).replace(/\s+/g, " ").trim();
+function clip(text2) {
+  const flat = String(text2).replace(/\s+/g, " ").trim();
   return flat.length <= SUMMARY_PART ? flat : flat.slice(0, SUMMARY_PART);
 }
 var choiceLabel = (node, value) => (Array.isArray(node.options) ? node.options : []).find((option) => choiceValue(option) === value)?.label ?? asText(value);
@@ -7487,11 +7487,11 @@ var PALETTE = ["var(--dv-accent)", "var(--dv-ink-tangerine)", "var(--dv-ink-gree
 var colorAt = (index) => PALETTE[index % PALETTE.length];
 var TICK = 10;
 var LABEL = 11;
-var textWidth = (text, size) => [...String(text)].reduce((sum, char) => sum + (char.charCodeAt(0) > 11904 ? size : size * 0.58), 0);
-var fit = (text, room2, size) => {
-  if (textWidth(text, size) <= room2) return text;
+var textWidth = (text2, size) => [...String(text2)].reduce((sum, char) => sum + (char.charCodeAt(0) > 11904 ? size : size * 0.58), 0);
+var fit = (text2, room2, size) => {
+  if (textWidth(text2, size) <= room2) return text2;
   let out = "";
-  for (const char of String(text)) {
+  for (const char of String(text2)) {
     if (textWidth(`${out}${char}…`, size) > room2) break;
     out += char;
   }
@@ -8462,8 +8462,8 @@ function WidgetNode({ node, ctx }) {
       );
     }
     case "text": {
-      const text = (0, import_react15.createElement)(ui2.Markdown, { text: asText(resolve(node.text, lookup, "")), labels: mdLabels(ui2), variant: "compact" });
-      return node.tone === "muted" ? (0, import_react15.createElement)("div", { className: "dv-view-muted" }, text) : text;
+      const text2 = (0, import_react15.createElement)(ui2.Markdown, { text: asText(resolve(node.text, lookup, "")), labels: mdLabels(ui2), variant: "compact" });
+      return node.tone === "muted" ? (0, import_react15.createElement)("div", { className: "dv-view-muted" }, text2) : text2;
     }
     case "metric":
       return (0, import_react15.createElement)(WidgetMetric, { node, lookup });
@@ -8922,13 +8922,13 @@ function viewAnswerText(view, answer) {
     });
     parts.push(...Object.entries(values.inputs).map(([key, value]) => `${labels.get(key) ?? key}=${value}`));
   }
-  const text = parts.join("; ");
-  return text.length > 200 ? `${text.slice(0, 200)}…` : text;
+  const text2 = parts.join("; ");
+  return text2.length > 200 ? `${text2.slice(0, 200)}…` : text2;
 }
-function readViewReply(text) {
+function readViewReply(text2) {
   let value;
   try {
-    value = JSON.parse(text);
+    value = JSON.parse(text2);
   } catch {
     return void 0;
   }
@@ -8944,20 +8944,20 @@ function actionSummary(answer, view) {
   const values = answer?.values;
   if (!isRecord2(values)) return "(skipped)";
   const inputs = inputsSummary(view, values.inputs);
-  let text;
-  if (Array.isArray(values.selected)) text = `selected: ${values.selected.join(", ")}`;
-  else if (typeof values.confirmed === "boolean") text = values.confirmed ? "confirmed" : "cancelled";
-  else if (values.canceled === true) text = "cancelled";
-  else if (isRecord2(values.fields)) text = Object.entries(values.fields).map(([key, value]) => `${key}: ${value}`).join("; ");
-  else if (inputs !== "") text = "";
-  else text = typeof answer.action === "string" && answer.action !== "" ? answer.action : "(skipped)";
-  if (inputs !== "") text = text === "" ? inputs : `${text}; ${inputs}`;
-  if (text === "") text = "(empty)";
-  return text.length > 500 ? text.slice(0, 500) : text;
+  let text2;
+  if (Array.isArray(values.selected)) text2 = `selected: ${values.selected.join(", ")}`;
+  else if (typeof values.confirmed === "boolean") text2 = values.confirmed ? "confirmed" : "cancelled";
+  else if (values.canceled === true) text2 = "cancelled";
+  else if (isRecord2(values.fields)) text2 = Object.entries(values.fields).map(([key, value]) => `${key}: ${value}`).join("; ");
+  else if (inputs !== "") text2 = "";
+  else text2 = typeof answer.action === "string" && answer.action !== "" ? answer.action : "(skipped)";
+  if (inputs !== "") text2 = text2 === "" ? inputs : `${text2}; ${inputs}`;
+  if (text2 === "") text2 = "(empty)";
+  return text2.length > 500 ? text2.slice(0, 500) : text2;
 }
-function viewReplyText(text) {
-  const reply = readViewReply(text);
-  if (reply === void 0) return text;
+function viewReplyText(text2) {
+  const reply = readViewReply(text2);
+  if (reply === void 0) return text2;
   return reply.views.map((view) => {
     const answer = reply.answers.find((item) => item.id === view.id);
     return `${view.title === "" ? "[Answer to view card]" : `[Answer to view card] ${view.title}`}
@@ -9157,14 +9157,14 @@ function ScopeSwitch({ value, onChange, bot }) {
     "div",
     { className: "bt-secret-scope", role: "radiogroup", "aria-label": t("Who may use it") },
     (0, import_react18.createElement)("span", { className: "bt-secret-glide", "data-at": value === "all" ? 0 : 1, "aria-hidden": true }),
-    options.map(([id, text]) => (0, import_react18.createElement)("button", {
+    options.map(([id, text2]) => (0, import_react18.createElement)("button", {
       key: id,
       type: "button",
       role: "radio",
       "aria-checked": value === id,
       className: "bt-secret-seg",
       onClick: () => onChange(id)
-    }, text))
+    }, text2))
   );
 }
 function SecretHead({ bot, title, detail, name, onClose }) {
@@ -9259,10 +9259,10 @@ function SecretCard({ sessionId, bot, request, roster, actions, inline = false }
 }
 function SettledSecret({ bot, request, roster }) {
   const canceled = request.status === "canceled";
-  const text = canceled ? t("{bot} asked for {name}", { bot: bot.name, name: request.name }) : request.status === "allowed" ? t("Allowed {bot} to use {name}", { bot: bot.name, name: request.name }) : t("Saved {name}", { name: request.name });
+  const text2 = canceled ? t("{bot} asked for {name}", { bot: bot.name, name: request.name }) : request.status === "allowed" ? t("Allowed {bot} to use {name}", { bot: bot.name, name: request.name }) : t("Saved {name}", { name: request.name });
   return (0, import_react18.createElement)(
     "div",
-    { className: "bt-q bt-q-settled bt-secret bt-secret-done", role: "group", "aria-label": text, "data-status": request.status },
+    { className: "bt-q bt-q-settled bt-secret bt-secret-done", role: "group", "aria-label": text2, "data-status": request.status },
     (0, import_react18.createElement)(
       "div",
       { className: "bt-q-head" },
@@ -9270,7 +9270,7 @@ function SettledSecret({ bot, request, roster }) {
       (0, import_react18.createElement)("div", { className: "bt-q-text" }, (0, import_react18.createElement)(
         "p",
         { className: "bt-q-title" },
-        text,
+        text2,
         canceled ? null : (0, import_react18.createElement)("span", { className: "bt-secret-scope-tag" }, ` · ${scopeLabel(request.scope, roster)}`)
       )),
       canceled ? (0, import_react18.createElement)("span", { className: "bt-q-badge" }, t("Canceled")) : (0, import_react18.createElement)("span", { className: "bt-q-check bt-secret-check", title: t("Done") }, (0, import_react18.createElement)(CheckIcon))
@@ -9317,11 +9317,11 @@ function ScopeEditor({ secret, roster, onSave }) {
     (0, import_react18.createElement)(
       "div",
       { className: "bt-secret-radios", role: "radiogroup", "aria-label": t("Who may use {name}", { name: secret.name }) },
-      [["all", t("All Bots")], ["some", t("Chosen Bots")]].map(([id, text]) => (0, import_react18.createElement)(
+      [["all", t("All Bots")], ["some", t("Chosen Bots")]].map(([id, text2]) => (0, import_react18.createElement)(
         "label",
         { key: id, className: "bt-secret-radio" },
         (0, import_react18.createElement)("input", { type: "radio", name: `scope-${secret.name}`, checked: mode === id, onChange: () => setMode(id) }),
-        text
+        text2
       ))
     ),
     mode === "some" ? (0, import_react18.createElement)("div", { className: "bt-secret-bots" }, roster.bots.map((bot) => (0, import_react18.createElement)("button", {
@@ -9998,7 +9998,7 @@ function ModelChoiceDock({ sessionId, useRoster, actions }) {
       void actions.refreshModels?.();
     }).finally(() => setBusy(""));
   };
-  const text = lost ? t("{model} is not available anymore. Pick another model for me.", { model: bot.model.split("/").slice(1).join("/") }) : keyFor ? t("Hi, I'm {name}. I need a {provider} API key before I can start.", { name: bot.name, provider: keyFor.providerName ?? keyFor.provider }) : usable.length === 0 ? t("Hi, I'm {name}. I don't have a model yet. How do you want to set one up?", { name: bot.name }) : t("Hi, I'm {name}. Pick a model for me first. You can change it later in my details.", { name: bot.name });
+  const text2 = lost ? t("{model} is not available anymore. Pick another model for me.", { model: bot.model.split("/").slice(1).join("/") }) : keyFor ? t("Hi, I'm {name}. I need a {provider} API key before I can start.", { name: bot.name, provider: keyFor.providerName ?? keyFor.provider }) : usable.length === 0 ? t("Hi, I'm {name}. I don't have a model yet. How do you want to set one up?", { name: bot.name }) : t("Hi, I'm {name}. Pick a model for me first. You can change it later in my details.", { name: bot.name });
   const choices = usable.length === 0 ? setupChoices(actions).map(([label, run2]) => (0, import_react19.createElement)("button", { key: label, type: "button", className: "bt-model-chip", onClick: run2 }, label)) : [
     ...groupModels(usable).map(([provider, list]) => (0, import_react19.createElement)(
       "div",
@@ -10030,7 +10030,7 @@ function ModelChoiceDock({ sessionId, useRoster, actions }) {
           "div",
           { className: "bt-msg-line" },
           (0, import_react19.createElement)(BotMark, { bot, size: 22 }),
-          (0, import_react19.createElement)("div", { className: "bt-bubble" }, text)
+          (0, import_react19.createElement)("div", { className: "bt-bubble" }, text2)
         )
       )
     ),
@@ -10669,8 +10669,8 @@ function timingText(task) {
       return `${t("Every day at {time}", { time: clock2(task.time) })}${zone}`;
     case "weekly": {
       const days = (task.weekdays ?? []).join();
-      const text = days === "1,2,3,4,5" ? t("Every weekday at {time}", { time: clock2(task.time) }) : days === "6,7" ? t("Every weekend at {time}", { time: clock2(task.time) }) : days === "1,2,3,4,5,6,7" ? t("Every day at {time}", { time: clock2(task.time) }) : t("Every {days} at {time}", { days: weekdayNames(task.weekdays ?? []), time: clock2(task.time) });
-      return `${text}${zone}`;
+      const text2 = days === "1,2,3,4,5" ? t("Every weekday at {time}", { time: clock2(task.time) }) : days === "6,7" ? t("Every weekend at {time}", { time: clock2(task.time) }) : days === "1,2,3,4,5,6,7" ? t("Every day at {time}", { time: clock2(task.time) }) : t("Every {days} at {time}", { days: weekdayNames(task.weekdays ?? []), time: clock2(task.time) });
+      return `${text2}${zone}`;
     }
     case "cron":
       return `${t("On the schedule {expression}", { expression: task.expression })}${zone}`;
@@ -10965,10 +10965,10 @@ var SCHEDULE_CSS = `
 // src/client/capability-settings.js
 var import_react24 = require("react");
 var blank = () => ({ name: "", kind: "mcp", description: "", transport: "stdio", command: "", argsText: "", envText: "{}", url: "", headersText: "{}", content: "", items: [] });
-var parseMap = (text, label) => {
+var parseMap = (text2, label) => {
   let value;
   try {
-    value = JSON.parse(text || "{}");
+    value = JSON.parse(text2 || "{}");
   } catch {
     throw new Error(t("{label} must be valid JSON.", { label }));
   }
@@ -11611,17 +11611,17 @@ function Entries({ owner, view, remove, pin, layer, openMove, undoTidy }) {
   );
 }
 function changeLine(change) {
-  const text = change.text.length > 120 ? `${change.text.slice(0, 120)}…` : change.text;
-  if (!change.ok) return t("Not changed: {text} ({reason})", { text, reason: hostText(change.error ?? "") });
-  if (change.op === "remove") return change.scope === "team" ? t("Removed from team memory: {text}", { text }) : t("Removed: {text}", { text });
-  if (change.op === "edit") return t("Updated: {text}", { text });
-  return change.scope === "team" ? t("Added to team memory: {text}", { text }) : t("Added: {text}", { text });
+  const text2 = change.text.length > 120 ? `${change.text.slice(0, 120)}…` : change.text;
+  if (!change.ok) return t("Not changed: {text} ({reason})", { text: text2, reason: hostText(change.error ?? "") });
+  if (change.op === "remove") return change.scope === "team" ? t("Removed from team memory: {text}", { text: text2 }) : t("Removed: {text}", { text: text2 });
+  if (change.op === "edit") return t("Updated: {text}", { text: text2 });
+  return change.scope === "team" ? t("Added to team memory: {text}", { text: text2 }) : t("Added: {text}", { text: text2 });
 }
 function historyLine(row) {
-  const text = row.text.length > 120 ? `${row.text.slice(0, 120)}…` : row.text;
-  if (row.op === "remove") return row.scope === "team" ? t("Removed from team memory: {text}", { text }) : t("Removed: {text}", { text });
-  if (row.op === "replace") return t("Updated: {text}", { text });
-  return row.scope === "team" ? t("Added to team memory: {text}", { text }) : t("Added: {text}", { text });
+  const text2 = row.text.length > 120 ? `${row.text.slice(0, 120)}…` : row.text;
+  if (row.op === "remove") return row.scope === "team" ? t("Removed from team memory: {text}", { text: text2 }) : t("Removed: {text}", { text: text2 });
+  if (row.op === "replace") return t("Updated: {text}", { text: text2 });
+  return row.scope === "team" ? t("Added to team memory: {text}", { text: text2 }) : t("Added: {text}", { text: text2 });
 }
 function HistoryRow({ row, undo, now }) {
   const [confirming, setConfirming] = (0, import_react26.useState)(false);
@@ -11770,7 +11770,7 @@ function MemoryDialog({ owner, actions, leaving = false }) {
   const [moveShown, moveLeaving] = useLinger(moveOpen, MENU_EXIT_MS2);
   const moveRef = (0, import_react26.useRef)(null);
   const moveAnchor = (0, import_react26.useRef)(null);
-  const [text, setText] = (0, import_react26.useState)("");
+  const [text2, setText] = (0, import_react26.useState)("");
   const [answer, setAnswer] = (0, import_react26.useState)(null);
   const menuRef = (0, import_react26.useRef)(null);
   const dotsRef = (0, import_react26.useRef)(null);
@@ -11867,7 +11867,7 @@ function MemoryDialog({ owner, actions, leaving = false }) {
   };
   const ask = async (event) => {
     event.preventDefault();
-    const asked = text.trim();
+    const asked = text2.trim();
     if (asked === "" || answer?.pending) return;
     setText("");
     setAnswer({ asked, pending: true });
@@ -11938,7 +11938,7 @@ function MemoryDialog({ owner, actions, leaving = false }) {
           (0, import_react26.createElement)("input", {
             ref: inputRef,
             className: "bt-mem-input",
-            value: text,
+            value: text2,
             maxLength: 2e3,
             disabled: view === null,
             placeholder: t("Ask or update"),
@@ -11947,7 +11947,7 @@ function MemoryDialog({ owner, actions, leaving = false }) {
           }),
           (0, import_react26.createElement)(
             "button",
-            { type: "submit", className: "bt-mem-send", disabled: busy || text.trim() === "", "aria-label": t("Send") },
+            { type: "submit", className: "bt-mem-send", disabled: busy || text2.trim() === "", "aria-label": t("Send") },
             busy ? (0, import_react26.createElement)("span", { className: "bt-mem-spin", "aria-hidden": true }) : (0, import_react26.createElement)(ArrowUpIcon)
           )
         )
@@ -13112,7 +13112,7 @@ function BotConnectors({ bot, roster, actions, run: run2 }) {
     })
   );
 }
-var literal = (text) => String(text ?? "").replace(/[\\`*_{}[\]()#+\-.!|<>~&@:]/g, "\\$&");
+var literal = (text2) => String(text2 ?? "").replace(/[\\`*_{}[\]()#+\-.!|<>~&@:]/g, "\\$&");
 var MailIcon = () => (0, import_react29.createElement)(
   "svg",
   { width: 14, height: 14, viewBox: "0 0 20 20", fill: "none", stroke: "currentColor", strokeWidth: 1.6, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true },
@@ -13406,12 +13406,12 @@ function opensReply(steps, current, withReasoning = true) {
 var thinkingStep = (steps) => steps.find(thinkingLive);
 var thinkingLive = (step) => step.status === "running" && texts(step).length === 0 && step.blocks.some((block) => block.kind === "reasoning");
 var texts = (step) => step.blocks.filter((block) => block.kind === "text" && block.text.trim() !== "");
-var visibleReasoning = (text) => {
-  if (text[0] !== "<") return text;
-  if ("<signature>".startsWith(text)) return "";
-  if (!text.startsWith("<signature>")) return text;
-  const end = text.indexOf("</signature>");
-  return end === -1 ? "" : text.slice(end + "</signature>".length).replace(/^(\r?\n)+/, "");
+var visibleReasoning = (text2) => {
+  if (text2[0] !== "<") return text2;
+  if ("<signature>".startsWith(text2)) return "";
+  if (!text2.startsWith("<signature>")) return text2;
+  const end = text2.indexOf("</signature>");
+  return end === -1 ? "" : text2.slice(end + "</signature>".length).replace(/^(\r?\n)+/, "");
 };
 var ACTIVITY = "▸ ";
 var isActivity = (line) => line.startsWith(ACTIVITY);
@@ -13422,28 +13422,28 @@ var stepActivity = (step) => reasoningText(step).split("\n").filter(isActivity).
 // src/shared/group-replies.js
 var RELAY_LIST = /"replies"\s*:\s*\[/;
 var PRUNE_MARKER = /\[\.\.\. tool result middle pruned \.\.\.\]/;
-function parseReplies(text) {
+function parseReplies(text2) {
   try {
-    return { replies: JSON.parse(text).replies ?? [], broken: false };
+    return { replies: JSON.parse(text2).replies ?? [], broken: false };
   } catch {
   }
   const replies = [];
-  const head = RELAY_LIST.exec(text);
+  const head = RELAY_LIST.exec(text2);
   if (head) {
-    for (const piece of text.slice(head.index + head[0].length).split(PRUNE_MARKER)) {
+    for (const piece of text2.slice(head.index + head[0].length).split(PRUNE_MARKER)) {
       const first = piece.indexOf('{"');
       if (first !== -1) scanReplies(piece, first, replies);
     }
   }
   return { replies, broken: true };
 }
-function scanReplies(text, start, replies) {
+function scanReplies(text2, start, replies) {
   let depth = 0;
   let from = -1;
   let inString = false;
   let escaped = false;
-  for (let i = start; i < text.length; i += 1) {
-    const ch = text[i];
+  for (let i = start; i < text2.length; i += 1) {
+    const ch = text2[i];
     if (inString) {
       if (escaped) escaped = false;
       else if (ch === "\\") escaped = true;
@@ -13461,7 +13461,7 @@ function scanReplies(text, start, replies) {
       depth -= 1;
       if (depth === 0 && from >= 0) {
         try {
-          replies.push(JSON.parse(text.slice(from, i + 1)));
+          replies.push(JSON.parse(text2.slice(from, i + 1)));
         } catch {
         }
         from = -1;
@@ -13495,13 +13495,13 @@ var closes = (line, open) => {
   const marker = CLOSE.exec(line)?.[1];
   return marker !== void 0 && marker[0] === open[0] && marker.length >= open.length;
 };
-function cutAt(text, end) {
-  const code = text.charCodeAt(end - 1);
-  return text.slice(0, code >= 55296 && code <= 56319 ? end - 1 : end);
+function cutAt(text2, end) {
+  const code = text2.charCodeAt(end - 1);
+  return text2.slice(0, code >= 55296 && code <= 56319 ? end - 1 : end);
 }
-function moreLines(text, max) {
+function moreLines(text2, max) {
   let lines = 1;
-  for (let at = text.indexOf("\n"); at !== -1; at = text.indexOf("\n", at + 1)) {
+  for (let at = text2.indexOf("\n"); at !== -1; at = text2.indexOf("\n", at + 1)) {
     if (++lines > max) return true;
   }
   return false;
@@ -13529,9 +13529,9 @@ function blockCode(body, fenceLine, open) {
   }
   return code.join("\n");
 }
-function foldView(text, limit = FOLD_AT, markdown = true) {
-  if (text.length <= limit.chars && !moreLines(text, limit.lines)) return null;
-  const body = text.replace(/^(\s*\n)+/, "");
+function foldView(text2, limit = FOLD_AT, markdown = true) {
+  if (text2.length <= limit.chars && !moreLines(text2, limit.lines)) return null;
+  const body = text2.replace(/^(\s*\n)+/, "");
   if (body.trim() === "") return null;
   let head = body.split("\n", PREVIEW_LINES).join("\n");
   if (head.length > PREVIEW_CHARS) {
@@ -13559,16 +13559,16 @@ ${opened.marker}`,
     code: blockCode(body, opened.line, opened.marker)
   };
 }
-function foldPreview(text, limit = FOLD_AT, markdown = true) {
-  return foldView(text, limit, markdown)?.head ?? null;
+function foldPreview(text2, limit = FOLD_AT, markdown = true) {
+  return foldView(text2, limit, markdown)?.head ?? null;
 }
-var stripLongNote = (text) => text.replace(/^\[A long message: \d+ characters\.[^\]\n]*\]\n/, "");
-function useFold(text, { limit = FOLD_AT, whole, live = false, markdown = true } = {}) {
+var stripLongNote = (text2) => text2.replace(/^\[A long message: \d+ characters\.[^\]\n]*\]\n/, "");
+function useFold(text2, { limit = FOLD_AT, whole, live = false, markdown = true } = {}) {
   const [open, setOpen] = (0, import_react30.useState)(false);
   const [read, setRead] = (0, import_react30.useState)();
-  const cut = whole !== void 0 && whole.length > text.length;
-  const view = (0, import_react30.useMemo)(() => live ? null : foldView(text, cut ? ALWAYS : limit, markdown), [text, live, limit, markdown, cut]);
-  if (view === null) return { shown: text, control: null };
+  const cut = whole !== void 0 && whole.length > text2.length;
+  const view = (0, import_react30.useMemo)(() => live ? null : foldView(text2, cut ? ALWAYS : limit, markdown), [text2, live, limit, markdown, cut]);
+  if (view === null) return { shown: text2, control: null };
   const readWhole = async () => {
     if (typeof read?.text === "string") return read;
     setRead("loading");
@@ -13583,7 +13583,7 @@ function useFold(text, { limit = FOLD_AT, whole, live = false, markdown = true }
     return full2;
   };
   const shown = code === void 0 ? view.head : view.prose;
-  const count = (cut ? whole.length : text.length).toLocaleString();
+  const count = (cut ? whole.length : text2.length).toLocaleString();
   if (!open) {
     const show2 = async () => {
       setOpen(true);
@@ -13592,9 +13592,9 @@ function useFold(text, { limit = FOLD_AT, whole, live = false, markdown = true }
     return { shown, folded: true, code, codeHead: view.codeHead, control: (0, import_react30.createElement)("span", { className: "bt-fold" }, (0, import_react30.createElement)("button", { type: "button", className: "bt-more", onClick: show2 }, t("Show all · {count} characters", { count }))) };
   }
   const loaded = typeof read?.text === "string" ? read : void 0;
-  const note = !cut || read === void 0 || read === "loading" || loaded?.whole ? null : loaded !== void 0 && loaded.text.length > text.length ? t("Showing the first {count} characters", { count: loaded.text.length.toLocaleString() }) : t("Only the start of this message is kept here");
+  const note = !cut || read === void 0 || read === "loading" || loaded?.whole ? null : loaded !== void 0 && loaded.text.length > text2.length ? t("Showing the first {count} characters", { count: loaded.text.length.toLocaleString() }) : t("Only the start of this message is kept here");
   return {
-    shown: loaded?.text ?? text,
+    shown: loaded?.text ?? text2,
     control: (0, import_react30.createElement)(
       "span",
       { className: "bt-fold" },
@@ -13807,8 +13807,8 @@ var import_react31 = require("react");
 var mdLabels2 = () => ({ code: { copyLabel: t("Copy"), copiedLabel: t("Copied") }, footnotes: t("Footnotes") });
 function failureText(card) {
   const raw = typeof card.error === "string" ? card.error : card.error?.message;
-  const text = typeof raw === "string" ? raw.trim() : "";
-  return text !== "" ? hostText(text) : t("Could not answer.");
+  const text2 = typeof raw === "string" ? raw.trim() : "";
+  return text2 !== "" ? hostText(text2) : t("Could not answer.");
 }
 function stampOf(card) {
   const time = Number.isFinite(card.finishedAt) ? card.finishedAt : card.createdAt;
@@ -14016,20 +14016,20 @@ function mentionableBots(roster, sessionId) {
   if (room2) return room2.members.map((id) => roster.byId[id]).filter(Boolean);
   return roster.byId[sessionId] ? roster.bots : [];
 }
-function userTextParts(text, bots, referenceLabels = []) {
+function userTextParts(text2, bots, referenceLabels = []) {
   const parts = [];
   let cursor = 0;
-  for (const span of mentionSpans(text, bots, { references: referenceLabels })) {
+  for (const span of mentionSpans(text2, bots, { references: referenceLabels })) {
     if (!span.bot) continue;
-    if (span.start > cursor) parts.push({ text: text.slice(cursor, span.start) });
-    parts.push({ bot: span.bot, label: text.slice(span.start + 1, span.end) });
+    if (span.start > cursor) parts.push({ text: text2.slice(cursor, span.start) });
+    parts.push({ bot: span.bot, label: text2.slice(span.start + 1, span.end) });
     cursor = span.end;
   }
-  if (cursor < text.length) parts.push({ text: text.slice(cursor) });
+  if (cursor < text2.length) parts.push({ text: text2.slice(cursor) });
   return parts;
 }
-function UserText({ text, bots, referenceLabels, skillNames, references, actions }) {
-  return userTextParts(text, bots, referenceLabels).map((part, index) => part.bot ? (0, import_react32.createElement)(
+function UserText({ text: text2, bots, referenceLabels, skillNames, references, actions }) {
+  return userTextParts(text2, bots, referenceLabels).map((part, index) => part.bot ? (0, import_react32.createElement)(
     "button",
     { key: index, type: "button", className: "bt-umention", title: `@${part.bot.name}`, onClick: () => actions.openSession(part.bot.id) },
     (0, import_react32.createElement)(BotMark, { bot: part.bot, size: 16 }),
@@ -14052,10 +14052,10 @@ function Attachments({ attachments, renderMessageImages }) {
     );
   }));
 }
-function CopyButton({ text }) {
+function CopyButton({ text: text2 }) {
   const [copied, setCopied] = (0, import_react32.useState)(false);
   const copy2 = () => {
-    void navigator.clipboard?.writeText(text).then(() => {
+    void navigator.clipboard?.writeText(text2).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1e3);
     });
@@ -14068,13 +14068,13 @@ var ViaTag = ({ via }) => (0, import_react32.createElement)("span", { className:
 function UserMessageCell({ node, sessionId, useRoster, actions, renderMessageImages, openFile, openSkill }) {
   const roster = useRoster((value) => value);
   const data = node.data ?? {};
-  const { text, attachments, rest } = contentParts(data.content);
+  const { text: text2, attachments, rest } = contentParts(data.content);
   const referenceLabels = data.referenceLabels ?? [];
   const references = openFile && openSkill ? { openFile, openSkill } : void 0;
   const steering = node.kind === "steering";
   const sentAt = Number.isFinite(data.time) ? messageClock(data.time) : void 0;
   const via = viaOf2(data.source) ?? roster.imVia?.[sessionId]?.[data.seq];
-  const { shown, folded, control } = useFold(text, { markdown: false });
+  const { shown, folded, control } = useFold(text2, { markdown: false });
   const body = (0, import_react32.createElement)(UserText, { text: shown, bots: mentionableBots(roster, sessionId), referenceLabels, skillNames: data.skillNames ?? [], references, actions });
   const row = (0, import_react32.useRef)(null);
   const [toolsOpen, setToolsOpen] = (0, import_react32.useState)(false);
@@ -14101,7 +14101,7 @@ function UserMessageCell({ node, sessionId, useRoster, actions, renderMessageIma
       "div",
       { className: "bt-ustack" },
       attachments.length > 0 ? (0, import_react32.createElement)(Attachments, { attachments, renderMessageImages }) : null,
-      text !== "" || rest.length > 0 ? (0, import_react32.createElement)(
+      text2 !== "" || rest.length > 0 ? (0, import_react32.createElement)(
         "div",
         { className: "bt-ubody", title: clock3(data.time), "data-folded": folded || void 0, onClick: tapTools },
         control ? (0, import_react32.createElement)("div", { className: "bt-fold-body" }, body) : body,
@@ -14111,7 +14111,7 @@ function UserMessageCell({ node, sessionId, useRoster, actions, renderMessageIma
       referenceLabels.length > 0 ? (0, import_react32.createElement)("div", { className: "bt-urefs" }, t("Referenced {labels}", { labels: referenceLabels.join(t(", ")) })) : null,
       sentAt || via ? (0, import_react32.createElement)("div", { className: "bt-utime", title: clockLabel(data.time) }, ...via ? [(0, import_react32.createElement)(ViaTag, { key: "via", via })] : [], sentAt) : null
     ),
-    text === "" ? null : (0, import_react32.createElement)("div", { className: "bt-utools", "data-open": toolsOpen || void 0 }, (0, import_react32.createElement)(CopyButton, { text }))
+    text2 === "" ? null : (0, import_react32.createElement)("div", { className: "bt-utools", "data-open": toolsOpen || void 0 }, (0, import_react32.createElement)(CopyButton, { text: text2 }))
   );
 }
 var USER_MESSAGE_CSS = `
@@ -14151,11 +14151,11 @@ function Bubbles({ texts: texts2, roster, selfId, actions, streaming, sessionId,
   return (0, import_react33.createElement)(
     "div",
     { className: "bt-astack", "data-lead": lead ? "" : void 0, onClickCapture: onClick },
-    texts2.map((text, index) => {
+    texts2.map((text2, index) => {
       const last = index === texts2.length - 1;
       return (0, import_react33.createElement)(Bubble, {
         key: index,
-        text,
+        text: text2,
         index,
         roster,
         selfId,
@@ -14178,11 +14178,11 @@ function FoldCodeCopy({ code, actions }) {
   const copy2 = async () => {
     try {
       if (typeof code === "function" && typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
-        const text = Promise.resolve().then(code).then((value) => new Blob([value], { type: "text/plain" }));
-        await navigator.clipboard.write([new ClipboardItem({ "text/plain": text })]);
+        const text2 = Promise.resolve().then(code).then((value) => new Blob([value], { type: "text/plain" }));
+        await navigator.clipboard.write([new ClipboardItem({ "text/plain": text2 })]);
       } else {
-        const text = typeof code === "function" ? await code() : code;
-        if (!await (0, import_dsh_client_ui_primitives.writeClipboard)(text)) throw new Error("Could not copy the code block");
+        const text2 = typeof code === "function" ? await code() : code;
+        if (!await (0, import_dsh_client_ui_primitives.writeClipboard)(text2)) throw new Error("Could not copy the code block");
       }
       setCopied(true);
       setTimeout(() => setCopied(false), 1e3);
@@ -14199,8 +14199,8 @@ var foldArea = (body, code, codeHead, actions) => code === void 0 ? body : (0, i
   (0, import_react33.createElement)("pre", { className: "bt-fold-pre" }, (0, import_react33.createElement)("code", null, codeHead)),
   (0, import_react33.createElement)(FoldCodeCopy, { code, actions })
 );
-function Bubble({ text, index, roster, selfId, actions, sessionId, msgKey, mentions, fold, picked, live, lead, whole }) {
-  const { shown, folded, control, code, codeHead } = useFold(text, { limit: fold, whole, live });
+function Bubble({ text: text2, index, roster, selfId, actions, sessionId, msgKey, mentions, fold, picked, live, lead, whole }) {
+  const { shown, folded, control, code, codeHead } = useFold(text2, { limit: fold, whole, live });
   const key = msgKey ? `${msgKey}:${index}` : void 0;
   const body = shown === "" ? null : (0, import_react33.createElement)(import_dsh_client_ui_primitives.MarkdownText, { text: linkMentions(shown, roster.bots, selfId), streaming: live, labels: mdLabels3(), variant: "compact", fileMentions: mentions });
   const row = (0, import_react33.useRef)(null);
@@ -14224,7 +14224,7 @@ function Bubble({ text, index, roster, selfId, actions, sessionId, msgKey, menti
         control ? (0, import_react33.createElement)("div", { className: "bt-fold-body" }, area) : area,
         control
       ),
-      live ? null : (0, import_react33.createElement)(MessageTools, { text: folded ? text : shown, name: roster.byId[selfId]?.name ?? t("Bot"), sessionId, react: key ? (emoji) => actions.toggleReaction(msgKey, index, emoji) : void 0, actions, open: toolsOpen })
+      live ? null : (0, import_react33.createElement)(MessageTools, { text: folded ? text2 : shown, name: roster.byId[selfId]?.name ?? t("Bot"), sessionId, react: key ? (emoji) => actions.toggleReaction(msgKey, index, emoji) : void 0, actions, open: toolsOpen })
     ),
     picked.length ? (0, import_react33.createElement)("div", { className: "bt-reacts" }, picked.map((emoji) => (0, import_react33.createElement)("button", {
       key: emoji,
@@ -14260,7 +14260,7 @@ function useDismiss(open, close, refs) {
     };
   }, [open]);
 }
-function MessageTools({ text, name, sessionId, react, actions, open: tapped }) {
+function MessageTools({ text: text2, name, sessionId, react, actions, open: tapped }) {
   const [panel, setPanel] = (0, import_react33.useState)(null);
   const [copied, setCopied] = (0, import_react33.useState)(false);
   const tools = (0, import_react33.useRef)(null);
@@ -14282,13 +14282,13 @@ function MessageTools({ text, name, sessionId, react, actions, open: tapped }) {
     return panel.kind === "react" ? { left: Math.min(Math.max(rect.left + rect.width / 2, STRIP_HALF), window.innerWidth - STRIP_HALF), top: rect.top - 6, "--bt-origin": "bottom center" } : { left: Math.min(rect.left, window.innerWidth - 208), ...below ? { top: rect.bottom + 4 } : { bottom: viewBottom() - rect.top + 4, "--bt-origin": "bottom left" } };
   }, [panel, tick]);
   const copy2 = () => {
-    void navigator.clipboard?.writeText(text).then(() => {
+    void navigator.clipboard?.writeText(text2).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1e3);
     });
   };
   const download2 = () => {
-    const url = URL.createObjectURL(new Blob([text], { type: "text/markdown" }));
+    const url = URL.createObjectURL(new Blob([text2], { type: "text/markdown" }));
     const link = Object.assign(document.createElement("a"), { href: url, download: `${name}-message.md` });
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1e3);
@@ -14301,7 +14301,7 @@ function MessageTools({ text, name, sessionId, react, actions, open: tapped }) {
     "div",
     { ref: tools, className: "bt-tools", "data-open": panel !== null || tapped || void 0 },
     react ? (0, import_react33.createElement)("button", { type: "button", className: "bt-tool", "aria-label": t("Add reaction"), title: t("Add reaction"), "aria-expanded": panel?.kind === "react", onClick: (event) => open("react", event) }, (0, import_react33.createElement)(SmileIcon)) : null,
-    sessionId ? (0, import_react33.createElement)("button", { type: "button", className: "bt-tool", "aria-label": t("Reply"), title: t("Reply"), onClick: () => actions.quote(sessionId, text) }, (0, import_react33.createElement)(ReplyIcon)) : null,
+    sessionId ? (0, import_react33.createElement)("button", { type: "button", className: "bt-tool", "aria-label": t("Reply"), title: t("Reply"), onClick: () => actions.quote(sessionId, text2) }, (0, import_react33.createElement)(ReplyIcon)) : null,
     (0, import_react33.createElement)("button", { type: "button", className: "bt-tool", "aria-label": t("More message actions"), title: t("More"), "aria-haspopup": "menu", "aria-expanded": panel?.kind === "more", onClick: (event) => open("more", event) }, copied ? (0, import_react33.createElement)(CheckIcon) : (0, import_react33.createElement)(DotsIcon)),
     panel?.kind === "react" ? (0, import_react_dom3.createPortal)((0, import_react33.createElement)(
       "div",
@@ -14339,7 +14339,7 @@ function useThinkingMs({ sessionId, turn, settledSteps, skip }) {
   return ms;
 }
 var rowViews = /* @__PURE__ */ new Map();
-function ThinkingRow({ text, live, at, ms, viewKey }) {
+function ThinkingRow({ text: text2, live, at, ms, viewKey }) {
   const box = (0, import_react33.useRef)(null);
   const view = (0, import_react33.useRef)(rowViews.get(viewKey));
   const atEnd = (0, import_react33.useRef)(view.current?.atEnd ?? true);
@@ -14369,7 +14369,7 @@ function ThinkingRow({ text, live, at, ms, viewKey }) {
     if (atEnd.current) el.scrollTop = el.scrollHeight;
     else if (restore?.top !== void 0) el.scrollTop = restore.top;
     measure();
-  }, [text, open]);
+  }, [text2, open]);
   const title = live ? t("Thinking") : t("Thought it through");
   return (0, import_react33.createElement)(
     "details",
@@ -14381,7 +14381,7 @@ function ThinkingRow({ text, live, at, ms, viewKey }) {
       live && at !== void 0 ? (0, import_react33.createElement)(Elapsed, { at, className: "bt-think-time" }) : null,
       !live && ms !== void 0 ? (0, import_react33.createElement)("span", { className: "bt-think-time" }, `· ${elapsedLabel(Math.max(1e3, ms))}`) : null
     ),
-    (0, import_react33.createElement)("div", { ref: box, className: "bt-think-text", role: "region", "aria-label": title, tabIndex: 0, "data-fade": fade, onScroll: measure }, text)
+    (0, import_react33.createElement)("div", { ref: box, className: "bt-think-text", role: "region", "aria-label": title, tabIndex: 0, "data-fade": fade, onScroll: measure }, text2)
   );
 }
 function useFileMentions({ node, openFile, fileMentions, useTurnData }) {
@@ -14515,7 +14515,7 @@ function scheduleGroupChains(flow) {
     if (flow.isConnected !== false) syncGroupChains(flow);
   });
 }
-function GroupMessage({ bot, text, texts: texts2 = [text], room: room2, roster, actions, msgKey, useUi, whole, time, duration }) {
+function GroupMessage({ bot, text: text2, texts: texts2 = [text2], room: room2, roster, actions, msgKey, useUi, whole, time, duration }) {
   const ref = (0, import_react33.useRef)(null);
   (0, import_react33.useLayoutEffect)(() => {
     const el = ref.current;
@@ -14828,10 +14828,10 @@ function TriggerCell({ node, sessionId, useRoster, useSessions, useTurnClock, us
         const room2 = roster.roomsById[sessionId];
         const poster = roster.byId[source.senderSessionId] ?? { id: source.senderSessionId, name: source.senderName ?? t("a Bot"), color: "gray" };
         const file = source.length === void 0 ? void 0 : (data.content ?? []).find((block) => block?.type === "file")?.attachment;
-        const text = stripHeader(contentText(data.content));
+        const text2 = stripHeader(contentText(data.content));
         return (0, import_react33.createElement)(GroupMessage, {
           bot: poster,
-          text: file ? stripLongNote(text) : text,
+          text: file ? stripLongNote(text2) : text2,
           room: room2,
           roster,
           actions,
@@ -17531,7 +17531,7 @@ var SIDEBAR_CSS = `
 `;
 
 // src/client/thread-home.js
-function threadHomeGuard({ roster, mainView, threadBotOfSession, threadOwnerOf, openSession }) {
+function threadHomeGuard({ roster, mainView, threadBotOfSession, threadOwnerOf, threadPage, openSession }) {
   return async function homeToMainBot() {
     const snapshot = roster.getSnapshot();
     if (!snapshot.ready || !snapshot.mainBotId) return;
@@ -17541,6 +17541,7 @@ function threadHomeGuard({ roster, mainView, threadBotOfSession, threadOwnerOf, 
     if (snapshot.byId[main] !== void 0 || snapshot.roomsById[main] !== void 0) return;
     const owner = await Promise.resolve(threadOwnerOf(main)).catch(() => void 0);
     if (owner !== null) return;
+    if (threadPage?.() !== void 0) return;
     if (mainView() !== main) return;
     openSession(snapshot.mainBotId);
   };
@@ -18296,8 +18297,8 @@ function summarize(view, range, keep = () => true, seriesOf = () => "all") {
   return result;
 }
 function trimmed(value) {
-  const text = value >= 100 ? value.toFixed(0) : value >= 10 ? value.toFixed(1) : value.toFixed(2);
-  return text.includes(".") ? text.replace(/\.?0+$/, "") : text;
+  const text2 = value >= 100 ? value.toFixed(0) : value >= 10 ? value.toFixed(1) : value.toFixed(2);
+  return text2.includes(".") ? text2.replace(/\.?0+$/, "") : text2;
 }
 function compact(count) {
   for (const [size, unit] of [[1e9, "B"], [1e6, "M"], [1e3, "K"]]) {
@@ -18429,14 +18430,14 @@ function kindLabel(kind, botFocus) {
   return labels[kind] ?? kind;
 }
 function Tabs({ label, value, options, onChange, boxRef }) {
-  const names = options.map(([, text]) => text).join("\n");
+  const names = options.map(([, text2]) => text2).join("\n");
   const glide = useGlide(`${value}
 ${names}`, { box: boxRef });
   return (0, import_react40.createElement)(
     "div",
     { ref: glide.box, className: "bt-us-tabs", role: "group", "aria-label": label },
     (0, import_react40.createElement)("span", { ref: glide.thumb, className: "bt-thumb", "aria-hidden": true }),
-    options.map(([id, text, icon2]) => (0, import_react40.createElement)("button", { key: id, type: "button", "aria-pressed": value === id, onClick: () => onChange(id) }, icon2 ? (0, import_react40.createElement)(icon2) : null, text))
+    options.map(([id, text2, icon2]) => (0, import_react40.createElement)("button", { key: id, type: "button", "aria-pressed": value === id, onClick: () => onChange(id) }, icon2 ? (0, import_react40.createElement)(icon2) : null, text2))
   );
 }
 function Stats({ range, total, previous }) {
@@ -21262,9 +21263,9 @@ function Guide({ platform, domain }) {
   );
 }
 var QUIET = 4;
-function QrCode({ text }) {
+function QrCode({ text: text2 }) {
   const qr = qrcode_default(0, "M");
-  qr.addData(text);
+  qr.addData(text2);
   qr.make();
   const count = qr.getModuleCount();
   const size = count + QUIET * 2;
@@ -21841,15 +21842,15 @@ var FeedbackIcon = () => (0, import_react44.createElement)(
   (0, import_react44.createElement)("path", { d: "M4 4.5h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H9l-3.5 3v-3H4a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1z" }),
   (0, import_react44.createElement)("path", { d: "M10 7v2.6M10 11.4h.01" })
 );
-function download(name, text) {
-  const url = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }));
+function download(name, text2) {
+  const url = URL.createObjectURL(new Blob([text2], { type: "text/plain;charset=utf-8" }));
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = name;
   anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 1e3);
 }
-var copy = (text) => navigator.clipboard === void 0 ? Promise.resolve(false) : navigator.clipboard.writeText(text).then(() => true, () => false);
+var copy = (text2) => navigator.clipboard === void 0 ? Promise.resolve(false) : navigator.clipboard.writeText(text2).then(() => true, () => false);
 function whenText(time) {
   const date = new Date(time);
   const today = (/* @__PURE__ */ new Date()).toDateString() === date.toDateString();
@@ -21896,8 +21897,8 @@ function FeedbackPage({ actions, run: run2, Section: Section2, Row: Row4 }) {
       if (!inline && !copied) setPreview(true);
     }));
   };
-  const downloadLog = () => run2(actions.diagnosticsLog().then((text) => {
-    download("ds-bot-diagnostics.log", text || "No entries.\n");
+  const downloadLog = () => run2(actions.diagnosticsLog().then((text2) => {
+    download("ds-bot-diagnostics.log", text2 || "No entries.\n");
     setNote(t("Downloaded the log. Keys, tokens, and your home folder are hidden in it."));
   }));
   const clearLog = () => run2(actions.diagnosticsClear().then(clearClientErrors).then(load).then(() => setNote(t("Cleared the error log."))));
@@ -22598,14 +22599,14 @@ var MEMORY_SIZES = [
   { scope: "team", label: "Team memory size", size: 4e3 }
 ];
 function MemorySize({ label, value, save }) {
-  const [text, setText] = (0, import_react48.useState)(String(value));
+  const [text2, setText] = (0, import_react48.useState)(String(value));
   (0, import_react48.useEffect)(() => setText(String(value)), [value]);
   const commit = () => {
-    const number = Number(text);
+    const number = Number(text2);
     if (Number.isInteger(number) && number >= 1e3 && number <= 2e5 && number !== value) save(number);
     else setText(String(value));
   };
-  return (0, import_react48.createElement)("input", { className: "bt-input bt-set-number", type: "number", min: 1e3, max: 2e5, step: 1e3, "aria-label": label, value: text, onChange: (event) => setText(event.target.value), onBlur: commit, onKeyDown: (event) => {
+  return (0, import_react48.createElement)("input", { className: "bt-input bt-set-number", type: "number", min: 1e3, max: 2e5, step: 1e3, "aria-label": label, value: text2, onChange: (event) => setText(event.target.value), onBlur: commit, onKeyDown: (event) => {
     if (event.key === "Enter") event.target.blur();
   } });
 }
@@ -22622,14 +22623,14 @@ function SetRow({ label, hint, children, className = "" }) {
 }
 var LAYOUTS = [["bubble", "Bubble"], ["flat", "Flat"]];
 function Choice({ label, value, options, pick: pick2 }) {
-  return (0, import_react48.createElement)(Segmented, { label, value, className: "bt-look-seg" }, options.map(([id, text]) => (0, import_react48.createElement)("button", {
+  return (0, import_react48.createElement)(Segmented, { label, value, className: "bt-look-seg" }, options.map(([id, text2]) => (0, import_react48.createElement)("button", {
     key: id,
     type: "button",
     "aria-pressed": value === id,
     onClick: () => {
       if (value !== id) pick2(id);
     }
-  }, t(text))));
+  }, t(text2))));
 }
 function WidthSlider({ label, value, save }) {
   const [width, setWidth] = (0, import_react48.useState)(value);
@@ -22982,13 +22983,13 @@ function SettingsDialog({ page, id, roster, actions, useUpdate, leaving = false,
   const [usageOpened, setUsageOpened] = (0, import_react48.useState)(shown === "usage");
   if (shown === "usage" && !usageOpened) setUsageOpened(true);
   const errorLine = error ? (0, import_react48.createElement)("div", { className: "bt-error", role: "alert", style: { padding: 0 } }, error) : null;
-  const pageButton = (key, text) => (0, import_react48.createElement)("button", {
+  const pageButton = (key, text2) => (0, import_react48.createElement)("button", {
     key,
     type: "button",
     className: "bt-settings-item",
     "aria-current": shown === key ? "page" : void 0,
     onClick: () => actions.openSettings(key)
-  }, (0, import_react48.createElement)(PAGE_ICONS[key]), t(text));
+  }, (0, import_react48.createElement)(PAGE_ICONS[key]), t(text2));
   return (0, import_react48.createElement)(
     "div",
     { className: "bt-settings-layer", "data-leaving": leaving || void 0 },
@@ -23000,7 +23001,7 @@ function SettingsDialog({ page, id, roster, actions, useUpdate, leaving = false,
         "nav",
         { ref: nav.box, className: "bt-settings-nav", "aria-label": t("Settings pages") },
         (0, import_react48.createElement)("span", { ref: nav.thumb, className: "bt-thumb", "aria-hidden": true }),
-        pages.filter(([key]) => !LAST_PAGES.has(key)).map(([key, text]) => pageButton(key, text)),
+        pages.filter(([key]) => !LAST_PAGES.has(key)).map(([key, text2]) => pageButton(key, text2)),
         extra.length > 0 ? (0, import_react48.createElement)("span", { className: "bt-settings-rule", "aria-hidden": true }) : null,
         extra.map((row) => (0, import_react48.createElement)("button", {
           key: `dsh:${row.id}`,
@@ -23013,7 +23014,7 @@ function SettingsDialog({ page, id, roster, actions, useUpdate, leaving = false,
           fallback: (0, import_react48.createElement)(DSH_ICONS[row.id] ?? import_dsh_client_ui_primitives2.IconSettingsOutlineMedium, { size: 16 })
         })), row.label)),
         (0, import_react48.createElement)("span", { className: "bt-settings-rule", "aria-hidden": true }),
-        pages.filter(([key]) => LAST_PAGES.has(key)).map(([key, text]) => pageButton(key, text))
+        pages.filter(([key]) => LAST_PAGES.has(key)).map(([key, text2]) => pageButton(key, text2))
       ),
       (0, import_react48.createElement)(
         "div",
@@ -23984,10 +23985,10 @@ function useDictation(onText) {
       let interim = "";
       for (let index = event.resultIndex; index < event.results.length; index += 1) {
         const result = event.results[index];
-        const text = result[0]?.transcript ?? "";
+        const text2 = result[0]?.transcript ?? "";
         if (result.isFinal) {
-          if (text.trim()) latest.current(text, true);
-        } else interim += text;
+          if (text2.trim()) latest.current(text2, true);
+        } else interim += text2;
       }
       if (interim) latest.current(interim, false);
     };
@@ -24023,8 +24024,8 @@ function ComposerVoice({ sessionId, inputActions, actions, useUi, useRoster }) {
     root.addEventListener("keydown", onKey, true);
     return () => root.removeEventListener("keydown", onKey, true);
   }, [enterToSend, inputActions]);
-  const dictation = useDictation((text, final) => {
-    if (final && inputActions) inputActions.insertText(text, inputActions.captureInsertion());
+  const dictation = useDictation((text2, final) => {
+    if (final && inputActions) inputActions.insertText(text2, inputActions.captureInsertion());
   });
   const quote = useUi((state) => state.quote?.sessionId === sessionId ? state.quote : null);
   (0, import_react51.useEffect)(() => {
@@ -24390,11 +24391,11 @@ async function matchSideEnter(roster, sessionId, line, envelope2, signal) {
   return { claim: true };
 }
 async function submitSide({ call: call2, roster, sessionId, args, attachments, open }) {
-  const text = String(args ?? "").trim();
+  const text2 = String(args ?? "").trim();
   if (sideSurface(roster, sessionId) === "group") throw new Error(t(GROUP_REFUSAL));
   if (Array.isArray(attachments) && attachments.length > 0) throw new Error(t(ATTACHMENT_REFUSAL));
-  if (text === "") throw new Error(t(EMPTY_REFUSAL));
-  const value = await call2("side-ask", { sessionId, recent: true, text });
+  if (text2 === "") throw new Error(t(EMPTY_REFUSAL));
+  const value = await call2("side-ask", { sessionId, recent: true, text: text2 });
   open?.(value?.chatId);
   return { kind: "success" };
 }
@@ -24472,12 +24473,12 @@ function SideChatView({ subject, chat, roster, actions }) {
   }, [chat?.id, entries2.length, last?.status]);
   if (!chat) return null;
   const ask = () => {
-    const text = draft.trim();
-    if (text === "" || busy || typeof actions?.askSide !== "function") return;
+    const text2 = draft.trim();
+    if (text2 === "" || busy || typeof actions?.askSide !== "function") return;
     setDraft("");
     setFail(null);
-    Promise.resolve(actions.askSide(subject, chat.id, text)).catch((error) => {
-      setDraft((value) => value === "" ? text : value);
+    Promise.resolve(actions.askSide(subject, chat.id, text2)).catch((error) => {
+      setDraft((value) => value === "" ? text2 : value);
       setFail(hostText(error?.message ?? ""));
     });
   };
@@ -24629,8 +24630,8 @@ function preparationStep(catalog) {
 function waveBytes(samples, rate = 16e3) {
   const bytes = new Uint8Array(44 + samples.length * 2);
   const view = new DataView(bytes.buffer);
-  const ascii = (at, text) => {
-    for (let index = 0; index < text.length; index += 1) bytes[at + index] = text.charCodeAt(index);
+  const ascii = (at, text2) => {
+    for (let index = 0; index < text2.length; index += 1) bytes[at + index] = text2.charCodeAt(index);
   };
   ascii(0, "RIFF");
   view.setUint32(4, 36 + samples.length * 2, true);
@@ -24651,9 +24652,9 @@ function waveBytes(samples, rate = 16e3) {
   return bytes;
 }
 function base64Of(bytes) {
-  let text = "";
-  for (let index = 0; index < bytes.length; index += 32768) text += String.fromCharCode(...bytes.subarray(index, index + 32768));
-  return btoa(text);
+  let text2 = "";
+  for (let index = 0; index < bytes.length; index += 32768) text2 += String.fromCharCode(...bytes.subarray(index, index + 32768));
+  return btoa(text2);
 }
 var captureError = (kind, cause) => Object.assign(new Error(kind), { kind, cause });
 async function openCapture() {
@@ -24973,8 +24974,8 @@ function TechnicalDetails({ facts }) {
   const [copied, setCopied] = (0, import_react53.useState)(false);
   if (facts.length === 0) return null;
   const copy2 = () => {
-    const text = facts.map(([name, , value]) => `${name}: ${value}`).join("\n");
-    void navigator.clipboard?.writeText(text).then(() => {
+    const text2 = facts.map(([name, , value]) => `${name}: ${value}`).join("\n");
+    void navigator.clipboard?.writeText(text2).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1e3);
     }).catch(() => {
@@ -25002,7 +25003,7 @@ function FailureCell({ node, sessionId, useRoster, useTurnClock, actions }) {
   const [joining, setJoining] = (0, import_react53.useState)(null);
   const blocked = bot?.blocked?.code === data.code ? bot.blocked : void 0;
   const provider = blocked?.provider ?? providerOf(bot, roster);
-  const text = failureText2(data.code, { name: bot?.name ?? t("This Bot"), provider: providerName(roster, provider), status: blocked?.status });
+  const text2 = failureText2(data.code, { name: bot?.name ?? t("This Bot"), provider: providerName(roster, provider), status: blocked?.status });
   const facts = failureFacts(data, blocked);
   const current = bot !== void 0 && currentPart(bot) === sessionId && !later;
   const moveToAccount = () => {
@@ -25037,7 +25038,7 @@ function FailureCell({ node, sessionId, useRoster, useTurnClock, actions }) {
   const settled = () => (0, import_react53.createElement)(
     "div",
     { className: "bt-fail", "data-settled": "", role: "status" },
-    (0, import_react53.createElement)("div", { className: "bt-fail-head" }, (0, import_react53.createElement)("span", { className: "bt-fail-dot", "aria-hidden": true }), (0, import_react53.createElement)("span", { className: "bt-fail-text" }, text)),
+    (0, import_react53.createElement)("div", { className: "bt-fail-head" }, (0, import_react53.createElement)("span", { className: "bt-fail-dot", "aria-hidden": true }), (0, import_react53.createElement)("span", { className: "bt-fail-text" }, text2)),
     (0, import_react53.createElement)(TechnicalDetails, { facts })
   );
   if (!current) return settled();
@@ -25087,7 +25088,7 @@ function FailureCell({ node, sessionId, useRoster, useTurnClock, actions }) {
   return (0, import_react53.createElement)(
     "div",
     { className: "bt-fail", role: "status" },
-    (0, import_react53.createElement)("div", { className: "bt-fail-head" }, (0, import_react53.createElement)("span", { className: "bt-fail-dot", "aria-hidden": true }), (0, import_react53.createElement)("span", { className: "bt-fail-text" }, text)),
+    (0, import_react53.createElement)("div", { className: "bt-fail-head" }, (0, import_react53.createElement)("span", { className: "bt-fail-dot", "aria-hidden": true }), (0, import_react53.createElement)("span", { className: "bt-fail-text" }, text2)),
     (0, import_react53.createElement)("div", { className: "bt-fail-actions" }, row),
     keying && keyHere ? (0, import_react53.createElement)(ModelKeyCard, { model: { provider, providerName: providerName(roster, provider) }, actions, onSaved: () => setKeying(false) }) : null,
     error ? (0, import_react53.createElement)("div", { className: "bt-fail-error", role: "alert" }, error) : null,
@@ -25143,11 +25144,11 @@ function CommandPalette({ start, token, roster, actions, useSessions }) {
         const entry = outline[index2];
         if (hidden.includes(entry.turn)) continue;
         for (const raw of [entry.response, entry.prompt]) {
-          const text = stripHeader(raw ?? "").replace(/\s+/g, " ").trim();
-          const at = text.toLowerCase().indexOf(wanted);
+          const text2 = stripHeader(raw ?? "").replace(/\s+/g, " ").trim();
+          const at = text2.toLowerCase().indexOf(wanted);
           if (at < 0) continue;
           const from = Math.max(0, at - 24);
-          hits.push([id, entry.turn, (from > 0 ? "…" : "") + text.slice(from, at + wanted.length + 60)]);
+          hits.push([id, entry.turn, (from > 0 ? "…" : "") + text2.slice(from, at + wanted.length + 60)]);
           break;
         }
       }
@@ -25385,29 +25386,29 @@ function NewChat({ mode, sectionId = null, paneLeft, roster, actions }) {
   };
   const makeGroup = async () => {
     if (admin === null || picked.length === 0) return;
-    const text = message.trim();
-    const room2 = await actions.createRoom([admin, ...picked], { admin, ...sectionId ? { sectionId } : {}, ...text ? {} : { greet: true } });
-    if (text) await actions.send(room2.id, text);
+    const text2 = message.trim();
+    const room2 = await actions.createRoom([admin, ...picked], { admin, ...sectionId ? { sectionId } : {}, ...text2 ? {} : { greet: true } });
+    if (text2) await actions.send(room2.id, text2);
     actions.openSession(room2.id);
     close();
   };
   const createGroup = () => run2(makeGroup);
   const sendMessage = () => run2(async () => {
-    const text = message.trim();
+    const text2 = message.trim();
     if (group && admin !== null) {
       await makeGroup();
       return;
     }
-    if (text === "" || picked.length === 0) return;
+    if (text2 === "" || picked.length === 0) return;
     if (picked.length === 1) {
       if (sectionId) await actions.setFlags(picked[0], { sectionId });
-      await actions.send(picked[0], text);
+      await actions.send(picked[0], text2);
       actions.openSession(picked[0]);
       close();
       return;
     }
     const room2 = await actions.createRoom(picked, sectionId ? { sectionId } : {});
-    await actions.send(room2.id, text);
+    await actions.send(room2.id, text2);
     actions.openSession(room2.id);
     close();
   });
@@ -25661,7 +25662,7 @@ function ExchangeDialog({ pair, paneLeft, roster, actions }) {
 
 // src/client/voice.js
 var import_react57 = require("react");
-var plainSpeech = (text) => stripHeader(text).replace(/```[\s\S]*?```/g, " ").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[*_`#>|~-]+/g, " ").replace(/\s+/g, " ").trim();
+var plainSpeech = (text2) => stripHeader(text2).replace(/```[\s\S]*?```/g, " ").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[*_`#>|~-]+/g, " ").replace(/\s+/g, " ").trim();
 var VOICE_LABELS = {
   listening: "Listening",
   thinking: "Thinking",
@@ -25678,11 +25679,11 @@ function watchReply(read, watch, consume) {
   let consumed = false;
   const attempt = () => {
     if (consumed) return;
-    const text = read();
-    if (text === void 0) return;
+    const text2 = read();
+    if (text2 === void 0) return;
     consumed = true;
     off();
-    consume(text);
+    consume(text2);
   };
   off = watch(attempt);
   attempt();
@@ -25761,17 +25762,17 @@ function VoiceMode({ sessionId, paneLeft, roster, actions, useSessions, useSessi
     actions.closeVoice();
   };
   useEscape(close);
-  const submit = (text) => {
-    setHeard(text);
+  const submit = (text2) => {
+    setHeard(text2);
     setPhase("thinking");
     waiting.current = reply.current.split("|")[0];
-    void actions.send(sessionId, text.trim()).catch(() => setPhase("listening"));
+    void actions.send(sessionId, text2.trim()).catch(() => setPhase("listening"));
   };
-  const dictation = useDictation((text, final) => {
-    setHeard(text);
+  const dictation = useDictation((text2, final) => {
+    setHeard(text2);
     if (!final) return;
     dictation.stop();
-    submit(text);
+    submit(text2);
   });
   (0, import_react57.useEffect)(() => {
     if (!note) return void 0;
@@ -25815,9 +25816,9 @@ function VoiceMode({ sessionId, paneLeft, roster, actions, useSessions, useSessi
       setPhase("transcribing");
       try {
         const wave = await current.finish(catalog.maxDurationSeconds);
-        const text = wave ? await transcribeWave(speech, catalog, wave, new AbortController().signal) : "";
+        const text2 = wave ? await transcribeWave(speech, catalog, wave, new AbortController().signal) : "";
         if (turn.current !== own) return;
-        if (text) submit(text);
+        if (text2) submit(text2);
         else setPhase("listening");
       } catch (error) {
         if (turn.current !== own) return;
@@ -25869,9 +25870,9 @@ function VoiceMode({ sessionId, paneLeft, roster, actions, useSessions, useSessi
     const count = lastReply.slice(0, lastReply.indexOf("|"));
     const turn2 = Number(lastReply.slice(lastReply.indexOf("|") + 1));
     if (count === waiting.current) return void 0;
-    const speak = (text) => {
+    const speak = (text2) => {
       waiting.current = null;
-      const spoken = plainSpeech(text);
+      const spoken = plainSpeech(text2);
       setSaid(spoken);
       setHeard("");
       if (!window.speechSynthesis || !spoken) {
@@ -25889,13 +25890,13 @@ function VoiceMode({ sessionId, paneLeft, roster, actions, useSessions, useSessi
     return watchReply(
       () => actions.closingReply(sessionId, turn2),
       (listener) => actions.watchTurns(sessionId, listener),
-      (text) => {
-        if (text === null) {
+      (text2) => {
+        if (text2 === null) {
           waiting.current = null;
           setPhase("listening");
           return;
         }
-        speak(text);
+        speak(text2);
       }
     );
   }, [phase, running, lastReply]);
@@ -26712,16 +26713,16 @@ function BrowserCards({ bot, sessionId, roster, actions, useBrowserTabs, useBrow
     (0, import_react60.createElement)("button", { type: "button", className: "bt-bcard-new", style: { animationDelay: `${state.ids.length * 30}ms` }, onClick: () => actions.browserNewTab(sessionId) }, (0, import_react60.createElement)(PlusIcon), t("New tab"))
   );
 }
-function About({ text, title = "About" }) {
+function About({ text: text2, title = "About" }) {
   const [open, setOpen] = (0, import_react60.useState)(false);
-  const long = text.split("\n").length > 5 || text.length > 240;
+  const long = text2.split("\n").length > 5 || text2.length > 240;
   const body = (0, import_react60.useRef)(null);
   useMorph(body, open);
   return (0, import_react60.createElement)(
     "div",
     null,
     (0, import_react60.createElement)("div", { className: "bt-section-title" }, t(title)),
-    (0, import_react60.createElement)("div", { ref: body, className: "bt-about", "data-open": open || void 0 }, text),
+    (0, import_react60.createElement)("div", { ref: body, className: "bt-about", "data-open": open || void 0 }, text2),
     long ? (0, import_react60.createElement)("button", { type: "button", className: "bt-more", onClick: () => setOpen((value) => !value) }, open ? t("Show less") : t("Show more")) : null
   );
 }
@@ -27425,11 +27426,11 @@ function BrowserView({ bot, tabId, leaving, landed, actions, useBrowserPages, ho
   }, [tabId, landed]);
   const go = (event) => {
     event.preventDefault();
-    const text = draft ?? "";
-    if (text.trim() === "") return;
+    const text2 = draft ?? "";
+    if (text2.trim() === "") return;
     setDraft(null);
     input.current?.blur();
-    void actions.browserNavigate(tabId, text).then((opened) => {
+    void actions.browserNavigate(tabId, text2).then((opened) => {
       if (opened) actions.browserFocus(tabId);
     });
   };
@@ -28153,19 +28154,19 @@ function readPage(limits) {
     const auto = String(el.getAttribute("autocomplete") || "").toLowerCase();
     return el.type === "password" || /(^|\s)(cc-|one-time-code)/.test(auto) || SECRET_HINT.test(`${el.getAttribute("name") || ""} ${el.id || ""}`);
   };
-  const keep = (text2, end = "") => {
-    if (text2 === "") return "";
-    stash.push(text2);
+  const keep = (text3, end = "") => {
+    if (text3 === "") return "";
+    stash.push(text3);
     return `
 
 ${stash.length - 1}${end}
 
 `;
   };
-  const expand = (text2) => text2.replace(/\u0001(\d+)[\u0002\u0003]/g, (_, index) => expand(stash[Number(index)]));
-  const flow = (text2) => text2.split("\n").map((line) => line.replace(/[ \t\f\v\u00a0\u2028\u2029]+/g, " ").trim().replace(/^· /, "")).join("\n").replace(/\n{3,}/g, "\n\n").replace(/\u0003\n\n(?=\u0001\d+\u0003)/g, "\n").trim();
-  const block = (text2) => expand(flow(text2));
-  const oneLine = (text2) => block(text2).replace(/\s*\n+\s*/g, " ").trim();
+  const expand = (text3) => text3.replace(/\u0001(\d+)[\u0002\u0003]/g, (_, index) => expand(stash[Number(index)]));
+  const flow = (text3) => text3.split("\n").map((line) => line.replace(/[ \t\f\v\u00a0\u2028\u2029]+/g, " ").trim().replace(/^· /, "")).join("\n").replace(/\n{3,}/g, "\n\n").replace(/\u0003\n\n(?=\u0001\d+\u0003)/g, "\n").trim();
+  const block = (text3) => expand(flow(text3));
+  const oneLine = (text3) => block(text3).replace(/\s*\n+\s*/g, " ").trim();
   const styleOf = (el) => (el.ownerDocument.defaultView || window).getComputedStyle(el);
   const childrenOf = (el) => {
     if (el.shadowRoot) return el.shadowRoot.childNodes;
@@ -28199,8 +28200,8 @@ function readPage(limits) {
     items.push(item);
     return { item, number: items.length, secret };
   };
-  const nameOf2 = (el, text2, secret) => collapse(
-    el.getAttribute("aria-label") || text2 || (el.localName === "input" && !secret && NO_VALUE_TYPES.has(el.type) ? el.value : "") || el.getAttribute("placeholder") || el.title || el.getAttribute("alt") || el.querySelector?.("img[alt]")?.alt || el.getAttribute("name") || ""
+  const nameOf2 = (el, text3, secret) => collapse(
+    el.getAttribute("aria-label") || text3 || (el.localName === "input" && !secret && NO_VALUE_TYPES.has(el.type) ? el.value : "") || el.getAttribute("placeholder") || el.title || el.getAttribute("alt") || el.querySelector?.("img[alt]")?.alt || el.getAttribute("name") || ""
   ).slice(0, 80);
   const fenced = (code, lang) => {
     const longest = Math.max(2, ...(code.match(/`{3,}/g) || []).map((run2) => run2.length));
@@ -28269,12 +28270,12 @@ ${children(cell, ctx)}
       for (const cell of row.cells) {
         place();
         if (styleOf(cell).display === "none") continue;
-        const text2 = cellText3(cell, ctx);
+        const text3 = cellText3(cell, ctx);
         const span = Math.max(1, Math.min(limits.tableCols, Number(cell.colSpan) || 1));
         const down = Math.max(1, Math.min(limits.tableRows, Number(cell.rowSpan) || 1));
         for (let offset = 0; offset < span; offset += 1) {
-          line[column] = offset === 0 ? text2 : "";
-          if (down > 1) carry[column] = { text: offset === 0 ? text2 : "", left: down - 1 };
+          line[column] = offset === 0 ? text3 : "";
+          if (down > 1) carry[column] = { text: offset === 0 ? text3 : "", left: down - 1 };
           column += 1;
         }
       }
@@ -28339,9 +28340,9 @@ ${body2 || "(no text)"}
     if (node.nodeType === 3) {
       if (!ctx.shown) return "";
       const data = node.data.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "");
-      const text2 = ctx.pre ? data : data.replace(/[\t\n\r ]+/g, " ");
-      chars += text2.length;
-      return text2;
+      const text3 = ctx.pre ? data : data.replace(/[\t\n\r ]+/g, " ");
+      chars += text3.length;
+      return text3;
     }
     if (node.nodeType !== 1) return "";
     const el = node;
@@ -28429,12 +28430,12 @@ ${marked}
     return marked;
   }
   const body = document.body;
-  let text = "";
+  let text2 = "";
   if (body) {
-    text = block(render(body, { depth: 0, frames: 0, shown: true, pre: false })).replace(/\u00a0/g, " ");
+    text2 = block(render(body, { depth: 0, frames: 0, shown: true, pre: false })).replace(/\u00a0/g, " ");
   }
-  if (text.length > limits.chars) {
-    text = text.slice(0, limits.chars);
+  if (text2.length > limits.chars) {
+    text2 = text2.slice(0, limits.chars);
     stop ||= `the text passed ${limits.chars} characters`;
   }
   const page = {
@@ -28444,7 +28445,7 @@ ${marked}
     description: document.querySelector('meta[name="description"]')?.content || "",
     selection: String(getSelection() || "").slice(0, 4e3),
     format: "markdown",
-    text,
+    text: text2,
     items,
     stats: { ...stats, ms: Math.round(performance.now() - started) }
   };
@@ -28593,15 +28594,15 @@ var METADATA_HOST = /^(169\.254\.\d+\.\d+|\[fd00:ec2::254\]|metadata\.google\.in
 var BLOCKED = "Cloud metadata addresses do not open here.";
 var blockedAddress = (url) => URL.canParse(url) && METADATA_HOST.test(new URL(url).hostname);
 function browserAddress(input) {
-  const text = String(input ?? "").trim();
-  if (text === "") return null;
-  if (/^[a-z][a-z\d+.-]*:\/\//i.test(text)) return /^https?:\/\//i.test(text) && URL.canParse(text) ? new URL(text).href : null;
-  if (/^(about|javascript|data|file|blob|chrome|devtools|view-source):/i.test(text)) return null;
-  const host = text.split(/[/?#]/)[0];
+  const text2 = String(input ?? "").trim();
+  if (text2 === "") return null;
+  if (/^[a-z][a-z\d+.-]*:\/\//i.test(text2)) return /^https?:\/\//i.test(text2) && URL.canParse(text2) ? new URL(text2).href : null;
+  if (/^(about|javascript|data|file|blob|chrome|devtools|view-source):/i.test(text2)) return null;
+  const host = text2.split(/[/?#]/)[0];
   const local = /^(localhost|127(\.\d+){3}|10(\.\d+){3}|192\.168(\.\d+){2}|172\.(1[6-9]|2\d|3[01])(\.\d+){2}|\[[\da-f:]+\])(:\d+)?$/i.test(host);
-  const looksLikeHost = !/\s/.test(text) && (local || /^[^\s.]+(\.[^\s.]+)+(:\d+)?$/.test(host));
-  if (looksLikeHost && URL.canParse(`http://${text}`)) return new URL(`${local ? "http" : "https"}://${text}`).href;
-  return `${SEARCH_URL}${encodeURIComponent(text)}`;
+  const looksLikeHost = !/\s/.test(text2) && (local || /^[^\s.]+(\.[^\s.]+)+(:\d+)?$/.test(host));
+  if (looksLikeHost && URL.canParse(`http://${text2}`)) return new URL(`${local ? "http" : "https"}://${text2}`).href;
+  return `${SEARCH_URL}${encodeURIComponent(text2)}`;
 }
 function createBotBrowsers({ bridge, createSource: createSource2, storage = globalThis.localStorage, document: doc = globalThis.document, guestFactory }) {
   const views = /* @__PURE__ */ new Map();
@@ -29126,12 +29127,12 @@ function proposalPlacement(proposal, turns) {
   if (turn === void 0) return { kind: settled ? "none" : "dock" };
   return { kind: "turn", turn };
 }
-function fileLines(text) {
-  const body = String(text ?? "").replace(/\n+$/, "");
+function fileLines(text2) {
+  const body = String(text2 ?? "").replace(/\n+$/, "");
   return body === "" ? [] : body.split("\n");
 }
-function editLines(text) {
-  return typeof text === "string" ? text.split(/\r?\n/) : [];
+function editLines(text2) {
+  return typeof text2 === "string" ? text2.split(/\r?\n/) : [];
 }
 var DIFF_CELLS = 25e4;
 function lineDiff(before, after) {
@@ -29491,11 +29492,11 @@ function QueueThumb({ attachment, loadImage, label }) {
   }, [attachment, loadImage]);
   return url === null ? (0, import_react64.createElement)("span", { className: "bt-queue-thumb", "aria-hidden": true }) : (0, import_react64.createElement)("img", { className: "bt-queue-thumb", src: url, alt: label });
 }
-function Preview({ text, renderFactorySlot }) {
-  const rendered = renderFactorySlot?.("conversation.user.text", { text, facts: QUEUE_TEXT_FACTS, interactive: false, ellipsis: true });
-  return (0, import_react64.createElement)("span", { className: "bt-queue-preview" }, rendered ?? text);
+function Preview({ text: text2, renderFactorySlot }) {
+  const rendered = renderFactorySlot?.("conversation.user.text", { text: text2, facts: QUEUE_TEXT_FACTS, interactive: false, ellipsis: true });
+  return (0, import_react64.createElement)("span", { className: "bt-queue-preview" }, rendered ?? text2);
 }
-function EditField({ text, onChange, onSave, onCancel }) {
+function EditField({ text: text2, onChange, onSave, onCancel }) {
   const field = (0, import_react64.useRef)(null);
   (0, import_react64.useEffect)(() => {
     const node = field.current;
@@ -29503,11 +29504,11 @@ function EditField({ text, onChange, onSave, onCancel }) {
     node.focus();
     node.style.height = "auto";
     node.style.height = `${node.scrollHeight}px`;
-  }, [text]);
+  }, [text2]);
   return (0, import_react64.createElement)("textarea", {
     ref: field,
     className: "bt-queue-edit",
-    value: text,
+    value: text2,
     rows: 1,
     "aria-label": t("Edit queued message"),
     onChange: (event) => onChange(event.target.value),
@@ -29591,12 +29592,12 @@ function QueueDock({ useSession, useProjection, updateQueue, loadImage, renderFa
         { id: listId, className: "bt-queue-list", hidden: !listVisible },
         listVisible && queue.map((row) => {
           const attachments = queueAttachments(row.content);
-          const text = textOf(row.content);
+          const text2 = textOf(row.content);
           return (0, import_react64.createElement)(
             "li",
             { key: row.id, className: "bt-queue-row" },
             rowCount === 1 && (0, import_react64.createElement)("span", { className: "bt-queue-lead", "aria-hidden": true }, (0, import_react64.createElement)(QueueIcon)),
-            editing?.id === row.id ? (0, import_react64.createElement)(EditField, { text: editing.text, onChange: (text2) => setEditing({ id: row.id, text: text2 }), onSave: saveEdit, onCancel: () => setEditing(null) }) : (0, import_react64.createElement)(
+            editing?.id === row.id ? (0, import_react64.createElement)(EditField, { text: editing.text, onChange: (text3) => setEditing({ id: row.id, text: text3 }), onSave: saveEdit, onCancel: () => setEditing(null) }) : (0, import_react64.createElement)(
               import_react64.Fragment,
               null,
               attachments.length > 0 && (0, import_react64.createElement)(
@@ -29617,8 +29618,8 @@ function QueueDock({ useSession, useProjection, updateQueue, loadImage, renderFa
               ) : (0, import_react64.createElement)(
                 import_react64.Fragment,
                 null,
-                (0, import_react64.createElement)(RowButton, { label: t("Edit queued message"), title: text === null ? t("Contains non-text content, so editing is not supported yet") : void 0, disabled: busy !== null || text === null, onClick: () => {
-                  if (text !== null) setEditing({ id: row.id, text });
+                (0, import_react64.createElement)(RowButton, { label: t("Edit queued message"), title: text2 === null ? t("Contains non-text content, so editing is not supported yet") : void 0, disabled: busy !== null || text2 === null, onClick: () => {
+                  if (text2 !== null) setEditing({ id: row.id, text: text2 });
                 } }, (0, import_react64.createElement)(PencilIcon)),
                 (0, import_react64.createElement)(RowButton, { label: t("Delete queued message"), disabled: busy !== null, onClick: () => applyAction(row.id, { kind: "remove" }, t("Couldn’t delete the queued message — it may have started already.")) }, (0, import_react64.createElement)(TrashIcon)),
                 (0, import_react64.createElement)(RowButton, { label: t("Steer queued message"), title: running ? void 0 : t("Only while a turn is running"), disabled: busy !== null || !running, onClick: () => applyAction(row.id, { kind: "steer" }, t("Couldn’t steer the queued message. Try again.")) }, (0, import_react64.createElement)(ArrowUpIcon))
@@ -29784,6 +29785,59 @@ function threadOwnerResolver({ request = call, remember = () => {
   };
 }
 
+// src/client/thread-restore.js
+var PAGE_KEY = "dsh.threads.page";
+var text = (value) => typeof value === "string" && value !== "" ? value : void 0;
+function rememberThreadPage(page, storage = globalThis.localStorage) {
+  const botId = text(page?.botId);
+  const sessionId = text(page?.sessionId);
+  if (botId === void 0 || sessionId === void 0) return false;
+  const threadId = text(page?.threadId);
+  try {
+    storage?.setItem(PAGE_KEY, JSON.stringify(threadId === void 0 ? { botId, sessionId } : { botId, threadId, sessionId }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+function forgetThreadPage(storage = globalThis.localStorage) {
+  try {
+    storage?.removeItem(PAGE_KEY);
+  } catch {
+  }
+}
+function readThreadPage(storage = globalThis.localStorage) {
+  try {
+    const saved = JSON.parse(storage?.getItem(PAGE_KEY) ?? "null");
+    const botId = text(saved?.botId);
+    const sessionId = text(saved?.sessionId);
+    if (botId === void 0 || sessionId === void 0) return void 0;
+    const threadId = text(saved?.threadId);
+    return threadId === void 0 ? { botId, sessionId } : { botId, threadId, sessionId };
+  } catch {
+    return void 0;
+  }
+}
+function admitThreadPage(sessions, storage = globalThis.localStorage) {
+  const page = readThreadPage(storage);
+  if (page === void 0) return void 0;
+  const add = sessions?.handleSessionAdded;
+  if (typeof add !== "function") return page;
+  add.call(sessions, { agentAvailable: true, sessionId: page.sessionId, updatedAt: Date.now(), running: false, blank: true });
+  return page;
+}
+async function restoreThreadPage({ page, open, ownerOf, forget }) {
+  if (page === void 0) return "none";
+  const owner = await Promise.resolve(ownerOf(page.sessionId)).catch(() => void 0);
+  if (owner === null) {
+    forget?.();
+    return "gone";
+  }
+  if (owner === void 0) return "unknown";
+  open?.(page.sessionId);
+  return "opened";
+}
+
 // src/client/host-session.js
 async function hostHasSession(remote, sessionId, note = () => {
 }) {
@@ -29814,6 +29868,7 @@ var inject = ["sessions", "uiWorkspace", "uiConversation", "slots", "theme", "la
 function apply(ctx) {
   ctx.effect(() => installLocale(ctx.get("locale")), "ds-bot: interface copy");
   migrateStorage();
+  admitThreadPage(ctx.sessions);
   const PREFS_KEY = STORAGE.prefs;
   let savedPrefs = {};
   try {
@@ -30229,8 +30284,55 @@ function apply(ctx) {
     mainView,
     threadBotOfSession: threadSessionBot,
     threadOwnerOf: (sessionId) => threadOwnerOf(sessionId),
+    threadPage: () => readThreadPage(),
     openSession: (id) => actions.openSession(id)
   });
+  ctx.effect(() => {
+    const page = readThreadPage();
+    if (page === void 0) return;
+    let done = false;
+    let timer = 0;
+    let tries = 0;
+    const settle = async () => {
+      const list = ctx.sessions.list.getSnapshot();
+      const main = mainView();
+      if (main === page.sessionId) return;
+      const snapshot = roster.getSnapshot();
+      const row = main === void 0 ? void 0 : list.byId?.[main];
+      const borrowed = main === void 0 || row?.blank === true && snapshot.byId[main] === void 0 && snapshot.roomsById[main] === void 0 && !isAgentSessionId(main) && threadSessionBot(main) === void 0;
+      if (!borrowed) {
+        forgetThreadPage();
+        return;
+      }
+      const verdict = await restoreThreadPage({
+        page,
+        open: (sessionId) => openThreadSession(sessionId),
+        ownerOf: (sessionId) => threadOwnerOf(sessionId),
+        forget: forgetThreadPage
+      });
+      if (verdict === "gone" && snapshot.mainBotId !== void 0) actions.openSession(snapshot.mainBotId);
+    };
+    const tick = () => {
+      if (done) return;
+      const list = ctx.sessions.list.getSnapshot();
+      if (list.phase !== "ready") {
+        timer = setTimeout(tick, 100);
+        return;
+      }
+      if (mainView() === void 0 && tries < 20) {
+        tries += 1;
+        timer = setTimeout(tick, 100);
+        return;
+      }
+      done = true;
+      void settle();
+    };
+    timer = setTimeout(tick, 150);
+    return () => {
+      done = true;
+      clearTimeout(timer);
+    };
+  }, "ds-bot: restore the last Thread page");
   const actions = {
     ...teamActions({ call, after, partFor, roster, ui: ui2, live, cards, heldCards, turnClock, panelFolded, openSession: (id) => actions.openSession(id), ...sessionProbes(ctx, quietly) }),
     learningAnswer: (id, approve) => after(call("learning-answer", { id, approve })),
@@ -30244,6 +30346,7 @@ function apply(ctx) {
     threadOwnerOf: (sessionId) => threadOwnerOf(sessionId),
     openSession: (id) => {
       if (isAgentSessionId(id) || threadSessionBot(id) !== void 0) return actions.openAgentSession(id);
+      forgetThreadPage();
       ui2.set((state) => state.newChat || state.exchange || state.menu || state.palette ? { ...state, newChat: null, exchange: null, menu: null, palette: null } : state);
       setPlain(false);
       const target = partFor(id);
@@ -30252,6 +30355,9 @@ function apply(ctx) {
     // The conversation replacements withdraw for a plain Session; set the surface
     // before the navigation so the Bot skin never flashes.
     openAgentSession: (sessionId) => {
+      const threadBot = threadSessionBot(sessionId);
+      if (threadBot === void 0) forgetThreadPage();
+      else rememberThreadPage({ botId: threadBot, sessionId });
       ui2.set((state) => ({ ...state, newChat: null, exchange: null, menu: null, palette: null, details: null, view: "details", renaming: false, tab: null }));
       setPlain(true);
       show2(sessionId);
@@ -30259,11 +30365,13 @@ function apply(ctx) {
     // A Thread row: Main is the Bot page, a Thread with its own Session is the plain
     // Session page. The cache decides; a row that is not loaded yet falls back to the
     // Bot page rather than a wrong Session.
-    openThread: (botId, threadId) => {
+    openThread: async (botId, threadId) => {
       const thread = threadsStore.get(threadId);
       const target = threadTargetOf(thread, botId);
-      if (target.kind === "session") return openThreadSession(target.id);
-      return actions.openSession(botId);
+      if (target.kind !== "session") return actions.openSession(botId);
+      const opened = await openThreadSession(target.id);
+      if (opened) rememberThreadPage({ botId, threadId: thread?.id ?? threadId, sessionId: target.id });
+      return opened;
     },
     loadThreads: (botId, force = false) => threadsStore.load(botId, { force: force === true }),
     createThread: (botId) => threadsStore.create(botId),
@@ -30796,7 +30904,7 @@ function apply(ctx) {
     const themes = allThemes();
     const theme = themes[prefs.theme] ?? themes.deepseek;
     const offs = [
-      ...SHELL_SHEETS.map(([text, tag]) => installCompiledStyles(botOwnCss(text), `settings-${tag}`)),
+      ...SHELL_SHEETS.map(([text2, tag]) => installCompiledStyles(botOwnCss(text2), `settings-${tag}`)),
       installCompiledStyles(botOwnCss(themeCss(theme, isHex(prefs.accent) ? prefs.accent : void 0)), "settings-theme")
     ];
     return () => {
@@ -30810,7 +30918,7 @@ function apply(ctx) {
         shellSheets -= 1;
       };
     },
-    ...SHELL_SHEETS.map(([text, tag]) => () => installCompiledStyles(text, tag)),
+    ...SHELL_SHEETS.map(([text2, tag]) => () => installCompiledStyles(text2, tag)),
     () => installFrameWatch(frame),
     () => installFrameSync(),
     () => installTheme(),

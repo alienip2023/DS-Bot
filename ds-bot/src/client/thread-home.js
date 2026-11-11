@@ -3,7 +3,7 @@
 // neither the roster nor the cache recognizes is put to the Host before it is
 // treated as an outside one — and a question that could not be asked is not an
 // answer, so the view stays rather than bouncing on a guess.
-export function threadHomeGuard({ roster, mainView, threadBotOfSession, threadOwnerOf, openSession }) {
+export function threadHomeGuard({ roster, mainView, threadBotOfSession, threadOwnerOf, threadPage, openSession }) {
   return async function homeToMainBot() {
     const snapshot = roster.getSnapshot()
     if (!snapshot.ready || !snapshot.mainBotId) return
@@ -17,6 +17,10 @@ export function threadHomeGuard({ roster, mainView, threadBotOfSession, threadOw
     // null is the Host's answer that nothing owns it; a Thread, or no answer at
     // all, is a reason to stay.
     if (owner !== null) return
+    // The core's initial restore may have placed a fresh blank Session because the
+    // saved Thread page was not in its list. That page is still the user's: the
+    // restore pass puts it back, so this check must not send it home first.
+    if (threadPage?.() !== undefined) return
     // The user may have moved on while the question was in flight.
     if (mainView() !== main) return
     openSession(snapshot.mainBotId)

@@ -61,6 +61,7 @@ import { noticeApprovals } from './approval-notices.js'
 import { listedOpener } from './open-listed.js'
 import { threadSessionOpener } from './thread-open.js'
 import { threadOwnerResolver } from './thread-owner.js'
+import { admitThreadPage, forgetThreadPage, readThreadPage, rememberThreadPage, restoreThreadPage } from './thread-restore.js'
 import { sessionProbes } from './host-session.js'
 
 export const inject = ['sessions', 'uiWorkspace', 'uiConversation', 'slots', 'theme', 'layout']
@@ -68,6 +69,11 @@ export const inject = ['sessions', 'uiWorkspace', 'uiConversation', 'slots', 'th
 export function apply(ctx) {
   ctx.effect(() => installLocale(ctx.get('locale')), 'ds-bot: interface copy')
   migrateStorage()
+  // The core restores the main view from its own saved Session id as soon as its
+  // lists are ready, and only a Session already in the list can be restored. A
+  // Thread page is a blank Session, so it is admitted here — before that restore —
+  // under the page this plugin remembers leaving.
+  admitThreadPage(ctx.sessions)
   // The window's cached prefs stand in until the first pull answers: a saved
   // `enterToSend: false` then already holds, instead of Enter sending meanwhile.
   const PREFS_KEY = STORAGE.prefs
@@ -493,8 +499,57 @@ export function apply(ctx) {
     mainView,
     threadBotOfSession: threadSessionBot,
     threadOwnerOf: (sessionId) => threadOwnerOf(sessionId),
+    threadPage: () => readThreadPage(),
     openSession: (id) => actions.openSession(id),
   })
+  // The core's restore only reopens a Session its list already shows, so the Thread
+  // page the user left can still be replaced by a fresh workspace Session. Once the
+  // restore settles, put that page back — never over a page the user chose, and
+  // never for a Thread the Host no longer knows (a deleted Thread goes to its Bot).
+  ctx.effect(() => {
+    const page = readThreadPage()
+    if (page === undefined) return
+    let done = false
+    let timer = 0
+    let tries = 0
+    const settle = async () => {
+      const list = ctx.sessions.list.getSnapshot()
+      const main = mainView()
+      // The restore kept the Thread page: nothing to correct.
+      if (main === page.sessionId) return
+      const snapshot = roster.getSnapshot()
+      const row = main === undefined ? undefined : list.byId?.[main]
+      const borrowed = main === undefined
+        || (row?.blank === true
+          && snapshot.byId[main] === undefined
+          && snapshot.roomsById[main] === undefined
+          && !isAgentSessionId(main)
+          && threadSessionBot(main) === undefined)
+      if (!borrowed) {
+        // The view is a Bot page, a Room, an Agent Session or another Thread: the
+        // saved page is stale.
+        forgetThreadPage()
+        return
+      }
+      const verdict = await restoreThreadPage({
+        page,
+        open: (sessionId) => openThreadSession(sessionId),
+        ownerOf: (sessionId) => threadOwnerOf(sessionId),
+        forget: forgetThreadPage,
+      })
+      if (verdict === 'gone' && snapshot.mainBotId !== undefined) actions.openSession(snapshot.mainBotId)
+    }
+    const tick = () => {
+      if (done) return
+      const list = ctx.sessions.list.getSnapshot()
+      if (list.phase !== 'ready') { timer = setTimeout(tick, 100); return }
+      if (mainView() === undefined && tries < 20) { tries += 1; timer = setTimeout(tick, 100); return }
+      done = true
+      void settle()
+    }
+    timer = setTimeout(tick, 150)
+    return () => { done = true; clearTimeout(timer) }
+  }, 'ds-bot: restore the last Thread page')
   const actions = {
     ...teamActions({ call, after, partFor, roster, ui, live, cards, heldCards, turnClock, panelFolded, openSession: id => actions.openSession(id), ...sessionProbes(ctx, quietly) }),
     learningAnswer: (id, approve) => after(call('learning-answer', { id, approve })),
@@ -509,6 +564,8 @@ export function apply(ctx) {
     openSession: (id) => {
       // A DSH Agent Session id, and a Thread Session id, land on the plain surface.
       if (isAgentSessionId(id) || threadSessionBot(id) !== undefined) return actions.openAgentSession(id)
+      // Not a Thread page: the next restore must not put one back.
+      forgetThreadPage()
       ui.set(state => (state.newChat || state.exchange || state.menu || state.palette ? { ...state, newChat: null, exchange: null, menu: null, palette: null } : state))
       setPlain(false)
       const target = partFor(id)
@@ -517,6 +574,9 @@ export function apply(ctx) {
     // The conversation replacements withdraw for a plain Session; set the surface
     // before the navigation so the Bot skin never flashes.
     openAgentSession: (sessionId) => {
+      const threadBot = threadSessionBot(sessionId)
+      if (threadBot === undefined) forgetThreadPage()
+      else rememberThreadPage({ botId: threadBot, sessionId })
       ui.set(state => ({ ...state, newChat: null, exchange: null, menu: null, palette: null, details: null, view: 'details', renaming: false, tab: null }))
       setPlain(true)
       show(sessionId)
@@ -524,11 +584,13 @@ export function apply(ctx) {
     // A Thread row: Main is the Bot page, a Thread with its own Session is the plain
     // Session page. The cache decides; a row that is not loaded yet falls back to the
     // Bot page rather than a wrong Session.
-    openThread: (botId, threadId) => {
+    openThread: async (botId, threadId) => {
       const thread = threadsStore.get(threadId)
       const target = threadTargetOf(thread, botId)
-      if (target.kind === 'session') return openThreadSession(target.id)
-      return actions.openSession(botId)
+      if (target.kind !== 'session') return actions.openSession(botId)
+      const opened = await openThreadSession(target.id)
+      if (opened) rememberThreadPage({ botId, threadId: thread?.id ?? threadId, sessionId: target.id })
+      return opened
     },
     loadThreads: (botId, force = false) => threadsStore.load(botId, { force: force === true }),
     createThread: (botId) => threadsStore.create(botId),
