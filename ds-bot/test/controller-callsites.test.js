@@ -50,11 +50,14 @@ const DIRECT = {
   'src/host/usage.js page': 1,
   'src/host/usage.js projections': 1,
 }
-// The takeovers of this fork: the joined page's prompt/cancel/list, and the Bot-turn prompt wrapper.
+// The takeovers of this fork: the joined page's prompt/cancel/list, the Bot-turn prompt
+// wrapper, and P1-T3a's Thread prompt gate (which also owns cancel so Stop clears the queue).
 const WRAPS = {
   'src/host/joined-prompt.js cancel': 1,
   'src/host/joined-prompt.js prompt': 1,
   'src/host/joined-running.js list': 1,
+  'src/host/thread-prompt.js cancel': 1,
+  'src/host/thread-prompt.js prompt': 1,
   'src/host/turns.js prompt': 1,
 }
 

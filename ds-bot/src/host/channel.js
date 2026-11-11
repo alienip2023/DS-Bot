@@ -96,12 +96,16 @@ export function createSendUser(rt, { textOfContent, getMirrorState, ctx } = {}) 
         : past?.roomId === undefined && past !== undefined ? rt.chatOf(past.botId)
           : past !== undefined ? rt.sessionOfRoom(rt.roomOf(past.roomId)) : ref
     await rt.ensureCapabilities(sessionId)
-    await _ctx.sessionController.prompt({
+    const request = {
       requestId,
       sessionId,
       mode: 'queue',
       content,
-    }, AbortSignal.timeout(30_000))
+    }
+    // This turn already went through sendThreadTurn above (or is a joined turn); the
+    // prompt gate must let it pass instead of queueing it behind itself.
+    rt.markThreadPromptAdmitted?.(request)
+    await _ctx.sessionController.prompt(request, AbortSignal.timeout(30_000))
   }
 }
 

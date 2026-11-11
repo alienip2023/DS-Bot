@@ -18,9 +18,17 @@ import { quietly } from './diagnostics.js'
 import { frameLayout, dragColumn, RAIL_WIDTH, FALLBACK_SIDEBAR_WIDTH, userSidebarToggle } from './frame-layout.js'
 import { chatRoom, dshCollapsed } from './frame-watch.js'
 import { botRowClick } from './row-actions.js'
+import { threadsStore } from './threads.js'
+import { sortThreads, canCreateThread } from './thread-target.js'
 
 // -------------------------------------------------------------------------
 // Sidebar
+
+// Which Bots have their Thread list open. Module state on purpose: it must survive a
+// roster refresh without writing a preference to disk. A row that becomes active opens
+// on its own, so switching Threads keeps the list in view.
+const openThreadBots = new Set()
+const MAIN_THREAD_TITLE = 'Main'
 
 // Manual "Mark as Unread" lasts until the conversation is opened again.
 function useMarkedUnread(id, active, marked, actions) {
@@ -191,6 +199,65 @@ function NewGroupRow({ actions }) {
     }, '+ 新建分组'))
 }
 
+// One Thread of a local Bot. A joined Bot has only its Main row for now; it opens the
+// Bot's home page, not a plain Session (the node's Session is not opened here yet).
+export function ThreadRow({ thread, bot, actions, useSessionRetainInfo, index, botActive }) {
+  const joined = bot.origin === 'joined' && bot.worker?.home === 'remote'
+  // A local Bot's Main Thread has no Session of its own; its Bot chat is the one shown.
+  const sessionId = thread.isMain === true ? (bot.sessionId ?? bot.id) : thread.sessionId
+  const active = useSessionRetainInfo(sessionId, info => (info?.retainedBy?.mainView ?? 0) > 0) || (thread.isMain === true && botActive === true)
+  return h('button', {
+    type: 'button', className: 'bt-agent-sub-row', 'aria-current': active ? 'page' : undefined,
+    style: { '--i': index }, title: thread.title,
+    onClick: () => {
+      openThreadBots.add(bot.id)
+      if (joined) { actions.openJoinedHome(bot.id); return }
+      actions.openThread(bot.id, thread.id)
+    },
+  }, h('span', { className: 'bt-agent-sub-title' }, thread.title))
+}
+
+// The Thread list a Bot row expands to: new Thread first, then Main, then the rest in
+// creation order. Archived Threads are not drawn; they still count against the limit.
+export function ThreadList({ bot, threads, status, actions, useSessionRetainInfo, botActive, onRetry }) {
+  const joined = bot.origin === 'joined' && bot.worker?.home === 'remote'
+  const all = Array.isArray(threads) ? threads : []
+  const visible = sortThreads(all.filter(thread => thread?.archived !== true))
+  const list = visible.length > 0 ? visible : [{
+    id: `${bot.id}:main`, botId: bot.id, title: MAIN_THREAD_TITLE, createdAt: bot.createdAt ?? 0,
+    archived: false, sessionId: typeof bot.sessionId === 'string' && bot.sessionId !== '' ? bot.sessionId : null, isMain: true,
+  }]
+  const canCreate = !joined && canCreateThread(all)
+  const create = async () => {
+    if (!canCreate) return
+    try {
+      const result = await actions.createThread(bot.id)
+      if (result?.sessionId !== undefined && result?.sessionId !== null) {
+        openThreadBots.add(bot.id)
+        actions.openAgentSession(result.sessionId)
+      }
+    } catch (error) {
+      actions.reportError(error, 'thread-create')
+    }
+  }
+  return h(Fragment, null,
+    !joined ? h('button', {
+      type: 'button', className: 'bt-agent-sub-row bt-agent-new', style: { '--i': 0 },
+      title: canCreate ? undefined : t('Thread limit reached'),
+      disabled: canCreate ? undefined : true,
+      onClick: () => { void create() },
+    }, h(PlusIcon), h('span', { className: 'bt-agent-sub-title' }, t('New thread'))) : null,
+    list.map((thread, index) => h(ThreadRow, {
+      key: thread.id, thread, bot, actions, useSessionRetainInfo, botActive, index: index + 1,
+    })),
+    status === 'error'
+      ? h('button', {
+        type: 'button', className: 'bt-agent-sub-row bt-agent-new',
+        onClick: () => { void onRetry?.() },
+      }, h('span', { className: 'bt-agent-sub-title' }, t('Could not load threads. Retry')))
+      : null)
+}
+
 function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessionRetainInfo, useActivity, useWork, wide, marked, onDragStart }) {
   const id = bot.id
   const part = currentPart(bot)
@@ -214,6 +281,19 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
   const waitsRaw = useWork ? useWork(work => JSON.stringify(work.waiting?.[id] ?? null)) : 'null'
   const waits = useMemo(() => JSON.parse(waitsRaw), [waitsRaw])
   const waitsFor = state === 'waiting' ? waitingFor(roster, waits) : ''
+  const threadSlot = useSyncExternalStore(threadsStore.subscribe, () => threadsStore.slot(id))
+  const [, bumpThreads] = useState(0)
+  const openThreads = openThreadBots.has(id) || active
+  useEffect(() => {
+    if (wide && openThreads) void actions.loadThreads?.(id)
+  }, [wide, openThreads, id])
+  const toggleThreads = (event) => {
+    event.preventDefault()
+    event.stopPropagation()
+    if (openThreadBots.has(id)) openThreadBots.delete(id)
+    else openThreadBots.add(id)
+    bumpThreads(value => value + 1)
+  }
   if (bot.hidden && !active && !main) return null
   const openMenuBtn = (event) => {
     event.preventDefault()
@@ -242,7 +322,7 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
       onClick: openMenuBtn,
     }, '⋮')))
   }
-  return h('button', {
+  const row = h('button', {
     type: 'button', className: 'bt-row', 'aria-label': label, 'aria-current': active ? 'page' : undefined,
     'data-bot-id': id, title: wide ? undefined : bot.name,
     ref: bindPointerMenu(actions.openMenu, () => ({ kind: 'bot', id })),
@@ -263,11 +343,26 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
   wide && unread && !active ? h('span', { className: 'bt-unread', 'aria-hidden': true })
     : !wide && !active && (alert || unread) ? h('span', { className: `bt-dot${alert ? ' bt-dot-wait' : ''}`, 'aria-hidden': true }) : null,
   wide ? h('button', {
+    type: 'button', 'aria-label': t('Threads'), title: t('Threads'),
+    className: 'bt-ctx-btn bt-thread-toggle',
+    'aria-expanded': openThreads ? 'true' : 'false',
+    style: { background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px', lineHeight: 1, flexShrink: 0, display: 'inline-flex' },
+    onClick: toggleThreads,
+  }, h(ChevronRightIcon)) : null,
+  wide ? h('button', {
     type: 'button', 'aria-label': t('More actions'), title: t('More actions'),
     className: 'bt-ctx-btn',
     style: { background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.1em', padding: '2px 6px', lineHeight: 1, flexShrink: 0 },
     onClick: openMenuBtn,
   }, '⋮') : null)
+  if (!wide) return row
+  return h('div', { className: 'bt-bot', onMouseEnter: row.props.onMouseEnter }, row,
+    h('div', { className: 'bt-agent-sub', 'data-open': openThreads || undefined },
+      h('div', { className: 'bt-agent-sub-in' },
+        h(ThreadList, {
+          bot, threads: threadSlot.threads, status: threadSlot.status, actions, useSessionRetainInfo,
+          botActive: active, onRetry: () => actions.loadThreads?.(id, true),
+        }))))
 }
 
 function RoomRow({ room, roster, actions, useSessions, useSessionStatus, useSessionRetainInfo, useWork, wide, marked, onDragStart }) {
@@ -1494,6 +1589,12 @@ export const SIDEBAR_CSS = `
 .bt-agent-sub-time{flex:none;font-size:11px;color:var(--bt-ink-3)}
 .bt-agent-new{color:var(--bt-ink-3)}
 .bt-agent-new svg{width:14px;height:14px;flex:none}
+.bt-agent-new:disabled{opacity:.45;cursor:default}
+.bt-agent-new:disabled:hover{background:none;color:var(--bt-ink-3)}
+/* A Bot row and the Thread list under it share one block, like the DSH Agent row. */
+.bt-bot{display:flex;flex-direction:column}
+.bt-thread-toggle svg{width:14px;height:14px;transition:transform .15s ease}
+.bt-thread-toggle[aria-expanded=true] svg{transform:rotate(90deg)}
 .bt-agent-edit{padding:3px 10px 3px 4px}
 .bt-agent-edit input{width:100%;border:0;border-radius:6px;background:var(--bt-hover);color:var(--bt-ink);font:inherit;font-size:13px;line-height:20px;padding:2px 8px;outline:none;box-shadow:inset 0 0 0 .5px var(--bt-line-2)}
 .bt-agent-sub[data-open] .bt-agent-sub-row{animation:bt-agent-row-in .24s ease both;animation-delay:calc(var(--i, 0)*30ms)}

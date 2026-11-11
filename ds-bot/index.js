@@ -46,6 +46,7 @@ import * as threadQueue from './src/host/thread-queue.js'
 import * as channel from './src/host/channel.js'
 import * as joinedTurn from './src/host/joined-turn.js'
 import * as joinedPrompt from './src/host/joined-prompt.js'
+import * as threadPrompt from './src/host/thread-prompt.js'
 import * as mirrorGuard from './src/host/mirror-guard.js'
 import { joinedTimeoutFrom } from './src/host/joined-turn.js'
 import * as joinedCreate from './src/host/joined-create.js'
@@ -69,7 +70,7 @@ export const inject = ['llm', 'tools', 'systemPrompt', 'sessionController', 'ses
 // install. Listeners run and tools are listed in registration order, so this order holds:
 // usage meters model requests after every listener that rewrites them. privacy checks a
 // call before the hooks of tools do, so a closed call never reaches a card they show.
-export const MODULES = [diagnostics, store, models, providers, permissions, turns, steer, handoffs, requests, delivery, workerBridge, rosterJoin, roster, folders, privacy, agents, prompt, timeContext, hostContext, tools, chatIndex, groups, groupLog, goals, approvals, resume, memory, parts, images, avatarLibrary, secrets, connectors, capabilities, learning, schedules, browser, browserPlugins, computer, usage, update, dshUpdate, thinking, threadQueue, feed, im, channel, joinedTurn, joinedPrompt, mirrorGuard, joinedCreate, configSource, joinedPage, officeSkills, goalSkills, localAgents]
+export const MODULES = [diagnostics, store, models, providers, permissions, turns, steer, handoffs, requests, delivery, workerBridge, rosterJoin, roster, folders, privacy, agents, prompt, timeContext, hostContext, tools, chatIndex, groups, groupLog, goals, approvals, resume, memory, parts, images, avatarLibrary, secrets, connectors, capabilities, learning, schedules, browser, browserPlugins, computer, usage, update, dshUpdate, thinking, threadQueue, feed, im, channel, joinedTurn, joinedPrompt, threadPrompt, mirrorGuard, joinedCreate, configSource, joinedPage, officeSkills, goalSkills, localAgents]
 
 export function apply(ctx, config = {}) {
   createRuntime(ctx, config)

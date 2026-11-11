@@ -287,8 +287,11 @@ test('no browser plugin is mounted unless one is selected for the team', (t) => 
   assert.equal(rt.teamTools.some(d => d.name === 'browser_task'), false)
 })
 
-test('user browser controls are not exposed as Bot tools', (t) => {
+test('user browser controls are not exposed as Bot tools', async (t) => {
   const { stop } = start({ browser: true, browserPlugin: 'refs' })
+  // The first load migrates the v1 team and saves it; let that write finish before the
+  // teardown removes the temp home (otherwise save and rmSync race).
+  await rt.load()
   t.after(stop)
   for (const name of ['browser-takeover', 'browser-give-back', 'browser-stop']) {
     assert.equal(rt.teamTools.some(d => d.name === name), false)

@@ -15598,9 +15598,106 @@ function installFrameWatch(frame) {
   };
 }
 
+// src/client/threads.js
+var IDLE = Object.freeze({ status: "idle", threads: [], error: void 0, loadedAt: 0 });
+function createThreadsStore({ request = call } = {}) {
+  const byBot = /* @__PURE__ */ new Map();
+  const inflight = /* @__PURE__ */ new Map();
+  const listeners2 = /* @__PURE__ */ new Set();
+  let version = 0;
+  const slotOf = (botId) => {
+    let slot2 = byBot.get(botId);
+    if (slot2 === void 0) {
+      slot2 = { ...IDLE };
+      byBot.set(botId, slot2);
+    }
+    return slot2;
+  };
+  const publish2 = (botId, next) => {
+    byBot.set(botId, next);
+    version += 1;
+    for (const fn of listeners2) fn();
+  };
+  const subscribe = (fn) => {
+    listeners2.add(fn);
+    return () => listeners2.delete(fn);
+  };
+  const slot = (botId) => slotOf(botId);
+  const getSnapshot = () => version;
+  const load = (botId, { force = false } = {}) => {
+    const current = slotOf(botId);
+    if (force !== true && (current.status === "ready" || current.status === "loading")) return Promise.resolve(current);
+    const pending = inflight.get(botId);
+    if (pending !== void 0) return pending;
+    publish2(botId, { ...current, status: "loading", error: void 0 });
+    const loading = (async () => {
+      try {
+        const result = await request("threads", { botId });
+        const threads = Array.isArray(result?.threads) ? result.threads : [];
+        const next = { status: "ready", threads, error: void 0, loadedAt: Date.now() };
+        publish2(botId, next);
+        return next;
+      } catch (error) {
+        const next = { ...slotOf(botId), status: "error", error };
+        publish2(botId, next);
+        return next;
+      } finally {
+        inflight.delete(botId);
+      }
+    })();
+    inflight.set(botId, loading);
+    return loading;
+  };
+  const create = async (botId) => {
+    const result = await request("thread-create", { botId });
+    const thread = result?.thread;
+    if (thread !== void 0 && thread !== null) {
+      const current = slotOf(botId);
+      const threads = current.threads.some((row) => row?.id === thread.id) ? current.threads : [...current.threads, thread];
+      publish2(botId, { ...current, status: current.status === "idle" ? "ready" : current.status, threads });
+    }
+    return result;
+  };
+  const get = (threadId) => {
+    for (const slot2 of byBot.values()) {
+      const thread = slot2.threads.find((row) => row?.id === threadId);
+      if (thread !== void 0) return thread;
+    }
+    return void 0;
+  };
+  const reset = () => {
+    byBot.clear();
+    inflight.clear();
+    version += 1;
+    for (const fn of listeners2) fn();
+  };
+  return { subscribe, getSnapshot, slot, load, create, get, reset };
+}
+var threadsStore = createThreadsStore();
+
+// src/client/thread-target.js
+function sortThreads(threads) {
+  return [...threads].sort((a, b) => {
+    const main = (b?.isMain === true ? 1 : 0) - (a?.isMain === true ? 1 : 0);
+    if (main !== 0) return main;
+    return (a?.createdAt ?? 0) - (b?.createdAt ?? 0);
+  });
+}
+function canCreateThread(threads, max = 10) {
+  return threads.length < max;
+}
+function threadTargetOf(thread, botId) {
+  if (thread === void 0 || thread === null) return { kind: "bot", id: botId };
+  if (thread.isMain === true) return { kind: "bot", id: botId };
+  if (typeof thread.sessionId !== "string" || thread.sessionId === "") return { kind: "bot", id: botId };
+  return { kind: "session", id: thread.sessionId };
+}
+
 // src/client/sidebar.js
 var import_react35 = require("react");
 var import_react_dom5 = require("react-dom");
+var openThreadBots = /* @__PURE__ */ new Set();
+var MAIN_THREAD_TITLE = "Main";
 function useMarkedUnread(id, active, marked, actions) {
   (0, import_react35.useEffect)(() => {
     if (active && marked) actions.clearUnread(id);
@@ -15789,6 +15886,83 @@ function NewGroupRow({ actions }) {
     }, "+ 新建分组")
   );
 }
+function ThreadRow({ thread, bot, actions, useSessionRetainInfo, index, botActive }) {
+  const joined = bot.origin === "joined" && bot.worker?.home === "remote";
+  const sessionId = thread.isMain === true ? bot.sessionId ?? bot.id : thread.sessionId;
+  const active = useSessionRetainInfo(sessionId, (info) => (info?.retainedBy?.mainView ?? 0) > 0) || thread.isMain === true && botActive === true;
+  return (0, import_react35.createElement)("button", {
+    type: "button",
+    className: "bt-agent-sub-row",
+    "aria-current": active ? "page" : void 0,
+    style: { "--i": index },
+    title: thread.title,
+    onClick: () => {
+      openThreadBots.add(bot.id);
+      if (joined) {
+        actions.openJoinedHome(bot.id);
+        return;
+      }
+      actions.openThread(bot.id, thread.id);
+    }
+  }, (0, import_react35.createElement)("span", { className: "bt-agent-sub-title" }, thread.title));
+}
+function ThreadList({ bot, threads, status, actions, useSessionRetainInfo, botActive, onRetry }) {
+  const joined = bot.origin === "joined" && bot.worker?.home === "remote";
+  const all = Array.isArray(threads) ? threads : [];
+  const visible = sortThreads(all.filter((thread) => thread?.archived !== true));
+  const list = visible.length > 0 ? visible : [{
+    id: `${bot.id}:main`,
+    botId: bot.id,
+    title: MAIN_THREAD_TITLE,
+    createdAt: bot.createdAt ?? 0,
+    archived: false,
+    sessionId: typeof bot.sessionId === "string" && bot.sessionId !== "" ? bot.sessionId : null,
+    isMain: true
+  }];
+  const canCreate = !joined && canCreateThread(all);
+  const create = async () => {
+    if (!canCreate) return;
+    try {
+      const result = await actions.createThread(bot.id);
+      if (result?.sessionId !== void 0 && result?.sessionId !== null) {
+        openThreadBots.add(bot.id);
+        actions.openAgentSession(result.sessionId);
+      }
+    } catch (error) {
+      actions.reportError(error, "thread-create");
+    }
+  };
+  return (0, import_react35.createElement)(
+    import_react35.Fragment,
+    null,
+    !joined ? (0, import_react35.createElement)("button", {
+      type: "button",
+      className: "bt-agent-sub-row bt-agent-new",
+      style: { "--i": 0 },
+      title: canCreate ? void 0 : t("Thread limit reached"),
+      disabled: canCreate ? void 0 : true,
+      onClick: () => {
+        void create();
+      }
+    }, (0, import_react35.createElement)(PlusIcon), (0, import_react35.createElement)("span", { className: "bt-agent-sub-title" }, t("New thread"))) : null,
+    list.map((thread, index) => (0, import_react35.createElement)(ThreadRow, {
+      key: thread.id,
+      thread,
+      bot,
+      actions,
+      useSessionRetainInfo,
+      botActive,
+      index: index + 1
+    })),
+    status === "error" ? (0, import_react35.createElement)("button", {
+      type: "button",
+      className: "bt-agent-sub-row bt-agent-new",
+      onClick: () => {
+        void onRetry?.();
+      }
+    }, (0, import_react35.createElement)("span", { className: "bt-agent-sub-title" }, t("Could not load threads. Retry"))) : null
+  );
+}
 function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessionRetainInfo, useActivity, useWork, wide, marked, onDragStart }) {
   const id = bot.id;
   const part = currentPart(bot);
@@ -15810,6 +15984,19 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
   const waitsRaw = useWork ? useWork((work) => JSON.stringify(work.waiting?.[id] ?? null)) : "null";
   const waits = (0, import_react35.useMemo)(() => JSON.parse(waitsRaw), [waitsRaw]);
   const waitsFor = state === "waiting" ? waitingFor(roster, waits) : "";
+  const threadSlot = (0, import_react35.useSyncExternalStore)(threadsStore.subscribe, () => threadsStore.slot(id));
+  const [, bumpThreads] = (0, import_react35.useState)(0);
+  const openThreads = openThreadBots.has(id) || active;
+  (0, import_react35.useEffect)(() => {
+    if (wide && openThreads) void actions.loadThreads?.(id);
+  }, [wide, openThreads, id]);
+  const toggleThreads = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (openThreadBots.has(id)) openThreadBots.delete(id);
+    else openThreadBots.add(id);
+    bumpThreads((value) => value + 1);
+  };
   if (bot.hidden && !active && !main) return null;
   const openMenuBtn = (event) => {
     event.preventDefault();
@@ -15846,7 +16033,7 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
       }, "⋮")
     ));
   }
-  return (0, import_react35.createElement)(
+  const row = (0, import_react35.createElement)(
     "button",
     {
       type: "button",
@@ -15872,12 +16059,44 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
     wide && unread && !active ? (0, import_react35.createElement)("span", { className: "bt-unread", "aria-hidden": true }) : !wide && !active && (alert || unread) ? (0, import_react35.createElement)("span", { className: `bt-dot${alert ? " bt-dot-wait" : ""}`, "aria-hidden": true }) : null,
     wide ? (0, import_react35.createElement)("button", {
       type: "button",
+      "aria-label": t("Threads"),
+      title: t("Threads"),
+      className: "bt-ctx-btn bt-thread-toggle",
+      "aria-expanded": openThreads ? "true" : "false",
+      style: { background: "none", border: "none", cursor: "pointer", padding: "2px 4px", lineHeight: 1, flexShrink: 0, display: "inline-flex" },
+      onClick: toggleThreads
+    }, (0, import_react35.createElement)(ChevronRightIcon)) : null,
+    wide ? (0, import_react35.createElement)("button", {
+      type: "button",
       "aria-label": t("More actions"),
       title: t("More actions"),
       className: "bt-ctx-btn",
       style: { background: "none", border: "none", cursor: "pointer", fontSize: "1.1em", padding: "2px 6px", lineHeight: 1, flexShrink: 0 },
       onClick: openMenuBtn
     }, "⋮") : null
+  );
+  if (!wide) return row;
+  return (0, import_react35.createElement)(
+    "div",
+    { className: "bt-bot", onMouseEnter: row.props.onMouseEnter },
+    row,
+    (0, import_react35.createElement)(
+      "div",
+      { className: "bt-agent-sub", "data-open": openThreads || void 0 },
+      (0, import_react35.createElement)(
+        "div",
+        { className: "bt-agent-sub-in" },
+        (0, import_react35.createElement)(ThreadList, {
+          bot,
+          threads: threadSlot.threads,
+          status: threadSlot.status,
+          actions,
+          useSessionRetainInfo,
+          botActive: active,
+          onRetry: () => actions.loadThreads?.(id, true)
+        })
+      )
+    )
   );
 }
 function RoomRow({ room: room2, roster, actions, useSessions, useSessionStatus, useSessionRetainInfo, useWork, wide, marked, onDragStart }) {
@@ -17185,6 +17404,12 @@ var SIDEBAR_CSS = `
 .bt-agent-sub-time{flex:none;font-size:11px;color:var(--bt-ink-3)}
 .bt-agent-new{color:var(--bt-ink-3)}
 .bt-agent-new svg{width:14px;height:14px;flex:none}
+.bt-agent-new:disabled{opacity:.45;cursor:default}
+.bt-agent-new:disabled:hover{background:none;color:var(--bt-ink-3)}
+/* A Bot row and the Thread list under it share one block, like the DSH Agent row. */
+.bt-bot{display:flex;flex-direction:column}
+.bt-thread-toggle svg{width:14px;height:14px;transition:transform .15s ease}
+.bt-thread-toggle[aria-expanded=true] svg{transform:rotate(90deg)}
 .bt-agent-edit{padding:3px 10px 3px 4px}
 .bt-agent-edit input{width:100%;border:0;border-radius:6px;background:var(--bt-hover);color:var(--bt-ink);font:inherit;font-size:13px;line-height:20px;padding:2px 8px;outline:none;box-shadow:inset 0 0 0 .5px var(--bt-line-2)}
 .bt-agent-sub[data-open] .bt-agent-sub-row{animation:bt-agent-row-in .24s ease both;animation-delay:calc(var(--i, 0)*30ms)}
@@ -29912,6 +30137,17 @@ function apply(ctx) {
       setPlain(true);
       show2(sessionId);
     },
+    // A Thread row: Main is the Bot page, a Thread with its own Session is the plain
+    // Session page. The cache decides; a row that is not loaded yet falls back to the
+    // Bot page rather than a wrong Session.
+    openThread: (botId, threadId) => {
+      const thread = threadsStore.get(threadId);
+      const target = threadTargetOf(thread, botId);
+      if (target.kind === "session") return actions.openAgentSession(target.id);
+      return actions.openSession(botId);
+    },
+    loadThreads: (botId, force = false) => threadsStore.load(botId, { force: force === true }),
+    createThread: (botId) => threadsStore.create(botId),
     addAgent: async () => {
       const agent = await after(call("add-agent"));
       if (agent?.sessions?.[0] !== void 0) actions.openAgentSession(agent.sessions[0]);

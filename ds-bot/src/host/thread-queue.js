@@ -70,6 +70,17 @@ export function install(rt) {
     }
   }
 
+  // A queued message can be withdrawn (Stop, a disposed Session, the caller's signal)
+  // before the turn in front of it ends; then its abort listener must go with it.
+  const clearAbort = (entry) => {
+    if (entry.onAbort !== undefined) {
+      entry.signal?.removeEventListener?.('abort', entry.onAbort)
+      entry.onAbort = undefined
+    }
+  }
+
+  const abortError = () => Object.assign(new Error('This message was cancelled before it started'), { name: 'AbortError', code: 'ABORT_ERR' })
+
   const runningEntryOf = (sessionId) => {
     for (const slot of slots.values()) {
       if (slot.entry !== null && slot.running?.sessionId === sessionId) return slot.entry
@@ -83,6 +94,7 @@ export function install(rt) {
     const slot = slots.get(entry.botId)
     if (slot === undefined || slot.running?.queueId !== entry.queueId) return
     clearWatch(entry)
+    clearAbort(entry)
     slot.running = null
     slot.entry = null
     const next = slot.queue.shift()
@@ -92,6 +104,9 @@ export function install(rt) {
   }
 
   async function start(slot, entry) {
+    // It is this entry's turn: the caller's abort no longer withdraws it, the Session's
+    // own `turn/end` (or the watch) releases it from here.
+    clearAbort(entry)
     slot.running = { queueId: entry.queueId, threadId: entry.threadId, sessionId: entry.sessionId, startedAt: Date.now(), kind: entry.kind }
     slot.entry = entry
     entry.startedAt = slot.running.startedAt
@@ -125,6 +140,8 @@ export function install(rt) {
   async function enqueueThreadTurn(spec) {
     const run = spec?.run
     if (typeof run !== 'function') throw new Error('enqueueThreadTurn needs run()')
+    const signal = spec?.signal
+    if (signal?.aborted === true) throw abortError()
     const owner = ownerOf(spec)
     if (owner === undefined || typeof owner.sessionId !== 'string' || owner.sessionId === '') {
       await run()
@@ -146,6 +163,8 @@ export function install(rt) {
       startedAt: undefined,
       sawStart: false,
       watch: undefined,
+      signal,
+      onAbort: undefined,
     }
     const slot = slotOf(owner.botId)
     if (slot.running === null) {
@@ -153,6 +172,15 @@ export function install(rt) {
       return { queued: false, queueId: entry.queueId }
     }
     slot.queue.push(entry)
+    if (signal !== undefined && typeof signal.addEventListener === 'function') {
+      entry.onAbort = () => {
+        const at = slot.queue.findIndex(candidate => candidate.queueId === entry.queueId)
+        if (at === -1) return
+        slot.queue.splice(at, 1)
+        clearAbort(entry)
+      }
+      signal.addEventListener('abort', entry.onAbort, { once: true })
+    }
     return { queued: true, queueId: entry.queueId, position: slot.queue.length }
   }
 
@@ -183,6 +211,7 @@ export function install(rt) {
     const slot = slots.get(botId)
     if (slot === undefined) return
     if (slot.entry !== null) clearWatch(slot.entry)
+    for (const entry of slot.queue) clearAbort(entry)
     slots.delete(botId)
   }
 
@@ -192,8 +221,30 @@ export function install(rt) {
     if (slot === undefined) return { cancelled: false, remaining: 0 }
     const at = slot.queue.findIndex(entry => entry.queueId === queueId)
     if (at === -1) return { cancelled: false, remaining: slot.queue.length }
-    slot.queue.splice(at, 1)
+    const [gone] = slot.queue.splice(at, 1)
+    clearAbort(gone)
     return { cancelled: true, remaining: slot.queue.length }
+  }
+
+  // A Session that is being stopped or disposed may still have messages waiting behind
+  // it: drop those (and their abort listeners). `release` also lets a running turn go,
+  // for a Session the core has disposed.
+  const dropSession = (sessionId, options = {}) => {
+    if (typeof sessionId !== 'string' || sessionId === '') return 0
+    let dropped = 0
+    let running
+    for (const slot of slots.values()) {
+      for (let at = slot.queue.length - 1; at >= 0; at -= 1) {
+        const entry = slot.queue[at]
+        if (entry.sessionId !== sessionId) continue
+        slot.queue.splice(at, 1)
+        clearAbort(entry)
+        dropped += 1
+      }
+      if (slot.entry !== null && slot.entry.sessionId === sessionId) running = slot.entry
+    }
+    if (options.release === true && running !== undefined) release(running)
+    return dropped
   }
 
   ctx.on('session/event', (session, event) => {
@@ -215,5 +266,6 @@ export function install(rt) {
     threadQueueLive: liveOf,
     threadQueueCancel: dropCancelled,
     dropThreadQueue: forget,
+    dropThreadQueueSession: dropSession,
   })
 }

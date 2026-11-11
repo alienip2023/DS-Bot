@@ -8,6 +8,8 @@ import { MENTION_ORIGIN, currentPart } from './text.js'
 import { SHELL_CSS, CONVERSATION_CSS, botOwnCss, installStyles, installCompiledStyles } from './styles.js'
 import { lookOf } from './mark.js'
 import { TeamSidebar, YouAvatar, AccountLauncher, FooterAccount, BrandMark, BrandName, BotReturn, SIDEBAR_CSS, RETURN_CSS, holdShellShortcuts } from './sidebar.js'
+import { threadsStore } from './threads.js'
+import { threadTargetOf } from './thread-target.js'
 import { installSettingsShell, SETTINGS_SHELL_CSS } from './settings-shell.js'
 import { frameLayout, readSidebar, writeSidebar, toggledPref, DSH_NARROW } from './frame-layout.js'
 import { installFrameWatch } from './frame-watch.js'
@@ -493,6 +495,17 @@ export function apply(ctx) {
       setPlain(true)
       show(sessionId)
     },
+    // A Thread row: Main is the Bot page, a Thread with its own Session is the plain
+    // Session page. The cache decides; a row that is not loaded yet falls back to the
+    // Bot page rather than a wrong Session.
+    openThread: (botId, threadId) => {
+      const thread = threadsStore.get(threadId)
+      const target = threadTargetOf(thread, botId)
+      if (target.kind === 'session') return actions.openAgentSession(target.id)
+      return actions.openSession(botId)
+    },
+    loadThreads: (botId, force = false) => threadsStore.load(botId, { force: force === true }),
+    createThread: (botId) => threadsStore.create(botId),
     addAgent: async () => {
       const agent = await after(call('add-agent'))
       if (agent?.sessions?.[0] !== undefined) actions.openAgentSession(agent.sessions[0])
