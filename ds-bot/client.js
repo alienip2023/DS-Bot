@@ -15609,9 +15609,22 @@ function installFrameWatch(frame) {
 var IDLE = Object.freeze({ status: "idle", threads: [], error: void 0, loadedAt: 0 });
 function createThreadsStore({ request = call } = {}) {
   const byBot = /* @__PURE__ */ new Map();
+  const bySession = /* @__PURE__ */ new Map();
   const inflight = /* @__PURE__ */ new Map();
   const listeners2 = /* @__PURE__ */ new Set();
   let version = 0;
+  const index = (botId, threads) => {
+    const live = /* @__PURE__ */ new Set();
+    for (const thread of threads) {
+      if (typeof thread?.sessionId === "string" && thread.sessionId !== "") {
+        bySession.set(thread.sessionId, botId);
+        live.add(thread.sessionId);
+      }
+    }
+    for (const [sessionId, owner] of bySession) {
+      if (owner === botId && !live.has(sessionId)) bySession.delete(sessionId);
+    }
+  };
   const slotOf = (botId) => {
     let slot2 = byBot.get(botId);
     if (slot2 === void 0) {
@@ -15622,6 +15635,7 @@ function createThreadsStore({ request = call } = {}) {
   };
   const publish2 = (botId, next) => {
     byBot.set(botId, next);
+    index(botId, next.threads);
     version += 1;
     for (const fn of listeners2) fn();
   };
@@ -15672,13 +15686,15 @@ function createThreadsStore({ request = call } = {}) {
     }
     return void 0;
   };
+  const botOfSession = (sessionId) => typeof sessionId === "string" ? bySession.get(sessionId) : void 0;
   const reset = () => {
     byBot.clear();
+    bySession.clear();
     inflight.clear();
     version += 1;
     for (const fn of listeners2) fn();
   };
-  return { subscribe, getSnapshot, slot, load, create, get, reset };
+  return { subscribe, getSnapshot, slot, load, create, get, botOfSession, reset };
 }
 var threadsStore = createThreadsStore();
 
@@ -17307,6 +17323,10 @@ function useLandOnMainBot(roster, useSessions, actions) {
     if (room2 !== void 0) {
       lastBot.current = null;
       if ((room2.sessionId ?? room2.id) !== id) actions.openSession(room2.id);
+      return void 0;
+    }
+    if (id !== "" && actions.threadBotOfSession?.(id) !== void 0) {
+      lastBot.current = null;
       return void 0;
     }
     if (id !== "" && ((actions.isAgentSession?.(id) ?? roster.agentOf[id] !== void 0) || blank3 !== "1")) {
@@ -30119,6 +30139,10 @@ function apply(ctx) {
     for (const [id, owner] of pendingAdopt) if (owner === agentId && !ids.includes(id)) ids.push(id);
     return ids;
   };
+  const threadSessionBot = (id) => {
+    if (id === void 0 || roster.getSnapshot().byId[id] !== void 0) return void 0;
+    return threadsStore.botOfSession(id);
+  };
   const mainView = () => Object.values(ctx.sessions.list.getSnapshot().byId ?? {}).find((session) => (session?.retainedBy?.mainView ?? 0) > 0)?.id;
   const show2 = listedOpener({ list: ctx.sessions.list, refresh: () => Promise.resolve(ctx.sessions.refresh?.()).catch(quietly("refresh sessions")), open: (target) => {
     expected2 = target;
@@ -30135,6 +30159,7 @@ function apply(ctx) {
     const snapshot = roster.getSnapshot();
     if (!snapshot.ready || !snapshot.mainBotId) return;
     const main = mainView();
+    if (threadSessionBot(main) !== void 0) return;
     if (main !== void 0 && snapshot.byId[main] === void 0 && snapshot.roomsById[main] === void 0) {
       actions.openSession(snapshot.mainBotId);
     }
@@ -30160,8 +30185,11 @@ function apply(ctx) {
     // The full-pane overlays sit above the conversation, so opening one must dismiss them
     // or the click appears to do nothing.
     isAgentSession: (id) => isAgentSessionId(id),
+    // The Bot a Thread Session belongs to; the sidebar's landing check asks this so a
+    // blank Thread page is not mistaken for an empty Session.
+    threadBotOfSession: (id) => threadSessionBot(id),
     openSession: (id) => {
-      if (isAgentSessionId(id)) return actions.openAgentSession(id);
+      if (isAgentSessionId(id) || threadSessionBot(id) !== void 0) return actions.openAgentSession(id);
       ui2.set((state) => state.newChat || state.exchange || state.menu || state.palette ? { ...state, newChat: null, exchange: null, menu: null, palette: null } : state);
       setPlain(false);
       const target = partFor(id);
@@ -30811,7 +30839,7 @@ function apply(ctx) {
     const sync = () => {
       const list = ctx.sessions.list.getSnapshot();
       const main = Object.values(list.byId ?? {}).find((session) => (session?.retainedBy?.mainView ?? 0) > 0)?.id;
-      const plain = isAgentSessionId(main);
+      const plain = isAgentSessionId(main) || threadSessionBot(main) !== void 0;
       setPlain(plain);
       if (plain) dropPanels();
       if (main === previous) return;

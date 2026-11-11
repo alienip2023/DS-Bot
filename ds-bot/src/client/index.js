@@ -442,6 +442,12 @@ export function apply(ctx) {
     for (const [id, owner] of pendingAdopt) if (owner === agentId && !ids.includes(id)) ids.push(id)
     return ids
   }
+  // The Bot a Thread page belongs to. A Bot's own conversation is excluded even
+  // though its Main Thread shares the Session: that page wears the Bot skin.
+  const threadSessionBot = (id) => {
+    if (id === undefined || roster.getSnapshot().byId[id] !== undefined) return undefined
+    return threadsStore.botOfSession(id)
+  }
   const mainView = () => Object.values(ctx.sessions.list.getSnapshot().byId ?? {}).find(session => (session?.retainedBy?.mainView ?? 0) > 0)?.id
   const show = listedOpener({ list: ctx.sessions.list, refresh: () => Promise.resolve(ctx.sessions.refresh?.()).catch(quietly('refresh sessions')), open: (target) => { expected = target; ctx.uiWorkspace.openSession(target) }, current: mainView })
   // Whether the open Bot panel is folded away for lack of room: its opener then
@@ -461,6 +467,9 @@ export function apply(ctx) {
     const snapshot = roster.getSnapshot()
     if (!snapshot.ready || !snapshot.mainBotId) return
     const main = mainView()
+    // A Thread page belongs to a Bot: it is a team conversation, never an outside
+    // Session the Bot surface would be wrong for.
+    if (threadSessionBot(main) !== undefined) return
     if (main !== undefined && snapshot.byId[main] === undefined && snapshot.roomsById[main] === undefined) {
       actions.openSession(snapshot.mainBotId)
     }
@@ -489,9 +498,12 @@ export function apply(ctx) {
     // The full-pane overlays sit above the conversation, so opening one must dismiss them
     // or the click appears to do nothing.
     isAgentSession: id => isAgentSessionId(id),
+    // The Bot a Thread Session belongs to; the sidebar's landing check asks this so a
+    // blank Thread page is not mistaken for an empty Session.
+    threadBotOfSession: id => threadSessionBot(id),
     openSession: (id) => {
-      // A DSH Agent Session id lands on the plain surface, not the Bot skin.
-      if (isAgentSessionId(id)) return actions.openAgentSession(id)
+      // A DSH Agent Session id, and a Thread Session id, land on the plain surface.
+      if (isAgentSessionId(id) || threadSessionBot(id) !== undefined) return actions.openAgentSession(id)
       ui.set(state => (state.newChat || state.exchange || state.menu || state.palette ? { ...state, newChat: null, exchange: null, menu: null, palette: null } : state))
       setPlain(false)
       const target = partFor(id)
@@ -1173,7 +1185,10 @@ export function apply(ctx) {
     const sync = () => {
       const list = ctx.sessions.list.getSnapshot()
       const main = Object.values(list.byId ?? {}).find(session => (session?.retainedBy?.mainView ?? 0) > 0)?.id
-      const plain = isAgentSessionId(main)
+      // A Thread Session is one of a Bot's team conversations, so it keeps the Bot
+      // surface withdrawn exactly like an Agent Session does — otherwise the skin's
+      // composer and its landing check treat the Thread page as an outside Session.
+      const plain = isAgentSessionId(main) || threadSessionBot(main) !== undefined
       setPlain(plain)
       if (plain) dropPanels()
       if (main === previous) return

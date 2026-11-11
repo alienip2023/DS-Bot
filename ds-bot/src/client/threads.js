@@ -11,9 +11,26 @@ const IDLE = Object.freeze({ status: 'idle', threads: [], error: undefined, load
 /** A store with its own request function, for tests; the app uses the shared one below. */
 export function createThreadsStore({ request = call } = {}) {
   const byBot = new Map()
+  // A Thread Session is a team conversation even though it is nobody's Bot id:
+  // the shell asks this index before it treats the main view as an outside Session.
+  const bySession = new Map()
   const inflight = new Map()
   const listeners = new Set()
   let version = 0
+
+  const index = (botId, threads) => {
+    const live = new Set()
+    for (const thread of threads) {
+      if (typeof thread?.sessionId === 'string' && thread.sessionId !== '') {
+        bySession.set(thread.sessionId, botId)
+        live.add(thread.sessionId)
+      }
+    }
+    // A list that no longer holds a Thread must not keep its Session an inside one.
+    for (const [sessionId, owner] of bySession) {
+      if (owner === botId && !live.has(sessionId)) bySession.delete(sessionId)
+    }
+  }
 
   const slotOf = (botId) => {
     let slot = byBot.get(botId)
@@ -26,6 +43,7 @@ export function createThreadsStore({ request = call } = {}) {
 
   const publish = (botId, next) => {
     byBot.set(botId, next)
+    index(botId, next.threads)
     version += 1
     for (const fn of listeners) fn()
   }
@@ -83,14 +101,18 @@ export function createThreadsStore({ request = call } = {}) {
     return undefined
   }
 
+  /** The Bot a Thread Session belongs to, or undefined for any other Session. */
+  const botOfSession = (sessionId) => (typeof sessionId === 'string' ? bySession.get(sessionId) : undefined)
+
   const reset = () => {
     byBot.clear()
+    bySession.clear()
     inflight.clear()
     version += 1
     for (const fn of listeners) fn()
   }
 
-  return { subscribe, getSnapshot, slot, load, create, get, reset }
+  return { subscribe, getSnapshot, slot, load, create, get, botOfSession, reset }
 }
 
 export const threadsStore = createThreadsStore()

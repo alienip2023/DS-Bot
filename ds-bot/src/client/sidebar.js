@@ -1456,7 +1456,7 @@ function glideOnto(mark, from) {
 // The view always lands on a Bot rather than an empty New Session page.
 // When a Bot's chat moves on to a fresh part, the shell clears the view of the part
 // it archived; the chat then goes on in the Bot's current part instead.
-function useLandOnMainBot(roster, useSessions, actions) {
+export function useLandOnMainBot(roster, useSessions, actions) {
   const mainView = useSessions((list) => {
     const row = Object.values(list.byId).find(session => (session?.retainedBy?.mainView ?? 0) > 0)
     return row ? `${row.id}|${row.blank ? 1 : 0}` : ''
@@ -1477,6 +1477,13 @@ function useLandOnMainBot(roster, useSessions, actions) {
     if (room !== undefined) {
       lastBot.current = null
       if ((room.sessionId ?? room.id) !== id) actions.openSession(room.id)
+      return undefined
+    }
+    // A Thread Session is one of a Bot's team conversations: it is a destination of
+    // its own, blank until its first turn included. Without this a new Thread opened
+    // from its row landed straight back on the Main Bot page.
+    if (id !== '' && actions.threadBotOfSession?.(id) !== undefined) {
+      lastBot.current = null
       return undefined
     }
     // A DSH Agent Session, blank or not, is a real destination: it stays.
