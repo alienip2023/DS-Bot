@@ -2352,6 +2352,7 @@ Object.assign(ES, {
   "Thread limit reached": "Se alcanzó el límite de hilos",
   "New thread": "Nuevo hilo",
   "Could not load threads. Retry": "No se pudieron cargar los hilos. Reintentar",
+  "This Bot runs on another machine and is read-only here": "Este Bot se ejecuta en otra máquina y aquí es de solo lectura.",
   "More actions": "Más acciones",
   "Threads": "Hilos",
   "The conversation list could not be refreshed, so the mirror conversation of this remote Bot could not be checked. Try again in a moment.": "No se pudo actualizar la lista de conversaciones, así que no se pudo comprobar la conversación espejo de este Bot remoto. Vuelve a intentarlo en un momento.",

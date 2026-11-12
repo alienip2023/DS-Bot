@@ -249,9 +249,13 @@ export function install(rt) {
     // `waiting`: the Bot holds its greeting until the user picks its model or fixes
     // what failed it. `blocked`: the facts of a failure only the user can fix (turns.js).
     bots: Object.values(state.bots).map(({ segments, kickoff, ...bot }) => {
-      const tail = rt.chatTail(rt.chatOf(bot.id))
+      // A peer shadow lives on another machine: it has no Session here, and its id must
+      // not be presented as one (or paged as history).
+      const peer = bot.origin === 'peer'
+      const own = peer ? null : rt.chatOf(bot.id)
+      const tail = peer ? undefined : rt.chatTail(own)
       return {
-        ...bot, sessionId: rt.chatOf(bot.id), parts: (segments ?? []).map(segment => segment.sessionId), ...(kickoff ? { waiting: true } : {}),
+        ...bot, sessionId: own, parts: peer ? [] : (segments ?? []).map(segment => segment.sessionId), ...(kickoff && !peer ? { waiting: true } : {}),
         // `engine` is the Bot's local-agent route, present only on abots.
         ...(rt.localAgentBadge?.(bot.model ?? bot.appliedModel) !== undefined ? { engine: rt.localAgentBadge(bot.model ?? bot.appliedModel) } : {}),
         ...(tail ? { lastAt: tail.lastAt, preview: tail.preview } : {}),
@@ -566,6 +570,7 @@ export function install(rt) {
         case 'update-bot': {
           await rt.load()
           const updateTarget = rt.botOf?.(body.id)
+          if (updateTarget && updateTarget.origin === 'peer') return fail('This Bot belongs to another machine and is read-only', 'bot/refused')
           if (updateTarget && updateTarget.origin === 'joined' && updateTarget.worker?.home === 'remote' && typeof rt.joinedUpdateBot === 'function') {
             const updateResult = await rt.joinedUpdateBot(body.id, body)
             if (!updateResult.ok) return fail(updateResult.error, 'bot/refused')
@@ -599,9 +604,23 @@ export function install(rt) {
           return ok(await rt.avatarLibraryDelete(String(body.id ?? '')))
         case 'delete-bot':
           await rt.load()
+          if (rt.botOf?.(body.id)?.origin === 'peer') return fail('This Bot belongs to another machine and is read-only', 'bot/refused')
           await rt.deleteBot(body.id)
           return ok(view())
         // Threads inside one Bot: each has its own Session, history and place in the queue.
+        // Whether this hub mirrors another machine's Bots, and at what level. `set` is a
+        // write and stays out of READS; the client only reads it.
+        case 'federation': {
+          await rt.load()
+          if (body.level !== undefined) {
+            try {
+              return ok(await rt.setFederationLevel?.(body.level))
+            } catch (error) {
+              return fail(error?.message ?? String(error), error?.code ?? 'bot/invalid')
+            }
+          }
+          return ok(rt.federationView?.() ?? { level: 'off', allowPeerToMain: false })
+        }
         case 'threads': {
           await rt.load()
           const bot = rt.botOf(String(body.botId ?? ''))

@@ -2352,6 +2352,7 @@ Object.assign(DE, {
   "Thread limit reached": "Thread-Limit erreicht",
   "New thread": "Neuer Thread",
   "Could not load threads. Retry": "Threads konnten nicht geladen werden. Erneut versuchen",
+  "This Bot runs on another machine and is read-only here": "Dieser Bot läuft auf einem anderen Rechner und ist hier schreibgeschützt.",
   "More actions": "Weitere Aktionen",
   "Threads": "Threads",
   "The conversation list could not be refreshed, so the mirror conversation of this remote Bot could not be checked. Try again in a moment.": "Die Gesprächsliste konnte nicht aktualisiert werden, daher ließ sich das Spiegelgespräch dieses entfernten Bots nicht prüfen. Versuche es gleich noch einmal.",

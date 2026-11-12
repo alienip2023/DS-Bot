@@ -16,7 +16,7 @@ const { JSDOM } = createRequire(join(process.env.DSH_HARNESS ?? join(PLUGIN, '..
 // The wide Bot-row button, not the main-bot tile. The tile keeps its ref inline.
 // Deleting this line must turn the clientX assertion red.
 function botRowRefPattern() {
-  return /('data-bot-id': id, title: wide \? undefined : bot\.name,)\r?\n    ref: bindPointerMenu\(actions\.openMenu, \(\) => \(\{ kind: 'bot', id \}\)\),/
+  return /('data-bot-id': id, title: wide \? undefined : bot\.name,)\r?\n    ref: peer \? undefined : bindPointerMenu\(actions\.openMenu, \(\) => \(\{ kind: 'bot', id \}\)\),/
 }
 
 function sha256(bytes) {

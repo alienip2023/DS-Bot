@@ -213,7 +213,9 @@ async function sendLocal({ bot, text, rt, tracker }) {
       requestId: turnId,
       kind: 'send',
       preview: text ?? '',
-      releaseOn: bot.origin === 'joined' ? 'run' : undefined,
+      // A joined mirror and a peer shadow both hand off outside this host: the wait ends
+      // when the hand-off is accepted, not when the far turn reports back.
+      releaseOn: bot.origin === 'joined' || bot.origin === 'peer' ? 'run' : undefined,
       run,
     })
     if (outcome?.queued === true) return { ok: true, turnId, text: text ?? '', queued: true, position: outcome.position }

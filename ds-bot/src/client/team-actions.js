@@ -14,6 +14,10 @@ export function teamActions({ call, after, partFor, roster, ui, live, cards, hel
     noteClientError(where, error)
     ui.set(state => ({ ...state, toast: { text: error?.message ?? String(error), token: Date.now() } }))
   }
+  // A plain note (not a failure): the same toast, without an entry in the diagnostics log.
+  const notice = (text) => {
+    ui.set(state => ({ ...state, toast: { text: String(text), token: Date.now() } }))
+  }
   // Does this Bot already have a local mirror session to open? The host always sends
   // `sessionId` (channel.js view(): rt.chatOf(bot.id)), and chatOf falls back to the Bot's
   // own id until the mirror session is created on the first send, so only a sessionId
@@ -305,6 +309,7 @@ export function teamActions({ call, after, partFor, roster, ui, live, cards, hel
     diagnosticsClear: () => call('diagnostics-clear'),
     repoStars: () => call('repo-stars'),
     reportError,
+    notice,
     dismissToast: token => ui.set(state => (state.toast && (token === undefined || state.toast.token === token) ? { ...state, toast: null } : state)),
     noteTurnTime: (sessionId, turn, key, time) => {
       if (sessionId === undefined || !Number.isFinite(turn) || !Number.isFinite(time)) return

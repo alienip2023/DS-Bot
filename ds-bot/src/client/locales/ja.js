@@ -2316,6 +2316,7 @@ Object.assign(JA, {
   "Thread limit reached": "スレッド数の上限に達しました",
   "New thread": "新しいスレッド",
   "Could not load threads. Retry": "スレッドを読み込めませんでした。再試行",
+  "This Bot runs on another machine and is read-only here": "この Bot は別のマシンで動作しており、ここでは読み取り専用です。",
   "More actions": "その他の操作",
   "Threads": "スレッド",
   "The conversation list could not be refreshed, so the mirror conversation of this remote Bot could not be checked. Try again in a moment.": "会話一覧を更新できなかったため、このリモート Bot のミラー会話を確認できませんでした。しばらくしてからやり直してください。",

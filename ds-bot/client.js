@@ -2435,6 +2435,7 @@ Object.assign(JA, {
   "Thread limit reached": "スレッド数の上限に達しました",
   "New thread": "新しいスレッド",
   "Could not load threads. Retry": "スレッドを読み込めませんでした。再試行",
+  "This Bot runs on another machine and is read-only here": "この Bot は別のマシンで動作しており、ここでは読み取り専用です。",
   "More actions": "その他の操作",
   "Threads": "スレッド",
   "The conversation list could not be refreshed, so the mirror conversation of this remote Bot could not be checked. Try again in a moment.": "会話一覧を更新できなかったため、このリモート Bot のミラー会話を確認できませんでした。しばらくしてからやり直してください。",
@@ -4801,6 +4802,7 @@ Object.assign(KO, {
   "Thread limit reached": "스레드 수 한도에 도달했습니다",
   "New thread": "새 스레드",
   "Could not load threads. Retry": "스레드를 불러오지 못했습니다. 재시도",
+  "This Bot runs on another machine and is read-only here": "이 Bot은 다른 머신에서 실행되며 여기서는 읽기 전용입니다.",
   "More actions": "추가 작업",
   "Threads": "스레드",
   "The conversation list could not be refreshed, so the mirror conversation of this remote Bot could not be checked. Try again in a moment.": "대화 목록을 새로 고치지 못해 이 원격 Bot의 미러 대화를 확인할 수 없었습니다. 잠시 후 다시 시도하세요.",
@@ -7167,6 +7169,7 @@ Object.assign(ES, {
   "Thread limit reached": "Se alcanzó el límite de hilos",
   "New thread": "Nuevo hilo",
   "Could not load threads. Retry": "No se pudieron cargar los hilos. Reintentar",
+  "This Bot runs on another machine and is read-only here": "Este Bot se ejecuta en otra máquina y aquí es de solo lectura.",
   "More actions": "Más acciones",
   "Threads": "Hilos",
   "The conversation list could not be refreshed, so the mirror conversation of this remote Bot could not be checked. Try again in a moment.": "No se pudo actualizar la lista de conversaciones, así que no se pudo comprobar la conversación espejo de este Bot remoto. Vuelve a intentarlo en un momento.",
@@ -9488,6 +9491,7 @@ Object.assign(FR, {
   "Thread limit reached": "Limite de fils atteinte",
   "New thread": "Nouveau fil",
   "Could not load threads. Retry": "Impossible de charger les fils. Réessayer",
+  "This Bot runs on another machine and is read-only here": "Ce Bot tourne sur une autre machine et est en lecture seule ici.",
   "More actions": "Plus d’actions",
   "Threads": "Fils",
   "The conversation list could not be refreshed, so the mirror conversation of this remote Bot could not be checked. Try again in a moment.": "La liste des conversations n’a pas pu être actualisée ; la conversation miroir de ce Bot distant n’a donc pas pu être vérifiée. Réessayez dans un instant.",
@@ -11854,6 +11858,7 @@ Object.assign(DE, {
   "Thread limit reached": "Thread-Limit erreicht",
   "New thread": "Neuer Thread",
   "Could not load threads. Retry": "Threads konnten nicht geladen werden. Erneut versuchen",
+  "This Bot runs on another machine and is read-only here": "Dieser Bot läuft auf einem anderen Rechner und ist hier schreibgeschützt.",
   "More actions": "Weitere Aktionen",
   "Threads": "Threads",
   "The conversation list could not be refreshed, so the mirror conversation of this remote Bot could not be checked. Try again in a moment.": "Die Gesprächsliste konnte nicht aktualisiert werden, daher ließ sich das Spiegelgespräch dieses entfernten Bots nicht prüfen. Versuche es gleich noch einmal.",
@@ -11962,6 +11967,7 @@ var ZH = {
   "New thread": "新建线程",
   "Thread limit reached": "线程数已达上限",
   "Could not load threads. Retry": "无法加载线程，请重试",
+  "This Bot runs on another machine and is read-only here": "这个 Bot 在另一台机器上，此处只读",
   "Could not open this Thread’s conversation. Try again in a moment.": "打不开这个线程的对话，请稍后再试。",
   // Sidebar and account menu
   "Bot list": "Bot 列表",
@@ -14121,6 +14127,9 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
     noteClientError(where, error);
     ui2.set((state) => ({ ...state, toast: { text: error?.message ?? String(error), token: Date.now() } }));
   };
+  const notice = (text2) => {
+    ui2.set((state) => ({ ...state, toast: { text: String(text2), token: Date.now() } }));
+  };
   const botHasHome = (botId) => {
     const bot = roster.getSnapshot().byId?.[botId];
     const sessionId = bot?.sessionId;
@@ -14422,6 +14431,7 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
     diagnosticsClear: () => call2("diagnostics-clear"),
     repoStars: () => call2("repo-stars"),
     reportError,
+    notice,
     dismissToast: (token) => ui2.set((state) => state.toast && (token === void 0 || state.toast.token === token) ? { ...state, toast: null } : state),
     noteTurnTime: (sessionId, turn, key, time) => {
       if (sessionId === void 0 || !Number.isFinite(turn) || !Number.isFinite(time)) return;
@@ -28138,7 +28148,8 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
   };
   const pinned = bot.pinned === true && !tile;
   const joined = bot.origin === "joined" && bot.worker?.home === "remote";
-  const machine = joined ? [bot.worker.hostname || bot.worker.nodeId, bot.worker.online === false ? "离线" : ""].filter(Boolean).join(" · ") : "";
+  const peer = bot.origin === "peer" && bot.worker?.home === "hub";
+  const machine = joined ? [bot.worker.hostname || bot.worker.nodeId, bot.worker.online === false ? "离线" : ""].filter(Boolean).join(" · ") : peer ? [bot.worker?.hostname || "", bot.worker?.online === false ? "离线" : "在线"].filter(Boolean).join(" · ") : "";
   const label = [bot.name, machine, main ? t("Main Bot") : "", pinned ? t("Pinned") : "", running || away ? t("Working") : "", waitsFor, approval ? t("Waiting for your approval") : alert ? t("Waiting for your answer") : "", unread ? t("Unread activity") : ""].filter(Boolean).join(", ");
   if (tile && wide) {
     return (0, import_react35.createElement)("div", { className: "bt-tile-wrap", ref: bindPointerMenu(actions.openMenu, () => ({ kind: "bot", id })) }, (0, import_react35.createElement)(
@@ -28174,11 +28185,11 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
       "aria-current": active ? "page" : void 0,
       "data-bot-id": id,
       title: wide ? void 0 : bot.name,
-      ref: bindPointerMenu(actions.openMenu, () => ({ kind: "bot", id })),
-      draggable: wide && !tile && onDragStart ? true : void 0,
-      onDragStart: wide && !tile && onDragStart ? (event) => onDragStart(event, id) : void 0,
+      ref: peer ? void 0 : bindPointerMenu(actions.openMenu, () => ({ kind: "bot", id })),
+      draggable: wide && !tile && !peer && onDragStart ? true : void 0,
+      onDragStart: wide && !tile && !peer && onDragStart ? (event) => onDragStart(event, id) : void 0,
       onMouseEnter: wide ? nameIfCut : void 0,
-      onClick: () => botRowClick(joined, id, actions)
+      onClick: () => peer ? actions.notice?.(t("This Bot runs on another machine and is read-only here")) : botRowClick(joined, id, actions)
     },
     (0, import_react35.createElement)(BotAvatar, { bot, size: wide ? 36 : 44, state, main }),
     pinned && !wide ? (0, import_react35.createElement)(PinMark) : null,
@@ -28189,7 +28200,7 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
       machine ? (0, import_react35.createElement)("span", { className: "bt-row-preview", "data-machine": bot.worker.hostname || bot.worker.nodeId || "" }, machine) : runningLine ? (0, import_react35.createElement)("span", { className: "bt-row-preview" }, runningLine) : awayLine ? (0, import_react35.createElement)("span", { className: "bt-row-preview" }, awayLine) : waitsFor ? (0, import_react35.createElement)("span", { className: "bt-row-preview" }, waitsFor) : preview ? (0, import_react35.createElement)("span", { className: "bt-row-preview" }, preview) : null
     ) : null,
     wide && unread && !active ? (0, import_react35.createElement)("span", { className: "bt-unread", "aria-hidden": true }) : !wide && !active && (alert || unread) ? (0, import_react35.createElement)("span", { className: `bt-dot${alert ? " bt-dot-wait" : ""}`, "aria-hidden": true }) : null,
-    wide ? (0, import_react35.createElement)("button", {
+    wide && !peer ? (0, import_react35.createElement)("button", {
       type: "button",
       "aria-label": t("Threads"),
       title: t("Threads"),
@@ -28198,7 +28209,7 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
       style: { background: "none", border: "none", cursor: "pointer", padding: "2px 4px", lineHeight: 1, flexShrink: 0, display: "inline-flex" },
       onClick: toggleThreads
     }, (0, import_react35.createElement)(ChevronRightIcon)) : null,
-    wide ? (0, import_react35.createElement)("button", {
+    wide && !peer ? (0, import_react35.createElement)("button", {
       type: "button",
       "aria-label": t("More actions"),
       title: t("More actions"),
@@ -28208,6 +28219,7 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
     }, "⋮") : null
   );
   if (!wide) return row;
+  if (peer) return row;
   return (0, import_react35.createElement)(
     "div",
     { className: "bt-bot", onMouseEnter: row.props.onMouseEnter },

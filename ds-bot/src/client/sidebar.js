@@ -308,9 +308,13 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
   }
   const pinned = bot.pinned === true && !tile
   const joined = bot.origin === 'joined' && bot.worker?.home === 'remote'
+  // Another machine's Bot, mirrored read-only: it has no local Session to open.
+  const peer = bot.origin === 'peer' && bot.worker?.home === 'hub'
   const machine = joined
     ? [bot.worker.hostname || bot.worker.nodeId, bot.worker.online === false ? '离线' : ''].filter(Boolean).join(' · ')
-    : ''
+    : peer
+      ? [bot.worker?.hostname || '', bot.worker?.online === false ? '离线' : '在线'].filter(Boolean).join(' · ')
+      : ''
   const label = [bot.name, machine, main ? t('Main Bot') : '', pinned ? t('Pinned') : '', running || away ? t('Working') : '', waitsFor, approval ? t('Waiting for your approval') : alert ? t('Waiting for your answer') : '', unread ? t('Unread activity') : ''].filter(Boolean).join(', ')
   if (tile && wide) {
     return h('div', { className: 'bt-tile-wrap', ref: bindPointerMenu(actions.openMenu, () => ({ kind: 'bot', id })) }, h('button', {
@@ -330,11 +334,11 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
   const row = h('button', {
     type: 'button', className: 'bt-row', 'aria-label': label, 'aria-current': active ? 'page' : undefined,
     'data-bot-id': id, title: wide ? undefined : bot.name,
-    ref: bindPointerMenu(actions.openMenu, () => ({ kind: 'bot', id })),
-    draggable: wide && !tile && onDragStart ? true : undefined,
-    onDragStart: wide && !tile && onDragStart ? event => onDragStart(event, id) : undefined,
+    ref: peer ? undefined : bindPointerMenu(actions.openMenu, () => ({ kind: 'bot', id })),
+    draggable: wide && !tile && !peer && onDragStart ? true : undefined,
+    onDragStart: wide && !tile && !peer && onDragStart ? event => onDragStart(event, id) : undefined,
     onMouseEnter: wide ? nameIfCut : undefined,
-    onClick: () => botRowClick(joined, id, actions),
+    onClick: () => (peer ? actions.notice?.(t('This Bot runs on another machine and is read-only here')) : botRowClick(joined, id, actions)),
   },
   h(BotAvatar, { bot, size: wide ? 36 : 44, state, main }),
   pinned && !wide ? h(PinMark) : null,
@@ -347,20 +351,22 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
           : preview ? h('span', { className: 'bt-row-preview' }, preview) : null) : null,
   wide && unread && !active ? h('span', { className: 'bt-unread', 'aria-hidden': true })
     : !wide && !active && (alert || unread) ? h('span', { className: `bt-dot${alert ? ' bt-dot-wait' : ''}`, 'aria-hidden': true }) : null,
-  wide ? h('button', {
+  wide && !peer ? h('button', {
     type: 'button', 'aria-label': t('Threads'), title: t('Threads'),
     className: 'bt-ctx-btn bt-thread-toggle',
     'aria-expanded': openThreads ? 'true' : 'false',
     style: { background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px', lineHeight: 1, flexShrink: 0, display: 'inline-flex' },
     onClick: toggleThreads,
   }, h(ChevronRightIcon)) : null,
-  wide ? h('button', {
+  wide && !peer ? h('button', {
     type: 'button', 'aria-label': t('More actions'), title: t('More actions'),
     className: 'bt-ctx-btn',
     style: { background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.1em', padding: '2px 6px', lineHeight: 1, flexShrink: 0 },
     onClick: openMenuBtn,
   }, '⋮') : null)
   if (!wide) return row
+  // A shadow has no Threads on this machine: no expandable list, no create button.
+  if (peer) return row
   return h('div', { className: 'bt-bot', onMouseEnter: row.props.onMouseEnter }, row,
     h('div', { className: 'bt-agent-sub', 'data-open': openThreads || undefined },
       h('div', { className: 'bt-agent-sub-in' },

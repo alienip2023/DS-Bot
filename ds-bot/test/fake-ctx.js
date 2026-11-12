@@ -61,6 +61,12 @@ export function fakeContext({ services = {} } = {}) {
     sections,
     logger: { warn() {}, info() {} },
     get: name => services[name],
+    // Services a module offers to the others (federation's peer roster receiver).
+    provide(name, value) {
+      services[name] = value
+      calls.push(`provide ${name}`)
+      return () => { if (services[name] === value) delete services[name] }
+    },
     // As in real cordis: the plugin does not inject this service, so reading it throws.
     get subagents() { throw new Error('cannot get property "subagents" without inject') },
     // The real ctx guards plain access with `inject`; service() reads this.

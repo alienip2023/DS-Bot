@@ -110,6 +110,7 @@ const ZH = {
   'New thread': '新建线程',
   'Thread limit reached': '线程数已达上限',
   'Could not load threads. Retry': '无法加载线程，请重试',
+  'This Bot runs on another machine and is read-only here': '这个 Bot 在另一台机器上，此处只读',
   'Could not open this Thread’s conversation. Try again in a moment.': '打不开这个线程的对话，请稍后再试。',
 
   // Sidebar and account menu

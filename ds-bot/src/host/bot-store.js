@@ -28,7 +28,7 @@ import { MAIN_THREAD_ID, MAIN_THREAD_TITLE } from './constants.js'
 export function toBotRecord(raw) {
   return {
     id: raw.id,
-    kind: raw.origin === 'joined' ? 'joined' : 'local',
+    kind: raw.origin === 'peer' ? 'peer' : raw.origin === 'joined' ? 'joined' : 'local',
     origin: raw.origin,          // kept so joinedShadow(record) → true for joined bots
     sessionId: typeof raw.sessionId === 'string' ? raw.sessionId : null,
     worker: raw.worker ?? undefined,  // kept so joinedShadow(record) can check worker.home

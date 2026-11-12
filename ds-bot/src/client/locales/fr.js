@@ -2316,6 +2316,7 @@ Object.assign(FR, {
   "Thread limit reached": "Limite de fils atteinte",
   "New thread": "Nouveau fil",
   "Could not load threads. Retry": "Impossible de charger les fils. Réessayer",
+  "This Bot runs on another machine and is read-only here": "Ce Bot tourne sur une autre machine et est en lecture seule ici.",
   "More actions": "Plus d’actions",
   "Threads": "Fils",
   "The conversation list could not be refreshed, so the mirror conversation of this remote Bot could not be checked. Try again in a moment.": "La liste des conversations n’a pas pu être actualisée ; la conversation miroir de ce Bot distant n’a donc pas pu être vérifiée. Réessayez dans un instant.",

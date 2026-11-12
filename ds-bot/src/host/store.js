@@ -9,6 +9,7 @@ import { replaceFile } from './files.js'
 import { homeLock } from './home-lock.js'
 import { currentColor, headOf, normalize, unquote } from './text.js'
 import { mainThreadId, mainThreadOf, newMainThread, saveThread, threadOf, threadsOfBot, updateBySessionId, updateBySessionIdFull } from './bot-store.js'
+import { ensureFederationState, migrateFederation } from './federation.js'
 import { joinedShadow } from './roster-join.js'
 import { AMBIGUOUS_OLD_ROUTES, legacyRoute } from './local-agents/engines.js'
 
@@ -22,7 +23,7 @@ export function install(rt) {
   const { ctx, home, statePath } = rt
 
   /** @type {{version:2, workspaceId?:string, mainBotIds:string[], bots:Record<string,any>, threads:Record<string,any>, privateArchives:any[], rooms:Record<string,any>, agents:Record<string,any>, sections:any[], capabilities:{items:Record<string,any>}, exchanges:any[], exchangeTurns:Record<string,number[]>, revision:number}} */
-  const state = { version: STATE_VERSION, mainBotIds: [], bots: {}, threads: {}, privateArchives: [], rooms: {}, agents: {}, sections: [], capabilities: { items: {} }, exchanges: [], exchangeTurns: {}, works: {}, requests: {}, questions: {}, views: {}, closedCards: {}, prefs: {}, switching: {}, revision: 0 }
+  const state = { version: STATE_VERSION, mainBotIds: [], bots: {}, threads: {}, privateArchives: [], rooms: {}, agents: {}, sections: [], capabilities: { items: {} }, exchanges: [], exchangeTurns: {}, works: {}, requests: {}, questions: {}, views: {}, closedCards: {}, prefs: {}, switching: {}, federation: { version: 1, hubId: null, peersAt: 0, inbox: {}, outbox: {}, seen: {}, seq: 0, allowPeerToMain: false, lastError: null }, revision: 0 }
   let loaded = null
   let writing = Promise.resolve()
   const { warn } = rt
@@ -135,6 +136,7 @@ export function install(rt) {
     // `computer` is the computer-use switch; absent or corrupt means off.
     if (state.computer === null || typeof state.computer !== 'object' || Array.isArray(state.computer)) state.computer = {}
     let migrated = !hadCapabilities
+    if (ensureFederationState(state)) migrated = true
     if (state.capabilities === null || typeof state.capabilities !== 'object' || Array.isArray(state.capabilities)) {
       state.capabilities = { items: {} }
       migrated = true
@@ -162,6 +164,7 @@ export function install(rt) {
         migrated = true
       }
     }
+    if (migrateFederation(state)) migrated = true
     const savedVersion = parsed?.version
     if (migrateThreads(state)) migrated = true
     // Keep the v1 team file once, beside it, before the migrated shape is saved.
@@ -525,6 +528,8 @@ export function install(rt) {
     bySessionIdMap.clear()
     bySessionIdFullMap.clear()
     for (const bot of Object.values(state.bots)) {
+      // A peer row is a shadow: `chatOf` would name its id as if it were a Session.
+      if (bot.origin === 'peer') continue
       for (const segment of bot.segments ?? []) pastOwners.set(segment.sessionId, { botId: bot.id })
       chatOwners.set(chatOf(bot.id), bot.id)
       // Maintain bySessionId reverse index for mirror session lookup
@@ -675,6 +680,8 @@ export function migrateThreads(state, now = Date.now()) {
   }
   for (const bot of Object.values(state.bots ?? {})) {
     if (bot === null || typeof bot !== 'object' || typeof bot.id !== 'string' || bot.id === '') continue
+    // A peer row is a shadow of another machine's Bot: it has no Session and so no Thread.
+    if (bot.origin === 'peer') continue
     const id = mainThreadId(bot.id)
     if (threadOf(state, id) === undefined) {
       saveThread(state, newMainThread(bot, now))

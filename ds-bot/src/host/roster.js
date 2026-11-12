@@ -331,6 +331,9 @@ export function install(rt) {
     await rt.load()
     const bot = rt.botOf(botId)
     if (bot === undefined) throw codedError('bot/not-found', 'Unknown Bot')
+    // A peer row is a read-only shadow of another machine's Bot: nothing here may make
+    // Threads, Sessions or models for it (docs/thread-model.md §1; t9a-brief §3).
+    if (bot.origin === 'peer') throw codedError('E_SHADOW_READONLY', 'This Bot belongs to another machine and is read-only')
     const rows = threadsOfBot(state, bot.id)
     if (rows.length >= MAX_THREADS_PER_BOT) {
       throw codedError('bot/refused', `A Bot keeps at most ${MAX_THREADS_PER_BOT} threads`)
@@ -487,6 +490,9 @@ export function install(rt) {
   async function updateBot(id, patch, actorId, fromSessionId) {
     const bot = rt.botOf(id)
     if (bot === undefined) throw new Error('Unknown Bot')
+    // The roster of another machine is owned there; editing a shadow here would be lost
+    // on its next report.
+    if (bot.origin === 'peer') throw codedError('E_SHADOW_READONLY', 'This Bot belongs to another machine and is read-only')
     if (patch.browserGrants !== undefined && actorId !== undefined) {
       throw new Error(`Only the user can set what ${bot.name} may do in the browser`)
     }
@@ -1000,6 +1006,9 @@ export function install(rt) {
     const bot = rt.botOf(id)
     if (bot === undefined) throw new Error('Unknown Bot')
     if (rt.isMain(id)) throw new Error('A Main Bot cannot be deleted; remove its Main Bot role first')
+    // Never destroy a local Session for a Bot that has none, and never tell the node to
+    // delete a Bot it owns: a shadow leaves only when its machine stops reporting it.
+    if (bot.origin === 'peer') throw codedError('E_SHADOW_READONLY', 'This Bot belongs to another machine and is read-only')
     // Before the Bot and its group Sessions leave the state, which the archive reads.
     const archived = rt.archiveBotMemory(id)
     const current = rt.chatOf(id)

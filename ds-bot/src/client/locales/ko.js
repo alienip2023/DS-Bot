@@ -2352,6 +2352,7 @@ Object.assign(KO, {
   "Thread limit reached": "스레드 수 한도에 도달했습니다",
   "New thread": "새 스레드",
   "Could not load threads. Retry": "스레드를 불러오지 못했습니다. 재시도",
+  "This Bot runs on another machine and is read-only here": "이 Bot은 다른 머신에서 실행되며 여기서는 읽기 전용입니다.",
   "More actions": "추가 작업",
   "Threads": "스레드",
   "The conversation list could not be refreshed, so the mirror conversation of this remote Bot could not be checked. Try again in a moment.": "대화 목록을 새로 고치지 못해 이 원격 Bot의 미러 대화를 확인할 수 없었습니다. 잠시 후 다시 시도하세요.",

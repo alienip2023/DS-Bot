@@ -340,6 +340,7 @@ export function install(rt) {
   // selection is made right after: the Thread's own model and level when the create named
   // them, else the Bot's current route, in the same shape Main uses.
   async function applyThreadModel(bot, sessionId, { model, effort } = {}) {
+    if (bot?.origin === 'peer') return undefined
     const ref = model ?? await desiredModel(bot)
     if (ref === undefined) return undefined
     const level = effort ?? (model === undefined ? await desiredEffort(bot, ref) : undefined)
@@ -351,6 +352,7 @@ export function install(rt) {
   // `force` re-selects even when the record says it is applied: the composer's own
   // model picker can move the Session without telling this plugin.
   async function applyModel(bot, { force = false } = {}) {
+    if (bot?.origin === 'peer') return undefined
     const ref = await desiredModel(bot)
     if (ref === undefined) return ref
     const effort = await desiredEffort(bot, ref)
@@ -408,6 +410,8 @@ export function install(rt) {
   }
   async function syncAll() {
     for (const bot of Object.values(state.bots)) {
+      // A peer row is a shadow of another machine's Bot: it has no Session here to select on.
+      if (bot?.origin === 'peer') continue
       await applyModel(bot).catch(error => rt.warn('ds-bot: model for %s not applied: %s', bot.name, error))
     }
   }

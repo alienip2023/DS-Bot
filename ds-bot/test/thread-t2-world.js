@@ -9,7 +9,7 @@ import { createRuntime } from '../index.js'
 import { ROUTE } from '../src/host/constants.js'
 import { fakeContext } from './fake-ctx.js'
 
-export function threadWorld({ home: givenHome } = {}) {
+export function threadWorld({ home: givenHome, services } = {}) {
   const routes = []
   const prompts = []
   const followups = []
@@ -33,7 +33,7 @@ export function threadWorld({ home: givenHome } = {}) {
     }
     return agents.get(sessionId)
   }
-  const ctx = fakeContext({ services: {} })
+  const ctx = fakeContext({ services: services ?? {} })
   ctx.sessionController = {
     async create(options) { const sessionId = `session-${nextSession++}`; createdOptions.push({ sessionId, options }); return { sessionId } },
     async resolveAgent(sessionId) { return { agent: agentOf(sessionId) } },
