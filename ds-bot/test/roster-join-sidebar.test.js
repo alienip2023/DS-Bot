@@ -256,7 +256,10 @@ test('a joined shadow does not call handleRemoteTurn', async () => {
   const rt = {
     ctx: {},
     state: { bots: { [shadow.id]: shadow } },
-    botOf: () => shadow,
+    // v0.3.5 books a pair's message before sending it; this test only cares that
+    // nothing reaches the remote turn handler.
+    ledger: { importer() {}, records: () => [], append() {}, written: async () => {} },
+    botOf: (id) => (id === shadow.id ? shadow : undefined),
     handleRemoteTurn() { calls.push('turn') },
     chatOf() { calls.push('chat') },
     hideBotUnusedTools() {},

@@ -127,6 +127,8 @@ test('delivery routes a joined request and still refuses when the handler is mis
   const rt = {
     ctx: {},
     state: { bots: { [shadow.id]: shadow }, exchanges: [] },
+    // v0.3.5 writes a pair's messages to the ledger before they go out.
+    ledger: { importer() {}, records: () => [], append: async () => {}, written: async () => {} },
     botOf: (id) => (id === shadow.id ? shadow : undefined),
     handleRemoteTurn() { calls.push('remote') },
     handleJoinedTurn() { calls.push('joined'); return 'routed' },
@@ -142,6 +144,47 @@ test('delivery routes a joined request and still refuses when the handler is mis
   const refused = await rt.deliver({ fromId: 'local', toId: shadow.id, text: 'go', role: 'request' })
   assert.equal(refused.error, 'joined shadow cannot dispatch')
   assert.deepEqual(calls, ['joined'])
+})
+
+test('a joined turn is in the book before it goes out', async () => {
+  const shadow = shadowFor('node-a', 'alpha')
+  // The sender is a real Bot: who wrote a pair's message decides which book keeps it.
+  const sender = { id: 'local', name: 'Local', type: 'normal' }
+  const events = []
+  const records = []
+  const book = `pair-${['local', shadow.id].sort().join('-')}`
+  const rt = {
+    ctx: {},
+    state: { bots: { [shadow.id]: shadow, local: sender }, exchanges: [] },
+    // v0.3.5 writes a pair's messages to the ledger before they go out.
+    ledger: {
+      importer() {},
+      records: () => records,
+      append: (name, record) => { events.push(`book:${name}`); if (record.event === undefined) records.push(record) },
+      written: async () => { events.push('written') },
+    },
+    botOf: (id) => (id === shadow.id ? shadow : id === sender.id ? sender : undefined),
+    handleJoinedTurn() { events.push('joined'); return 'routed' },
+    chatOf() { return 'chat' },
+    hideBotUnusedTools() {},
+  }
+  installDelivery(rt)
+  assert.equal(await rt.deliver({ fromId: 'local', toId: shadow.id, text: 'go', role: 'request', exchangeId: 'ex-9' }), 'routed')
+  // The record is written and flushed before the turn leaves this machine.
+  assert.deepEqual(events, [`book:${book}`, 'written', 'joined'])
+  assert.equal(records.length, 1)
+  assert.equal(records[0].id, 'ex-9')
+  assert.equal(records[0].to, shadow.id)
+  // A reply to a joined Bot is not dispatched, and books nothing new.
+  const reply = await rt.deliver({ fromId: 'local', toId: shadow.id, text: 'back', role: 'reply' })
+  assert.equal(reply.error, 'joined shadow cannot dispatch')
+  assert.equal(records.length, 1)
+
+  // Without the handler the turn is refused, and nothing more is booked.
+  delete rt.handleJoinedTurn
+  const refused = await rt.deliver({ fromId: 'local', toId: shadow.id, text: 'go', role: 'request' })
+  assert.equal(refused.error, 'joined shadow cannot dispatch')
+  assert.equal(records.length, 1)
 })
 
 test('the remote receiver only accepts a local non-worker bot and keeps the exchangeId', async () => {

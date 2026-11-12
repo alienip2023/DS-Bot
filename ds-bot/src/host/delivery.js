@@ -45,6 +45,29 @@ export function install(rt) {
   // Roles recorded as team exchanges.
   const EXCHANGE_ROLES = new Set(['request', 'reply', 'stopped'])
 
+  // What two Bots say to each other is in the book of the pair (ledger.js), whole, written
+  // before the message goes out. A message is shown once a record says it was delivered.
+  const pairBook = (a, b) => `pair-${[String(a), String(b)].sort().join('-')}`
+  // A pair's book starts from the exchanges a team kept in state.json before the ledger.
+  rt.ledger.importer('pair-', book => state.exchanges
+    .filter(entry => entry.from !== undefined && entry.to !== undefined && pairBook(entry.from, entry.to) === book)
+    .map(entry => ({ ...entry, delivered: true })))
+  // A message shows the text its delivery carried: the last record of its id written before
+  // a delivery mark. A merged request whose replacement never went out keeps the text that did.
+  function pairMessages(a, b) {
+    const written = new Map()
+    const shown = new Map()
+    for (const record of rt.ledger.records(pairBook(a, b))) {
+      if (record.event === 'delivered') {
+        if (written.has(record.id)) shown.set(record.id, written.get(record.id))
+      } else if (record.event === undefined) {
+        written.set(record.id, record)
+        if (record.delivered === true) shown.set(record.id, record)
+      }
+    }
+    return [...shown.values()]
+  }
+
   // `sessionId` defaults to the recipient's own chat; group turns name its group Session.
   // `deferred`: a request the Bot already read mid-turn, handed back to answer in a
   // turn of its own; its exchange was recorded when it first arrived. `resumed` and
@@ -62,6 +85,17 @@ export function install(rt) {
     const from = rt.botOf(fromId)
     const to = rt.botOf(toId)
     if (to === undefined) throw new Error(`Unknown Bot ${toId}`)
+    // On disk before it goes out: a message the book could not keep is not sent, so none is
+    // delivered with no record of it. A resend keeps the record it has; only a merged request
+    // replaces it with its added text. A joined turn leaves this machine before it reaches a
+    // Session, so it is booked here too (below) — a restart after the send still owes it.
+    const book = fromId !== undefined && from !== undefined && recordExchange && EXCHANGE_ROLES.has(role) && !deferred && !resumed && !retried ? pairBook(fromId, toId) : undefined
+    const writeBook = async () => {
+      if (book === undefined) return
+      if (!merged && rt.ledger.records(book).some(record => record.event === undefined && record.id === exchangeId)) return
+      rt.ledger.append(book, { id: exchangeId, from: fromId, to: toId, role, text, time: Date.now(), ...(length !== undefined ? { length, files } : {}), ...(replyTo ? { replyTo } : {}), ...(audience === 'user' ? { audience } : {}), ...(roomId ? { roomId } : {}) })
+      await rt.ledger.written(book)
+    }
     // A joined shadow is visible in the sidebar. Step 2 sends the turn to that
     // remote Bot. If the handler is not installed, keep the step-1 refusal and
     // do not fall through to a local session or handleRemoteTurn.
@@ -69,6 +103,7 @@ export function install(rt) {
     if (refused) {
       const skip = role === 'reply' || role === 'report' || role === 'kickoff' || role === 'continue' || role === 'update'
       if (!skip && typeof rt.handleJoinedTurn === 'function') {
+        await writeBook()
         return rt.handleJoinedTurn({ fromId, toId, text, role, exchangeId, replyTo, work })
       }
       return refused
@@ -105,6 +140,7 @@ export function install(rt) {
       ...(abandoned ? { abandoned: true } : {}),
     }
     const targetSessionId = sessionId ?? rt.chatOf(toId)
+    await writeBook()
     await rt.ensureCapabilities(targetSessionId)
     const agent = await resolveAgent(targetSessionId)
     // A steered message cuts into a running turn at its next step; a follow-up
@@ -117,6 +153,7 @@ export function install(rt) {
       ],
       source,
     })
+    // A message no Bot of the team sent keeps the record it had before the ledger.
     // Recorded once the message is in the Session: an earlier record would show
     // a failed delivery as delivered. The whole text is in its file, or in the
     // Session it goes to; exchangeText reads it back there. Resends keep any
@@ -131,20 +168,29 @@ export function install(rt) {
       else if (merged) state.exchanges[earlier] = entry
       void rt.save().catch(() => {})
     }
+    // The book holds the text already; its mark says the message went out. A mark
+    // that is lost only hides it from the dialog.
+    const markDelivered = async () => {
+      rt.ledger.append(book, { event: 'delivered', id: exchangeId, sessionId: targetSessionId, time: Date.now() })
+      await rt.ledger.written(book).catch(() => {})
+    }
+    const send = async () => {
+      if (steer) agent.steer(message)
+      else agent.followup(message)
+      await ctx.sessions.flush(agent.session)
+      if (book !== undefined) await markDelivered()
+      else recordExchangeEntry()
+    }
     // A steered message cuts into a running turn at its next step; it must not wait
     // behind that turn, so it never goes through the serial gate.
     if (steer) {
-      agent.steer(message)
-      await ctx.sessions.flush(agent.session)
-      recordExchangeEntry()
+      await send()
       return exchangeId
     }
     // Everything else waits for the Bot's running turn (thread-model §4.5): a queued
     // delivery is written to the Session and recorded only when its turn starts.
     const run = async () => {
-      agent.followup(message)
-      await ctx.sessions.flush(agent.session)
-      recordExchangeEntry()
+      await send()
     }
     if (typeof rt.sendThreadTurn === 'function') {
       // The Session decides the Bot; a group's own Session has no Bot and stays ungated.
@@ -162,6 +208,9 @@ export function install(rt) {
   // there is its header line, then the text. `whole` is false when only the start could
   // be read (the Session is gone, or the message is past what the dialog shows).
   async function exchangeText(entry) {
+    // A message of the ledger is whole there, or in its file when it went as one.
+    if (entry.ledger === true && entry.files?.length > 0) return await fileText(entry.files[0]) ?? { text: headOf(entry.text, TEXT_SHOW_MAX), whole: false }
+    if (entry.ledger === true) return { text: headOf(entry.text, TEXT_SHOW_MAX), whole: entry.text.length <= TEXT_SHOW_MAX }
     if (entry.length === undefined) return { text: entry.text, whole: true }
     if (entry.files?.length > 0) return await fileText(entry.files[0]) ?? { text: entry.text, whole: false }
     try {
@@ -214,7 +263,6 @@ export function install(rt) {
     return { text, whole: true }
   }
 
-  Object.assign(rt, { resolveAgent, deliver, exchangeText, attachLong, fileText })
 
   // ── Worker Bot reply helpers (Subtask B) ──────────────────────────────────
   // deliverHandoff: formats a remote_handoff result as a Bot reply and delivers it.
@@ -260,4 +308,18 @@ export function install(rt) {
       rt.warn('ds-bot: deliverProgress error: %s', err)
     }
   }
+  const exchangesOf = (a, b) => pairMessages(a, b).map((record) => {
+    const kept = headOf(record.text ?? '', TEXT_KEPT)
+    const { delivered: _delivered, ...rest } = record
+    return { ...rest, text: kept, ...(record.length === undefined && kept.length < (record.text ?? '').length ? { length: record.text.length } : {}) }
+  })
+  const exchangeOf = (id, a, b) => {
+    const record = pairMessages(a, b).find(item => item.id === id)
+    if (record === undefined) return undefined
+    // Imported from before the ledger: as whole as it was kept then.
+    if (record.sessionId !== undefined || (record.length !== undefined && !(record.files?.length > 0))) return record
+    return { ...record, ledger: true }
+  }
+
+  Object.assign(rt, { resolveAgent, deliver, exchangeText, attachLong, fileText, exchangesOf, exchangeOf })
 }

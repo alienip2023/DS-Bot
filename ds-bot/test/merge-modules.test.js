@@ -1,4 +1,4 @@
-// s50 / merge plan I1 (R8): upstream v0.3.2 added modules (groupLog, local-agent engines); this fork added
+// s50 / merge plan I1 (R8), carried to v0.3.5: upstream added the group book (ledger) and local-agent engines; this fork
 // joinedTurn/joinedPrompt/mirrorGuard/joinedCreate/configSource/joinedPage/hostContext. The merged MODULES list must
 // keep every module exactly once, in an order where each wrapper installs after what it wraps, and the real
 // createRuntime must come up with both halves' runtime surface (upstream's abandonWork/saveSection/adoptLiveWork
@@ -16,7 +16,10 @@ import * as delivery from '../src/host/delivery.js'
 import * as rosterJoin from '../src/host/roster-join.js'
 import * as roster from '../src/host/roster.js'
 import * as groups from '../src/host/groups.js'
-import * as groupLog from '../src/host/group-log.js'
+import * as ledger from '../src/host/ledger.js'
+import * as feed from '../src/host/feed.js'
+import * as threadQueue from '../src/host/thread-queue.js'
+import * as threadPrompt from '../src/host/thread-prompt.js'
 import * as goals from '../src/host/goals.js'
 import * as channel from '../src/host/channel.js'
 import * as store from '../src/host/store.js'
@@ -34,15 +37,16 @@ const at = module => MODULES.indexOf(module)
 
 describe('S50-modules: the merged install order', () => {
   it('M-mod-once: every module of both sides is installed exactly once', () => {
-    for (const [name, module] of Object.entries({ turns, steer, handoffs, delivery, rosterJoin, roster, groups, groupLog, goals, channel, store, memory, joinedTurn, joinedPrompt, mirrorGuard, joinedCreate, configSource, joinedPage, localAgents })) {
+    for (const [name, module] of Object.entries({ turns, steer, handoffs, delivery, rosterJoin, roster, groups, ledger, goals, channel, store, memory, joinedTurn, joinedPrompt, mirrorGuard, joinedCreate, configSource, joinedPage, localAgents })) {
       assert.equal(MODULES.filter(item => item === module).length, 1, `${name} appears once`)
     }
     assert.equal(new Set(MODULES).size, MODULES.length, 'no module twice')
     assert.ok(MODULES.every(module => typeof module.install === 'function'), 'every entry has install()')
   })
 
-  it('M-mod-order: wrappers install after what they wrap, groupLog follows groups, the store comes first', () => {
-    assert.ok(at(groupLog) > at(groups), 'groupLog (upstream) installs after groups')
+  it('M-mod-order: wrappers install after what they wrap, the book follows the store, the store comes first', () => {
+    assert.ok(at(store) < at(ledger), 'the store is up before the book it imports from')
+    assert.ok(at(ledger) < at(turns), 'the book is up before turns write to it')
     assert.ok(at(store) < at(turns) && at(store) < at(roster) && at(store) < at(channel), 'the store is up before anything reads state')
     assert.ok(at(turns) < at(steer) && at(handoffs) < at(delivery), 'turns before steer, handoffs before delivery')
     assert.ok(at(delivery) < at(roster), 'delivery (joined interception) before roster')
@@ -51,12 +55,17 @@ describe('S50-modules: the merged install order', () => {
     assert.ok(at(joinedPrompt) > at(turns), 'joinedPrompt wraps turns, not the other way round')
     assert.ok(at(mirrorGuard) < at(joinedCreate) && at(joinedCreate) < at(configSource) && at(configSource) < at(joinedPage), 'the node-side modules follow in order')
     assert.ok(at(memory) > at(groups), 'memory after groups (the group review reads rooms)')
+    assert.ok(at(threadQueue) < at(feed), 'the serial gate listens before feed takes its place')
+    assert.ok(at(joinedPrompt) < at(threadPrompt) && at(threadPrompt) < at(mirrorGuard), 'joinedPrompt, threadPrompt, mirrorGuard in that order')
   })
 
   it('M-mod-surface: the real runtime carries upstream\'s and this fork\'s surface together', () => {
     const home = mkdtempSync(join(tmpdir(), 'ds-bot-merge-mod-'))
     const rt = createRuntime(fakeContext(), { home })
     for (const name of ['abandonWork', 'adoptLiveWork', 'saveSection', 'reorderSections', 'deleteSection', 'deliver', 'openWork', 'noteCutOffTurn', 'fileMemoryFor']) {
+      assert.equal(typeof rt[name], 'function', `rt.${name}`)
+    }
+    for (const name of ['sendThreadTurn', 'threadQueueLive', 'applyThreadModel', 'threadOf']) {
       assert.equal(typeof rt[name], 'function', `rt.${name}`)
     }
     assert.ok(rt.fileMemoryTools !== undefined, 'rt.fileMemoryTools')

@@ -22,7 +22,7 @@ import * as hostContext from './src/host/host-context.js'
 import * as tools from './src/host/tools.js'
 import * as chatIndex from './src/host/chat-index.js'
 import * as groups from './src/host/groups.js'
-import * as groupLog from './src/host/group-log.js'
+import * as ledger from './src/host/ledger.js'
 import * as goals from './src/host/goals.js'
 import * as approvals from './src/host/approvals.js'
 import * as resume from './src/host/resume.js'
@@ -52,6 +52,8 @@ import { joinedTimeoutFrom } from './src/host/joined-turn.js'
 import * as joinedCreate from './src/host/joined-create.js'
 import * as configSource from './src/host/config-source.js'
 import * as joinedPage from './src/host/joined-page.js'
+import * as phone from './src/host/phone.js'
+import * as mobile from './src/host/mobile.js'
 import * as feed from './src/host/feed.js'
 import * as im from './src/host/im/index.js'
 import * as officeSkills from './src/host/office-skills.js'
@@ -70,7 +72,7 @@ export const inject = ['llm', 'tools', 'systemPrompt', 'sessionController', 'ses
 // install. Listeners run and tools are listed in registration order, so this order holds:
 // usage meters model requests after every listener that rewrites them. privacy checks a
 // call before the hooks of tools do, so a closed call never reaches a card they show.
-export const MODULES = [diagnostics, store, models, providers, permissions, turns, steer, handoffs, requests, delivery, workerBridge, rosterJoin, roster, folders, privacy, agents, prompt, timeContext, hostContext, tools, chatIndex, groups, groupLog, goals, approvals, resume, memory, parts, images, avatarLibrary, secrets, connectors, capabilities, learning, schedules, browser, browserPlugins, computer, usage, update, dshUpdate, thinking, threadQueue, feed, im, channel, joinedTurn, joinedPrompt, threadPrompt, mirrorGuard, joinedCreate, configSource, joinedPage, officeSkills, goalSkills, localAgents]
+export const MODULES = [diagnostics, store, ledger, models, providers, permissions, turns, steer, handoffs, requests, delivery, workerBridge, rosterJoin, roster, folders, privacy, agents, prompt, timeContext, hostContext, tools, chatIndex, groups, goals, approvals, resume, memory, parts, images, avatarLibrary, secrets, connectors, capabilities, learning, schedules, browser, browserPlugins, computer, usage, update, dshUpdate, thinking, threadQueue, mobile, feed, phone, im, channel, joinedTurn, joinedPrompt, threadPrompt, mirrorGuard, joinedCreate, configSource, joinedPage, officeSkills, goalSkills, localAgents]
 
 export function apply(ctx, config = {}) {
   createRuntime(ctx, config)

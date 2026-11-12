@@ -106,6 +106,10 @@ test('T2-threads view reports live running and queued counts', async () => {
   assert.equal(again.value.threads.find(thread => thread.isMain).queued, 1)
 })
 
+// The pair's book of messages (ledger.js): v0.3.5 writes a message there before it goes out.
+const pairBook = (a, b) => `pair-${[a, b].sort().join('-')}`
+const bookOf = (w, a, b) => w.rt.ledger.records(pairBook(a, b))
+
 test("T2-team delivery waits for the running thread's turn/end", async () => {
   const w = threadWorld()
   const bot = await makeBot(w, 'Alpha')
@@ -118,14 +122,16 @@ test("T2-team delivery waits for the running thread's turn/end", async () => {
   assert.equal(w.followups.length, 0, 'a queued delivery must not write to the Session yet')
   assert.equal(w.flushes.length, 0)
   assert.equal(w.rt.state.exchanges.length, 0)
+  assert.equal(bookOf(w, bot.id, other.id).filter(record => record.id === exchangeId && record.event === undefined).length, 1, 'the message is in the book before it goes out')
   w.sessionEvent(bot.id, { type: 'turn/start', data: { turn: 1 }, time: Date.now() })
   w.sessionEvent(bot.id, { type: 'turn/end', data: { turn: 1 }, time: Date.now() })
   await tick()
   assert.equal(w.followups.length, 1)
   assert.equal(w.flushes.length, 1)
-  assert.equal(w.rt.state.exchanges.length, 1)
-  assert.equal(w.rt.state.exchanges[0].id, exchangeId)
-  assert.equal(w.rt.state.exchanges[0].to, bot.id)
+  assert.equal(w.rt.state.exchanges.length, 0)
+  const delivered = bookOf(w, bot.id, other.id).filter(record => record.event === 'delivered' && record.id === exchangeId)
+  assert.equal(delivered.length, 1, 'the delivery is marked in the book')
+  assert.equal(delivered[0].sessionId, bot.id)
 })
 
 test('T2-steer delivery is not queued', async () => {
@@ -139,7 +145,8 @@ test('T2-steer delivery is not queued', async () => {
   assert.equal(typeof exchangeId, 'string')
   assert.equal(w.steers.length, 1)
   assert.equal(w.followups.length, 0)
-  assert.equal(w.rt.state.exchanges.length, 1)
+  assert.equal(w.rt.state.exchanges.length, 0)
+  assert.equal(bookOf(w, bot.id, other.id).filter(record => record.event === 'delivered' && record.id === exchangeId).length, 1)
 })
 
 test('T2-room delivery is not gated', async () => {
