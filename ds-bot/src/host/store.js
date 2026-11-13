@@ -221,6 +221,10 @@ export function install(rt) {
       delete state.groups
       for (const bot of Object.values(state.bots)) delete bot.groupId
     }
+    // The migration above runs after `migrated` was first computed, and a canonical v2 team
+    // reaches this point with every other flag already true on disk: without this line the
+    // sections would live in memory only until some later save.
+    if (groupsMigrated) migrated = true
     const sectionIds = new Set(state.sections.map(sec => sec.id))
     for (const entry of [...Object.values(state.bots), ...Object.values(state.rooms), ...Object.values(state.agents)]) {
       if (entry.sectionId !== undefined && (typeof entry.sectionId !== 'string' || !sectionIds.has(entry.sectionId) || entry.id === state.mainBotIds[0])) {

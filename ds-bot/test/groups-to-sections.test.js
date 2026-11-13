@@ -110,6 +110,46 @@ describe('S50-groups-migrate: state.groups becomes sections once, and never come
     assert.equal(w.onDisk().groups, undefined)
   })
 
+  it('M-v2-disk: a canonical v2 team writes the migrated sections to disk on load alone', async () => {
+    // A team saved by this version carries capabilities.items, whaleStored and federation, so
+    // every other reason to save is already settled on disk. Only the groups migration is
+    // left to do, and it has to reach the file by itself: the version 1 seeds above also trip
+    // hadCapabilities, which masked a migration that lived in memory only.
+    const first = world()
+    await first.rt.load()
+    await first.rt.save()
+    const canonical = first.onDisk()
+    assert.equal(canonical.capabilities.items !== undefined, true, 'the seed has canonical capabilities')
+    assert.equal(canonical.whaleStored, true, 'the seed has the whale already stored')
+    assert.equal(canonical.federation !== undefined, true, 'the seed has federation state')
+
+    canonical.groups = GROUPS
+    canonical.sections = [{ id: 's1', name: 'Workflow', color: 'blue' }]
+    for (const bot of Object.values(canonical.bots)) delete bot.sectionId
+    for (const [id, group] of Object.entries(GROUPS)) {
+      for (const botId of group.botIds) canonical.bots[botId].groupId = id
+    }
+    writeFileSync(join(first.home, 'state.json'), JSON.stringify(canonical))
+
+    const ctx = fakeContext({})
+    ctx.connection.fetch.register = () => () => {}
+    ctx.sessionController = { prompt: async () => ({ accepted: true }), list: async () => ({ items: [] }), cancel: async () => ({ accepted: true }) }
+    const rt = createRuntime(ctx, { home: first.home })
+    await rt.load()
+
+    const disk = JSON.parse(readFileSync(join(first.home, 'state.json'), 'utf8'))
+    assert.deepEqual(disk.sections.map(sec => sec.id), ['s1', 'g1', 'g2'], 'the migration is on disk without an explicit save')
+    assert.equal(disk.bots.b1.sectionId, 'g1')
+    assert.equal(disk.bots.b3.sectionId, 'g2')
+    assert.equal(disk.groups, undefined, 'the old field is gone from the file')
+    assert.equal(disk.bots.b1.groupId, undefined)
+
+    const before = readFileSync(join(first.home, 'state.json'), 'utf8')
+    rt.loaded = undefined
+    await rt.load()
+    assert.equal(readFileSync(join(first.home, 'state.json'), 'utf8'), before, 'a second load does not touch the file again')
+  })
+
   it('M-old-endpoints: the custom group endpoints are no longer routed', async () => {
     const w = world()
     await w.rt.load()
