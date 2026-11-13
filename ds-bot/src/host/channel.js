@@ -267,8 +267,6 @@ export function install(rt) {
         ...(tail ? { lastAt: tail.lastAt, preview: tail.preview } : {}),
       }
     }),
-    // Bot custom groups (Worker Bot fleet etc.): { [groupId]: { id, name, color, order, collapsed, botIds } }
-    groups: state.groups ?? {},
     // `sessionId` is the group's own Session's current part, `ownParts` its earlier
     // ones; `parts` the members' hidden group Sessions and their earlier segments,
     // for usage.
@@ -772,61 +770,6 @@ export function install(rt) {
         case 'agent-session':
           await rt.load()
           return ok({ sessionId: await rt.createAgentSession(body.agentId, body.workspaceId) })
-        case 'rename-group': {
-          await rt.load()
-          const { id, name } = body
-          if (typeof name !== 'string' || !name.trim()) return fail('Group name required', 'bot/invalid')
-          if (!state.groups?.[id]) return fail('Unknown group', 'bot/not-found')
-          state.groups[id].name = name.trim()
-          await rt.save()
-          return ok({ groups: view().groups })
-        }
-        case 'toggle-bot-group': {
-          await rt.load()
-          const { id } = body
-          if (typeof id !== 'string' || !id) return fail('Missing group id', 'bot/invalid')
-          if (!state.groups) state.groups = {}
-          if (!state.groups[id]) return fail('Unknown group', 'bot/not-found')
-          state.groups[id].collapsed = !state.groups[id].collapsed
-          await rt.save()
-          return ok({ groups: view().groups })
-        }
-        case 'create-bot-group': {
-          await rt.load()
-          const { name, color, botIds } = body
-          if (typeof name !== 'string' || !name.trim()) return fail('Group name required', 'bot/invalid')
-          if (!state.groups) state.groups = {}
-          const { randomUUID } = await import('node:crypto')
-          const groupId = randomUUID()
-          state.groups[groupId] = { id: groupId, name: name.trim(), color: color ?? null, order: Object.keys(state.groups).length, collapsed: false, botIds: Array.isArray(botIds) ? botIds : [] }
-          await rt.save()
-          return ok({ groups: view().groups })
-        }
-        case 'delete-bot-group': {
-          await rt.load()
-          const { id } = body
-          if (!state.groups?.[id]) return fail('Unknown group', 'bot/not-found')
-          delete state.groups[id]
-          await rt.save()
-          return ok({ groups: view().groups })
-        }
-        case 'move-bot-to-group': {
-          await rt.load()
-          const { botId, groupId } = body
-          if (!rt.botOf(botId)) return fail('Unknown Bot', 'bot/not-found')
-          if (!state.groups) state.groups = {}
-          // Remove from any current group first.
-          for (const g of Object.values(state.groups)) {
-            g.botIds = (g.botIds ?? []).filter(id => id !== botId)
-          }
-          if (groupId && state.groups[groupId]) {
-            if (!state.groups[groupId].botIds.includes(botId)) state.groups[groupId].botIds.push(botId)
-          }
-          // Update bot record groupId.
-          if (state.bots[botId]) state.bots[botId].groupId = groupId ?? null
-          await rt.save()
-          return ok({ groups: view().groups })
-        }
         case 'agent-adopt':
           await rt.load()
           return ok({ sessionId: await rt.adoptAgentSession(body.agentId, body.sessionId) })

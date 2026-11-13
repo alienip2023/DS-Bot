@@ -14327,11 +14327,6 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
     setTeamWorkspace: (path2) => after(call2("team-workspace", { path: path2 })),
     deleteBot: (id) => after(call2("delete-bot", { id })),
     releasePrivate: (id) => after(call2("private-release", { id })),
-    toggleBotGroup: (id) => after(call2("toggle-bot-group", { id })),
-    createBotGroup: (name, botIds) => after(call2("create-bot-group", { name, botIds: botIds ?? [] })),
-    deleteBotGroup: (id) => after(call2("delete-bot-group", { id })),
-    moveBotToGroup: (botId, groupId) => after(call2("move-bot-to-group", { botId, groupId })),
-    renameGroup: (id, name) => after(call2("rename-group", { id, name })),
     duplicateBot: (id) => after(call2("duplicate-bot", { id })),
     setPrefs: (prefs) => after(call2("set-prefs", prefs)),
     setMain: (id, main = true, options = {}) => after(call2("set-main", { id, main, ...options })),
@@ -27902,145 +27897,6 @@ var waitingFor = (roster, waits) => {
   const names = [...(waits?.bots ?? []).map((id) => roster.byId[id]?.name), ...(waits?.rooms ?? []).map((id) => roster.roomsById[id]?.name)].filter(Boolean);
   return names.length === 0 ? "" : t("Waiting for {names}", { names: names.join(t(" and ")) });
 };
-function GroupHeaderRow({ group, actions, wideContent }) {
-  if (!wideContent) return null;
-  const { id, name, onlineCount, totalCount, collapsed } = group;
-  const [renaming, setRenaming] = (0, import_react35.useState)(false);
-  const [renameValue, setRenameValue] = (0, import_react35.useState)("");
-  const inputRef = (0, import_react35.useRef)(null);
-  (0, import_react35.useEffect)(() => {
-    if (renaming) {
-      setRenameValue(name);
-      inputRef.current?.focus();
-    }
-  }, [renaming]);
-  const submitRename = () => {
-    const next = renameValue.trim();
-    if (next && next !== name) actions.renameGroup?.(id, next);
-    setRenaming(false);
-  };
-  const label = `${name} (${onlineCount}/${totalCount})`;
-  const indicator = onlineCount > 0 ? "🟢" : "⚪";
-  if (renaming) {
-    return (0, import_react35.createElement)(
-      "div",
-      {
-        className: "bt-group-header",
-        style: { display: "flex", alignItems: "center", padding: "4px 12px", gap: 6, fontSize: "0.78em" }
-      },
-      (0, import_react35.createElement)("input", {
-        ref: inputRef,
-        value: renameValue,
-        placeholder: name,
-        style: { flex: 1, fontSize: "1em", padding: "2px 6px", borderRadius: 4, border: "1px solid var(--bt-line-2)", background: "transparent" },
-        onChange: (e) => setRenameValue(e.target.value),
-        onKeyDown: (e) => {
-          if (e.key === "Enter") submitRename();
-          if (e.key === "Escape") setRenaming(false);
-        }
-      }),
-      (0, import_react35.createElement)("button", { type: "button", style: { fontSize: "0.85em", padding: "2px 8px", cursor: "pointer" }, onClick: submitRename }, "确定"),
-      (0, import_react35.createElement)("button", { type: "button", style: { fontSize: "0.85em", padding: "2px 6px", cursor: "pointer" }, onClick: () => setRenaming(false) }, "取消")
-    );
-  }
-  return (0, import_react35.createElement)(
-    "div",
-    {
-      className: "bt-group-header",
-      ref: bindPointerMenu(actions.openMenu, () => ({ kind: "group", id, name, onRename: () => setRenaming(true) })),
-      style: { display: "flex", alignItems: "center", padding: "4px 12px", opacity: 0.7, fontSize: "0.78em", fontWeight: 600, letterSpacing: "0.04em", userSelect: "none" },
-      "aria-label": label
-    },
-    (0, import_react35.createElement)(
-      "div",
-      {
-        style: { display: "flex", alignItems: "center", flex: 1, cursor: "pointer" },
-        role: "button",
-        "aria-expanded": String(!collapsed),
-        onClick: () => actions.toggleBotGroup?.(id),
-        title: collapsed ? `展开 ${name}` : `收起 ${name}`
-      },
-      (0, import_react35.createElement)("span", { style: { marginRight: 4 } }, indicator),
-      (0, import_react35.createElement)("span", { style: { flex: 1 } }, name.toUpperCase()),
-      (0, import_react35.createElement)("span", { style: { marginRight: 6, fontVariantNumeric: "tabular-nums" } }, `${onlineCount}/${totalCount}`),
-      (0, import_react35.createElement)("span", { style: { fontSize: "0.9em" } }, collapsed ? "▶" : "▼")
-    ),
-    (0, import_react35.createElement)("button", {
-      type: "button",
-      "aria-label": `更多操作 ${name}`,
-      title: "更多操作",
-      style: { background: "none", border: "none", cursor: "pointer", padding: "0 4px", opacity: 0.5, fontSize: "0.95em" },
-      onClick: (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const r = e.currentTarget.getBoundingClientRect();
-        actions.openMenu({ kind: "group", id, name, x: r.left, y: r.bottom, onRename: () => setRenaming(true) });
-      }
-    }, "⋮"),
-    (0, import_react35.createElement)("button", {
-      type: "button",
-      "aria-label": `删除分组 ${name}`,
-      title: `删除分组 ${name}`,
-      style: { background: "none", border: "none", cursor: "pointer", padding: "0 4px", opacity: 0.6, fontSize: "0.95em" },
-      onClick: (e) => {
-        e.stopPropagation();
-        if (window.confirm(`删除分组「${name}」？`)) actions.deleteBotGroup?.(id);
-      }
-    }, "✕")
-  );
-}
-function NewGroupRow({ actions }) {
-  const [editing, setEditing] = (0, import_react35.useState)(false);
-  const [value, setValue] = (0, import_react35.useState)("");
-  const inputRef = (0, import_react35.useRef)(null);
-  (0, import_react35.useEffect)(() => {
-    if (editing) inputRef.current?.focus();
-  }, [editing]);
-  const submit = () => {
-    const name = value.trim();
-    if (!name) {
-      setEditing(false);
-      setValue("");
-      return;
-    }
-    actions.createBotGroup?.(name, []);
-    setEditing(false);
-    setValue("");
-  };
-  if (editing) return (0, import_react35.createElement)(
-    "div",
-    { style: { display: "flex", alignItems: "center", padding: "4px 12px", gap: 6 } },
-    (0, import_react35.createElement)("input", {
-      ref: inputRef,
-      value,
-      placeholder: "分组名称",
-      style: { flex: 1, fontSize: "0.82em", padding: "2px 6px", borderRadius: 4, border: "1px solid var(--bt-line-2)", background: "transparent" },
-      onChange: (e) => setValue(e.target.value),
-      onKeyDown: (e) => {
-        if (e.key === "Enter") submit();
-        if (e.key === "Escape") {
-          setEditing(false);
-          setValue("");
-        }
-      }
-    }),
-    (0, import_react35.createElement)("button", { type: "button", style: { fontSize: "0.8em", padding: "2px 8px", cursor: "pointer" }, onClick: submit }, "确定"),
-    (0, import_react35.createElement)("button", { type: "button", style: { fontSize: "0.8em", padding: "2px 6px", cursor: "pointer" }, onClick: () => {
-      setEditing(false);
-      setValue("");
-    } }, "取消")
-  );
-  return (0, import_react35.createElement)(
-    "div",
-    { style: { padding: "2px 12px" } },
-    (0, import_react35.createElement)("button", {
-      type: "button",
-      style: { background: "none", border: "none", cursor: "pointer", fontSize: "0.78em", opacity: 0.55, padding: "2px 0" },
-      title: "新建自定义分组",
-      onClick: () => setEditing(true)
-    }, "+ 新建分组")
-  );
-}
 function ThreadRow({ thread, bot, actions, useSessionRetainInfo, index, botActive }) {
   const joined = bot.origin === "joined" && bot.worker?.home === "remote" || bot.worker?.home === "node";
   const sessionId = thread.isMain === true ? bot.sessionId ?? bot.id : thread.sessionId;
@@ -28452,7 +28308,7 @@ function AgentRow({ agent, actions, useSessions, useSessionStatus, useUi, wide, 
   );
 }
 function renderSidebarEntry(entry, rowProps, markedUnread, onDragStart) {
-  return entry.kind === "bot" ? (0, import_react35.createElement)(BotRow, { key: entry.item.id, ...rowProps, bot: entry.item, marked: markedUnread[entry.item.id] === true, onDragStart }) : entry.kind === "room" ? (0, import_react35.createElement)(RoomRow, { key: entry.item.id, ...rowProps, room: entry.item, marked: markedUnread[entry.item.id] === true, onDragStart }) : entry.kind === "group-header" ? (0, import_react35.createElement)(GroupHeaderRow, { key: `group:${entry.item.id}`, group: entry.item, actions: rowProps.actions, wideContent: rowProps.wide }) : (0, import_react35.createElement)(AgentRow, { key: entry.item.id, ...rowProps, agent: entry.item, marked: markedUnread[entry.item.id] === true, onDragStart });
+  return entry.kind === "bot" ? (0, import_react35.createElement)(BotRow, { key: entry.item.id, ...rowProps, bot: entry.item, marked: markedUnread[entry.item.id] === true, onDragStart }) : entry.kind === "room" ? (0, import_react35.createElement)(RoomRow, { key: entry.item.id, ...rowProps, room: entry.item, marked: markedUnread[entry.item.id] === true, onDragStart }) : (0, import_react35.createElement)(AgentRow, { key: entry.item.id, ...rowProps, agent: entry.item, marked: markedUnread[entry.item.id] === true, onDragStart });
 }
 function SectionBlock({ section, entries: entries2, rowProps, markedUnread, renaming, dropTarget, onDragStart, onDragOverSec, onDropSec }) {
   const { roster, actions, useSessions, useSessionStatus, useWork, wide } = rowProps;
@@ -28743,26 +28599,11 @@ function TeamSidebar(props) {
   });
   const order = (0, import_react35.useMemo)(() => {
     const stamps = JSON.parse(updated);
-    const groups = roster.groups ?? {};
-    const groupedBotIds = new Set(Object.values(groups).flatMap((g) => g.botIds ?? []));
-    const ungroupedBots = roster.bots.filter((bot) => bot.id !== roster.mainBotId && !groupedBotIds.has(bot.id)).map((bot) => ({ kind: "bot", item: bot, at: stamps[currentPart(bot)] ?? bot.createdAt }));
+    const botEntries = roster.bots.filter((bot) => bot.id !== roster.mainBotId).map((bot) => ({ kind: "bot", item: bot, at: stamps[currentPart(bot)] ?? bot.createdAt }));
     const roomEntries = roster.rooms.map((room2) => ({ kind: "room", item: room2, at: stamps[room2.id] ?? room2.createdAt }));
     const agentEntries = (roster.agents ?? []).map((agent) => ({ kind: "agent", item: agent, at: Math.max(0, ...agent.sessions.map((id) => stamps[id] ?? 0)) || agent.createdAt }));
-    const groupEntries2 = [];
-    const sortedGroups = Object.values(groups).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-    for (const group of sortedGroups) {
-      const memberBots = (group.botIds ?? []).map((id) => roster.bots.find((bot) => bot.id === id)).filter(Boolean);
-      const onlineCount = memberBots.filter((bot) => bot.worker?.online).length;
-      groupEntries2.push({ kind: "group-header", item: { ...group, onlineCount, totalCount: memberBots.length }, at: 0 });
-      if (!group.collapsed) {
-        for (const bot of memberBots) {
-          groupEntries2.push({ kind: "bot", item: bot, at: stamps[currentPart(bot)] ?? bot.createdAt });
-        }
-      }
-    }
-    const entries2 = [...ungroupedBots, ...roomEntries, ...agentEntries, ...groupEntries2];
-    return entries2.sort(
-      (a, b) => a.kind === "group-header" || b.kind === "group-header" ? 0 : Number(Boolean(b.item.pinned)) - Number(Boolean(a.item.pinned)) || b.at - a.at
+    return [...botEntries, ...roomEntries, ...agentEntries].sort(
+      (a, b) => Number(Boolean(b.item.pinned)) - Number(Boolean(a.item.pinned)) || b.at - a.at
     );
   }, [roster, updated]);
   const sections = roster.sections ?? [];
@@ -29070,8 +28911,7 @@ function TeamSidebar(props) {
         onDragStart,
         onDragOverSec,
         onDropSec
-      })),
-      wideContent ? (0, import_react35.createElement)(NewGroupRow, { actions }) : null
+      }))
     ),
     foot
   );
@@ -38389,7 +38229,6 @@ function ContextMenu({ menu, roster, actions, useWork, leaving = false }) {
     setPlace({ left: Math.max(8, Math.min(menu.x, window.innerWidth - box.width - 8)), top: Math.max(8, Math.min(menu.y, viewBottom() - box.height - 8)) });
   }, [menu.x, menu.y, tick]);
   if (menu.kind === "agent" || menu.kind === "agent-session") return (0, import_react59.createElement)(AgentMenu, { menu, roster, actions, leaving });
-  if (menu.kind === "group") return (0, import_react59.createElement)(GroupMenu, { menu, roster, actions, leaving });
   if (menu.kind === "section" || menu.kind === "section-add") return (0, import_react59.createElement)(SectionMenu, { menu, roster, actions, leaving });
   const bot = roster.byId[menu.id];
   const room2 = roster.roomsById[menu.id];
@@ -38425,10 +38264,6 @@ function ContextMenu({ menu, roster, actions, useWork, leaving = false }) {
       isMainBot ? null : [room2 ? t("Delete group") : t("Delete"), TrashIcon, () => bot ? actions.deleteBot(bot.id) : actions.deleteRoom(menu.id), true]
     ]
   ].map((group) => group.filter(Boolean)).filter((group) => group.length > 0);
-  const groupList = Object.values(roster.groups ?? {}).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-  const currentGroupId2 = bot ? bot.groupId ?? null : null;
-  const moveToGroupItems = bot && groupList.length > 0 ? groupList.map((g) => [g.name, PinIcon, () => actions.moveBotToGroup(bot.id, currentGroupId2 === g.id ? null : g.id)]) : [];
-  if (bot && moveToGroupItems.length > 0) groups.splice(1, 0, moveToGroupItems);
   return (0, import_react59.createElement)(
     "div",
     { ref, className: "bt-menu", role: "menu", "aria-label": t("{name} actions", { name: bot?.name ?? room2.name }), style: place, "data-leaving": leaving || void 0 },
@@ -38655,45 +38490,6 @@ function AgentMenu({ menu, roster, actions, leaving }) {
           void Promise.resolve(run2()).catch((error) => console.warn("[ds-bot]", error));
         }
       }, (0, import_react59.createElement)(Icon), (0, import_react59.createElement)("span", { className: "bt-menu-label" }, label), checked ? (0, import_react59.createElement)("span", { className: "bt-menu-check" }, (0, import_react59.createElement)(CheckIcon)) : null))
-    ))
-  );
-}
-function GroupMenu({ menu, roster, actions, leaving }) {
-  const ref = (0, import_react59.useRef)(null);
-  const [place, setPlace] = (0, import_react59.useState)({ left: menu.x, top: menu.y });
-  const tick = useViewport();
-  (0, import_react59.useLayoutEffect)(() => {
-    const box = ref.current?.getBoundingClientRect();
-    if (!box) return;
-    setPlace({ left: Math.max(8, Math.min(menu.x, window.innerWidth - box.width - 8)), top: Math.max(8, Math.min(menu.y, viewBottom() - box.height - 8)) });
-  }, [menu.x, menu.y, tick]);
-  const groups = [
-    [
-      [t("Rename group"), PencilIcon, () => menu.onRename?.()]
-    ],
-    [
-      [t("Delete group"), TrashIcon, () => {
-        if (window.confirm(`删除分组「${menu.name}」？`)) return actions.deleteBotGroup(menu.id);
-      }, true]
-    ]
-  ];
-  return (0, import_react59.createElement)(
-    "div",
-    { ref, className: "bt-menu", role: "menu", "aria-label": t("{name} actions", { name: menu.name }), style: place, "data-leaving": leaving || void 0 },
-    groups.map((group, index) => (0, import_react59.createElement)(
-      import_react59.Fragment,
-      { key: index },
-      index > 0 ? (0, import_react59.createElement)("div", { className: "bt-menu-sep", role: "separator" }) : null,
-      group.map(([label, Icon, run2, danger]) => (0, import_react59.createElement)("button", {
-        key: label,
-        type: "button",
-        role: "menuitem",
-        className: danger ? "bt-danger" : void 0,
-        onClick: () => {
-          actions.closeMenu();
-          void Promise.resolve(run2()).catch((error) => actions.reportError(error, "menu"));
-        }
-      }, (0, import_react59.createElement)(Icon), label))
     ))
   );
 }

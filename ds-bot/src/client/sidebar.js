@@ -101,104 +101,6 @@ const waitingFor = (roster, waits) => {
   return names.length === 0 ? '' : t('Waiting for {names}', { names: names.join(t(' and ')) })
 }
 
-// GroupHeaderRow: collapsible section header for a custom Bot group (e.g. 执行机 fleet).
-// Shows the group name, online/total worker count, collapse toggle, and delete button.
-function GroupHeaderRow({ group, actions, wideContent }) {
-  if (!wideContent) return null
-  const { id, name, onlineCount, totalCount, collapsed } = group
-  const [renaming, setRenaming] = useState(false)
-  const [renameValue, setRenameValue] = useState('')
-  const inputRef = useRef(null)
-  useEffect(() => { if (renaming) { setRenameValue(name); inputRef.current?.focus() } }, [renaming])
-  const submitRename = () => {
-    const next = renameValue.trim()
-    if (next && next !== name) actions.renameGroup?.(id, next)
-    setRenaming(false)
-  }
-  const label = `${name} (${onlineCount}/${totalCount})`
-  const indicator = onlineCount > 0 ? '🟢' : '⚪'
-  if (renaming) {
-    return h('div', {
-      className: 'bt-group-header',
-      style: { display: 'flex', alignItems: 'center', padding: '4px 12px', gap: 6, fontSize: '0.78em' },
-    },
-      h('input', {
-        ref: inputRef,
-        value: renameValue,
-        placeholder: name,
-        style: { flex: 1, fontSize: '1em', padding: '2px 6px', borderRadius: 4, border: '1px solid var(--bt-line-2)', background: 'transparent' },
-        onChange: e => setRenameValue(e.target.value),
-        onKeyDown: e => { if (e.key === 'Enter') submitRename(); if (e.key === 'Escape') setRenaming(false) },
-      }),
-      h('button', { type: 'button', style: { fontSize: '0.85em', padding: '2px 8px', cursor: 'pointer' }, onClick: submitRename }, '确定'),
-      h('button', { type: 'button', style: { fontSize: '0.85em', padding: '2px 6px', cursor: 'pointer' }, onClick: () => setRenaming(false) }, '取消'))
-  }
-  return h('div', {
-    className: 'bt-group-header',
-    ref: bindPointerMenu(actions.openMenu, () => ({ kind: 'group', id, name, onRename: () => setRenaming(true) })),
-    style: { display: 'flex', alignItems: 'center', padding: '4px 12px', opacity: 0.7, fontSize: '0.78em', fontWeight: 600, letterSpacing: '0.04em', userSelect: 'none' },
-    'aria-label': label,
-  },
-    h('div', {
-      style: { display: 'flex', alignItems: 'center', flex: 1, cursor: 'pointer' },
-      role: 'button',
-      'aria-expanded': String(!collapsed),
-      onClick: () => actions.toggleBotGroup?.(id),
-      title: collapsed ? `展开 ${name}` : `收起 ${name}`,
-    },
-      h('span', { style: { marginRight: 4 } }, indicator),
-      h('span', { style: { flex: 1 } }, name.toUpperCase()),
-      h('span', { style: { marginRight: 6, fontVariantNumeric: 'tabular-nums' } }, `${onlineCount}/${totalCount}`),
-      h('span', { style: { fontSize: '0.9em' } }, collapsed ? '▶' : '▼')),
-    h('button', {
-      type: 'button',
-      'aria-label': `更多操作 ${name}`,
-      title: '更多操作',
-      style: { background: 'none', border: 'none', cursor: 'pointer', padding: '0 4px', opacity: 0.5, fontSize: '0.95em' },
-      onClick: (e) => { e.preventDefault(); e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); actions.openMenu({ kind: 'group', id, name, x: r.left, y: r.bottom, onRename: () => setRenaming(true) }) },
-    }, '⋮'),
-    h('button', {
-      type: 'button',
-      'aria-label': `删除分组 ${name}`,
-      title: `删除分组 ${name}`,
-      style: { background: 'none', border: 'none', cursor: 'pointer', padding: '0 4px', opacity: 0.6, fontSize: '0.95em' },
-      onClick: (e) => { e.stopPropagation(); if (window.confirm(`删除分组「${name}」？`)) actions.deleteBotGroup?.(id) },
-    }, '✕'))
-}
-
-// NewGroupRow: inline row at the bottom of the Bot list to create a custom group.
-function NewGroupRow({ actions }) {
-  const [editing, setEditing] = useState(false)
-  const [value, setValue] = useState('')
-  const inputRef = useRef(null)
-  useEffect(() => { if (editing) inputRef.current?.focus() }, [editing])
-  const submit = () => {
-    const name = value.trim()
-    if (!name) { setEditing(false); setValue(''); return }
-    actions.createBotGroup?.(name, [])
-    setEditing(false)
-    setValue('')
-  }
-  if (editing) return h('div', { style: { display: 'flex', alignItems: 'center', padding: '4px 12px', gap: 6 } },
-    h('input', {
-      ref: inputRef,
-      value,
-      placeholder: '分组名称',
-      style: { flex: 1, fontSize: '0.82em', padding: '2px 6px', borderRadius: 4, border: '1px solid var(--bt-line-2)', background: 'transparent' },
-      onChange: e => setValue(e.target.value),
-      onKeyDown: e => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') { setEditing(false); setValue('') } },
-    }),
-    h('button', { type: 'button', style: { fontSize: '0.8em', padding: '2px 8px', cursor: 'pointer' }, onClick: submit }, '确定'),
-    h('button', { type: 'button', style: { fontSize: '0.8em', padding: '2px 6px', cursor: 'pointer' }, onClick: () => { setEditing(false); setValue('') } }, '取消'))
-  return h('div', { style: { padding: '2px 12px' } },
-    h('button', {
-      type: 'button',
-      style: { background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.78em', opacity: 0.55, padding: '2px 0' },
-      title: '新建自定义分组',
-      onClick: () => setEditing(true),
-    }, '+ 新建分组'))
-}
-
 // One Thread of a local Bot. A joined Bot has only its Main row for now; it opens the
 // Bot's home page, not a plain Session (the node's Session is not opened here yet).
 export function ThreadRow({ thread, bot, actions, useSessionRetainInfo, index, botActive }) {
@@ -526,11 +428,7 @@ function renderSidebarEntry(entry, rowProps, markedUnread, onDragStart) {
     ? h(BotRow, { key: entry.item.id, ...rowProps, bot: entry.item, marked: markedUnread[entry.item.id] === true, onDragStart })
     : entry.kind === 'room'
       ? h(RoomRow, { key: entry.item.id, ...rowProps, room: entry.item, marked: markedUnread[entry.item.id] === true, onDragStart })
-      : entry.kind === 'group-header'
-        // This fork's custom Bot groups (state.groups) keep their own header; upstream's sections are a
-        // separate model (state.sections) and a header carries no sectionId, so it lists with the ungrouped.
-        ? h(GroupHeaderRow, { key: `group:${entry.item.id}`, group: entry.item, actions: rowProps.actions, wideContent: rowProps.wide })
-        : h(AgentRow, { key: entry.item.id, ...rowProps, agent: entry.item, marked: markedUnread[entry.item.id] === true, onDragStart })
+      : h(AgentRow, { key: entry.item.id, ...rowProps, agent: entry.item, marked: markedUnread[entry.item.id] === true, onDragStart })
 }
 
 function SectionBlock({ section, entries, rowProps, markedUnread, renaming, dropTarget, onDragStart, onDragOverSec, onDropSec }) {
@@ -782,37 +680,13 @@ export function TeamSidebar(props) {
   })
   const order = useMemo(() => {
     const stamps = JSON.parse(updated)
-    // Collect ungrouped bots and rooms/agents first.
-    const groups = roster.groups ?? {}
-    const groupedBotIds = new Set(Object.values(groups).flatMap(g => g.botIds ?? []))
-
-    const ungroupedBots = roster.bots
-      .filter(bot => bot.id !== roster.mainBotId && !groupedBotIds.has(bot.id))
+    const botEntries = roster.bots
+      .filter(bot => bot.id !== roster.mainBotId)
       .map(bot => ({ kind: 'bot', item: bot, at: stamps[currentPart(bot)] ?? bot.createdAt }))
-
     const roomEntries = roster.rooms.map(room => ({ kind: 'room', item: room, at: stamps[room.id] ?? room.createdAt }))
     const agentEntries = (roster.agents ?? []).map(agent => ({ kind: 'agent', item: agent, at: Math.max(0, ...agent.sessions.map(id => stamps[id] ?? 0)) || agent.createdAt }))
-
-    // Build group-header + group-bot entries for each custom group.
-    const groupEntries = []
-    const sortedGroups = Object.values(groups).sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
-    for (const group of sortedGroups) {
-      const memberBots = (group.botIds ?? [])
-        .map(id => roster.bots.find(bot => bot.id === id))
-        .filter(Boolean)
-      const onlineCount = memberBots.filter(bot => bot.worker?.online).length
-      groupEntries.push({ kind: 'group-header', item: { ...group, onlineCount, totalCount: memberBots.length }, at: 0 })
-      if (!group.collapsed) {
-        for (const bot of memberBots) {
-          groupEntries.push({ kind: 'bot', item: bot, at: stamps[currentPart(bot)] ?? bot.createdAt })
-        }
-      }
-    }
-
-    const entries = [...ungroupedBots, ...roomEntries, ...agentEntries, ...groupEntries]
-    return entries.sort((a, b) =>
-      a.kind === 'group-header' || b.kind === 'group-header' ? 0
-        : Number(Boolean(b.item.pinned)) - Number(Boolean(a.item.pinned)) || b.at - a.at
+    return [...botEntries, ...roomEntries, ...agentEntries].sort((a, b) =>
+      Number(Boolean(b.item.pinned)) - Number(Boolean(a.item.pinned)) || b.at - a.at
     )
   }, [roster, updated])
   const sections = roster.sections ?? []
@@ -1128,7 +1002,7 @@ export function TeamSidebar(props) {
         onDragOverSec,
         onDropSec,
       })),
-      wideContent ? h(NewGroupRow, { actions }) : null),
+    ),
     foot)
   return h(Fragment, null,
     h(TitleToggle, { hidden: mode === 'hidden', onToggle }),

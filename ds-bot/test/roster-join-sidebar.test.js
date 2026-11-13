@@ -142,7 +142,7 @@ function rosterOf(state) {
 }
 
 function propsFor(roster, opened) {
-  const names = ['openAgent', 'openAgentSession', 'newAgentSession', 'openPalette', 'openNewChat', 'toggleSidebar', 'toggleLeftHidden', 'clearUnread', 'renameGroup', 'deleteBotGroup', 'toggleBotGroup', 'createBotGroup', 'setLeftDrawer', 'landOn']
+  const names = ['openAgent', 'openAgentSession', 'newAgentSession', 'openPalette', 'openNewChat', 'toggleSidebar', 'toggleLeftHidden', 'clearUnread', 'setLeftDrawer', 'landOn']
   const actions = Object.fromEntries(names.map(name => [name, () => {}]))
   actions.openSession = (id) => { opened.push(id) }
   actions.openMenu = () => {}
