@@ -11,7 +11,7 @@
  *   On node offline or timeout returns { sessionId: botId, items: [offline-item], cursor: null }.
  */
 import { randomUUID } from 'node:crypto'
-import { checkWorkDirRoots } from './joined-create.js'
+import { checkWorkDirRoots, cleanMemory } from './joined-create.js'
 import { joinedShadow } from './roster-join.js'
 
 const JOINED_HISTORY_TIMEOUT_MS = 15_000
@@ -154,19 +154,40 @@ export async function joinedUpdateBot(rt, botId, patch) {
   if (!registry || typeof registry.send !== 'function') return { ok: false, error: 'bridge-down' }
 
   const online = typeof registry.onlineNodes === 'function' ? registry.onlineNodes() : []
-  if (!online.some(n => n.nodeId === nodeId)) return { ok: false, error: 'node-offline' }
+  const node = online.find(n => n.nodeId === nodeId)
+  if (!node) return { ok: false, error: 'node-offline' }
+
+  // The memory backend rides along with `bot/update`, but only to a node that can take
+  // it: a node older than ra 0.10.1-fork.76 rejects a frame whose only content is
+  // memoryConfig and sends no result, which would leave the hub waiting 30 seconds.
+  // With an old node the field is dropped and the rest of the patch still goes.
+  let requestedMemory = null
+  if (patch.memoryConfig !== undefined && patch.memoryConfig !== null) {
+    requestedMemory = cleanMemory(patch.memoryConfig)
+    if (requestedMemory === null) return { ok: false, error: 'bot-update-memory-invalid' }
+  }
+  const caps = Array.isArray(node.hello?.caps) ? node.hello.caps : (Array.isArray(node.caps) ? node.caps : [])
+  const nodeTakesMemory = caps.includes('bot-memory-update/1')
+  const otherPatch = ['model', 'effort', 'instructions', 'workDir']
+    .some(key => patch[key] !== undefined && patch[key] !== null)
+  if (requestedMemory !== null && !nodeTakesMemory && !otherPatch) {
+    return { ok: false, error: 'bot-update-memory-unsupported' }
+  }
+  const sentMemory = requestedMemory !== null && nodeTakesMemory
 
   const requestId = crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)
   const timeoutMs = rt.botUpdateTimeoutMs ?? BOT_UPDATE_TIMEOUT_MS
   const waiter = listenBotUpdateResult(registry, requestId, nodeId, timeoutMs)
 
-  const sent = registry.send(nodeId, 'bot/update', {
+  const frame = {
     nodeId, requestId, remoteBotId,
     model: patch.model ?? null,
     effort: patch.effort ?? null,
     instructions: patch.instructions ?? null,
     workDir: patch.workDir ?? null,
-  })
+  }
+  if (sentMemory) frame.memoryConfig = requestedMemory
+  const sent = registry.send(nodeId, 'bot/update', frame)
   if (sent !== true) {
     waiter.cancel()
     return { ok: false, error: 'bridge-down' }
@@ -183,8 +204,21 @@ export async function joinedUpdateBot(rt, botId, patch) {
     bot.appliedModel = result.model
   }
   if (result.effort !== undefined) bot.effort = result.effort
+  // Only trust the backend the node applied: it validates the enum on its own side, so
+  // the shadow row must show what the Bot row there now says, not what we asked for.
+  if (sentMemory) {
+    if (result.memoryConfig === null || result.memoryConfig === undefined) delete bot.memoryConfig
+    else {
+      const applied = cleanMemory(result.memoryConfig)
+      if (applied !== null) bot.memoryConfig = applied
+    }
+  }
   await rt.save?.()
-  return { ok: true, model: result.model, effort: result.effort, instructions: result.instructions, workDir: result.workDir }
+  return {
+    ok: true, model: result.model, effort: result.effort,
+    instructions: result.instructions, workDir: result.workDir,
+    ...(sentMemory ? { memoryConfig: bot.memoryConfig ?? null } : {}),
+  }
 }
 
 // ── bot/update node side ──────────────────────────────────────────────────────
@@ -196,6 +230,15 @@ export function createBotUpdateReceiver(rt) {
 
     const workDir = spec.workDir ?? null
     const modelRef = typeof spec.model === 'string' ? spec.model : null
+    const memoryConfig = spec.memoryConfig ?? null
+    // The hub already cleaned this, but a node must not take a malformed value from the
+    // wire. Whether the backend exists is the roster's call: an unknown value is
+    // dropped there exactly as it is on creation.
+    if (memoryConfig !== null
+      && (typeof memoryConfig !== 'object' || Array.isArray(memoryConfig)
+        || typeof memoryConfig.backend !== 'string' || memoryConfig.backend.trim() === '')) {
+      return { ok: false, error: 'bot-update-memoryConfig-invalid' }
+    }
 
     // workDir boundary check — reuse shared checkWorkDirRoots (fail-closed, same as createBotCreateReceiver)
     if (workDir !== null) {
@@ -228,10 +271,18 @@ export function createBotUpdateReceiver(rt) {
       if (spec.effort !== null) patch.effort = spec.effort
       if (spec.instructions !== null) patch.instructions = spec.instructions
       if (spec.workDir !== null) patch.workDir = spec.workDir
+      if (memoryConfig !== null) patch.memoryConfig = { backend: memoryConfig.backend.trim() }
       // The hub is the one writer allowed to change a managed Bot's model and level.
       const bot = await rt.updateBot(remoteBotId, patch, undefined, undefined, { allowManagedModel: true })
       if (!bot) return { ok: false, error: 'bot-update-not-found' }
-      return { ok: true, model: bot.model ?? null, effort: bot.effort ?? null, instructions: bot.instructions ?? null, workDir: bot.workDir ?? null }
+      return {
+        ok: true,
+        model: bot.model ?? null,
+        effort: bot.effort ?? null,
+        instructions: bot.instructions ?? null,
+        workDir: bot.workDir ?? null,
+        memoryConfig: bot.memoryConfig?.backend ? { backend: bot.memoryConfig.backend } : null,
+      }
     } catch (err) {
       return { ok: false, error: 'bot-update-failed: ' + (err?.message ?? String(err)) }
     }

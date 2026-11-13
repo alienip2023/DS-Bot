@@ -17,7 +17,10 @@ function trimmed(value) {
 // The memory backend the main picked for the Bot it is creating on a node. The node's
 // own roster validates MEMORY_BACKENDS again, so an unknown value is dropped there;
 // sending only a known value keeps a typo from reaching the frame at all.
-function cleanMemory(input) {
+//
+// Exported for the update path: `bot/update` must apply the same rule as creation,
+// otherwise a typo could reach a node that stores it as-is.
+export function cleanMemory(input) {
   if (input === null || typeof input !== 'object' || Array.isArray(input)) return null
   return MEMORY_BACKENDS.includes(input.backend) ? { backend: input.backend } : null
 }
