@@ -148,4 +148,10 @@ test('a managed Bot on a route that is not a model endpoint shows the main\'s co
   await refusal
   assert.equal(w.rt.state.bots.b1.model, 'm3probe/ling-mini', 'the main still owns the model it chose')
   assert.equal((await w.rt.catalog({ fresh: true })).some(entry => entry.ref === 'm3probe/ling-mini'), false, 'the route stays out of the catalog')
+  // The route is marked, not rewritten: a later turn that falls through to NO_ADAPTER
+  // still shows the main's card, and the route is refused only once.
+  w.emit('b1', 'turn/start', { turn: 2 }, session)
+  w.emit('b1', 'turn/end', { turn: 2, reason: { kind: 'error', error: { code: 'NO_ADAPTER', message: 'no adapter for route m3probe/ling-mini' } } }, session)
+  assert.equal(w.failures[1].code, 'E_BOT_MODEL_UNAVAILABLE')
+  assert.deepEqual(refused, ['m3probe/ling-mini'])
 })
