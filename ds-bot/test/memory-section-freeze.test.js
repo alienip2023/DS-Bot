@@ -58,3 +58,23 @@ test('a change of role re-renders even though the snapshot did not move', async 
   assert.match(demoted, /tell a Main Bot with message_bot/)
   assert.doesNotMatch(demoted, /As a Main Bot you write it/)
 })
+
+test('turning federation off shows the off text in the same Session, and on again shows the snapshot', async (t) => {
+  const { rt, section, stop } = startNode({ link: fakeLink() })
+  t.after(() => stop())
+  await rt.load()
+
+  await rt.memoryNode.apply(snapshot(5, { node: '- node keeps tea' }))
+  const shown = section('b1')
+  assert.match(shown, /- node keeps tea/)
+
+  rt.state.prefs = { ...(rt.state.prefs ?? {}), memoryFederation: false }
+  const off = section('b1')
+  assert.match(off, /Federated memory is turned off on this node/)
+  assert.doesNotMatch(off, /- node keeps tea/)
+
+  rt.state.prefs.memoryFederation = true
+  const back = section('b1')
+  assert.match(back, /- node keeps tea/)
+  assert.doesNotMatch(back, /turned off on this node/)
+})

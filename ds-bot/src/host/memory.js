@@ -914,18 +914,20 @@ export function install(rt) {
   // 远端 Bot 的 Main 会话是唯一入口，hub 写入后必须在同一会话的下一回合读到新快照。
   // 失效键是节点应用快照的时间 `cached.at`（memory-federation.js 的 nodeSnapshot 每次应用
   // 都刷新它，同 seq 重推也刷新）；同一 at 复用已渲染文本，at 变化必须重渲染。marks 变化
-  // 仍重渲染。文件记忆那套 frozen/snapshotPath 不在这里。
+  // 仍重渲染。`enabled()` 不进失效键：`cached()` 不读 prefs，关掉开关后 `at` 不变，若先查
+  // kept 就会一直返回旧快照。所以开关判断在复用之前，关闭后下一回合立刻是关闭文案。
+  // 文件记忆那套 frozen/snapshotPath 不在这里。
   /** @type {Map<string, { text: string, at: number }>} */
   const frozenFederation = new Map()
   function federationSectionFor(sessionId, bot) {
     const marks = [teamRule(rt.isMain(bot.id), writesTeam(bot.id), rt.isPrivate(bot.id))]
     const holds = text => marks.every(mark => text.includes(mark))
-    const at = Number(rt.memoryNode?.cached(bot)?.at) || 0
-    const kept = frozenFederation.get(sessionId)
-    if (kept !== undefined && kept.at === at && holds(kept.text)) return kept.text
     if (rt.memoryNode === undefined || rt.memoryNode.enabled() === false) {
       return ['# Your memory', memoryRules(reviewOn), ...marks, '', 'Federated memory is turned off on this node, so there is no memory to show.'].join('\n')
     }
+    const at = Number(rt.memoryNode.cached(bot)?.at) || 0
+    const kept = frozenFederation.get(sessionId)
+    if (kept !== undefined && kept.at === at && holds(kept.text)) return kept.text
     let text
     try {
       text = federationSection(bot).text
