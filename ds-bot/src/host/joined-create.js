@@ -173,6 +173,10 @@ export async function createBotOnNode(rt, { nodeId, name, role, modelRef = null,
   const now = Date.now()
   if (!rt.state.bots || typeof rt.state.bots !== 'object') rt.state.bots = {}
   const existing = rt.state.bots[shadowBotId]
+  // `undefined` here means "this row never had a backend" and must stay that way; the
+  // node's own Bot kept whatever default it was built with, so a hub-side default would
+  // describe a federation that does not exist.
+  const keptMemoryConfig = existing === undefined ? memory : (chosen ?? existing.memoryConfig)
   rt.state.bots[shadowBotId] = {
     ...(existing ?? {}),
     id: shadowBotId,
@@ -187,9 +191,12 @@ export async function createBotOnNode(rt, { nodeId, name, role, modelRef = null,
     effort: effort ?? null,
     createdAt: existing?.createdAt ?? now,
     capabilities: existing?.capabilities ?? [],
-    // Re-reporting an existing joined Bot must not change the backend it runs with;
-    // only a creation that named one (or a row that never had one) writes it.
-    memoryConfig: chosen === null && existing?.memoryConfig !== undefined ? existing.memoryConfig : memory,
+    // A row that is already known keeps the backend it runs with, including "never set":
+    // re-reporting must not add today's default to a Bot created before the default
+    // existed, which would also leave the panel waiting on a snapshot the node will never
+    // send. Only a row this call creates gets `memory` (the explicit pick, else the
+    // default); an explicit pick still wins for an existing row.
+    ...(keptMemoryConfig === undefined ? {} : { memoryConfig: keptMemoryConfig }),
     worker: {
       ...(existing?.worker ?? {}),
       nodeId: nid,

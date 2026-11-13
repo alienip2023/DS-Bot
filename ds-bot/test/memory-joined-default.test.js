@@ -75,6 +75,19 @@ test('re-reporting a Bot that already has a backend leaves that row alone', asyn
   assert.deepEqual(registry.sent[0].data.memoryConfig, { backend: 'federation' })
 })
 
+test('re-reporting a row that never had a backend does not add the default', async () => {
+  const { rt } = runtime()
+  const id = shadowId('n1', 'rb1')
+  // Every joined row made before the federated default existed looks like this: the node
+  // reported the Bot, so the shadow row carries no backend at all.
+  rt.state.bots = { [id]: { id, name: 'Scout' } }
+  const result = await create(rt)
+  assert.equal(result.ok, true)
+  assert.equal(result.id, id)
+  assert.equal(Object.hasOwn(rt.state.bots[id], 'memoryConfig'), false)
+  assert.equal(rt.state.bots[id].memoryConfig, undefined)
+})
+
 test('the node end stores the backend the create frame carried', async () => {
   const seen = []
   const rt = {
