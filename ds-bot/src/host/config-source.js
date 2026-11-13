@@ -10,7 +10,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { env } from 'node:process'
 import { homedir } from 'node:os'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { createGatewayServer } from '../gateway/index.js'
 import { createTokenStore } from '../gateway/token-store.js'
 import { readUpstreamProviders } from '../gateway/upstream.js'
@@ -388,6 +388,128 @@ export function install(rt) {
       } else { defaultModel = null }
     } catch { defaultModel = null }
   }
+  // ── Change detection ─────────────────────────────────────────────────────
+  // A provider added, a key replaced or the team's default model changed shows up only in
+  // the payload the source builds: DSH's settings services emit no event for it. Each tick
+  // therefore fingerprints the BASE payload — providers and defaultModel, WITHOUT the
+  // per-node gateway token, which differs per node and would make every tick look changed.
+  // A node is pushed only when the fingerprint it applied is behind, at most once per 2s;
+  // rounds are debounced by 1s. A failed push is retried after 5s/15s/60s; three failures
+  // in a row mark that node stale. Only the code is kept, never a key or a payload.
+  const PUSH_DEBOUNCE_MS = 1_000
+  const NODE_PUSH_MIN_MS = 2_000
+  const PUSH_BACKOFF_MS = [5_000, 15_000, 60_000]
+  const syncNodes = new Map()
+  let lastFingerprint = null
+  let lastPushRoundAt = 0
+
+  const syncEntry = (nodeId) => {
+    let entry = syncNodes.get(nodeId)
+    if (entry === undefined) {
+      entry = { attempts: 0, retryAt: 0, lastPushAt: 0, appliedAtFingerprint: null, configStale: false, appliedRevision: null, lastError: null }
+      syncNodes.set(nodeId, entry)
+    }
+    return entry
+  }
+
+  // The same providers and defaultModel the source would hand a node, minus its gateway
+  // token: schema 1, no gateway option, so no per-node bytes enter the hash.
+  const baseFingerprint = () => {
+    const payload = buildConfigPayload(rt, { defaultModel })
+    return createHash('sha256')
+      .update(JSON.stringify({ providers: payload?.providers ?? [], defaultModel: payload?.defaultModel ?? null }))
+      .digest('hex')
+  }
+
+  // A node that refused a push (ack ok:false) is behind exactly like one whose frame did
+  // not go out: same backoff, same stale mark. Only the code is kept.
+  const notePushFailure = (entry, code) => {
+    entry.attempts += 1
+    entry.lastError = typeof code === 'string' && code !== '' ? code.slice(0, 64) : 'push-failed'
+    entry.configStale = entry.attempts >= PUSH_BACKOFF_MS.length
+    entry.retryAt = Date.now() + PUSH_BACKOFF_MS[Math.min(entry.attempts - 1, PUSH_BACKOFF_MS.length - 1)]
+  }
+
+  const pushRound = (service, fingerprint) => {
+    const now = Date.now()
+    if (now - lastPushRoundAt < PUSH_DEBOUNCE_MS) return
+    let nodes
+    try { nodes = ctx?.get?.('remote-agent:registry')?.onlineNodes?.() ?? [] } catch { nodes = [] }
+    if (nodes.length === 0) return
+    lastPushRoundAt = now
+    for (const node of nodes) {
+      const nodeId = node?.nodeId
+      if (typeof nodeId !== 'string' || nodeId === '') continue
+      const entry = syncEntry(nodeId)
+      if (entry.appliedAtFingerprint === fingerprint) continue
+      if (now - entry.lastPushAt < NODE_PUSH_MIN_MS) continue
+      if (entry.retryAt > now) continue
+      entry.lastPushAt = now
+      let sent = false
+      try { sent = service.sendPush(nodeId) !== false } catch { sent = false }
+      if (sent) {
+        entry.appliedAtFingerprint = fingerprint
+        entry.attempts = 0
+        entry.retryAt = 0
+        entry.configStale = false
+        entry.lastError = null
+        rt.warn?.('ds-bot: config-sync pushed to %s', nodeId)
+      } else {
+        notePushFailure(entry, 'push-failed')
+        rt.warn?.('ds-bot: config-sync push to %s failed (%d tries)', nodeId, entry.attempts)
+      }
+    }
+    // The fingerprint counts as pushed once every online node has it; a node still backing
+    // off keeps the next tick comparing, and only that node is retried (rate limit above).
+    if (nodes.every(node => {
+      const nodeId = node?.nodeId
+      return typeof nodeId !== 'string' || nodeId === '' || syncEntry(nodeId).appliedAtFingerprint === fingerprint
+    })) lastFingerprint = fingerprint
+  }
+
+  const compareAndPush = () => {
+    let service
+    try { service = ctx?.get?.('remote-agent:config-sync') } catch { service = undefined }
+    if (!service || typeof service.sendPush !== 'function') return
+    const fingerprint = baseFingerprint()
+    if (fingerprint === lastFingerprint) return
+    pushRound(service, fingerprint)
+  }
+
+  // A failing config push stays visible: `bot-create-targets` reads this per node.
+  rt.configSyncStatus = (nodeId) => {
+    const entry = typeof nodeId === 'string' ? syncNodes.get(nodeId) : undefined
+    return {
+      configStale: entry?.configStale === true,
+      appliedRevision: Number.isInteger(entry?.appliedRevision) ? entry.appliedRevision : null,
+      lastError: typeof entry?.lastError === 'string' ? entry.lastError : null,
+    }
+  }
+
+  // A node answers every push with a receipt; a refusal moves it back exactly like a frame
+  // that never left. Subscribed once, on the tick the registry first exists.
+  let watchingAcks = false
+  const watchAcks = () => {
+    if (watchingAcks) return
+    let registry
+    try { registry = ctx?.get?.('remote-agent:registry') } catch { registry = undefined }
+    if (!registry || typeof registry.on !== 'function') return
+    watchingAcks = true
+    registry.on('configAck', (ev) => {
+      try {
+        const nodeId = ev?.nodeId
+        if (typeof nodeId !== 'string' || nodeId === '') return
+        const entry = syncEntry(nodeId)
+        if (ev.ok === false) { notePushFailure(entry, ev.error); return }
+        entry.attempts = 0
+        entry.retryAt = 0
+        entry.configStale = false
+        entry.lastError = null
+        if (Number.isInteger(ev.appliedRevision)) entry.appliedRevision = ev.appliedRevision
+      } catch { /* a receipt must never take the tick down */ }
+    })
+  }
+
   // schema:2 only for a node whose hello announced `config-sync/2`; an unknown node, a missing registry or a
   // registry that throws all mean v1, the payload every node has always understood.
   const schemaOf = (nodeId) => {
@@ -420,7 +542,9 @@ export function install(rt) {
   }
   const tick = () => {
     attach()
-    if (attached) void refreshDefault()
+    watchAcks()
+    // A new default model is compared as soon as the source has it, not next tick.
+    if (attached) void (async () => { await refreshDefault(); compareAndPush() })()
   }
   tick()
   const timer = setInterval(tick, RETRY_MS)

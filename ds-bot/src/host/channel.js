@@ -569,13 +569,20 @@ export function install(rt) {
           try {
             const registry = rt.ctx?.get?.('remote-agent:registry')
             if (registry && typeof registry.onlineNodes === 'function') {
-              nodes = registry.onlineNodes().map(n => ({
-                nodeId: n.nodeId,
-                hostname: n.hostname ?? n.nodeId,
-                online: true,
-                models: Array.isArray(n.models) ? n.models.map(mapNodeModel) : [],
-                defaultModel: mapDefaultModel(n.defaultModel),
-              }))
+              nodes = registry.onlineNodes().map(n => {
+                // Whether the last config push reached this node: the create entry can say
+                // "not synced yet" instead of offering a model the node does not have.
+                const sync = typeof rt.configSyncStatus === 'function' ? rt.configSyncStatus(n.nodeId) : undefined
+                return {
+                  nodeId: n.nodeId,
+                  hostname: n.hostname ?? n.nodeId,
+                  online: true,
+                  configStale: sync?.configStale === true,
+                  appliedRevision: Number.isInteger(sync?.appliedRevision) ? sync.appliedRevision : null,
+                  models: Array.isArray(n.models) ? n.models.map(mapNodeModel) : [],
+                  defaultModel: mapDefaultModel(n.defaultModel),
+                }
+              })
             }
           } catch { /* registry plugin absent */ }
           return ok(nodes)
