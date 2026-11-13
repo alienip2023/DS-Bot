@@ -202,7 +202,7 @@ function NewGroupRow({ actions }) {
 // One Thread of a local Bot. A joined Bot has only its Main row for now; it opens the
 // Bot's home page, not a plain Session (the node's Session is not opened here yet).
 export function ThreadRow({ thread, bot, actions, useSessionRetainInfo, index, botActive }) {
-  const joined = bot.origin === 'joined' && bot.worker?.home === 'remote'
+  const joined = (bot.origin === 'joined' && bot.worker?.home === 'remote') || bot.worker?.home === 'node'
   // A local Bot's Main Thread has no Session of its own; its Bot chat is the one shown.
   const sessionId = thread.isMain === true ? (bot.sessionId ?? bot.id) : thread.sessionId
   const active = useSessionRetainInfo(sessionId, info => (info?.retainedBy?.mainView ?? 0) > 0) || (thread.isMain === true && botActive === true)
@@ -220,7 +220,7 @@ export function ThreadRow({ thread, bot, actions, useSessionRetainInfo, index, b
 // The Thread list a Bot row expands to: new Thread first, then Main, then the rest in
 // creation order. Archived Threads are not drawn; they still count against the limit.
 export function ThreadList({ bot, threads, status, actions, useSessionRetainInfo, botActive, onRetry }) {
-  const joined = bot.origin === 'joined' && bot.worker?.home === 'remote'
+  const joined = (bot.origin === 'joined' && bot.worker?.home === 'remote') || bot.worker?.home === 'node'
   const all = Array.isArray(threads) ? threads : []
   const visible = sortThreads(all.filter(thread => thread?.archived !== true))
   const list = visible.length > 0 ? visible : [{
@@ -308,12 +308,14 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
   }
   const pinned = bot.pinned === true && !tile
   const joined = bot.origin === 'joined' && bot.worker?.home === 'remote'
+  // A node-owned Bot has no local Session either; it is shown like a joined row.
+  const nodeBot = bot.origin === 'node' && bot.worker?.home === 'node'
   // Another machine's Bot, mirrored read-only: it has no local Session to open.
   const peer = bot.origin === 'peer' && bot.worker?.home === 'hub'
   const machine = joined
     ? [bot.worker.hostname || bot.worker.nodeId, bot.worker.online === false ? '离线' : ''].filter(Boolean).join(' · ')
-    : peer
-      ? [bot.worker?.hostname || '', bot.worker?.online === false ? '离线' : '在线'].filter(Boolean).join(' · ')
+    : nodeBot || peer
+      ? [bot.worker?.hostname || bot.worker?.nodeId || '', bot.worker?.online === false ? '离线' : '在线'].filter(Boolean).join(' · ')
       : ''
   const label = [bot.name, machine, main ? t('Main Bot') : '', pinned ? t('Pinned') : '', running || away ? t('Working') : '', waitsFor, approval ? t('Waiting for your approval') : alert ? t('Waiting for your answer') : '', unread ? t('Unread activity') : ''].filter(Boolean).join(', ')
   if (tile && wide) {

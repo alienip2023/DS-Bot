@@ -28026,7 +28026,7 @@ function NewGroupRow({ actions }) {
   );
 }
 function ThreadRow({ thread, bot, actions, useSessionRetainInfo, index, botActive }) {
-  const joined = bot.origin === "joined" && bot.worker?.home === "remote";
+  const joined = bot.origin === "joined" && bot.worker?.home === "remote" || bot.worker?.home === "node";
   const sessionId = thread.isMain === true ? bot.sessionId ?? bot.id : thread.sessionId;
   const active = useSessionRetainInfo(sessionId, (info) => (info?.retainedBy?.mainView ?? 0) > 0) || thread.isMain === true && botActive === true;
   return (0, import_react35.createElement)("button", {
@@ -28046,7 +28046,7 @@ function ThreadRow({ thread, bot, actions, useSessionRetainInfo, index, botActiv
   }, (0, import_react35.createElement)("span", { className: "bt-agent-sub-title" }, thread.title));
 }
 function ThreadList({ bot, threads, status, actions, useSessionRetainInfo, botActive, onRetry }) {
-  const joined = bot.origin === "joined" && bot.worker?.home === "remote";
+  const joined = bot.origin === "joined" && bot.worker?.home === "remote" || bot.worker?.home === "node";
   const all = Array.isArray(threads) ? threads : [];
   const visible = sortThreads(all.filter((thread) => thread?.archived !== true));
   const list = visible.length > 0 ? visible : [{
@@ -28148,8 +28148,9 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
   };
   const pinned = bot.pinned === true && !tile;
   const joined = bot.origin === "joined" && bot.worker?.home === "remote";
+  const nodeBot = bot.origin === "node" && bot.worker?.home === "node";
   const peer = bot.origin === "peer" && bot.worker?.home === "hub";
-  const machine = joined ? [bot.worker.hostname || bot.worker.nodeId, bot.worker.online === false ? "离线" : ""].filter(Boolean).join(" · ") : peer ? [bot.worker?.hostname || "", bot.worker?.online === false ? "离线" : "在线"].filter(Boolean).join(" · ") : "";
+  const machine = joined ? [bot.worker.hostname || bot.worker.nodeId, bot.worker.online === false ? "离线" : ""].filter(Boolean).join(" · ") : nodeBot || peer ? [bot.worker?.hostname || bot.worker?.nodeId || "", bot.worker?.online === false ? "离线" : "在线"].filter(Boolean).join(" · ") : "";
   const label = [bot.name, machine, main ? t("Main Bot") : "", pinned ? t("Pinned") : "", running || away ? t("Working") : "", waitsFor, approval ? t("Waiting for your approval") : alert ? t("Waiting for your answer") : "", unread ? t("Unread activity") : ""].filter(Boolean).join(", ");
   if (tile && wide) {
     return (0, import_react35.createElement)("div", { className: "bt-tile-wrap", ref: bindPointerMenu(actions.openMenu, () => ({ kind: "bot", id })) }, (0, import_react35.createElement)(
