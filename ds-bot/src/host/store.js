@@ -529,7 +529,7 @@ export function install(rt) {
     bySessionIdFullMap.clear()
     for (const bot of Object.values(state.bots)) {
       // A peer/node row is a shadow: `chatOf` would name its id as if it were a Session.
-      if (bot.origin === 'peer') continue
+      if (bot.origin === 'peer' || bot.origin === 'node') continue
       for (const segment of bot.segments ?? []) pastOwners.set(segment.sessionId, { botId: bot.id })
       chatOwners.set(chatOf(bot.id), bot.id)
       // Maintain bySessionId reverse index for mirror session lookup
@@ -681,7 +681,7 @@ export function migrateThreads(state, now = Date.now()) {
   for (const bot of Object.values(state.bots ?? {})) {
     if (bot === null || typeof bot !== 'object' || typeof bot.id !== 'string' || bot.id === '') continue
     // A peer/node row is a shadow of another machine's Bot: it has no Session and so no Thread.
-    if (bot.origin === 'peer') continue
+    if (bot.origin === 'peer' || bot.origin === 'node') continue
     const id = mainThreadId(bot.id)
     if (threadOf(state, id) === undefined) {
       saveThread(state, newMainThread(bot, now))
