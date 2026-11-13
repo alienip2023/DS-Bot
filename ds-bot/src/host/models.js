@@ -5,6 +5,17 @@ import { BlockAssembler, resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
 import { threadsOfBot } from './bot-store.js'
 import { normalize, splitRef } from './text.js'
 
+// A failure the turn turns into a repair card keeps its code on the Error.
+// A code this module raises for a Bot the main created. It blocks the Bot, so the repair
+// card shows it, until a later apply finds the model and level again.
+const MANAGED_FAILURES = new Set(['E_BOT_MODEL_UNAVAILABLE', 'E_BOT_MODEL_NO_KEY', 'E_BOT_EFFORT_UNAVAILABLE'])
+
+function codedError(code, message) {
+  const error = new Error(message)
+  error.code = code
+  return error
+}
+
 const CATALOG_TTL_MS = 10_000
 const ROUTE_WAIT_MS = 30_000
 // The DeepSeek account's sign-in grant (dsh-deepseek-account-platform).
@@ -268,21 +279,40 @@ export function install(rt) {
   // model that is no longer served falls back to the last one it ran on, then the
   // default; a fallback is never one that needs a key, nor a local agent. A local
   // agent that is gone stays the Bot's: its turn fails with the repair card.
+  //
+  // A Bot the main created (`managedBy: 'hub'`) does not fall back: the main is the only
+  // authority over its model, so a model the node no longer serves, or one whose provider
+  // lost its key, stops the turn with a code the repair card shows instead of running
+  // something the user did not choose.
   async function desiredModel(bot) {
     if (!bot.model) return undefined
     if (isLocal(bot.model)) return bot.model
     const entries = await catalog()
-    if (entries.some(entry => entry.ref === bot.model)) return bot.model
-    return usableOf(entries).some(entry => entry.ref === bot.appliedModel) ? bot.appliedModel : pickDefault(entries)
+    const entry = entries.find(candidate => candidate.ref === bot.model)
+    if (entry !== undefined) {
+      if (bot.managedBy === 'hub' && entry.needsKey === true) {
+        throw codedError('E_BOT_MODEL_NO_KEY', `The main's model ${bot.model} has no API key on this machine. Set the key on the main.`)
+      }
+      return bot.model
+    }
+    if (bot.managedBy === 'hub') {
+      throw codedError('E_BOT_MODEL_UNAVAILABLE', `The main's model ${bot.model} is not available on this machine. Pick another model on the main, or have it change this Bot's model.`)
+    }
+    return usableOf(entries).some(candidate => candidate.ref === bot.appliedModel) ? bot.appliedModel : pickDefault(entries)
   }
 
   // The thinking level a Bot asked for, when the model it runs on serves it; else the
   // model's own default applies. A level the model does not have is ignored, never
-  // sent: an explicit effort a provider does not know is a hard refusal there.
+  // sent: an explicit effort a provider does not know is a hard refusal there. A Bot the
+  // main created fails instead of quietly running at the model's default level.
   async function desiredEffort(bot, ref) {
     if (bot.effort === undefined || ref === undefined) return undefined
     const reasoning = await reasoningOf(ref)
-    return reasoning?.efforts?.some(effort => effort.id === bot.effort) ? bot.effort : undefined
+    if (reasoning?.efforts?.some(effort => effort.id === bot.effort) === true) return bot.effort
+    if (bot.managedBy === 'hub') {
+      throw codedError('E_BOT_EFFORT_UNAVAILABLE', `The thinking level ${bot.effort} is not available for ${ref} on this machine. Change it on the main.`)
+    }
+    return undefined
   }
 
   // A thinking level id, or a name only one level of the model has, like resolveModel.
@@ -356,9 +386,23 @@ export function install(rt) {
   // model picker can move the Session without telling this plugin.
   async function applyModel(bot, { force = false } = {}) {
     if (isShadow(bot)) return undefined
-    const ref = await desiredModel(bot)
+    let ref
+    let effort
+    try {
+      ref = await desiredModel(bot)
+      if (ref !== undefined) effort = await desiredEffort(bot, ref)
+    } catch (error) {
+      if (MANAGED_FAILURES.has(error?.code) === true && bot.blocked?.code !== error.code) {
+        bot.blocked = { code: error.code, at: Date.now() }
+        await rt.save().catch(() => {})
+      }
+      throw error
+    }
     if (ref === undefined) return ref
-    const effort = await desiredEffort(bot, ref)
+    if (MANAGED_FAILURES.has(bot.blocked?.code) === true) {
+      delete bot.blocked
+      await rt.save()
+    }
     const ownChanged = force || bot.appliedModel !== ref || (bot.appliedEffort ?? undefined) !== effort
     const route = { ...splitRef(ref), ...(effort === undefined ? {} : { reasoningEffort: effort }) }
     if (ownChanged) await selectSessionModel(rt.chatOf(bot.id), route)

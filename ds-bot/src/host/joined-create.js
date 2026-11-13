@@ -126,6 +126,11 @@ export async function createBotOnNode(rt, { nodeId, name, role, modelRef = null,
     requestId,
     modelRef: resolvedModelRef,
     effort: effort ?? null,
+    // The team's default level for a Bot whose creator named none: the node writes it as
+    // the Bot's effort. `managedBy: 'hub'` is what makes a later turn fail closed instead
+    // of falling back to a model the node happens to serve.
+    defaultEffort: effort ?? null,
+    managedBy: 'hub',
     workDir: workDir ?? null,
     instructions: clampedInstructions,
   })
@@ -158,6 +163,9 @@ export async function createBotOnNode(rt, { nodeId, name, role, modelRef = null,
     role: (result.role || (typeof role === 'string' ? trimmed(role) : '')).slice(0, 24),
     type: 'remote-worker',
     origin: 'joined',
+    // Hub-created: the node's turn runs the model the hub chose or fails with a repair
+    // card, never a silent fallback (models.js desiredModel).
+    managedBy: 'hub',
     model: resolvedModelRef ?? null,
     effort: effort ?? null,
     createdAt: existing?.createdAt ?? now,
@@ -188,7 +196,10 @@ export function createBotCreateReceiver(rt) {
     if (!name) return { ok: false, error: 'bot-create-name-missing' }
     const role = typeof spec?.role === 'string' ? trimmed(spec.role) : ''
     const modelRef = spec?.modelRef ?? null
-    const effort = spec?.effort ?? null
+    // `defaultEffort` is the hub's pick when the creator named none; `effort` still wins.
+    const defaultEffort = typeof spec?.defaultEffort === 'string' && spec.defaultEffort !== '' ? spec.defaultEffort.slice(0, 64) : null
+    const effort = spec?.effort ?? defaultEffort ?? null
+    const managedBy = spec?.managedBy === 'hub' ? 'hub' : undefined
     const workDir = spec?.workDir ?? null
     const instructions = spec?.instructions ?? null
 
@@ -221,6 +232,12 @@ export function createBotCreateReceiver(rt) {
       // roster.js createBot resolves to the Bot object (buildBot returns `bot`), not an id.
       const bot = await createBot({ name, role, model: modelRef, effort, workDir, instructions })
       const id = typeof bot?.id === 'string' ? bot.id.trim() : ''
+      // The row says who owns the model choice: a hub-created Bot fails closed on a
+      // missing model/level instead of falling back (models.js), a local one does not.
+      if (id !== '' && managedBy !== undefined) {
+        bot.managedBy = managedBy
+        await rt.save?.()
+      }
       // The hub accepts only a non-empty string id and silently drops anything else, so an
       // answer without one is a failure here, never an empty or object-valued remoteBotId.
       if (id === '') return { ok: false, error: 'bot-create-failed: createBot returned no Bot id' }
