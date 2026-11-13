@@ -406,7 +406,7 @@ export function install(rt) {
   const syncEntry = (nodeId) => {
     let entry = syncNodes.get(nodeId)
     if (entry === undefined) {
-      entry = { attempts: 0, retryAt: 0, lastPushAt: 0, appliedAtFingerprint: null, configStale: false, appliedRevision: null, lastError: null }
+      entry = { attempts: 0, retryAt: 0, lastPushAt: 0, pendingFingerprint: null, sentFingerprint: null, appliedAtFingerprint: null, configStale: false, appliedRevision: null, lastError: null }
       syncNodes.set(nodeId, entry)
     }
     return entry
@@ -442,17 +442,30 @@ export function install(rt) {
       if (typeof nodeId !== 'string' || nodeId === '') continue
       const entry = syncEntry(nodeId)
       if (entry.appliedAtFingerprint === fingerprint) continue
+      // Already out, waiting for the receipt: a second frame would only race the first.
+      if (entry.pendingFingerprint === fingerprint) continue
       if (now - entry.lastPushAt < NODE_PUSH_MIN_MS) continue
       if (entry.retryAt > now) continue
       entry.lastPushAt = now
       let sent = false
       try { sent = service.sendPush(nodeId) !== false } catch { sent = false }
       if (sent) {
-        entry.appliedAtFingerprint = fingerprint
-        entry.attempts = 0
-        entry.retryAt = 0
-        entry.configStale = false
-        entry.lastError = null
+        entry.sentFingerprint = fingerprint
+        // Sent is not confirmed. A schema 2 node confirms with configAck, and only that
+        // receipt may clear the failure count — otherwise a refusal would reset to one
+        // failure every round and never reach stale. A schema 1 node never answers, so for
+        // it a sent push is the confirmation; waiting on a receipt that cannot come would
+        // retry it forever.
+        if (schemaOf(nodeId) < 2) {
+          entry.pendingFingerprint = null
+          entry.appliedAtFingerprint = fingerprint
+          entry.attempts = 0
+          entry.retryAt = 0
+          entry.configStale = false
+          entry.lastError = null
+        } else {
+          entry.pendingFingerprint = fingerprint
+        }
         rt.warn?.('ds-bot: config-sync pushed to %s', nodeId)
       } else {
         notePushFailure(entry, 'push-failed')
@@ -500,7 +513,19 @@ export function install(rt) {
         const nodeId = ev?.nodeId
         if (typeof nodeId !== 'string' || nodeId === '') return
         const entry = syncEntry(nodeId)
-        if (ev.ok === false) { notePushFailure(entry, ev.error); return }
+        if (ev.ok === false) {
+          notePushFailure(entry, ev.error)
+          // The frame went out but the change is not on that node: clear the in-flight mark
+          // and keep comparing, so the same fingerprint is pushed again after the backoff.
+          entry.pendingFingerprint = null
+          lastFingerprint = null
+          return
+        }
+        // A late acceptance may arrive after a refusal cleared the in-flight mark; the last
+        // frame sent is still the payload it accepted.
+        const confirmed = entry.pendingFingerprint ?? entry.sentFingerprint
+        entry.pendingFingerprint = null
+        if (typeof confirmed === 'string' && confirmed !== '') entry.appliedAtFingerprint = confirmed
         entry.attempts = 0
         entry.retryAt = 0
         entry.configStale = false

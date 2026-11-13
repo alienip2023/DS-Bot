@@ -131,3 +131,87 @@ test('A6 a provider without a key is left out of the payload, and a key added la
   assert.deepEqual(world.pushes, ['n1'])
   assert.deepEqual(world.service.source('n1').providers.map(p => p.id), ['alpha', 'beta', 'nokey'])
 })
+
+// ── Receipts ───────────────────────────────────────────────────────────────
+// A schema 2 node answers every push. A refusal is a failure like a frame that never left:
+// same 5s/15s/60s backoff, same stale mark after the third, and the payload is pushed again
+// inside the same fingerprint. A schema 1 node never answers, so the send itself is its
+// confirmation.
+
+const receipt = (world, ev) => { for (const fn of world.acks) fn(ev) }
+
+// A node that announced config-sync/2 answers every push with a receipt; the schema 1 fixture
+// above never does.
+const v2World = (options = {}) => {
+  const world = makeWorld(options)
+  world.store['remote-agent:registry'].getNode = () => ({ hello: { caps: ['config-sync/2'] } })
+  return world
+}
+
+test('B1 a refused receipt retries at 5s, 15s and 60s, and the third marks the node stale', async (t) => {
+  const world = v2World()
+  await settle(t, world)
+  receipt(world, { nodeId: 'n1', ok: false, error: 'config-sync-refused' })
+  t.mock.timers.tick(5_000)
+  await flush()
+  assert.deepEqual(world.pushes, ['n1'], 'first retry 5s after the refusal')
+  receipt(world, { nodeId: 'n1', ok: false, error: 'config-sync-refused' })
+  t.mock.timers.tick(5_000)
+  await flush()
+  assert.deepEqual(world.pushes, ['n1'], 'nothing before the 15s backoff')
+  t.mock.timers.tick(10_000)
+  await flush()
+  assert.deepEqual(world.pushes, ['n1', 'n1'], 'second retry 15s after the second refusal')
+  receipt(world, { nodeId: 'n1', ok: false, error: 'config-sync-refused' })
+  assert.deepEqual(world.rt.configSyncStatus('n1'), { configStale: true, appliedRevision: null, lastError: 'config-sync-refused' }, 'three refusals mark it stale')
+  t.mock.timers.tick(5_000)
+  await flush()
+  assert.equal(world.pushes.length, 2, 'nothing before the 60s backoff')
+  t.mock.timers.tick(55_000)
+  await flush()
+  assert.equal(world.pushes.length, 3, 'a stale node is still retried, once per 60s')
+})
+
+test('B2 a refusal on one node leaves an applied node untouched', async (t) => {
+  const world = v2World({ nodes: ['n1', 'n2'] })
+  await settle(t, world)
+  receipt(world, { nodeId: 'n2', ok: true, appliedRevision: 7 })
+  receipt(world, { nodeId: 'n1', ok: false, error: 'config-sync-refused' })
+  t.mock.timers.tick(5_000)
+  await flush()
+  assert.deepEqual(world.pushes, ['n1'], 'only the refused node is pushed again')
+  assert.deepEqual(world.rt.configSyncStatus('n2'), { configStale: false, appliedRevision: 7, lastError: null })
+})
+
+test('B3 a later accepted receipt clears stale, records the revision and ends the retries', async (t) => {
+  const world = v2World()
+  await settle(t, world)
+  receipt(world, { nodeId: 'n1', ok: false, error: 'config-sync-refused' })
+  t.mock.timers.tick(5_000)
+  await flush()
+  receipt(world, { nodeId: 'n1', ok: false, error: 'config-sync-refused' })
+  t.mock.timers.tick(15_000)
+  await flush()
+  receipt(world, { nodeId: 'n1', ok: false, error: 'config-sync-refused' })
+  assert.equal(world.rt.configSyncStatus('n1').configStale, true)
+  receipt(world, { nodeId: 'n1', ok: true, appliedRevision: 12 })
+  assert.deepEqual(world.rt.configSyncStatus('n1'), { configStale: false, appliedRevision: 12, lastError: null }, 'the accepted receipt settles the node')
+  const sent = world.pushes.length
+  for (let i = 0; i < 4; i += 1) { t.mock.timers.tick(5_000); await flush() }
+  assert.equal(world.pushes.length, sent, 'an applied node is not pushed again')
+})
+
+test('B4 a schema 1 node counts as applied when the push leaves, so no receipt is awaited', async (t) => {
+  const world = makeWorld()
+  world.store['remote-agent:registry'].getNode = () => ({ hello: { caps: [] } })
+  await settle(t, world)
+  for (let i = 0; i < 5; i += 1) { t.mock.timers.tick(5_000); await flush() }
+  assert.deepEqual(world.pushes, [], 'an old node is never retried for a receipt it cannot send')
+  assert.equal(world.rt.configSyncStatus('n1').configStale, false)
+  world.rt.defaultBotModel = async () => 'alpha/m2'
+  t.mock.timers.tick(5_000)
+  await flush()
+  assert.deepEqual(world.pushes, ['n1'], 'a real change still reaches it once')
+  for (let i = 0; i < 3; i += 1) { t.mock.timers.tick(5_000); await flush() }
+  assert.deepEqual(world.pushes, ['n1'], 'and it is not pushed again')
+})
