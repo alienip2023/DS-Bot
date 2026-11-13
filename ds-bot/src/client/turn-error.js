@@ -150,8 +150,9 @@ function TechnicalDetails({ facts }) {
 }
 
 // The route codes DSH raises for a model or a key the main chose, and the codes the
-// repair card speaks for them.
-const ROUTE_LEVEL_CODES = new Set(['NO_ADAPTER', 'MISSING_CREDENTIAL'])
+// repair card speaks for them. A hosted loop engine route is not a model endpoint at all,
+// which the host speaks as an unavailable model for a Bot the main manages.
+const ROUTE_LEVEL_CODES = new Set(['NO_ADAPTER', 'MISSING_CREDENTIAL', 'HOSTED_ENGINE_ROUTE'])
 const MANAGED_CODES = new Set(['E_BOT_MODEL_UNAVAILABLE', 'E_BOT_MODEL_NO_KEY', 'E_BOT_EFFORT_UNAVAILABLE'])
 
 export function FailureCell({ node, sessionId, useRoster, useTurnClock, actions }) {

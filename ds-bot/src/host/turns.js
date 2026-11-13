@@ -679,8 +679,10 @@ export function install(rt) {
   // failure is that choice's own outcome and the code alone decides the card. Reading the
   // catalog here would also fail the first turn after a start, when nothing is listed yet;
   // it is never listed and never waited for. A local Bot, a local agent route and a failure
-  // already coded E_BOT_MODEL_NO_KEY keep what DSH raised.
-  const MANAGED_ROUTE_CODES = new Map([['NO_ADAPTER', 'E_BOT_MODEL_UNAVAILABLE'], ['MISSING_CREDENTIAL', 'E_BOT_MODEL_NO_KEY']])
+  // already coded E_BOT_MODEL_NO_KEY keep what DSH raised. HOSTED_ENGINE_ROUTE means the
+  // route is not a model endpoint at all: the main's model cannot run there either, so the
+  // card speaks the same code — while the route marking below still reads the raw code.
+  const MANAGED_ROUTE_CODES = new Map([['NO_ADAPTER', 'E_BOT_MODEL_UNAVAILABLE'], ['MISSING_CREDENTIAL', 'E_BOT_MODEL_NO_KEY'], ['HOSTED_ENGINE_ROUTE', 'E_BOT_MODEL_UNAVAILABLE']])
   const managedFailure = (id, failure) => {
     if (failure === undefined) return failure
     const code = MANAGED_ROUTE_CODES.get(failure.code)
@@ -1130,11 +1132,16 @@ export function install(rt) {
           }).catch(error => rt.warn('ds-bot: handing back a result failed: %s', error))
         }
         const reason = event.data?.reason
-        const failure = reason?.kind === 'error' && !switched ? managedFailure(id, turnFailure(reason.error)) : undefined
+        // Keep the code DSH raised before the card's mapping: a managed Bot maps
+        // HOSTED_ENGINE_ROUTE to E_BOT_MODEL_UNAVAILABLE, and deciding whether to mark the
+        // route from the mapped code would stop marking it — the next turn would then be a
+        // plain route failure again instead of the refusal it is.
+        const raw = reason?.kind === 'error' && !switched ? turnFailure(reason.error) : undefined
+        const failure = raw === undefined ? undefined : managedFailure(id, raw)
         if (failure !== undefined) noteTurnFailure(id, failure)
         // A route that is not a model endpoint refuses every generation; the failed
         // Session's own request names it, so it is refused everywhere from now on.
-        if (failure?.code === 'HOSTED_ENGINE_ROUTE') {
+        if (raw?.code === 'HOSTED_ENGINE_ROUTE') {
           const config = session.requestHeader?.()?.config
           const ref = config?.provider && config?.model ? `${config.provider}/${config.model}` : undefined
           if (ref !== undefined) void rt.routeRefused(ref, rt.botOf(rt.selfOf(id))).catch(error => rt.warn('ds-bot: %s still failing: %s', ref, error))

@@ -469,21 +469,30 @@ export function install(rt) {
   // its Session may still be on the route, or on another Bot's route in a group.
   async function routeRefused(ref, bot) {
     const served = await servedModels(ref)
+    const stuck = other => other?.managedBy === 'hub' && other.model === ref
     if (!refused.has(ref)) {
       refused.set(ref, served)
       rt.warn('ds-bot: %s is not a model endpoint, so it is not chosen again', ref)
       const entries = await catalog()
       const pinned = Object.values(state.bots).filter(other => !isShadow(other) && (other.model === ref || other.appliedModel === ref))
       for (const other of pinned) {
-        if (other.model === ref) other.model = pickDefault(entries)
+        // A Bot the main manages keeps the model the main chose: rewriting it here would be
+        // the same silent local fallback §49 caught, and it would hide the main's own
+        // refusal from the repair card. Its Session still re-selects below, so the turn
+        // fails with the mapped code instead of running something else. A local Bot moves
+        // to what it would be given today.
+        if (other.model === ref && other.managedBy !== 'hub') other.model = pickDefault(entries)
         if (other.appliedModel === ref) delete other.appliedModel
       }
       await rt.save()
+      // A managed Bot still on the refused model has nothing to select: it may only run
+      // what the main chose, and that choice is what refused. It fails its turns until the
+      // main changes the model, which is what its card says.
       for (const other of pinned) {
-        if (other !== bot) await applyModel(other, { force: true }).catch(error => rt.warn('ds-bot: model for %s not applied: %s', other.name, error))
+        if (other !== bot && !stuck(other)) await applyModel(other, { force: true }).catch(error => rt.warn('ds-bot: model for %s not applied: %s', other.name, error))
       }
     }
-    if (bot !== undefined) await applyModel(bot, { force: true })
+    if (bot !== undefined && !stuck(bot)) await applyModel(bot, { force: true })
   }
 
   const lifetime = new AbortController()

@@ -257,6 +257,24 @@ test('a route refused for not being a model endpoint is chosen nowhere again', a
   await assert.rejects(rt.resolveModel('external/default'), /Model external\/default is not available/)
 })
 
+// §49: a route refused for not being a model endpoint must not silently re-point a Bot the
+// main manages — the node would run one model while both rows named another. It keeps the
+// model, stays blocked with the mapped code, and its turn fails; a local Bot still moves.
+test('a refused route keeps the model a Bot the main manages was given', async () => {
+  const { rt, selected } = bench({ providers: { external: ['default'], deepseek: ['v4-flash'] }, fallback: { provider: 'external', model: 'default' } })
+  const managed = { id: 'b1', model: 'external/default', appliedModel: 'external/default', managedBy: 'hub' }
+  const local = { id: 'b2', model: 'external/default', appliedModel: 'external/default' }
+  rt.state.bots = { b1: managed, b2: local }
+  await rt.routeRefused('external/default', managed)
+  assert.equal(managed.model, 'external/default', 'the main still owns the choice')
+  assert.equal(managed.appliedModel, undefined)
+  // No model is applied or written for it here: the refusal card comes from the turn's
+  // own failure (blockBot), so routeRefused must not mask the main's choice with a local one.
+  assert.equal(managed.blocked, undefined, 'the card code comes from the turn, not from routeRefused')
+  assert.equal(local.model, 'deepseek/v4-flash', 'a local Bot still moves to what it would be given today')
+  assert.deepEqual(selected, ['b2:deepseek/v4-flash'], 'only the local Bot re-selects a replacement')
+})
+
 test('a Bot on a clean record but a poisoned Session re-selects its own model', async () => {
   const { rt, selected } = bench({ providers: { external: ['default'], deepseek: ['v4-flash'] }, fallback: { provider: 'external', model: 'default' } })
   // Its group Session ran on another Bot's route; its own record never named it.

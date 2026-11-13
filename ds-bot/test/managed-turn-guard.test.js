@@ -12,14 +12,14 @@ const PROVIDERS = {
   ollama: [{ id: 'kimi-k3' }],
 }
 
-function world({ missing = [] } = {}) {
+function world({ missing = [], providers = PROVIDERS } = {}) {
   let listener
   const prompts = []
   const failures = []
   const ctx = {
     llm: {
-      listProviders: () => Object.keys(PROVIDERS).map(id => ({ id })),
-      listModels: async id => PROVIDERS[id],
+      listProviders: () => Object.keys(providers).map(id => ({ id })),
+      listModels: async id => providers[id],
       resolveModelInfo: async () => ({ reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }], defaultEffort: 'low' } }),
     },
     get: () => undefined,
@@ -47,7 +47,7 @@ function world({ missing = [] } = {}) {
   installModels(rt)
   installTurns(rt)
   let seq = 0
-  const emit = (id, type, data) => listener({ id }, { type, seq: ++seq, data })
+  const emit = (id, type, data, session = { id }) => listener({ ...session, id }, { type, seq: ++seq, data })
   return { rt, prompts, failures, emit }
 }
 
@@ -125,4 +125,27 @@ test('a model the main dropped no longer stops the prompt: the turn itself fails
   w.rt.state.bots.b1 = { id: 'b1', name: 'Node Bot', model: 'gone/model', managedBy: 'hub' }
   assert.equal(await w.rt.ctx.sessionController.prompt({ sessionId: 'b1' }), 'ran')
   assert.equal(w.prompts.length, 1)
+})
+
+// §49's other half: a route that resolves models but refuses every generation reports
+// HOSTED_ENGINE_ROUTE. The main's Bot must show the same "model unavailable" card, and the
+// route must still be marked from the raw code — the card's mapped code no longer names it.
+test('a managed Bot on a route that is not a model endpoint shows the main\'s code and marks the route', async () => {
+  const w = world({ providers: { ...PROVIDERS, m3probe: [{ id: 'ling-mini' }] } })
+  w.rt.state.bots.b1 = { id: 'b1', name: 'Node Bot', model: 'm3probe/ling-mini', managedBy: 'hub' }
+  const session = { id: 'b1', requestHeader: () => ({ config: { provider: 'm3probe', model: 'ling-mini' } }) }
+  const refused = []
+  const real = w.rt.routeRefused
+  let refusal
+  w.rt.routeRefused = async (ref, bot) => { refused.push(ref); refusal = real(ref, bot); return refusal }
+  w.emit('b1', 'turn/start', { turn: 1 }, session)
+  w.emit('b1', 'turn/end', { turn: 1, reason: { kind: 'error', error: { code: 'HOSTED_ENGINE_ROUTE', message: 'not a model endpoint' } } }, session)
+  assert.equal(w.rt.state.bots.b1.blocked?.code, 'E_BOT_MODEL_UNAVAILABLE', 'the card speaks the main\'s code')
+  assert.equal(w.failures[0].code, 'E_BOT_MODEL_UNAVAILABLE')
+  assert.deepEqual(refused, ['m3probe/ling-mini'], 'the raw code still triggers the route refusal')
+  // The refusal itself runs after the turn returned by design: wait for it, so the model
+  // assertion below cannot pass just because the rewrite had not happened yet.
+  await refusal
+  assert.equal(w.rt.state.bots.b1.model, 'm3probe/ling-mini', 'the main still owns the model it chose')
+  assert.equal((await w.rt.catalog({ fresh: true })).some(entry => entry.ref === 'm3probe/ling-mini'), false, 'the route stays out of the catalog')
 })

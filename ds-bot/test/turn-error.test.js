@@ -494,3 +494,15 @@ test('a route code the host mapped to a managed one shows the mapped copy and ke
   assert.ok(side.tech(tree).includes('NO_ADAPTER'), 'the technical details keep the code DSH raised')
   assert.ok(side.tech(tree).includes('no adapter for route deepseek/deepseek-v4-pro'))
 })
+
+// §49's other half: a hosted loop engine route is refused by DSH with its own code, and
+// the host speaks the main's model code for a Bot it manages. The card must show that copy
+// even though DSH's code is not one of the two route codes it maps by itself.
+test('a hosted engine route on a managed Bot shows the main model card', () => {
+  const side = cell({ code: 'HOSTED_ENGINE_ROUTE', message: 'provider "external" is a hosted loop engine route, not a model endpoint', blocked: { code: 'E_BOT_MODEL_UNAVAILABLE', at: 1 } })
+  const tree = side.render()
+  assert.match(textOf(walk(tree, node => node.props?.className === 'bt-fail-text')[0]), /is not available on this machine, so this turn did not fall back/)
+  assert.deepEqual(labels(side.buttons(tree)), ['Retry'], 'no local model or key fix')
+  assert.ok(side.tech(tree).includes('HOSTED_ENGINE_ROUTE'), 'the technical details keep the code DSH raised')
+  assert.ok(side.tech(tree).some(text => text.includes('is a hosted loop engine route')))
+})

@@ -37195,7 +37195,7 @@ function TechnicalDetails({ facts }) {
     (0, import_react54.createElement)("button", { type: "button", className: "bt-mini bt-fail-copy", onClick: copy2 }, copied ? (0, import_react54.createElement)(CheckIcon) : (0, import_react54.createElement)(CopyIcon), copied ? t("Copied") : t("Copy"))
   );
 }
-var ROUTE_LEVEL_CODES = /* @__PURE__ */ new Set(["NO_ADAPTER", "MISSING_CREDENTIAL"]);
+var ROUTE_LEVEL_CODES = /* @__PURE__ */ new Set(["NO_ADAPTER", "MISSING_CREDENTIAL", "HOSTED_ENGINE_ROUTE"]);
 var MANAGED_CODES = /* @__PURE__ */ new Set(["E_BOT_MODEL_UNAVAILABLE", "E_BOT_MODEL_NO_KEY", "E_BOT_EFFORT_UNAVAILABLE"]);
 function FailureCell({ node, sessionId, useRoster, useTurnClock, actions }) {
   const roster = useRoster((value) => value);
