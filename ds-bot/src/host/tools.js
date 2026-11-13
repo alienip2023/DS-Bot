@@ -247,6 +247,34 @@ export function install(rt) {
       const send = async () => {
         const toUser = args.reply_to === 'user'
         const work = toUser ? undefined : works[0]
+        // A Bot on another machine has no local chat or Session on this machine: resolving
+        // one here fails with `session "…" not found` before delivery.js can route it. Hand
+        // the request straight to deliver(), whose joined / remote-worker branches own the
+        // wire; the read-only peer list keeps its refusal above and never reaches this path.
+        if (target.origin === 'joined' || target.type === 'remote-worker') {
+          const exchangeId = randomUUID()
+          if (!toUser) rt.openWork(exchangeId, { from: sender.id, to: target.id, parent: work })
+          try {
+            const delivered = await rt.deliver({
+              fromId: sender.id,
+              toId: target.id,
+              text,
+              role: 'request',
+              exchangeId,
+              joinedAsync: true,
+              ...(toUser ? { audience: 'user' } : {}),
+            })
+            if (delivered?.ok === false) throw new Error(delivered.error ?? 'not-delivered')
+          } catch (error) {
+            if (!toUser) rt.dropWork(exchangeId)
+            throw error
+          }
+          const machine = target.worker?.hostname ?? 'its machine'
+          const note = toUser
+            ? `It will answer the user there; nothing comes back to you.`
+            : `Its reply will arrive later as a new message; do not wait for it.`
+          return `Delivered to ${target.name} on ${machine}. ${note}`
+        }
         const chat = rt.chatOf(target.id)
         const agent = await rt.resolveAgent(chat)
         const status = rt.statusOf(target.id)

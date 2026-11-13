@@ -144,21 +144,32 @@ export async function handleJoinedTurn(rt, msg = {}) {
     await replyToSender(rt, { fromId, toId, exchangeId: xid, work, text: BRIDGE_DOWN_TEXT })
     return { ok: false, error: 'bridge-down' }
   }
-  const result = await wait.pending
-  if (!result || result.error === 'bridge-down') {
-    closeMirrorTurn(rt, mirror, to.id, { error: { code: result?.error ?? 'bot-turn-lost', message: BRIDGE_DOWN_TEXT } })
-    await replyToSender(rt, { fromId, toId, exchangeId: xid, work, text: BRIDGE_DOWN_TEXT })
-    return { ok: false, error: result?.error ?? 'bot-turn-lost' }
+  const settle = async (result) => {
+    if (!result || result.error === 'bridge-down') {
+      closeMirrorTurn(rt, mirror, to.id, { error: { code: result?.error ?? 'bot-turn-lost', message: BRIDGE_DOWN_TEXT } })
+      await replyToSender(rt, { fromId, toId, exchangeId: xid, work, text: BRIDGE_DOWN_TEXT })
+      return { ok: false, error: result?.error ?? 'bot-turn-lost' }
+    }
+    if (result.ok === false) {
+      const error = result.error ?? 'bot-turn-failed'
+      closeMirrorTurn(rt, mirror, to.id, { error: { code: error, message: `副机没有接上：${error}` } })
+      await replyToSender(rt, { fromId, toId, exchangeId: xid, work, text: `副机没有接上：${error}` })
+      return { ok: false, error }
+    }
+    closeMirrorTurn(rt, mirror, to.id, { text: result.text, seq: result.seq })
+    await replyToSender(rt, { fromId, toId, exchangeId: xid, work, text: result.text ?? '' })
+    return xid
   }
-  if (result.ok === false) {
-    const error = result.error ?? 'bot-turn-failed'
-    closeMirrorTurn(rt, mirror, to.id, { error: { code: error, message: `副机没有接上：${error}` } })
-    await replyToSender(rt, { fromId, toId, exchangeId: xid, work, text: `副机没有接上：${error}` })
-    return { ok: false, error }
+  if (msg.defer === true) {
+    // A message from another Bot must not hold its sender's tool call until the node's model
+    // turn finishes: the receipt says "delivered, the reply comes later", and the answer
+    // reaches the sender as a new message. Send failures above are still reported at once.
+    wait.pending.then(settle).catch(error => {
+      rt.warn?.('ds-bot: a joined turn for %s could not be completed: %s', to.id, error?.message ?? error)
+    })
+    return xid
   }
-  closeMirrorTurn(rt, mirror, to.id, { text: result.text, seq: result.seq })
-  await replyToSender(rt, { fromId, toId, exchangeId: xid, work, text: result.text ?? '' })
-  return xid
+  return settle(await wait.pending)
 }
 
 function findLocal(rt, remoteBotId) {
