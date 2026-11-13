@@ -1742,6 +1742,9 @@ Object.assign(ZH, HOST_ZH)
 // Fork-only UI copy (remote Workers, Threads, joined nodes) that arrived after the
 // upstream dictionary: kept here so the merged locales stay complete.
 Object.assign(ZH, {
+  '{name}\'s model {ref} is not available on this machine, so this turn did not fall back to another one.': '{name} 的模型 {ref} 在这台机器上不可用，本轮没有换用其它模型。',
+  '{provider} has no API key on this machine, so {name} did not run.': '{provider} 在这台机器上没有 API key，{name} 本轮没有运行。',
+  'The thinking level the main chose is not supported by {ref}, so this turn did not fall back.': '主控选择的思考等级不被 {ref} 支持，本轮没有降级运行。',
   'Please select a model': '请选择一个模型',
   'Failed to send': '发送失败',
   'Message…': '消息…',

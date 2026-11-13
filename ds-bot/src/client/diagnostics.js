@@ -65,6 +65,9 @@ const FAILURES = {
   TRANSPORT: 'Could not reach the model service',
   SESSION: 'Its group conversation could not open',
   SESSION_RESET: 'Its group conversation could not open, so it starts a new one next time',
+  E_BOT_MODEL_UNAVAILABLE: 'The model is not available on this machine',
+  E_BOT_MODEL_NO_KEY: 'The provider has no API key on this machine',
+  E_BOT_EFFORT_UNAVAILABLE: 'The thinking level is not served by this model',
 }
 
 // The short words for a known code, or undefined.

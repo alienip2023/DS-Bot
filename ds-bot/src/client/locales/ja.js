@@ -2323,3 +2323,10 @@ Object.assign(JA, {
   "The mirror conversation file of this remote Bot is damaged or cannot be read, so it cannot be opened here. The conversation on the node is not affected. Ask the maintainer to rebuild the mirror (the cause is in the DS Bot log).": "このリモート Bot のミラー会話ファイルが壊れているか読み取れないため、ここでは開けません。ノード上の会話は影響を受けません。管理者にミラーの再構築を依頼してください（原因は DS Bot のログにあります）。",
   "Could not open this Thread’s conversation. Try again in a moment.": "このスレッドの会話を開けませんでした。しばらくしてからやり直してください。",
 })
+
+// M3: the three fail-closed model codes of a Bot the main manages.
+Object.assign(JA, {
+  "{name}'s model {ref} is not available on this machine, so this turn did not fall back to another one.": "{name} のモデル {ref} はこのマシンでは利用できないため、今回のターンは別のモデルに切り替えずに終了しました。",
+  "{provider} has no API key on this machine, so {name} did not run.": "{provider} の API キーがこのマシンにないため、{name} は実行されませんでした。",
+  "The thinking level the main chose is not supported by {ref}, so this turn did not fall back.": "メインが選んだ思考レベルは {ref} ではサポートされていないため、今回のターンは代替で実行されませんでした。",
+})

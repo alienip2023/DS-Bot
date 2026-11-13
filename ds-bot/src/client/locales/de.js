@@ -2359,3 +2359,10 @@ Object.assign(DE, {
   "The mirror conversation file of this remote Bot is damaged or cannot be read, so it cannot be opened here. The conversation on the node is not affected. Ask the maintainer to rebuild the mirror (the cause is in the DS Bot log).": "Die Spiegelgesprächsdatei dieses entfernten Bots ist beschädigt oder nicht lesbar und kann hier daher nicht geöffnet werden. Das Gespräch auf dem Knoten ist nicht betroffen. Bitte den Betreuer, den Spiegel neu aufzubauen (die Ursache steht im DS-Bot-Protokoll).",
   "Could not open this Thread’s conversation. Try again in a moment.": "Das Gespräch dieses Threads konnte nicht geöffnet werden. Versuche es gleich noch einmal.",
 })
+
+// M3: the three fail-closed model codes of a Bot the main manages.
+Object.assign(DE, {
+  "{name}'s model {ref} is not available on this machine, so this turn did not fall back to another one.": "Das Modell {ref} von {name} ist auf diesem Rechner nicht verfügbar, daher lief dieser Durchlauf nicht mit einem anderen Modell.",
+  "{provider} has no API key on this machine, so {name} did not run.": "{provider} hat auf diesem Rechner keinen API-Schlüssel, daher wurde {name} nicht ausgeführt.",
+  "The thinking level the main chose is not supported by {ref}, so this turn did not fall back.": "Die vom Haupt gewählte Denkstufe wird von {ref} nicht unterstützt, daher lief dieser Durchlauf nicht ersatzweise.",
+})

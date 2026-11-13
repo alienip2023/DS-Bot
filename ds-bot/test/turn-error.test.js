@@ -420,6 +420,15 @@ test('the copy and fix tables go by code alone', () => {
   assert.deepEqual(Array.from(fixesFor('QUOTA', { official: false })), [])
   assert.deepEqual(Array.from(fixesFor('AUTH', { canSignIn: true, onAccount: true })), [])
   assert.deepEqual(Array.from(fixesFor('ACCOUNT_SIGNED_OUT', { canSignIn: true, onAccount: true })), ['sign-in-again'])
+  // A Bot the main manages: the card names the missing model, key or level instead of the
+  // generic line, and offers no local fix — the change belongs on the main.
+  assert.match(failureText('E_BOT_MODEL_UNAVAILABLE', { name: 'Scout', provider: 'OpenAI', ref: 'openai/gpt-4o' }), /Scout's model openai\/gpt-4o is not available/)
+  assert.match(failureText('E_BOT_MODEL_NO_KEY', { name: 'Scout', provider: 'OpenAI' }), /OpenAI has no API key/)
+  assert.match(failureText('E_BOT_EFFORT_UNAVAILABLE', { name: 'Scout', provider: 'OpenAI', ref: 'openai/gpt-4o' }), /not supported by openai\/gpt-4o/)
+  for (const code of ['E_BOT_MODEL_UNAVAILABLE', 'E_BOT_MODEL_NO_KEY', 'E_BOT_EFFORT_UNAVAILABLE']) {
+    assert.notEqual(failureText(code, { name: 'Scout', provider: 'OpenAI', ref: 'openai/gpt-4o' }), 'This turn failed.')
+    assert.deepEqual(Array.from(fixesFor(code, {})), [], 'no local fix for a Bot the main manages')
+  }
   assert.equal(retryShown('AUTH', { code: 'AUTH' }), false)
   assert.equal(retryShown('AUTH', undefined), true)
   assert.equal(retryShown('QUOTA', { code: 'QUOTA' }), true)

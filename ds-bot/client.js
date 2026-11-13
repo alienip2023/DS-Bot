@@ -2442,6 +2442,11 @@ Object.assign(JA, {
   "The mirror conversation file of this remote Bot is damaged or cannot be read, so it cannot be opened here. The conversation on the node is not affected. Ask the maintainer to rebuild the mirror (the cause is in the DS Bot log).": "このリモート Bot のミラー会話ファイルが壊れているか読み取れないため、ここでは開けません。ノード上の会話は影響を受けません。管理者にミラーの再構築を依頼してください（原因は DS Bot のログにあります）。",
   "Could not open this Thread’s conversation. Try again in a moment.": "このスレッドの会話を開けませんでした。しばらくしてからやり直してください。"
 });
+Object.assign(JA, {
+  "{name}'s model {ref} is not available on this machine, so this turn did not fall back to another one.": "{name} のモデル {ref} はこのマシンでは利用できないため、今回のターンは別のモデルに切り替えずに終了しました。",
+  "{provider} has no API key on this machine, so {name} did not run.": "{provider} の API キーがこのマシンにないため、{name} は実行されませんでした。",
+  "The thinking level the main chose is not supported by {ref}, so this turn did not fall back.": "メインが選んだ思考レベルは {ref} ではサポートされていないため、今回のターンは代替で実行されませんでした。"
+});
 
 // src/client/locales/ko.js
 var KO = {
@@ -4808,6 +4813,11 @@ Object.assign(KO, {
   "The conversation list could not be refreshed, so the mirror conversation of this remote Bot could not be checked. Try again in a moment.": "대화 목록을 새로 고치지 못해 이 원격 Bot의 미러 대화를 확인할 수 없었습니다. 잠시 후 다시 시도하세요.",
   "The mirror conversation file of this remote Bot is damaged or cannot be read, so it cannot be opened here. The conversation on the node is not affected. Ask the maintainer to rebuild the mirror (the cause is in the DS Bot log).": "이 원격 Bot의 미러 대화 파일이 손상되었거나 읽을 수 없어 여기서 열 수 없습니다. 노드의 대화는 영향을 받지 않습니다. 관리자에게 미러 재생성을 요청하세요(원인은 DS Bot 로그에 있습니다).",
   "Could not open this Thread’s conversation. Try again in a moment.": "이 스레드의 대화를 열지 못했습니다. 잠시 후 다시 시도하세요."
+});
+Object.assign(KO, {
+  "{name}'s model {ref} is not available on this machine, so this turn did not fall back to another one.": "{name}의 모델 {ref}을(를) 이 컴퓨터에서 사용할 수 없어 이번 턴은 다른 모델로 대체되지 않았습니다.",
+  "{provider} has no API key on this machine, so {name} did not run.": "{provider}에 이 컴퓨터의 API 키가 없어 {name}이(가) 실행되지 않았습니다.",
+  "The thinking level the main chose is not supported by {ref}, so this turn did not fall back.": "메인이 선택한 사고 수준을 {ref}이(가) 지원하지 않아 이번 턴은 대체 실행되지 않았습니다."
 });
 
 // src/client/locales/es.js
@@ -7176,6 +7186,11 @@ Object.assign(ES, {
   "The mirror conversation file of this remote Bot is damaged or cannot be read, so it cannot be opened here. The conversation on the node is not affected. Ask the maintainer to rebuild the mirror (the cause is in the DS Bot log).": "El archivo de la conversación espejo de este Bot remoto está dañado o no se puede leer, así que no se puede abrir aquí. La conversación en el nodo no se ve afectada. Pide al responsable que reconstruya el espejo (la causa está en el registro de DS Bot).",
   "Could not open this Thread’s conversation. Try again in a moment.": "No se pudo abrir la conversación de este hilo. Vuelve a intentarlo en un momento."
 });
+Object.assign(ES, {
+  "{name}'s model {ref} is not available on this machine, so this turn did not fall back to another one.": "El modelo {ref} de {name} no está disponible en este equipo, así que este turno no se ejecutó con otro modelo.",
+  "{provider} has no API key on this machine, so {name} did not run.": "{provider} no tiene clave de API en este equipo, así que {name} no se ejecutó.",
+  "The thinking level the main chose is not supported by {ref}, so this turn did not fall back.": "El nivel de razonamiento que eligió el principal no es compatible con {ref}, así que este turno no se ejecutó con otro."
+});
 
 // src/client/locales/fr.js
 var FR = {
@@ -9497,6 +9512,11 @@ Object.assign(FR, {
   "The conversation list could not be refreshed, so the mirror conversation of this remote Bot could not be checked. Try again in a moment.": "La liste des conversations n’a pas pu être actualisée ; la conversation miroir de ce Bot distant n’a donc pas pu être vérifiée. Réessayez dans un instant.",
   "The mirror conversation file of this remote Bot is damaged or cannot be read, so it cannot be opened here. The conversation on the node is not affected. Ask the maintainer to rebuild the mirror (the cause is in the DS Bot log).": "Le fichier de conversation miroir de ce Bot distant est endommagé ou illisible ; il ne peut donc pas être ouvert ici. La conversation sur le nœud n’est pas affectée. Demandez au responsable de reconstruire le miroir (la cause se trouve dans le journal de DS Bot).",
   "Could not open this Thread’s conversation. Try again in a moment.": "Impossible d’ouvrir la conversation de ce fil. Réessayez dans un instant."
+});
+Object.assign(FR, {
+  "{name}'s model {ref} is not available on this machine, so this turn did not fall back to another one.": "Le modèle {ref} de {name} n'est pas disponible sur cette machine ; ce tour n'a donc pas été exécuté avec un autre modèle.",
+  "{provider} has no API key on this machine, so {name} did not run.": "{provider} n'a pas de clé API sur cette machine ; {name} n'a donc pas été exécuté.",
+  "The thinking level the main chose is not supported by {ref}, so this turn did not fall back.": "Le niveau de réflexion choisi par le principal n'est pas pris en charge par {ref} ; ce tour n'a donc pas été exécuté autrement."
 });
 
 // src/client/locales/de.js
@@ -11865,6 +11885,11 @@ Object.assign(DE, {
   "The mirror conversation file of this remote Bot is damaged or cannot be read, so it cannot be opened here. The conversation on the node is not affected. Ask the maintainer to rebuild the mirror (the cause is in the DS Bot log).": "Die Spiegelgesprächsdatei dieses entfernten Bots ist beschädigt oder nicht lesbar und kann hier daher nicht geöffnet werden. Das Gespräch auf dem Knoten ist nicht betroffen. Bitte den Betreuer, den Spiegel neu aufzubauen (die Ursache steht im DS-Bot-Protokoll).",
   "Could not open this Thread’s conversation. Try again in a moment.": "Das Gespräch dieses Threads konnte nicht geöffnet werden. Versuche es gleich noch einmal."
 });
+Object.assign(DE, {
+  "{name}'s model {ref} is not available on this machine, so this turn did not fall back to another one.": "Das Modell {ref} von {name} ist auf diesem Rechner nicht verfügbar, daher lief dieser Durchlauf nicht mit einem anderen Modell.",
+  "{provider} has no API key on this machine, so {name} did not run.": "{provider} hat auf diesem Rechner keinen API-Schlüssel, daher wurde {name} nicht ausgeführt.",
+  "The thinking level the main chose is not supported by {ref}, so this turn did not fall back.": "Die vom Haupt gewählte Denkstufe wird von {ref} nicht unterstützt, daher lief dieser Durchlauf nicht ersatzweise."
+});
 
 // src/client/i18n.js
 var NAMESPACE = "ds-bot";
@@ -13602,6 +13627,9 @@ var HOST_ZH = {
 };
 Object.assign(ZH, HOST_ZH);
 Object.assign(ZH, {
+  "{name}'s model {ref} is not available on this machine, so this turn did not fall back to another one.": "{name} 的模型 {ref} 在这台机器上不可用，本轮没有换用其它模型。",
+  "{provider} has no API key on this machine, so {name} did not run.": "{provider} 在这台机器上没有 API key，{name} 本轮没有运行。",
+  "The thinking level the main chose is not supported by {ref}, so this turn did not fall back.": "主控选择的思考等级不被 {ref} 支持，本轮没有降级运行。",
   "Please select a model": "请选择一个模型",
   "Failed to send": "发送失败",
   "Message…": "消息…"
@@ -13813,7 +13841,10 @@ var FAILURES = {
   TIMEOUT: "The model took too long to answer",
   TRANSPORT: "Could not reach the model service",
   SESSION: "Its group conversation could not open",
-  SESSION_RESET: "Its group conversation could not open, so it starts a new one next time"
+  SESSION_RESET: "Its group conversation could not open, so it starts a new one next time",
+  E_BOT_MODEL_UNAVAILABLE: "The model is not available on this machine",
+  E_BOT_MODEL_NO_KEY: "The provider has no API key on this machine",
+  E_BOT_EFFORT_UNAVAILABLE: "The thinking level is not served by this model"
 };
 var knownFailure = (code) => Object.hasOwn(FAILURES, code ?? "") ? t(FAILURES[code]) : void 0;
 function failureLabel(code, message) {
@@ -37034,7 +37065,7 @@ var ACCOUNT_MODELS_WAIT_MS = 2e4;
 var SIGNED_OUT = /* @__PURE__ */ new Set(["ACCOUNT_SIGN_IN_REQUIRED", "ACCOUNT_SIGNED_OUT", "ACCOUNT_TOKEN_INVALID"]);
 var KEY_CODES = /* @__PURE__ */ new Set(["MISSING_CREDENTIAL", "INVALID_CREDENTIAL", "AUTH"]);
 var CREDENTIAL_CODES = /* @__PURE__ */ new Set([...KEY_CODES, ...SIGNED_OUT]);
-function failureText2(code, { name, provider, status }) {
+function failureText2(code, { name, provider, status, ref }) {
   switch (code) {
     case "MISSING_CREDENTIAL":
       return t("{name}'s model has no API key yet.", { name });
@@ -37050,6 +37081,14 @@ function failureText2(code, { name, provider, status }) {
     case "ACCOUNT_SIGNED_OUT":
     case "ACCOUNT_TOKEN_INVALID":
       return t("The DeepSeek account sign-in has expired.");
+    // A Bot the main created: the model or level it chose is the user's choice made
+    // elsewhere, so the card says what is missing and that nothing else ran instead.
+    case "E_BOT_MODEL_UNAVAILABLE":
+      return t("{name}'s model {ref} is not available on this machine, so this turn did not fall back to another one.", { name, ref: ref ?? provider ?? "?" });
+    case "E_BOT_MODEL_NO_KEY":
+      return t("{provider} has no API key on this machine, so {name} did not run.", { provider, name });
+    case "E_BOT_EFFORT_UNAVAILABLE":
+      return t("The thinking level the main chose is not supported by {ref}, so this turn did not fall back.", { ref: ref ?? provider ?? "?" });
     case "TRANSPORT":
     case "TIMEOUT":
       return t("Could not reach the model service.");
@@ -37077,6 +37116,12 @@ function fixesFor(code, { canSignIn, official, topUp, onAccount = false }) {
       return official ? ["top-up"] : [];
     case "ACCOUNT_QUOTA":
       return topUp ? ["top-up"] : [];
+    // The fix is on the main: this window cannot set a model or level for a Bot the
+    // main manages, and offering one here would suggest a change that does not apply.
+    case "E_BOT_MODEL_UNAVAILABLE":
+    case "E_BOT_MODEL_NO_KEY":
+    case "E_BOT_EFFORT_UNAVAILABLE":
+      return [];
     default:
       return [];
   }
@@ -37157,7 +37202,7 @@ function FailureCell({ node, sessionId, useRoster, useTurnClock, actions }) {
   const [joining, setJoining] = (0, import_react54.useState)(null);
   const blocked = bot?.blocked?.code === data.code ? bot.blocked : void 0;
   const provider = blocked?.provider ?? providerOf(bot, roster);
-  const text2 = failureText2(data.code, { name: bot?.name ?? t("This Bot"), provider: providerName(roster, provider), status: blocked?.status });
+  const text2 = failureText2(data.code, { name: bot?.name ?? t("This Bot"), provider: providerName(roster, provider), status: blocked?.status, ref: bot?.model });
   const facts = failureFacts(data, blocked);
   const current = bot !== void 0 && currentPart(bot) === sessionId && !later;
   const moveToAccount = () => {

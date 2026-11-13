@@ -2359,3 +2359,10 @@ Object.assign(KO, {
   "The mirror conversation file of this remote Bot is damaged or cannot be read, so it cannot be opened here. The conversation on the node is not affected. Ask the maintainer to rebuild the mirror (the cause is in the DS Bot log).": "이 원격 Bot의 미러 대화 파일이 손상되었거나 읽을 수 없어 여기서 열 수 없습니다. 노드의 대화는 영향을 받지 않습니다. 관리자에게 미러 재생성을 요청하세요(원인은 DS Bot 로그에 있습니다).",
   "Could not open this Thread’s conversation. Try again in a moment.": "이 스레드의 대화를 열지 못했습니다. 잠시 후 다시 시도하세요.",
 })
+
+// M3: the three fail-closed model codes of a Bot the main manages.
+Object.assign(KO, {
+  "{name}'s model {ref} is not available on this machine, so this turn did not fall back to another one.": "{name}의 모델 {ref}을(를) 이 컴퓨터에서 사용할 수 없어 이번 턴은 다른 모델로 대체되지 않았습니다.",
+  "{provider} has no API key on this machine, so {name} did not run.": "{provider}에 이 컴퓨터의 API 키가 없어 {name}이(가) 실행되지 않았습니다.",
+  "The thinking level the main chose is not supported by {ref}, so this turn did not fall back.": "메인이 선택한 사고 수준을 {ref}이(가) 지원하지 않아 이번 턴은 대체 실행되지 않았습니다.",
+})

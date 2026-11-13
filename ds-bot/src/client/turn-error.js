@@ -25,7 +25,7 @@ const KEY_CODES = new Set(['MISSING_CREDENTIAL', 'INVALID_CREDENTIAL', 'AUTH'])
 const CREDENTIAL_CODES = new Set([...KEY_CODES, ...SIGNED_OUT])
 
 // The sentence for one failure. `status` is the HTTP status, when the host has it.
-export function failureText(code, { name, provider, status }) {
+export function failureText(code, { name, provider, status, ref }) {
   switch (code) {
     case 'MISSING_CREDENTIAL': return t("{name}'s model has no API key yet.", { name })
     case 'INVALID_CREDENTIAL': return t('This API key is not in the right format.')
@@ -39,6 +39,11 @@ export function failureText(code, { name, provider, status }) {
     case 'ACCOUNT_SIGN_IN_REQUIRED':
     case 'ACCOUNT_SIGNED_OUT':
     case 'ACCOUNT_TOKEN_INVALID': return t('The DeepSeek account sign-in has expired.')
+    // A Bot the main created: the model or level it chose is the user's choice made
+    // elsewhere, so the card says what is missing and that nothing else ran instead.
+    case 'E_BOT_MODEL_UNAVAILABLE': return t("{name}'s model {ref} is not available on this machine, so this turn did not fall back to another one.", { name, ref: ref ?? provider ?? '?' })
+    case 'E_BOT_MODEL_NO_KEY': return t('{provider} has no API key on this machine, so {name} did not run.', { provider, name })
+    case 'E_BOT_EFFORT_UNAVAILABLE': return t('The thinking level the main chose is not supported by {ref}, so this turn did not fall back.', { ref: ref ?? provider ?? '?' })
     case 'TRANSPORT':
     case 'TIMEOUT': return t('Could not reach the model service.')
     case 'RATE_LIMIT': return t('Too many requests. Wait a moment, then try again.')
@@ -60,6 +65,11 @@ export function fixesFor(code, { canSignIn, official, topUp, onAccount = false }
     case 'AUTH': return ['rekey', canSignIn ? 'use-account' : null, 'model'].filter(Boolean)
     case 'QUOTA': return official ? ['top-up'] : []
     case 'ACCOUNT_QUOTA': return topUp ? ['top-up'] : []
+    // The fix is on the main: this window cannot set a model or level for a Bot the
+    // main manages, and offering one here would suggest a change that does not apply.
+    case 'E_BOT_MODEL_UNAVAILABLE':
+    case 'E_BOT_MODEL_NO_KEY':
+    case 'E_BOT_EFFORT_UNAVAILABLE': return []
     default: return []
   }
 }
@@ -155,7 +165,7 @@ export function FailureCell({ node, sessionId, useRoster, useTurnClock, actions 
   const [joining, setJoining] = useState(null)
   const blocked = bot?.blocked?.code === data.code ? bot.blocked : undefined
   const provider = blocked?.provider ?? providerOf(bot, roster)
-  const text = failureText(data.code, { name: bot?.name ?? t('This Bot'), provider: providerName(roster, provider), status: blocked?.status })
+  const text = failureText(data.code, { name: bot?.name ?? t('This Bot'), provider: providerName(roster, provider), status: blocked?.status, ref: bot?.model })
   const facts = failureFacts(data, blocked)
   const current = bot !== undefined && currentPart(bot) === sessionId && !later
   // The key route never takes the account's credential, so a sign-in alone leaves the Bot
