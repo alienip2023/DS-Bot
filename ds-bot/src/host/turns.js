@@ -153,9 +153,29 @@ export const promisesWork = text => typeof text === 'string' && text.trim().leng
  * Session this team owns, the reason is written to the diagnostics and put into the error the
  * user reads. Exported so the install/dispose can be run on a real cordis context in tests.
  */
+// A Bot the main manages runs on the model and the thinking level the main chose. A
+// Session can still hold a ref the main no longer serves — the catalog changed while the
+// node was offline, or the provider lost its key — and DSH would then answer NO_ADAPTER or
+// the local key card, which says nothing about the main. Every prompt of such a Bot is
+// checked first, so private chats, Threads and group Sessions all refuse before a model
+// call and the turn reports the code the repair card is for.
+async function refuseManagedRoute(rt, sessionId) {
+  if (typeof sessionId !== 'string' || sessionId === '') return
+  let bot
+  try {
+    const self = typeof rt.selfOf === 'function' ? rt.selfOf(sessionId) : sessionId
+    bot = rt.botOf?.(self ?? sessionId)
+  } catch { return }
+  // A joined row runs on its node, not here; only a Bot this process serves is checked.
+  if (bot === undefined || bot.managedBy !== 'hub' || bot.origin === 'joined') return
+  const ref = await rt.desiredModel?.(bot)
+  if (ref !== undefined) await rt.desiredEffort?.(bot, ref)
+}
+
 export function installPromptReasons(rt, placeOf) {
   const { ctx } = rt
   wrapControllerMethod(ctx, ctx.sessionController, 'prompt', prompt => async function (request, ...rest) {
+    await refuseManagedRoute(rt, request?.sessionId)
     try {
       return await prompt.call(this, request, ...rest)
     } catch (error) {

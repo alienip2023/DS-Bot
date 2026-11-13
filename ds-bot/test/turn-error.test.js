@@ -373,7 +373,7 @@ test('connection, rate and server failures retry; other codes keep a short line,
 })
 
 test('every failure code a Bot chat can show offers at least one button', () => {
-  for (const code of ['MISSING_CREDENTIAL', 'INVALID_CREDENTIAL', 'AUTH', 'QUOTA', 'ACCOUNT_QUOTA', 'ACCOUNT_SIGN_IN_REQUIRED', 'ACCOUNT_SIGNED_OUT', 'ACCOUNT_TOKEN_INVALID', 'TRANSPORT', 'TIMEOUT', 'RATE_LIMIT', 'SERVER', 'INTERRUPTED', 'INVALID_REQUEST', 'OTHER']) {
+  for (const code of ['MISSING_CREDENTIAL', 'INVALID_CREDENTIAL', 'AUTH', 'QUOTA', 'ACCOUNT_QUOTA', 'ACCOUNT_SIGN_IN_REQUIRED', 'ACCOUNT_SIGNED_OUT', 'ACCOUNT_TOKEN_INVALID', 'E_BOT_MODEL_UNAVAILABLE', 'E_BOT_MODEL_NO_KEY', 'E_BOT_EFFORT_UNAVAILABLE', 'TRANSPORT', 'TIMEOUT', 'RATE_LIMIT', 'SERVER', 'INTERRUPTED', 'INVALID_REQUEST', 'OTHER']) {
     for (const blocked of [undefined, { code, at: 1 }]) {
       const side = cell({ code, blocked })
       assert.ok(labels(side.buttons(side.render())).length > 0, `${code} ${blocked ? 'blocked' : 'free'}`)
