@@ -49,7 +49,9 @@ describe('N-1 I6: frames carry no environment', () => {
     const created = frames.filter(frame => frame.type === 'bot/create')
     assert.equal(created.length, 1)
     const keys = Object.keys(created[0].payload)
-    assert.deepEqual(keys.sort(), ['defaultEffort', 'effort', 'instructions', 'managedBy', 'modelRef', 'name', 'nodeId', 'requestId', 'role', 'workDir'])
+    // `memoryConfig` is part of the create frame since M4 S6: a joined Bot starts on the
+    // hub's federated memory unless its creator picked another backend.
+    assert.deepEqual(keys.sort(), ['defaultEffort', 'effort', 'instructions', 'managedBy', 'memoryConfig', 'modelRef', 'name', 'nodeId', 'requestId', 'role', 'workDir'])
     assert.deepEqual(keys.filter(key => ENV_KEY.test(key)), [])
   })
 })

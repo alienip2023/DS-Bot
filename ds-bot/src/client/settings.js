@@ -1,3 +1,4 @@
+import { failureText } from './error-text.js'
 import { Component, createElement as h, useCallback, useEffect, useRef, useState } from 'react'
 import { ACCENT_INKS, INKS } from './inks.js'
 import { isMainOf } from './sources.js'
@@ -306,7 +307,7 @@ export function SettingsDialog({ page, id, roster, actions, useUpdate, leaving =
   useEscape(close)
   const run = promise => Promise.resolve(promise)
     .then(() => { setError(''); return true })
-    .catch(failure => { setError(failure?.message ?? String(failure)); return false })
+    .catch(failure => { setError(failureText(failure)); return false })
   // A Bot or group deleted while its form is open leaves its page on the list.
   const bot = page === 'bots' && id ? roster.byId[id] : undefined
   const room = page === 'groups' && id ? roster.roomsById[id] : undefined

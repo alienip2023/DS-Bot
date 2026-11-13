@@ -750,6 +750,9 @@ export function install(rt) {
         }
         case 'update-room': {
           await rt.load()
+          // A group has no memory backend: its memory is the team's, and rooms are not
+          // federated. `memoryConfig` is not part of a room patch, so drop it here rather
+          // than letting a caller believe it was applied.
           const { room, changes } = await rt.updateRoom(body.id, {
             name: body.name,
             notice: body.notice,

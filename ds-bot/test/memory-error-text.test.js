@@ -1,0 +1,22 @@
+// The host's federation refusals are English sentences; a client that knows the code
+// shows the localized sentence instead, and anything else keeps the host's text.
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+import { failureText } from '../src/client/error-text.js'
+
+const coded = (message, code) => Object.assign(new Error(message), { code })
+
+test('a federation refusal without a node is shown in local wording', () => {
+  const error = coded('Federated memory only exists on a node joined to a hub; this machine has no node identity, so it keeps memory locally instead.', 'memory/federation-requires-node')
+  assert.equal(failureText(error), 'Federated memory needs a node joined to a hub. This machine has no node identity, so the Bot keeps its memory here.')
+})
+
+test('a hub that cannot federate is shown in local wording', () => {
+  const error = coded('Federated memory is not available on this machine.', 'memory/federation-unsupported')
+  assert.equal(failureText(error), 'Federated memory is not available here: this machine is not a node, or the hub does not support it. Nothing was saved.')
+})
+
+test('an unknown code keeps the host message', () => {
+  assert.equal(failureText(coded('Something broke.', 'memory/other')), 'Something broke.')
+  assert.equal(failureText(new Error('No code here.')), 'No code here.')
+})

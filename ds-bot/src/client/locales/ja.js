@@ -2365,4 +2365,6 @@ Object.assign(JA, {
   "Back to the machines": "マシン一覧に戻る",
   "Its own memory": "その Bot のメモリ",
   "This machine has no node identity": "このマシンにはノード ID がありません",
+  "Federated memory needs a node joined to a hub. This machine has no node identity, so the Bot keeps its memory here.": "連合メモリにはハブにつながったノードが必要です。このマシンにはノード ID がないため、この Bot のメモリはここに残ります。",
+  "Federated memory is not available here: this machine is not a node, or the hub does not support it. Nothing was saved.": "ここでは連合メモリを使えません。このマシンがノードではないか、ハブが対応していません。何も保存されませんでした。",
 })

@@ -872,11 +872,9 @@ export function install(rt) {
     if (patch.section !== undefined || patch.sectionId !== undefined) {
       resolveSectionInput({ section: patch.section, sectionId: patch.sectionId }, { allowCreate: false })
     }
-    // Checked before anything is changed: a refused backend must not leave half a patch behind.
-    if (patch.memoryConfig !== undefined && patch.memoryConfig !== null) {
-      const cannotFederate = federationProblem(cleanMemoryConfig(patch.memoryConfig))
-      if (cannotFederate !== undefined) throw cannotFederate
-    }
+    // A group has no memory backend of its own: its memory is the team's, and a room is
+    // never federated. `update-room` drops the field before it gets here, so there is
+    // nothing to validate.
     // A Bot's own permissions are the user's to set, so a group's are too.
     if (patch.permission !== undefined && actorId !== undefined) throw new Error(`Only the user can set the permissions of "${room.name}"`)
     const permission = patch.permission === undefined ? undefined : rt.cleanRoomPermission(patch.permission)

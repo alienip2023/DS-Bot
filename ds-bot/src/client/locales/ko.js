@@ -2401,4 +2401,6 @@ Object.assign(KO, {
   "Back to the machines": "머신 목록으로 돌아가기",
   "Its own memory": "해당 Bot의 메모리",
   "This machine has no node identity": "이 머신에는 노드 ID가 없습니다",
+  "Federated memory needs a node joined to a hub. This machine has no node identity, so the Bot keeps its memory here.": "연합 메모리는 허브에 연결된 노드가 필요합니다. 이 머신에는 노드 ID가 없어서 이 Bot의 메모리는 여기에 남습니다.",
+  "Federated memory is not available here: this machine is not a node, or the hub does not support it. Nothing was saved.": "여기서는 연합 메모리를 쓸 수 없습니다. 이 머신이 노드가 아니거나 허브가 지원하지 않습니다. 아무것도 저장되지 않았습니다.",
 })

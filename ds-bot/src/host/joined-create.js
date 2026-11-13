@@ -99,7 +99,12 @@ export async function createBotOnNode(rt, { nodeId, name, role, modelRef = null,
     }
   }
 
-  const memory = cleanMemory(memoryConfig)
+  // A Bot that lives on a node keeps its memory with the hub: the snapshot, the node's
+  // scope and its own scope all arrive from there, so `federation` is the backend a new
+  // joined Bot starts with. An explicit pick still wins, which is the only way back to
+  // `file`/`none` (an existing Bot row is never rewritten without one).
+  const chosen = cleanMemory(memoryConfig)
+  const memory = chosen ?? { backend: 'federation' }
   const requestId = randomUUID()
   const timeoutMs = rt.botCreateTimeoutMs ?? BOT_CREATE_TIMEOUT_MS
   const wait = listenBotCreateResult(registry, requestId, nid, timeoutMs)
@@ -143,9 +148,8 @@ export async function createBotOnNode(rt, { nodeId, name, role, modelRef = null,
     managedBy: 'hub',
     workDir: workDir ?? null,
     instructions: clampedInstructions,
-    // Only when the main picked one: a Bot created without a memory backend keeps the
-    // exact frame older nodes already accept.
-    ...(memory === null ? {} : { memoryConfig: memory }),
+    // Older nodes drop fields they do not validate, so sending the default is safe.
+    memoryConfig: memory,
   })
   if (sent !== true) {
     wait.cancel()
@@ -183,7 +187,9 @@ export async function createBotOnNode(rt, { nodeId, name, role, modelRef = null,
     effort: effort ?? null,
     createdAt: existing?.createdAt ?? now,
     capabilities: existing?.capabilities ?? [],
-    ...(memory === null ? {} : { memoryConfig: memory }),
+    // Re-reporting an existing joined Bot must not change the backend it runs with;
+    // only a creation that named one (or a row that never had one) writes it.
+    memoryConfig: chosen === null && existing?.memoryConfig !== undefined ? existing.memoryConfig : memory,
     worker: {
       ...(existing?.worker ?? {}),
       nodeId: nid,

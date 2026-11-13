@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { canFederate, memoryBackendChoices } from '../src/client/memory-backends.js'
+import { canFederate, canShowMemoryHub, memoryBackendChoices } from '../src/client/memory-backends.js'
 
 const values = choices => choices.map(choice => choice.value)
 
@@ -17,4 +17,12 @@ test('canFederate reads the roster flag the host adds', () => {
   assert.equal(canFederate({ memoryFederation: {} }), false)
   assert.equal(canFederate({}), false)
   assert.equal(canFederate(undefined), false)
+})
+
+test('canShowMemoryHub is true only when a hub answered', () => {
+  assert.equal(canShowMemoryHub({ memoryFederation: { hub: true } }), true)
+  assert.equal(canShowMemoryHub({ memoryFederation: { hub: false } }), false)
+  assert.equal(canShowMemoryHub({ memoryFederation: {} }), false)
+  assert.equal(canShowMemoryHub({}), false)
+  assert.equal(canShowMemoryHub(undefined), false)
 })

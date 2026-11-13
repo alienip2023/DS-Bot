@@ -14,3 +14,7 @@ export function memoryBackendChoices({ federate = false } = {}) {
 
 // Whether the screen should offer the federated backend at all.
 export const canFederate = roster => roster?.memoryFederation?.canFederate === true
+
+// Whether the details drawer shows the hub's federated memory at all: a machine that
+// joined a hub has three layers to show, a plain local install has none.
+export const canShowMemoryHub = roster => roster?.memoryFederation?.hub === true

@@ -1,3 +1,4 @@
+import { failureText } from './error-text.js'
 import { createElement as h, useEffect, useRef, useState } from 'react'
 import { BotMark } from './mark.js'
 import { CharacterGrid } from './bot-settings.js'
@@ -91,7 +92,7 @@ export function CreateBot({ roster, actions, start, brief = '', onBack, canGoBac
       const bot = await actions.createBot({ ...createPayload({ name: finalName, look, image, model: chosen, effort: local ? undefined : effort, brief, ownLook, sectionId: start?.sectionId }), memoryConfig: { backend: memoryBackend }, ...extra })
       onCreated(bot)
     } catch (failure) {
-      setError(failure?.message ?? String(failure))
+      setError(failureText(failure))
       setBusy(false)
     }
   }

@@ -2479,7 +2479,9 @@ Object.assign(JA, {
   "Added to {scope}": "{scope}に追加しました",
   "Back to the machines": "マシン一覧に戻る",
   "Its own memory": "その Bot のメモリ",
-  "This machine has no node identity": "このマシンにはノード ID がありません"
+  "This machine has no node identity": "このマシンにはノード ID がありません",
+  "Federated memory needs a node joined to a hub. This machine has no node identity, so the Bot keeps its memory here.": "連合メモリにはハブにつながったノードが必要です。このマシンにはノード ID がないため、この Bot のメモリはここに残ります。",
+  "Federated memory is not available here: this machine is not a node, or the hub does not support it. Nothing was saved.": "ここでは連合メモリを使えません。このマシンがノードではないか、ハブが対応していません。何も保存されませんでした。"
 });
 
 // src/client/locales/ko.js
@@ -4885,7 +4887,9 @@ Object.assign(KO, {
   "Added to {scope}": "{scope}에 추가했습니다",
   "Back to the machines": "머신 목록으로 돌아가기",
   "Its own memory": "해당 Bot의 메모리",
-  "This machine has no node identity": "이 머신에는 노드 ID가 없습니다"
+  "This machine has no node identity": "이 머신에는 노드 ID가 없습니다",
+  "Federated memory needs a node joined to a hub. This machine has no node identity, so the Bot keeps its memory here.": "연합 메모리는 허브에 연결된 노드가 필요합니다. 이 머신에는 노드 ID가 없어서 이 Bot의 메모리는 여기에 남습니다.",
+  "Federated memory is not available here: this machine is not a node, or the hub does not support it. Nothing was saved.": "여기서는 연합 메모리를 쓸 수 없습니다. 이 머신이 노드가 아니거나 허브가 지원하지 않습니다. 아무것도 저장되지 않았습니다."
 });
 
 // src/client/locales/es.js
@@ -7291,7 +7295,9 @@ Object.assign(ES, {
   "Added to {scope}": "Añadido a {scope}",
   "Back to the machines": "Volver a las máquinas",
   "Its own memory": "Su propia memoria",
-  "This machine has no node identity": "Esta máquina no tiene identidad de nodo"
+  "This machine has no node identity": "Esta máquina no tiene identidad de nodo",
+  "Federated memory needs a node joined to a hub. This machine has no node identity, so the Bot keeps its memory here.": "La memoria federada necesita un nodo conectado a un hub. Esta máquina no tiene identidad de nodo, así que la memoria de este Bot se queda aquí.",
+  "Federated memory is not available here: this machine is not a node, or the hub does not support it. Nothing was saved.": "La memoria federada no está disponible aquí: esta máquina no es un nodo, o el hub no la admite. No se guardó nada."
 });
 
 // src/client/locales/fr.js
@@ -9652,7 +9658,9 @@ Object.assign(FR, {
   "Added to {scope}": "Ajouté à {scope}",
   "Back to the machines": "Retour aux machines",
   "Its own memory": "Sa propre mémoire",
-  "This machine has no node identity": "Cette machine n’a pas d’identité de nœud"
+  "This machine has no node identity": "Cette machine n’a pas d’identité de nœud",
+  "Federated memory needs a node joined to a hub. This machine has no node identity, so the Bot keeps its memory here.": "La mémoire fédérée exige un nœud relié à un hub. Cette machine n’a pas d’identité de nœud, donc la mémoire de ce Bot reste ici.",
+  "Federated memory is not available here: this machine is not a node, or the hub does not support it. Nothing was saved.": "La mémoire fédérée n’est pas disponible ici : cette machine n’est pas un nœud, ou le hub ne la prend pas en charge. Rien n’a été enregistré."
 });
 
 // src/client/locales/de.js
@@ -12058,7 +12066,9 @@ Object.assign(DE, {
   "Added to {scope}": "Zu {scope} hinzugefügt",
   "Back to the machines": "Zurück zu den Maschinen",
   "Its own memory": "Sein eigenes Gedächtnis",
-  "This machine has no node identity": "Diese Maschine hat keine Knotenidentität"
+  "This machine has no node identity": "Diese Maschine hat keine Knotenidentität",
+  "Federated memory needs a node joined to a hub. This machine has no node identity, so the Bot keeps its memory here.": "Föderiertes Gedächtnis braucht einen Knoten, der mit einem Hub verbunden ist. Diese Maschine hat keine Knotenidentität, deshalb bleibt das Gedächtnis dieses Bots hier.",
+  "Federated memory is not available here: this machine is not a node, or the hub does not support it. Nothing was saved.": "Föderiertes Gedächtnis ist hier nicht verfügbar: Diese Maschine ist kein Knoten, oder der Hub unterstützt es nicht. Es wurde nichts gespeichert."
 });
 
 // src/client/i18n.js
@@ -13170,6 +13180,8 @@ var ZH = {
   "Add an entry to {scope}": "添加到{scope}",
   "Added to {scope}": "已添加到{scope}",
   "This machine has no node identity": "这台机器没有节点身份",
+  "Federated memory needs a node joined to a hub. This machine has no node identity, so the Bot keeps its memory here.": "联邦记忆需要一台接入 hub 的节点；这台机器没有节点身份，所以这个 Bot 的记忆留在这里。",
+  "Federated memory is not available here: this machine is not a node, or the hub does not support it. Nothing was saved.": "这里无法使用联邦记忆：这台机器不是节点，或 hub 不支持联邦记忆。没有保存任何内容。",
   "Every Bot reads it": "所有 Bot 都会读",
   "Group memory": "群记忆",
   "Only its members read it": "只有群成员会读",
@@ -24270,6 +24282,7 @@ function memoryBackendChoices({ federate = false } = {}) {
   return choices;
 }
 var canFederate = (roster) => roster?.memoryFederation?.canFederate === true;
+var canShowMemoryHub = (roster) => roster?.memoryFederation?.hub === true;
 
 // src/client/bot-settings.js
 var import_react27 = require("react");
@@ -29790,6 +29803,18 @@ function threadHomeGuard({ roster, mainView, threadBotOfSession, threadOwnerOf, 
   };
 }
 
+// src/client/error-text.js
+var BY_CODE = {
+  "memory/federation-requires-node": () => t("Federated memory needs a node joined to a hub. This machine has no node identity, so the Bot keeps its memory here."),
+  "memory/federation-unsupported": () => t("Federated memory is not available here: this machine is not a node, or the hub does not support it. Nothing was saved.")
+};
+function failureText2(failure) {
+  const code = typeof failure?.code === "string" ? failure.code : void 0;
+  const localize = code === void 0 ? void 0 : BY_CODE[code];
+  if (localize !== void 0) return localize();
+  return hostText(failure?.message ?? String(failure));
+}
+
 // src/client/permission-picker.js
 var import_react36 = require("react");
 var LABELS = { "read-only": "Read only", "workspace-write": "Workspace", "danger-full-access": "Full access" };
@@ -30180,7 +30205,7 @@ function CreateBot({ roster, actions, start, brief = "", onBack, canGoBack, onCr
       const bot = await actions.createBot({ ...createPayload({ name: finalName, look, image, model: chosen, effort: local ? void 0 : effort, brief, ownLook, sectionId: start?.sectionId }), memoryConfig: { backend: memoryBackend }, ...extra });
       onCreated(bot);
     } catch (failure) {
-      setError(failure?.message ?? String(failure));
+      setError(failureText2(failure));
       setBusy(false);
     }
   };
@@ -35466,7 +35491,7 @@ function SettingsDialog({ page, id, roster, actions, useUpdate, leaving = false,
     setError("");
     return true;
   }).catch((failure) => {
-    setError(failure?.message ?? String(failure));
+    setError(failureText2(failure));
     return false;
   });
   const bot = page === "bots" && id ? roster.byId[id] : void 0;
@@ -37388,7 +37413,7 @@ var ACCOUNT_MODELS_WAIT_MS = 2e4;
 var SIGNED_OUT = /* @__PURE__ */ new Set(["ACCOUNT_SIGN_IN_REQUIRED", "ACCOUNT_SIGNED_OUT", "ACCOUNT_TOKEN_INVALID"]);
 var KEY_CODES = /* @__PURE__ */ new Set(["MISSING_CREDENTIAL", "INVALID_CREDENTIAL", "AUTH"]);
 var CREDENTIAL_CODES = /* @__PURE__ */ new Set([...KEY_CODES, ...SIGNED_OUT]);
-function failureText2(code, { name, provider, status, ref }) {
+function failureText3(code, { name, provider, status, ref }) {
   switch (code) {
     case "MISSING_CREDENTIAL":
       return t("{name}'s model has no API key yet.", { name });
@@ -37528,7 +37553,7 @@ function FailureCell({ node, sessionId, useRoster, useTurnClock, actions }) {
   const blocked = bot?.blocked !== void 0 && (bot.blocked.code === data.code || ROUTE_LEVEL_CODES.has(data.code) && MANAGED_CODES.has(bot.blocked.code)) ? bot.blocked : void 0;
   const shown = blocked?.code ?? data.code;
   const provider = blocked?.provider ?? providerOf(bot, roster);
-  const text2 = failureText2(shown, { name: bot?.name ?? t("This Bot"), provider: providerName(roster, provider), status: blocked?.status, ref: bot?.model });
+  const text2 = failureText3(shown, { name: bot?.name ?? t("This Bot"), provider: providerName(roster, provider), status: blocked?.status, ref: bot?.model });
   const facts = failureFacts(data, blocked);
   const current = bot !== void 0 && currentPart(bot) === sessionId && !later;
   const moveToAccount = () => {
@@ -39687,7 +39712,7 @@ function DetailsDrawer({ sessionId, startRenaming, startTab, hasStrip, roster, a
     setError("");
     return true;
   }).catch((failure) => {
-    setError(failure?.message ?? String(failure));
+    setError(failureText2(failure));
     return false;
   });
   const share = () => {
@@ -39805,7 +39830,7 @@ function DetailsDrawer({ sessionId, startRenaming, startTab, hasStrip, roster, a
         bot.instructions ? (0, import_react63.createElement)(About, { key: "about", text: bot.instructions }) : (0, import_react63.createElement)("button", { key: "about", type: "button", className: "bt-more", onClick: () => setView("settings") }, t("Add instructions in Bot settings")),
         roster.memory === false ? null : (0, import_react63.createElement)(MemoryRow, { key: "memory", owner: { id: bot.id, name: bot.name }, actions }),
         // Only a hub has machines to show: a node's own screen offers its Bot memory only.
-        roster.memory !== false && roster.memoryFederation?.hub === true ? (0, import_react63.createElement)(MemoryHubRow, { key: "memory-hub", actions }) : null,
+        roster.memory !== false && canShowMemoryHub(roster) ? (0, import_react63.createElement)(MemoryHubRow, { key: "memory-hub", actions }) : null,
         usage ? (0, import_react63.createElement)(
           "div",
           { key: "usage" },

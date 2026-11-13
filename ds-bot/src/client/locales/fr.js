@@ -2365,4 +2365,6 @@ Object.assign(FR, {
   "Back to the machines": "Retour aux machines",
   "Its own memory": "Sa propre mémoire",
   "This machine has no node identity": "Cette machine n’a pas d’identité de nœud",
+  "Federated memory needs a node joined to a hub. This machine has no node identity, so the Bot keeps its memory here.": "La mémoire fédérée exige un nœud relié à un hub. Cette machine n’a pas d’identité de nœud, donc la mémoire de ce Bot reste ici.",
+  "Federated memory is not available here: this machine is not a node, or the hub does not support it. Nothing was saved.": "La mémoire fédérée n’est pas disponible ici : cette machine n’est pas un nœud, ou le hub ne la prend pas en charge. Rien n’a été enregistré.",
 })

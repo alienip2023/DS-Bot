@@ -14,6 +14,8 @@ import { BotModelMenu } from './node-models.js'
 import { FolderMenu } from './folder-menu.js'
 import { MemoryRow } from './memory-panel.js'
 import { MemoryHubRow } from './memory-hub-panel.js'
+import { canShowMemoryHub } from './memory-backends.js'
+import { failureText } from './error-text.js'
 import { ScheduleSummary } from './schedules.js'
 import { useGlide, useMorph } from './motion.js'
 import { MemberApprovals, MemberState, StopMemberWork, StopRoomWork, useMemberWork, workState } from './member-status.js'
@@ -253,7 +255,7 @@ export function DetailsDrawer({ sessionId, startRenaming, startTab, hasStrip, ro
   const usage = useSessions(list => usageOf(list, [part, ...(bot?.parts ?? room?.parts ?? [])]))
   const run = promise => Promise.resolve(promise)
     .then(() => { setError(''); return true })
-    .catch(failure => { setError(failure?.message ?? String(failure)); return false })
+    .catch(failure => { setError(failureText(failure)); return false })
   const share = () => {
     void navigator.clipboard?.writeText(transcript).then(() => {
       setCopied(true)
@@ -339,7 +341,7 @@ export function DetailsDrawer({ sessionId, startRenaming, startTab, hasStrip, ro
           : h('button', { key: 'about', type: 'button', className: 'bt-more', onClick: () => setView('settings') }, t('Add instructions in Bot settings')),
         roster.memory === false ? null : h(MemoryRow, { key: 'memory', owner: { id: bot.id, name: bot.name }, actions }),
         // Only a hub has machines to show: a node's own screen offers its Bot memory only.
-        roster.memory !== false && roster.memoryFederation?.hub === true ? h(MemoryHubRow, { key: 'memory-hub', actions }) : null,
+        roster.memory !== false && canShowMemoryHub(roster) ? h(MemoryHubRow, { key: 'memory-hub', actions }) : null,
         usage ? h('div', { key: 'usage' }, h('div', { className: 'bt-section-title' }, t('Usage')),
           h('div', { className: 'bt-kv' }, h('span', null, bot.name), h('span', null, usage))) : null,
         h(ScheduleSummary, { key: 'routines', bot, actions }),

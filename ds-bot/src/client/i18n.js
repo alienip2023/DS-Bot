@@ -1106,6 +1106,8 @@ const ZH = {
   'Add an entry to {scope}': '添加到{scope}',
   'Added to {scope}': '已添加到{scope}',
   'This machine has no node identity': '这台机器没有节点身份',
+  'Federated memory needs a node joined to a hub. This machine has no node identity, so the Bot keeps its memory here.': '联邦记忆需要一台接入 hub 的节点；这台机器没有节点身份，所以这个 Bot 的记忆留在这里。',
+  'Federated memory is not available here: this machine is not a node, or the hub does not support it. Nothing was saved.': '这里无法使用联邦记忆：这台机器不是节点，或 hub 不支持联邦记忆。没有保存任何内容。',
   'Every Bot reads it': '所有 Bot 都会读',
   'Group memory': '群记忆',
   'Only its members read it': '只有群成员会读',
