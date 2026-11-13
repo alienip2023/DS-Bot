@@ -17,7 +17,7 @@ import { showsDshRow } from './dsh-offer.js'
 import { quietly } from './diagnostics.js'
 import { frameLayout, dragColumn, RAIL_WIDTH, FALLBACK_SIDEBAR_WIDTH, userSidebarToggle } from './frame-layout.js'
 import { chatRoom, dshCollapsed } from './frame-watch.js'
-import { botRowClick } from './row-actions.js'
+import { botRowClick, remoteHomeOf } from './row-actions.js'
 import { threadsStore } from './threads.js'
 import { sortThreads, canCreateThread } from './thread-target.js'
 
@@ -308,8 +308,10 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
   }
   const pinned = bot.pinned === true && !tile
   const joined = bot.origin === 'joined' && bot.worker?.home === 'remote'
-  // A node-owned Bot has no local Session either; it is shown like a joined row.
+  // A node-owned Bot has no local Session either; it is shown like a joined row and its
+  // click goes to openJoinedHome, not to a local openSession.
   const nodeBot = bot.origin === 'node' && bot.worker?.home === 'node'
+  const remoteHome = remoteHomeOf(bot)
   // Another machine's Bot, mirrored read-only: it has no local Session to open.
   const peer = bot.origin === 'peer' && bot.worker?.home === 'hub'
   const machine = joined
@@ -340,7 +342,7 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
     draggable: wide && !tile && !peer && onDragStart ? true : undefined,
     onDragStart: wide && !tile && !peer && onDragStart ? event => onDragStart(event, id) : undefined,
     onMouseEnter: wide ? nameIfCut : undefined,
-    onClick: () => (peer ? actions.notice?.(t('This Bot runs on another machine and is read-only here')) : botRowClick(joined, id, actions)),
+    onClick: () => (peer ? actions.notice?.(t('This Bot runs on another machine and is read-only here')) : botRowClick(remoteHome, id, actions)),
   },
   h(BotAvatar, { bot, size: wide ? 36 : 44, state, main }),
   pinned && !wide ? h(PinMark) : null,

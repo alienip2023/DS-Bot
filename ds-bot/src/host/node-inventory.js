@@ -362,6 +362,37 @@ export async function sendNodePageTurn(rt, botId, body, requestId = randomUUID()
   return { ok: true, botId: target.bot.id, text: answer, requestId }
 }
 
+// ── the switch ────────────────────────────────────────────────────────────────
+//
+// `prefs.nodeInventory` is the one switch for both halves: on a node it gates the
+// provider below, on the hub it gates the rows. Turning it off clears the rows at once
+// instead of waiting for the next inventory; the node is told by the next report (which
+// carries enabled:false and is acknowledged with applied:0).
+
+export function nodeInventoryView(rt) {
+  const state = rt.state ?? {}
+  const rows = Object.values(state.bots ?? {}).filter(isNodeBot)
+  return {
+    enabled: nodeInventoryOn(rt),
+    rows: rows.length,
+    nodes: [...new Set(rows.map(row => row.worker?.nodeId).filter(Boolean))],
+    lastError: nodeInventoryState(rt).lastError ?? null,
+  }
+}
+
+export async function setNodeInventory(rt, enabled) {
+  if (typeof enabled !== 'boolean') throw coded('nodeInventory must be true or false', 'bot/invalid')
+  const state = rt.state
+  state.prefs = state.prefs ?? {}
+  state.prefs.nodeInventory = enabled
+  if (!enabled) {
+    await clearNodeInventory(rt)
+    return { ...nodeInventoryView(rt), applied: 0 }
+  }
+  await rt.save()
+  return { ...nodeInventoryView(rt), applied: Object.values(state.bots ?? {}).filter(isNodeBot).length }
+}
+
 // ── install ──────────────────────────────────────────────────────────────────
 
 const subscribed = new WeakSet()
@@ -392,6 +423,8 @@ export function install(rt) {
       list: () => listLocalBots(rt),
     })
   } catch { /* a host without provide (an old runtime) cannot report; the hub side still works */ }
+  rt.setNodeInventory = (enabled) => setNodeInventory(rt, enabled)
+  rt.nodeInventoryView = () => nodeInventoryView(rt)
   rt.applyNodeInventory = (inventory) => applyInventory(rt, inventory)
   rt.clearNodeInventory = (nodeId) => clearNodeInventory(rt, nodeId)
   rt.handleNodeTurn = (spec) => handleNodeTurn(rt, spec)

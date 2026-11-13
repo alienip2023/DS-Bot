@@ -335,12 +335,15 @@ export function install(rt) {
   }
 
   const sameSelection = (a, b) => a.provider === b.provider && a.model === b.model && a.reasoningEffort === b.reasoningEffort
+  // A shadow row (peer or node) is another machine's Bot: it has no Session here, and
+  // nothing may select a model for it or write applied fields onto it.
+  const isShadow = bot => bot?.origin === 'peer' || bot?.origin === 'node'
 
   // A Thread's Session is made without a model — the core's create carries none — so its
   // selection is made right after: the Thread's own model and level when the create named
   // them, else the Bot's current route, in the same shape Main uses.
   async function applyThreadModel(bot, sessionId, { model, effort } = {}) {
-    if (bot?.origin === 'peer') return undefined
+    if (isShadow(bot)) return undefined
     const ref = model ?? await desiredModel(bot)
     if (ref === undefined) return undefined
     const level = effort ?? (model === undefined ? await desiredEffort(bot, ref) : undefined)
@@ -352,7 +355,7 @@ export function install(rt) {
   // `force` re-selects even when the record says it is applied: the composer's own
   // model picker can move the Session without telling this plugin.
   async function applyModel(bot, { force = false } = {}) {
-    if (bot?.origin === 'peer') return undefined
+    if (isShadow(bot)) return undefined
     const ref = await desiredModel(bot)
     if (ref === undefined) return ref
     const effort = await desiredEffort(bot, ref)
@@ -410,8 +413,8 @@ export function install(rt) {
   }
   async function syncAll() {
     for (const bot of Object.values(state.bots)) {
-      // A peer row is a shadow of another machine's Bot: it has no Session here to select on.
-      if (bot?.origin === 'peer') continue
+      // A peer or node row is a shadow of another machine's Bot: it has no Session here.
+      if (isShadow(bot)) continue
       await applyModel(bot).catch(error => rt.warn('ds-bot: model for %s not applied: %s', bot.name, error))
     }
   }
@@ -426,7 +429,7 @@ export function install(rt) {
       refused.set(ref, served)
       rt.warn('ds-bot: %s is not a model endpoint, so it is not chosen again', ref)
       const entries = await catalog()
-      const pinned = Object.values(state.bots).filter(other => other.model === ref || other.appliedModel === ref)
+      const pinned = Object.values(state.bots).filter(other => !isShadow(other) && (other.model === ref || other.appliedModel === ref))
       for (const other of pinned) {
         if (other.model === ref) other.model = pickDefault(entries)
         if (other.appliedModel === ref) delete other.appliedModel

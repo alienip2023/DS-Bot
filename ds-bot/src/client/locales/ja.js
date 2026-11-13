@@ -259,6 +259,8 @@ export const JA = {
   "The privacy rules of a private Bot do not cover the tools of a local agent.": "プライベート Bot のプライバシー規則は、ローカルエージェント独自のツールには適用されません。",
   "Change and start a new part": "変更して新しいパートを開始",
   "Local agents": "ローカルエージェント",
+  "Other machines": "他のコンピューター",
+  "Bots on other machines": "他のコンピューター上の Bot",
   "This DSH cannot register local agent routes.": "この DSH ではローカルエージェントのルートを登録できません。",
   "Detected agents": "検出されたエージェント",
   "Refresh": "更新",

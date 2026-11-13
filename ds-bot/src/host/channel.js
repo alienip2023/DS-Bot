@@ -636,6 +636,19 @@ export function install(rt) {
         // Threads inside one Bot: each has its own Session, history and place in the queue.
         // Whether this hub mirrors another machine's Bots, and at what level. `set` is a
         // write and stays out of READS; the client only reads it.
+        // The node-inventory switch (M2). Off clears the node rows at once; the node side
+        // reads the same preference through its provider.
+        case 'node-inventory': {
+          await rt.load()
+          if (body.enabled !== undefined) {
+            try {
+              return ok(await rt.setNodeInventory?.(body.enabled))
+            } catch (error) {
+              return fail(error?.message ?? String(error), error?.code ?? 'bot/invalid')
+            }
+          }
+          return ok(rt.nodeInventoryView?.() ?? { enabled: false, rows: 0, nodes: [], lastError: null })
+        }
         case 'federation': {
           await rt.load()
           if (body.level !== undefined) {
