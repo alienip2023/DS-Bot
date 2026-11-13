@@ -227,3 +227,29 @@ test('a deleted remote Bot keeps its memory in the archive, and the node log say
   assert.match(row.to, /^archive\//)
   assert.equal(existsSync(dir('journal.jsonl')), false)
 })
+
+test('an ack ahead of the hub sequence is clamped to it', async (t) => {
+  const { rt, registry, close } = await hub({ nodes: [{ nodeId: 'n1' }], roster: [rosterFor('n1', ['rb1'])] })
+  t.after(close)
+
+  // Nothing has changed yet: a node that claims more than the hub knows is held at 0.
+  await registry.emitAsync('memoryAck', { nodeId: 'n1', seq: 99 })
+  assert.equal(rt.state.memoryFederation.nodes.n1.lastSeq, 0)
+
+  await registry.emitAsync('memoryWrite', writeFrame('n1', 'rb1', 'req-ack', { text: 'one line' }))
+  await registry.emitAsync('memoryAck', { nodeId: 'n1', seq: 99 })
+  // The hub never lets an ack run ahead of its own sequence, or a later snapshot at
+  // seq 1 would look stale to that node forever.
+  assert.equal(rt.state.memoryFederation.nodes.n1.lastSeq, 1)
+})
+
+test('a remote add writes its own folder and never the root MEMORY.md', async (t) => {
+  const { rt, registry, dir, close } = await hub({ roster: [rosterFor('n1', ['rb1'])] })
+  t.after(close)
+
+  await registry.emitAsync('memoryWrite', writeFrame('n1', 'rb1', 'req-root', { text: 'remote only' }))
+  assert.equal(existsSync(dir('MEMORY.md')), false)
+  assert.equal(existsSync(dir('journal.jsonl')), false)
+  assert.equal(rt.memoryHub.snapshotOf('n1').team, undefined)
+  assert.match(readFileSync(dir('nodes', 'n1', 'bots', 'rb1', 'MEMORY.md'), 'utf8'), /remote only/)
+})

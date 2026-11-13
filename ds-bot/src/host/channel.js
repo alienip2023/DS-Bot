@@ -555,7 +555,7 @@ export function install(rt) {
           if (body.nodeId) {
             await rt.load()
             if (typeof rt.createBotOnNode !== 'function') return fail('bot-create-unavailable', 'bot/refused')
-            const result = await rt.createBotOnNode({ nodeId: body.nodeId, name: body.name, role: body.role, modelRef: body.model ?? null, effort: body.effort ?? null, workDir: body.workDir ?? null, instructions: body.instructions ?? null })
+            const result = await rt.createBotOnNode({ nodeId: body.nodeId, name: body.name, role: body.role, modelRef: body.model ?? null, effort: body.effort ?? null, workDir: body.workDir ?? null, instructions: body.instructions ?? null, memoryConfig: body.memoryConfig ?? null })
             if (!result.ok) return fail(result.error, 'bot/refused')
             return ok(result)
           }

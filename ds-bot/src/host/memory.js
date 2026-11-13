@@ -36,7 +36,7 @@ import { replaceFile } from './files.js'
 import { assembleLlmStream } from './models.js'
 import { inside, pendingPath, read as readPending, record as pendingRecord, relativePath, serialize as serializePending } from './memory-pending.js'
 import { estimateTokens, splitRef, textOf, unquote } from './text.js'
-import { EMPTY_MAIN, GONE, DENIED, HEADING, MAIN, MEMORY_LIMITS, NO_MATCH, ROUTED, addLink, bodySize, cleanDay, cleanEntry, cleanTopic, entryId, fitWindow, formatEntry, insertEntry, isExpired, isPinned, joinLines, looksSecret, matchEntries, newEntryId, parseAsk, parseMemory, promptEntry, TEAM_SHARED, removeLink, splitMeta, squash, topicAbout, WINDOW_SHARE } from './memory-entries.js'
+import { EMPTY_MAIN, GONE, DENIED, HEADING, MAIN, MEMORY_LIMITS, NO_MATCH, ROUTED, SNAPSHOT_TRUNCATED, addLink, bodySize, cleanDay, cleanEntry, cleanTopic, entryId, fitWindow, formatEntry, insertEntry, isExpired, isPinned, joinLines, looksSecret, matchEntries, newEntryId, parseAsk, parseMemory, promptEntry, TEAM_SHARED, removeLink, splitMeta, squash, topicAbout, WINDOW_SHARE } from './memory-entries.js'
 import { pickRecalled, rankEntries } from './memory-search.js'
 import { GROUP_HEADING, GROUP_MEMORY_SOURCE, MEMORY_RECALL_SOURCE, MEMORY_UPDATE_SOURCE, RECALL_HEADING, RECALL_NOTE, SUMMARY_SYSTEM, UPDATE_HEADING, UPDATE_NOTE, askRequest, askSystem, groupNote, groupSummaryRequest, memoryRules, summaryRequest, teamRule } from './memory-copy.js'
 import { installReview } from './memory-review.js'
@@ -229,7 +229,9 @@ export function install(rt) {
   const backendOfSession = sessionId => backendOf(rt.botOf(rt.selfOf(sessionId)))
   // 这个 Session 的 Bot 是否由 ds-bot 的文件记忆服务（注入 + 三个工具）。
   // tools.js 在每个 Session 注册团队工具时问一次，所以改设置后下一轮就生效。
-  rt.fileMemoryFor = sessionId => backendOfSession(sessionId) === 'file'
+  // 文件记忆的工具和注入也给联邦后端用：它们在节点上问同一批工具，只是答案来自
+  // 缓存与 hub，而不是本机文件。tools.js 据此为这两种后端都注册三个记忆工具。
+  rt.fileMemoryFor = sessionId => ['file', 'federation'].includes(backendOfSession(sessionId))
 
   // An unreadable memory is not an empty one: callers that change it fail instead of
   // writing over what could not be read, the way store.js treats a broken state.json.
@@ -868,6 +870,69 @@ export function install(rt) {
     ]
     return { text: lines.join('\n'), failed: main.failed !== undefined || team.failed !== undefined || ownTopics.failed === true || teamTopics.failed === true }
   }
+  // ---------------------------------------------------------------------------
+  // Federated memory renders from the cache the hub last sent: sectionFor runs before
+  // every step, so it must never touch a file or the network. The three segments are
+  // the hub's own rendering, kept byte for byte; only the headings and the one
+  // "last synced" line around them are added here. A snapshot older than the applied
+  // one never reaches the cache (see memory-federation.js), so this cannot rewind.
+  const syncedAgo = (at) => {
+    if (!Number.isFinite(at) || at <= 0) return 'not synced with the hub yet'
+    const minutes = Math.floor((Date.now() - at) / 60_000)
+    if (minutes < 1) return 'synced with the hub just now'
+    if (minutes < 60) return `last synced with the hub ${minutes}m ago`
+    const hours = Math.floor(minutes / 60)
+    if (hours < 24) return `last synced with the hub ${hours}h ago`
+    return `last synced with the hub ${Math.floor(hours / 24)}d ago`
+  }
+  const federationBody = (value, truncated) => {
+    const body = typeof value === 'string' ? value : ''
+    if (truncated === true && !body.endsWith(SNAPSHOT_TRUNCATED)) return `${body}${body === '' ? '' : '\n'}${SNAPSHOT_TRUNCATED}`
+    return body
+  }
+  function federationSection(bot) {
+    const cached = rt.memoryNode.cached(bot)
+    const nodeName = cached.nodeId === undefined ? 'this node' : `node:${cached.nodeId}`
+    const lines = [
+      '# Your memory',
+      memoryRules(reviewOn),
+      teamRule(rt.isMain(bot.id), writesTeam(bot.id), rt.isPrivate(bot.id)),
+      `(${syncedAgo(cached.at)})`,
+      '',
+      '## Team memory, shared by every Bot',
+      federationBody(cached.team, false) || '(nothing has been synced yet)',
+      '',
+      `## Your node's memory (${nodeName})`,
+      federationBody(cached.node, false) || '(nothing saved on this node yet)',
+      '',
+      '## Your memory (MEMORY.md)',
+      federationBody(cached.own, cached.ownTruncated) || '(nothing saved yet)',
+    ]
+    return { text: lines.join('\n'), failed: false }
+  }
+  // 联邦后端的段落也按 Session 冻结：缓存更新后，进行中的对话仍看到同一份文本，
+  // 和文件记忆的快照语义一致；新的一轮对话才会读到新快照。
+  /** @type {Map<string, string>} */
+  const frozenFederation = new Map()
+  function federationSectionFor(sessionId, bot) {
+    const marks = [teamRule(rt.isMain(bot.id), writesTeam(bot.id), rt.isPrivate(bot.id))]
+    const holds = text => marks.every(mark => text.includes(mark))
+    const kept = frozenFederation.get(sessionId)
+    if (kept !== undefined && holds(kept)) return kept
+    if (rt.memoryNode === undefined || rt.memoryNode.enabled() === false) {
+      return ['# Your memory', memoryRules(reviewOn), ...marks, '', 'Federated memory is turned off on this node, so there is no memory to show.'].join('\n')
+    }
+    let text
+    try {
+      text = federationSection(bot).text
+    } catch (error) {
+      rt.warn('ds-bot: federated memory section for %s could not be rendered: %s', bot.name, error?.message ?? error)
+      text = ['# Your memory', memoryRules(reviewOn), ...marks, '', 'Federated memory is unavailable until this node and its hub can be read again.'].join('\n')
+    }
+    if (holds(text)) frozenFederation.set(sessionId, text)
+    return text
+  }
+
   function groupSection(roomId, bot) {
     const group = groupScope(roomId)
     const groupRead = sectionRead(join(dirOf(group), MAIN))
@@ -924,6 +989,7 @@ export function install(rt) {
     // 15a0fd1：dsh-mneme 接管（或记忆关闭）的 Bot，不往它的提示里放 ds-bot 的文件记忆。
     // install 只跑一次，而一台机器上可以同时有走 dsh-mneme 的 Bot 和用文件记忆的 Bot，
     // 所以按 Bot 各判断一次。
+    if (backendOf(bot) === 'federation') return federationSectionFor(sessionId, bot)
     if (backendOf(bot) !== 'file') return ''
     // A section frozen under another role (made a Main Bot or a group admin since, or no
     // longer one) is frozen again, so the rule it states matches what the tools allow.
@@ -970,6 +1036,7 @@ export function install(rt) {
   function renewMemory(sessionId) {
     if (sessionId === undefined) return
     frozen.delete(sessionId)
+    frozenFederation.delete(sessionId)
     seenTimes.delete(sessionId)
     try { unlinkSync(snapshotPath(sessionId)) } catch { /* none saved */ }
     try { unlinkSync(seenPath(sessionId)) } catch { /* none saved */ }
@@ -1210,6 +1277,138 @@ export function install(rt) {
     ? failure
     : new MemoryWriteError(failure?.message ?? String(failure), ROUTED.has(failure?.code) ? failure.code : FAILED)
 
+  // ---------------------------------------------------------------------------
+  // Federated memory on a node: the same three tools, but every read and write is a
+  // frame to the hub. The node only names a scope; the hub decides who may have it.
+  // "team" writes are refused here, before a frame is made or an outbox entry exists.
+  const federationTarget = (raw, write) => {
+    const value = unquote(raw)
+    // Nothing named is not "own": a recall with no scope reads your memory and the
+    // team's, and a write with no scope falls to the Bot's own memory.
+    if (value === '') return {}
+    if (/^(own|me|mine|self|yours?|自己|我)$/i.test(value)) return { scope: 'own' }
+    if (/^(node|this node|节点|本节点)$/i.test(value)) return { scope: 'node' }
+    if (/^(team|团队|共享)$/i.test(value)) {
+      return write
+        ? { error: 'The team memory is written on the hub by a Main Bot or a group admin; a node cannot write it. Nothing was saved.', code: 'memory/team-read-only' }
+        : { scope: 'team' }
+    }
+    if (/^(group|this group|群|本群|群聊)$/i.test(value)) return { error: 'Group memory stays on the hub\'s own machine; a node has no group memory to read or write.' }
+    if (rt.findBot(value) !== undefined) return { error: 'A federated Bot keeps its own memory on its node; scope is "own", "node", or "team". Use message_bot to ask that Bot.' }
+    return { error: `No scope named ${value}. Use "own" for your memory, "node" for the memory of the Bots on this node, or "team" for the team memory.` }
+  }
+  const federationUnavailable = () => {
+    if (rt.memoryNode === undefined) return 'Federated memory is not available in this Bot\'s host.'
+    if (rt.memoryNode.enabled() === false) return 'Federated memory is turned off on this node (prefs.memoryFederation=false).'
+    return undefined
+  }
+  const federationLabel = scope => (scope === 'own' ? 'your memory' : scope === 'node' ? 'this node\'s memory' : 'the team memory')
+
+  async function federationRemember(args, caller) {
+    const stopped = federationUnavailable()
+    if (stopped !== undefined) throw refused(stopped)
+    const target = federationTarget(args.scope, true)
+    if (target.error !== undefined) throw new MemoryWriteError(target.error, target.code ?? REFUSED)
+    const text = cleanEntry(args.text)
+    if (text === '') throw new MemoryWriteError(EMPTY_ENTRY, EMPTY)
+    const problem = entryProblem(text)
+    if (problem !== undefined) throw refused(problem)
+    const { topic, error } = topicArg(args.topic)
+    if (error !== undefined) throw refused(error)
+    const replace = String(args.replace ?? '').trim()
+    try {
+      const until = cleanDay(args.until)
+      const result = await rt.memoryNode.write(caller.bot, {
+        scope: target.scope,
+        op: replace === '' ? 'add' : 'replace',
+        text,
+        ...(replace === '' ? {} : { replace }),
+        ...(topic === undefined ? {} : { topic }),
+        ...(until === undefined ? {} : { until }),
+        ...(args.pin === true ? { pin: true } : {}),
+      })
+      if (result.queued === true) return `${replace === '' ? 'Saved' : 'Updated'}. This node is offline, so the change waits in its outbox and reaches the hub when the connection is back.`
+      return result.changed === true ? 'Saved. The hub has it; recall finds it now.' : 'That entry was already saved.'
+    } catch (failure) {
+      // The federation adapter names its failures with memory/* codes of its own (offline,
+      // unsupported hub, full outbox); keep them, so nothing has to read the message.
+      throw failure instanceof MemoryWriteError || String(failure?.code ?? '').startsWith('memory/')
+        ? new MemoryWriteError(failure.message ?? String(failure), failure.code)
+        : writeFailure(failure)
+    }
+  }
+
+  async function federationForget(args, caller) {
+    const stopped = federationUnavailable()
+    if (stopped !== undefined) throw refused(stopped)
+    const target = federationTarget(args.scope, true)
+    if (target.error !== undefined) throw new MemoryWriteError(target.error, target.code ?? REFUSED)
+    const { topic, error } = topicArg(args.topic)
+    if (error !== undefined) throw refused(error)
+    const entry = String(args.entry ?? '').trim()
+    if (entry === '') throw refused('Name the entry to remove.')
+    try {
+      const result = await rt.memoryNode.write(caller.bot, {
+        scope: target.scope,
+        op: 'forget',
+        replace: entry,
+        ...(topic === undefined ? {} : { topic }),
+      })
+      if (result.queued === true) return 'Removed from this node\'s view; the outbox carries the removal to the hub when the connection is back.'
+      return result.changed === true ? 'Removed. The hub has it; the change log keeps a copy.' : 'No entry there matched, so nothing was removed.'
+    } catch (failure) {
+      throw failure instanceof MemoryWriteError || String(failure?.code ?? '').startsWith('memory/')
+        ? new MemoryWriteError(failure.message ?? String(failure), failure.code)
+        : writeFailure(failure)
+    }
+  }
+
+  async function federationRecall(args, caller) {
+    const stopped = federationUnavailable()
+    if (stopped !== undefined) return stopped
+    const target = federationTarget(args.scope, false)
+    if (target.error !== undefined) return target.error
+    let topic
+    if (args.topic !== undefined && String(args.topic).trim() !== '') {
+      topic = cleanTopic(args.topic)
+      if (topic === undefined) return `"${String(args.topic).slice(0, 60)}" cannot be a topic name: use a short word or two, such as "travel" or "project-x".`
+    }
+    const wanted = String(args.query ?? '').trim().slice(0, 120)
+    const scopes = target.scope === undefined ? ['own', 'team'] : [target.scope]
+    const sections = []
+    for (const scope of scopes) {
+      let result
+      try {
+        result = await rt.memoryNode.read(caller.bot, {
+          scope,
+          ...(wanted === '' ? {} : { query: wanted }),
+          ...(topic === undefined ? {} : { topic }),
+        })
+      } catch (failure) {
+        return failure?.message ?? String(failure)
+      }
+      sections.push({ scope, entries: Array.isArray(result?.entries) ? result.entries : [] })
+    }
+    const where = scope => (scope === 'own' ? 'yours' : scope === 'node' ? 'node' : 'team')
+    if (topic !== undefined) {
+      const found = sections.filter(section => section.entries.length > 0)
+      if (found.length === 0) return `No topic [[${topic}]] in ${scopes.map(federationLabel).join(' or ')}.`
+      return found.map(({ scope, entries }) => `Topic [[${topic}]] in ${federationLabel(scope)}:\n${entries.map(entry => `- ${entry.text}`).join('\n')}`).join('\n\n')
+    }
+    if (wanted !== '') {
+      const found = sections.filter(section => section.entries.length > 0)
+      if (found.length === 0) return `Nothing in ${scopes.map(federationLabel).join(' or ')} mentions "${wanted}". read_own_chat searches what was said.`
+      return found.map(({ scope, entries }) => [
+        `Entries with "${wanted}" in ${federationLabel(scope)}:`,
+        ...entries.map(entry => `[${where(scope)}] ${entry.text}`),
+      ].join('\n')).join('\n\n')
+    }
+    return sections.map(({ scope, entries }) => [
+      `${capital(federationLabel(scope))}: ${entries.length === 0 ? 'nothing saved yet' : `${entries.length} entries`}.`,
+      ...entries.map(entry => `[${where(scope)}] ${entry.text}`),
+    ].join('\n')).join('\n\n')
+  }
+
   // remember/forget/recall 是 ds-bot 文件记忆的工具，装一次给所有 Bot 用；
   // 后端不是文件记忆的 Bot（dsh-mneme 或关闭）由 tools.js 在 shareBotTools 里
   // 按 rt.fileMemoryTools + rt.fileMemoryFor 跳过注册，执行时也会再拒一次。
@@ -1233,6 +1432,8 @@ export function install(rt) {
     output,
     async execute(args, exec) {
       await rt.load()
+      const federated = callerOf(exec)
+      if (federated !== undefined && backendOf(federated.bot) === 'federation') return await federationRemember(args, federated)
       const context = writeContext(args, exec)
       if (context.error) throw refused(context.error)
       const stopped = fileMemoryRefused(context.caller.bot)
@@ -1270,6 +1471,8 @@ export function install(rt) {
     output,
     async execute(args, exec) {
       await rt.load()
+      const federated = callerOf(exec)
+      if (federated !== undefined && backendOf(federated.bot) === 'federation') return await federationForget(args, federated)
       const context = writeContext(args, exec)
       if (context.error) throw refused(context.error)
       const stopped = fileMemoryRefused(context.caller.bot)
@@ -1311,6 +1514,7 @@ export function install(rt) {
       await rt.load()
       const caller = callerOf(exec)
       if (caller === undefined) return 'Only Bots on the team keep a memory.'
+      if (backendOf(caller.bot) === 'federation') return await federationRecall(args, caller)
       const stopped = fileMemoryRefused(caller.bot)
       if (stopped) return stopped.message
       const self = caller.bot.id

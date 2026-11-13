@@ -5,12 +5,21 @@ import { resolve as pathResolve, sep as pathSep } from 'node:path'
 import { ensureMainThread } from './bot-store.js'
 import { shadowId } from './roster-join.js'
 import { isInsideRoot } from './path-guard.js'
+import { MEMORY_BACKENDS } from './constants.js'
 
 export const BOT_CREATE_TIMEOUT_MS = 30_000
 const MAX_INSTRUCTIONS_BYTES = 8000
 
 function trimmed(value) {
   return typeof value === 'string' ? value.trim() : ''
+}
+
+// The memory backend the main picked for the Bot it is creating on a node. The node's
+// own roster validates MEMORY_BACKENDS again, so an unknown value is dropped there;
+// sending only a known value keeps a typo from reaching the frame at all.
+function cleanMemory(input) {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) return null
+  return MEMORY_BACKENDS.includes(input.backend) ? { backend: input.backend } : null
 }
 
 function listenBotCreateResult(registry, requestId, nodeId, timeoutMs) {
@@ -62,7 +71,7 @@ export function checkWorkDirRoots(rt, workDir) {
   return null
 }
 
-export async function createBotOnNode(rt, { nodeId, name, role, modelRef = null, effort = null, workDir = null, instructions = null } = {}) {
+export async function createBotOnNode(rt, { nodeId, name, role, modelRef = null, effort = null, workDir = null, instructions = null, memoryConfig = null } = {}) {
   const nid = trimmed(nodeId)
   if (nid === '') return { ok: false, error: 'bot-create-nodeId-missing' }
   if (!name || trimmed(name) === '') return { ok: false, error: 'bot-create-name-missing' }
@@ -90,6 +99,7 @@ export async function createBotOnNode(rt, { nodeId, name, role, modelRef = null,
     }
   }
 
+  const memory = cleanMemory(memoryConfig)
   const requestId = randomUUID()
   const timeoutMs = rt.botCreateTimeoutMs ?? BOT_CREATE_TIMEOUT_MS
   const wait = listenBotCreateResult(registry, requestId, nid, timeoutMs)
@@ -133,6 +143,9 @@ export async function createBotOnNode(rt, { nodeId, name, role, modelRef = null,
     managedBy: 'hub',
     workDir: workDir ?? null,
     instructions: clampedInstructions,
+    // Only when the main picked one: a Bot created without a memory backend keeps the
+    // exact frame older nodes already accept.
+    ...(memory === null ? {} : { memoryConfig: memory }),
   })
   if (sent !== true) {
     wait.cancel()
@@ -170,6 +183,7 @@ export async function createBotOnNode(rt, { nodeId, name, role, modelRef = null,
     effort: effort ?? null,
     createdAt: existing?.createdAt ?? now,
     capabilities: existing?.capabilities ?? [],
+    ...(memory === null ? {} : { memoryConfig: memory }),
     worker: {
       ...(existing?.worker ?? {}),
       nodeId: nid,
@@ -208,6 +222,9 @@ export function createBotCreateReceiver(rt) {
     const managedBy = spec?.managedBy === null ? undefined : 'hub'
     const workDir = spec?.workDir ?? null
     const instructions = spec?.instructions ?? null
+    // The node's roster validates the value against MEMORY_BACKENDS and stores only a
+    // known backend, so passing the object along is safe even from an older hub.
+    const memoryConfig = cleanMemory(spec?.memoryConfig)
 
     // roster.js install 把 createBot 挂到 rt 上（见 roster.js Object.assign(rt, {...createBot...})）
     const createBot = rt.createBot
@@ -236,7 +253,7 @@ export function createBotCreateReceiver(rt) {
     try {
       // 不传 type:'remote-worker'，建出来是普通本地 Bot，reportableBots 才会上报
       // roster.js createBot resolves to the Bot object (buildBot returns `bot`), not an id.
-      const bot = await createBot({ name, role, model: modelRef, effort, workDir, instructions })
+      const bot = await createBot({ name, role, model: modelRef, effort, workDir, instructions, ...(memoryConfig === null ? {} : { memoryConfig }) })
       const id = typeof bot?.id === 'string' ? bot.id.trim() : ''
       // The row says who owns the model choice: a hub-created Bot fails closed on a
       // missing model/level instead of falling back (models.js), a local one does not.

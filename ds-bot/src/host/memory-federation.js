@@ -8,6 +8,7 @@
 // module never opens a file, never keeps a second write queue, and never calls the
 // file system. `rt.memoryHost` is the only door.
 import { MEMORY_LIMITS, bodySize, cleanTopic, entryId, fitSnapshot, isExpired, isPinned } from './memory-entries.js'
+import { randomUUID } from 'node:crypto'
 import { joinedShadow, shadowId } from './roster-join.js'
 
 const CAP = 'memory-sync/1'
@@ -19,6 +20,56 @@ const DEFAULT_READ = 30
 const MAX_READ = 50
 const MAX_SNAPSHOT_BOTS = 64
 const USER = { id: 'user', name: 'user' }
+
+// A node queues what it could not send. The cap is on both the number of changes and
+// their size: a queue that grows without end would either lose the newest change
+// silently or fill the disk.
+const OUTBOX_MAX = 500
+const OUTBOX_BYTES = 256 * 1024
+// How long one read or write frame waits for the hub before the tool call gives up.
+// A write that timed out stays queued: the retry carries the same requestId, so the
+// hub's inbox writes it once.
+const REPLY_MS = 20_000
+// How often a node looks for the memory link service and for a reconnection.
+const NODE_TICK_MS = 2_000
+
+const NODE_FRAMES = {
+  hello: 'mem/hello',
+  snapshot: 'mem/snapshot',
+  read: 'mem/read',
+  readResult: 'mem/read-result',
+  write: 'mem/write',
+  writeResult: 'mem/write-result',
+  ack: 'mem/ack',
+}
+
+// A reply with one of these codes will not change on a retry: the entry is removed
+// from the outbox instead of blocking everything behind it forever.
+const TERMINAL_CODES = new Set([
+  'memory/team-read-only', 'memory/too-large', 'memory/refused', 'memory/ambiguous',
+  'memory/no-match', 'memory/not-on-roster', 'memory/read-only', 'memory/denied',
+  'memory/bot-gone',
+])
+
+const NODE_MESSAGES = {
+  'memory/federation-offline': 'This node is not connected to its hub, so federated memory cannot be reached now.',
+  'memory/federation-unsupported': 'The hub this node talks to does not support federated memory (memory-sync/1), so nothing was saved.',
+  'memory/federation-timeout': 'The hub did not answer the memory request in time. Nothing was written twice; try again.',
+  'memory/outbox-full': `This node already has ${OUTBOX_MAX} memory changes waiting for the hub, or ${Math.round(OUTBOX_BYTES / 1024)}KB of them; the change was not saved. Reconnect and let them go out, then try again.`,
+}
+
+const HUB_MESSAGES = {
+  'memory/not-on-roster': 'The hub does not have this Bot on its roster for this node, so the change was refused.',
+  'memory/read-only': 'The hub is read-only right now, so it refused the change.',
+  'memory/team-read-only': 'The team memory is written on the hub by a Main Bot or a group admin, not from a node.',
+  'memory/too-large': 'That memory is full on the hub; remove an entry there first.',
+  'memory/refused': 'The hub refused the change.',
+  'memory/denied': 'The hub says this Bot may not change that memory.',
+  'memory/ambiguous': 'More than one entry matches on the hub; quote more of the one you mean.',
+  'memory/no-match': 'No entry in that memory matches.',
+  'memory/bot-gone': 'That Bot no longer exists on the hub.',
+  'memory/failed': 'The hub could not save the change.',
+}
 
 const CODES = {
   teamReadOnly: 'memory/team-read-only',
@@ -558,6 +609,320 @@ export function install(rt) {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Node side. The same module also runs on a machine that hosts Bots for a hub. It
+  // keeps the last rendered snapshot the hub sent, queues writes that could not go
+  // out, and answers the memory tools from those two. It never reads or writes a
+  // memory file: on a node the hub owns `memory/nodes/<node>/`, and the cache lives
+  // in the state document instead.
+  //
+  // The memory link is ra's `remote-agent:memory-link` service (S2). That service
+  // already owns the four send gates (memory frames only, bound+online, hub announced
+  // `memory-sync/1`, E2E for body frames), so this side only decides *when* to send.
+
+  const nodePending = new Map()
+  const nodeOff = []
+  let nodeLink
+  let nodeTicker
+  let nodeDraining = false
+  let nodeAnnounced = false
+  let nodeWarnedOld = false
+
+  const nodePrefOff = () => rt.state?.prefs?.memoryFederation === false
+  const nodePolicyOf = () => {
+    try { return ctx.get?.('remote-agent:node-policy') ?? ctx['remote-agent:node-policy'] } catch { return undefined }
+  }
+  const nodeIdOf = () => text(nodePolicyOf()?.nodeId) || undefined
+  function nodeLinkOf() {
+    try {
+      const found = ctx.get?.('remote-agent:memory-link') ?? ctx['remote-agent:memory-link']
+      return found !== null && typeof found === 'object' && typeof found.send === 'function' ? found : undefined
+    } catch { return undefined }
+  }
+  const nodeOnline = () => {
+    const found = nodeLinkOf()
+    return Boolean(found !== undefined && found.isOnline === true)
+  }
+  function nodeCapable() {
+    const found = nodeLinkOf()
+    if (found === undefined) return false
+    try { return typeof found.hubSupportsMemory === 'function' ? found.hubSupportsMemory() === true : true } catch { return false }
+  }
+
+  function nodeError(code, message) {
+    return Object.assign(new Error(message ?? NODE_MESSAGES[code] ?? code), { code })
+  }
+  const nodeFailure = code => nodeError(text(code) || 'memory/failed', HUB_MESSAGES[text(code)] ?? `The hub answered ${text(code) || 'an error'}.`)
+
+  // What the hub last rendered for this node: the three segments exactly as the hub
+  // built them, and the seq they belong to. `at` is when this node applied it.
+  function nodeCache() {
+    const state = rt.state
+    let cache = state.memoryCache
+    if (cache === null || typeof cache !== 'object' || Array.isArray(cache)) cache = state.memoryCache = {}
+    if (!Number.isInteger(cache.seq) || cache.seq < 0) cache.seq = 0
+    if (!Number.isInteger(cache.at) || cache.at < 0) cache.at = 0
+    if (typeof cache.team !== 'string') cache.team = ''
+    if (typeof cache.node !== 'string') cache.node = ''
+    if (cache.bots === null || typeof cache.bots !== 'object' || Array.isArray(cache.bots)) cache.bots = {}
+    cache.truncated = cache.truncated === true
+    return cache
+  }
+
+  // What this node could not send yet, oldest first. Each item carries the requestId
+  // it was born with: a retry reuses it, so the hub's inbox writes it once.
+  function nodeOutbox() {
+    const state = rt.state
+    if (!Array.isArray(state.memoryOutbox)) state.memoryOutbox = []
+    return state.memoryOutbox
+  }
+  const outboxBytes = () => {
+    try { return Buffer.byteLength(JSON.stringify(nodeOutbox()), 'utf8') } catch { return Infinity }
+  }
+
+  const nodeSave = async () => { try { await rt.save?.() } catch (error) { warnf(error, 'saving the node memory state') } }
+
+  // A reply may come before or after the tool call gave up; only the requestId ties
+  // the two together, and a late reply for a request nobody waits for is dropped.
+  function nodeSettle(expect, data) {
+    if (data === null || typeof data !== 'object') return
+    const requestId = text(data.requestId)
+    if (requestId === '') return
+    const waiting = nodePending.get(requestId)
+    if (waiting === undefined || waiting.expect !== expect) return
+    clearTimeout(waiting.timer)
+    nodePending.delete(requestId)
+    waiting.resolve(data)
+  }
+
+  function nodeRequest(type, expect, payload) {
+    const found = nodeLinkOf()
+    if (found === undefined) return Promise.reject(nodeError('memory/federation-offline'))
+    const requestId = text(payload?.requestId)
+    return new Promise((resolve, reject) => {
+      const waitMs = Number.isFinite(rt.config?.memoryReplyMs) && rt.config.memoryReplyMs > 0 ? rt.config.memoryReplyMs : REPLY_MS
+      const timer = setTimeout(() => {
+        nodePending.delete(requestId)
+        reject(nodeError('memory/federation-timeout'))
+      }, waitMs)
+      timer.unref?.()
+      nodePending.set(requestId, { expect, resolve, reject, timer })
+      let sent = false
+      try { sent = found.send(type, payload) === true } catch { sent = false }
+      if (sent) return
+      clearTimeout(timer)
+      nodePending.delete(requestId)
+      reject(nodeError(nodeOnline() ? 'memory/federation-blocked' : 'memory/federation-offline'))
+    })
+  }
+
+  async function nodeSnapshot(data) {
+    if (data === null || typeof data !== 'object') return { applied: false }
+    const seq = Number.isInteger(data.seq) && data.seq >= 0 ? data.seq : undefined
+    if (seq === undefined) return { applied: false }
+    const cache = nodeCache()
+    if (seq < cache.seq) {
+      if (!nodeWarnedOld) {
+        nodeWarnedOld = true
+        warn('memory federation: dropped a snapshot older than the one applied (%s < %s)', seq, cache.seq)
+      }
+      return { applied: false, reason: 'old' }
+    }
+    nodeWarnedOld = false
+    cache.seq = seq
+    cache.at = Date.now()
+    cache.team = typeof data.team === 'string' ? data.team : ''
+    cache.node = typeof data.node === 'string' ? data.node : ''
+    cache.bots = {}
+    const bots = data.bots !== null && typeof data.bots === 'object' ? Object.entries(data.bots) : []
+    for (const [remoteBotId, segment] of bots.slice(0, MAX_SNAPSHOT_BOTS)) {
+      if (segment === null || typeof segment !== 'object') continue
+      cache.bots[remoteBotId] = {
+        text: typeof segment.text === 'string' ? segment.text : '',
+        truncated: segment.truncated === true,
+      }
+    }
+    cache.truncated = data.truncated === true
+    if (typeof data.truncatedAt === 'string') cache.truncatedAt = data.truncatedAt
+    else delete cache.truncatedAt
+    await nodeSave()
+    try { nodeLinkOf()?.send?.(NODE_FRAMES.ack, { seq }) } catch { /* the ack is best effort */ }
+    return { applied: true, seq }
+  }
+
+  async function nodeWrite(bot, change = {}) {
+    if (nodePrefOff()) {
+      throw nodeError('memory/federation-unsupported', 'Federated memory is turned off on this node (prefs.memoryFederation=false); nothing was saved.')
+    }
+    const scope = change.scope === 'node' ? 'node' : 'own'
+    const item = {
+      requestId: randomUUID(),
+      remoteBotId: text(bot?.id),
+      op: change.op === 'replace' || change.op === 'forget' ? change.op : 'add',
+      scope,
+      ...(typeof change.text === 'string' ? { text: change.text } : {}),
+      ...(typeof change.replace === 'string' ? { replace: change.replace } : {}),
+      ...(typeof change.topic === 'string' ? { topic: change.topic } : {}),
+      ...(typeof change.until === 'string' ? { until: change.until } : {}),
+      ...(change.pin === true ? { pin: true } : {}),
+      ...(change.always === true ? { always: true } : {}),
+    }
+    const queueIt = () => {
+      const queue = nodeOutbox()
+      let size = 0
+      try { size = JSON.stringify(item).length } catch { size = Infinity }
+      if (queue.length >= OUTBOX_MAX || outboxBytes() + size > OUTBOX_BYTES) throw nodeError('memory/outbox-full')
+      queue.push({ ...item, at: Date.now() })
+      void nodeSave()
+    }
+    if (!nodeOnline()) {
+      queueIt()
+      return { ok: true, queued: true, changed: true }
+    }
+    if (!nodeCapable()) throw nodeError('memory/federation-unsupported')
+    let result
+    try {
+      result = await nodeRequest(NODE_FRAMES.write, NODE_FRAMES.writeResult, item)
+    } catch (failure) {
+      if (failure?.code === 'memory/federation-offline' || failure?.code === 'memory/federation-blocked' || failure?.code === 'memory/federation-timeout') {
+        queueIt()
+        return { ok: true, queued: true, changed: true }
+      }
+      throw failure
+    }
+    if (result?.ok !== true) throw nodeFailure(result?.error)
+    return { ok: true, changed: result.changed === true, id: result.id, seq: result.seq }
+  }
+
+  async function nodeRead(bot, request = {}) {
+    if (nodePrefOff()) {
+      throw nodeError('memory/federation-unsupported', 'Federated memory is turned off on this node (prefs.memoryFederation=false), so nothing can be read.')
+    }
+    if (!nodeOnline()) throw nodeError('memory/federation-offline')
+    if (!nodeCapable()) throw nodeError('memory/federation-unsupported')
+    const scope = request.scope === 'node' ? 'node' : request.scope === 'team' ? 'team' : 'own'
+    const frame = {
+      requestId: randomUUID(),
+      remoteBotId: text(bot?.id),
+      scope,
+      ...(typeof request.query === 'string' && request.query !== '' ? { query: request.query.slice(0, 512) } : {}),
+      ...(typeof request.topic === 'string' && request.topic !== '' ? { topic: request.topic.slice(0, 64) } : {}),
+      ...(Number.isInteger(request.limit) ? { limit: request.limit } : {}),
+    }
+    const result = await nodeRequest(NODE_FRAMES.read, NODE_FRAMES.readResult, frame)
+    if (result?.ok !== true) throw nodeFailure(result?.error)
+    return result
+  }
+
+  function nodeCached(bot) {
+    const cache = nodeCache()
+    const key = text(bot?.id)
+    const own = key === '' ? undefined : cache.bots[key]
+    return {
+      seq: cache.seq,
+      at: cache.at,
+      nodeId: nodeIdOf(),
+      team: cache.team,
+      node: cache.node,
+      own: own !== null && typeof own === 'object' && typeof own.text === 'string' ? own.text : '',
+      ownTruncated: own?.truncated === true,
+      truncated: cache.truncated === true,
+      synced: key !== '' && own !== undefined,
+    }
+  }
+
+  function nodeStatus() {
+    return {
+      pref: !nodePrefOff(),
+      nodeId: nodeIdOf(),
+      linked: nodeLinkOf() !== undefined,
+      online: nodeOnline(),
+      capable: nodeCapable(),
+      seq: nodeCache().seq,
+      at: nodeCache().at,
+      queued: nodeOutbox().length,
+    }
+  }
+
+  async function nodeDrain() {
+    if (nodeDraining) return 0
+    nodeDraining = true
+    let sent = 0
+    try {
+      for (;;) {
+        if (stopped) return sent
+        const queue = nodeOutbox()
+        if (queue.length === 0 || !nodeOnline() || !nodeCapable()) return sent
+        const item = queue[0]
+        const { at, ...frame } = item
+        let result
+        try {
+          result = await nodeRequest(NODE_FRAMES.write, NODE_FRAMES.writeResult, frame)
+        } catch (failure) {
+          // A timeout may mean the hub wrote it: the item keeps its requestId, so the
+          // next attempt replays the same inbox answer instead of writing twice.
+          if (failure?.code === 'memory/federation-timeout' || failure?.code === 'memory/federation-offline' || failure?.code === 'memory/federation-blocked') return sent
+          throw failure
+        }
+        const code = text(result?.error)
+        if (result?.ok === true || TERMINAL_CODES.has(code)) {
+          queue.shift()
+          sent += 1
+          void nodeSave()
+          continue
+        }
+        return sent
+      }
+    } finally {
+      nodeDraining = false
+    }
+  }
+
+  // The link can be provided after this module installs (ra loads before or after us
+  // depending on the process), so it is looked up again on a tick instead of once.
+  function nodeAttach() {
+    const found = nodeLinkOf()
+    if (found !== nodeLink) {
+      while (nodeOff.length > 0) {
+        try { nodeOff.pop()() } catch { /* the old link is gone */ }
+      }
+      nodeLink = found
+      nodeAnnounced = false
+      nodeWarnedOld = false
+      if (found?.on) {
+        nodeOff.push(found.on(NODE_FRAMES.snapshot, data => { void nodeSnapshot(data) }))
+        nodeOff.push(found.on(NODE_FRAMES.readResult, data => { nodeSettle(NODE_FRAMES.readResult, data) }))
+        nodeOff.push(found.on(NODE_FRAMES.writeResult, data => { nodeSettle(NODE_FRAMES.writeResult, data) }))
+      }
+      // The hub needs to know how far this node's cache got before it pushes again.
+      try { found?.setAppliedSeq?.(() => nodeCache().seq) } catch { /* an older ra */ }
+    }
+    if (nodeLink === undefined) return
+    const online = nodeLink.isOnline === true
+    if (online && !nodeAnnounced) {
+      nodeAnnounced = true
+      // `online()` sends mem/hello with the appliedSeq thunk just installed.
+      try { if (typeof nodeLink.online === 'function') nodeLink.online() } catch { /* the link decides */ }
+      void nodeDrain()
+    }
+    if (!online) nodeAnnounced = false
+  }
+
+  function nodeDispose() {
+    while (nodeOff.length > 0) {
+      try { nodeOff.pop()() } catch { /* already gone */ }
+    }
+    nodeLink = undefined
+    nodeAnnounced = false
+    for (const [requestId, waiting] of nodePending) {
+      clearTimeout(waiting.timer)
+      nodePending.delete(requestId)
+      try { waiting.reject(nodeError('memory/federation-offline')) } catch { /* nobody listens */ }
+    }
+    if (nodeTicker !== undefined) clearInterval(nodeTicker)
+    nodeTicker = undefined
+  }
+
   async function memoryHubEndpoint(endpoint, body) {
     if (endpoint === 'memory-hub-scopes') return await scopes()
     if (endpoint === 'memory-hub-view') return await view(body)
@@ -578,6 +943,21 @@ export function install(rt) {
       scopes,
       view,
     }),
+    // The node half. `enabled` answers whether federation is allowed here at all;
+    // `status` says whether the hub can be reached right now. Tools and the prompt
+    // section use those two and never read a file.
+    memoryNode: Object.freeze({
+      enabled: () => !nodePrefOff(),
+      status: nodeStatus,
+      cached: nodeCached,
+      write: nodeWrite,
+      read: nodeRead,
+      apply: nodeSnapshot,
+      drain: nodeDrain,
+      flush: nodeDrain,
+      attach: nodeAttach,
+      outbox: () => nodeOutbox().map(item => ({ ...item })),
+    }),
   })
 
   // Start reading after the first load, so the inbox cleanup and the attach see the
@@ -589,6 +969,10 @@ export function install(rt) {
       attach()
       ticker = setInterval(attach, ATTACH_MS)
       ticker.unref?.()
+      // A node finds ra's link service on the same tick: either plugin may load first.
+      nodeAttach()
+      nodeTicker = setInterval(nodeAttach, NODE_TICK_MS)
+      nodeTicker.unref?.()
     }).catch(error => warnf(error, 'starting'))
     return () => {
       stopped = true
@@ -598,6 +982,7 @@ export function install(rt) {
       ticker = undefined
       dirty.clear()
       detach()
+      nodeDispose()
     }
   }, 'ds-bot: memory federation')
 }
