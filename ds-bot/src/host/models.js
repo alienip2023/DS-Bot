@@ -335,9 +335,9 @@ export function install(rt) {
   }
 
   const sameSelection = (a, b) => a.provider === b.provider && a.model === b.model && a.reasoningEffort === b.reasoningEffort
-  // A shadow row (peer or node) is another machine's Bot: it has no Session here, and
-  // nothing may select a model for it or write applied fields onto it.
-  const isShadow = bot => bot?.origin === 'peer' || bot?.origin === 'node'
+  // A peer row is another machine's Bot: it has no Session here, and nothing may select a
+  // model for it or write applied fields onto it.
+  const isShadow = bot => bot?.origin === 'peer'
 
   // A Thread's Session is made without a model — the core's create carries none — so its
   // selection is made right after: the Thread's own model and level when the create named

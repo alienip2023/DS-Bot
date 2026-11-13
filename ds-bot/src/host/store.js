@@ -23,7 +23,7 @@ export function install(rt) {
   const { ctx, home, statePath } = rt
 
   /** @type {{version:2, workspaceId?:string, mainBotIds:string[], bots:Record<string,any>, threads:Record<string,any>, privateArchives:any[], rooms:Record<string,any>, agents:Record<string,any>, sections:any[], capabilities:{items:Record<string,any>}, exchanges:any[], exchangeTurns:Record<string,number[]>, revision:number}} */
-  const state = { version: STATE_VERSION, mainBotIds: [], bots: {}, threads: {}, privateArchives: [], rooms: {}, agents: {}, sections: [], capabilities: { items: {} }, exchanges: [], exchangeTurns: {}, works: {}, requests: {}, questions: {}, views: {}, closedCards: {}, prefs: { nodeInventory: false }, switching: {}, nodeInventory: { lastError: null, appliedAt: 0 }, federation: { version: 1, hubId: null, peersAt: 0, inbox: {}, outbox: {}, seen: {}, seq: 0, allowPeerToMain: false, lastError: null }, revision: 0 }
+  const state = { version: STATE_VERSION, mainBotIds: [], bots: {}, threads: {}, privateArchives: [], rooms: {}, agents: {}, sections: [], capabilities: { items: {} }, exchanges: [], exchangeTurns: {}, works: {}, requests: {}, questions: {}, views: {}, closedCards: {}, prefs: {}, switching: {}, federation: { version: 1, hubId: null, peersAt: 0, inbox: {}, outbox: {}, seen: {}, seq: 0, allowPeerToMain: false, lastError: null }, revision: 0 }
   let loaded = null
   let writing = Promise.resolve()
   const { warn } = rt
@@ -225,6 +225,24 @@ export function install(rt) {
     // reaches this point with every other flag already true on disk: without this line the
     // sections would live in memory only until some later save.
     if (groupsMigrated) migrated = true
+    // One-time cleanup of the dropped node-inventory feature: its switch, its error slot and
+    // the read-only rows that mirrored Bots on another machine. A node row never had a
+    // Session or a Thread here, but a team saved while the feature was on can still carry the
+    // switch and its rows, so those go with any Thread still filed under them.
+    const nodeRows = Object.keys(state.bots).filter(id => state.bots[id]?.origin === 'node')
+    const hadNodeSwitch = Object.hasOwn(state.prefs ?? {}, 'nodeInventory') || Object.hasOwn(state, 'nodeInventory')
+    if (nodeRows.length > 0 || hadNodeSwitch) {
+      for (const id of nodeRows) {
+        delete state.bots[id]
+        for (const [threadId, thread] of Object.entries(state.threads ?? {})) {
+          if (thread?.botId === id) delete state.threads[threadId]
+        }
+      }
+      if (state.prefs !== null && typeof state.prefs === 'object') delete state.prefs.nodeInventory
+      delete state.nodeInventory
+      state.mainBotIds = state.mainBotIds.filter(id => state.bots[id] !== undefined)
+      migrated = true
+    }
     const sectionIds = new Set(state.sections.map(sec => sec.id))
     for (const entry of [...Object.values(state.bots), ...Object.values(state.rooms), ...Object.values(state.agents)]) {
       if (entry.sectionId !== undefined && (typeof entry.sectionId !== 'string' || !sectionIds.has(entry.sectionId) || entry.id === state.mainBotIds[0])) {
@@ -562,8 +580,8 @@ export function install(rt) {
     bySessionIdMap.clear()
     bySessionIdFullMap.clear()
     for (const bot of Object.values(state.bots)) {
-      // A peer/node row is a shadow: `chatOf` would name its id as if it were a Session.
-      if (bot.origin === 'peer' || bot.origin === 'node') continue
+      // A peer row is a shadow: `chatOf` would name its id as if it were a Session.
+      if (bot.origin === 'peer') continue
       for (const segment of bot.segments ?? []) pastOwners.set(segment.sessionId, { botId: bot.id })
       chatOwners.set(chatOf(bot.id), bot.id)
       // Maintain bySessionId reverse index for mirror session lookup
@@ -714,8 +732,8 @@ export function migrateThreads(state, now = Date.now()) {
   }
   for (const bot of Object.values(state.bots ?? {})) {
     if (bot === null || typeof bot !== 'object' || typeof bot.id !== 'string' || bot.id === '') continue
-    // A peer/node row is a shadow of another machine's Bot: it has no Session and so no Thread.
-    if (bot.origin === 'peer' || bot.origin === 'node') continue
+    // A peer row is a shadow of another machine's Bot: it has no Session and so no Thread.
+    if (bot.origin === 'peer') continue
     const id = mainThreadId(bot.id)
     if (threadOf(state, id) === undefined) {
       saveThread(state, newMainThread(bot, now))

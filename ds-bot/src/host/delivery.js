@@ -111,15 +111,6 @@ export function install(rt) {
     // A peer shadow is another machine's Bot in a read-only list. It has no wire to
     // dispatch on in this release, and it must never fall through to a local Session.
     if (to.origin === 'peer') return { ok: false, error: 'E_PEER_NOT_ENABLED' }
-    // A node-owned Bot lives on its machine: send the turn over the wire, never open a
-    // local Session here. The answer comes back through replyToSender.
-    if (to.origin === 'node') {
-      if (typeof rt.handleNodeTurn !== 'function') return { ok: false, error: 'E_NODE_BRIDGE_DOWN' }
-      const skip = role === 'reply' || role === 'report' || role === 'kickoff' || role === 'continue' || role === 'update'
-      if (skip) return { ok: false, error: 'E_NODE_SKIP' }
-      await writeBook()
-      return rt.handleNodeTurn({ fromId, toId, text, role, exchangeId, replyTo, work })
-    }
     // Worker Bot routing: dispatch to the remote hub instead of a local Session turn.
     // Reply, report, kickoff, and continue messages skip this path — they are either
     // results already coming back from the hub, or internal lifecycle messages.
