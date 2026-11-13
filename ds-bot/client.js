@@ -37188,6 +37188,8 @@ function TechnicalDetails({ facts }) {
     (0, import_react54.createElement)("button", { type: "button", className: "bt-mini bt-fail-copy", onClick: copy2 }, copied ? (0, import_react54.createElement)(CheckIcon) : (0, import_react54.createElement)(CopyIcon), copied ? t("Copied") : t("Copy"))
   );
 }
+var ROUTE_LEVEL_CODES = /* @__PURE__ */ new Set(["NO_ADAPTER", "MISSING_CREDENTIAL"]);
+var MANAGED_CODES = /* @__PURE__ */ new Set(["E_BOT_MODEL_UNAVAILABLE", "E_BOT_MODEL_NO_KEY", "E_BOT_EFFORT_UNAVAILABLE"]);
 function FailureCell({ node, sessionId, useRoster, useTurnClock, actions }) {
   const roster = useRoster((value) => value);
   const data = node?.data ?? {};
@@ -37200,9 +37202,10 @@ function FailureCell({ node, sessionId, useRoster, useTurnClock, actions }) {
   const [retry, setRetry] = (0, import_react54.useState)("idle");
   const [error, setError] = (0, import_react54.useState)("");
   const [joining, setJoining] = (0, import_react54.useState)(null);
-  const blocked = bot?.blocked?.code === data.code ? bot.blocked : void 0;
+  const blocked = bot?.blocked !== void 0 && (bot.blocked.code === data.code || ROUTE_LEVEL_CODES.has(data.code) && MANAGED_CODES.has(bot.blocked.code)) ? bot.blocked : void 0;
+  const shown = blocked?.code ?? data.code;
   const provider = blocked?.provider ?? providerOf(bot, roster);
-  const text2 = failureText2(data.code, { name: bot?.name ?? t("This Bot"), provider: providerName(roster, provider), status: blocked?.status, ref: bot?.model });
+  const text2 = failureText2(shown, { name: bot?.name ?? t("This Bot"), provider: providerName(roster, provider), status: blocked?.status, ref: bot?.model });
   const facts = failureFacts(data, blocked);
   const current = bot !== void 0 && currentPart(bot) === sessionId && !later;
   const moveToAccount = () => {
@@ -37261,10 +37264,10 @@ function FailureCell({ node, sessionId, useRoster, useTurnClock, actions }) {
     "sign-in-again": () => actions.signIn(),
     model: actions.showDetails ? () => actions.showDetails(sessionId) : void 0
   };
-  const fixes = fixesFor(data.code, { canSignIn, official, topUp: topUp !== void 0, onAccount: provider === ACCOUNT }).filter((fix) => fix === "top-up" || runs[fix] !== void 0);
+  const fixes = fixesFor(shown, { canSignIn, official, topUp: topUp !== void 0, onAccount: provider === ACCOUNT }).filter((fix) => fix === "top-up" || runs[fix] !== void 0);
   const asked = isHiddenTurn(roster, sessionId, data.turn);
-  const retrying = !asked && typeof actions.resume === "function" && retryShown(data.code, blocked);
-  const retryFirst = retrying && (fixes.length === 0 || CREDENTIAL_CODES.has(data.code));
+  const retrying = !asked && typeof actions.resume === "function" && retryShown(shown, blocked);
+  const retryFirst = retrying && (fixes.length === 0 || CREDENTIAL_CODES.has(shown));
   const resume = () => {
     setRetry("busy");
     setError("");

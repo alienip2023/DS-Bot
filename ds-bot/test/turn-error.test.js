@@ -484,3 +484,13 @@ test('a provider that is not in the catalog yet keeps a readable name in the key
   assert.equal(card.props.model.provider, 'deepseek-official')
   assert.equal(card.props.model.providerName, 'DeepSeek')
 })
+
+test('a route code the host mapped to a managed one shows the mapped copy and keeps the route code in details', () => {
+  const side = cell({ code: 'NO_ADAPTER', message: 'no adapter for route deepseek/deepseek-v4-pro', blocked: { code: 'E_BOT_MODEL_UNAVAILABLE', at: 1 } })
+  const tree = side.render()
+  assert.match(textOf(walk(tree, node => node.props?.className === 'bt-fail-text')[0]), /is not available on this machine, so this turn did not fall back/)
+  // No local fix: the model is changed on the main, and Retry is all this card offers.
+  assert.deepEqual(labels(side.buttons(tree)), ['Retry'])
+  assert.ok(side.tech(tree).includes('NO_ADAPTER'), 'the technical details keep the code DSH raised')
+  assert.ok(side.tech(tree).includes('no adapter for route deepseek/deepseek-v4-pro'))
+})

@@ -149,6 +149,11 @@ function TechnicalDetails({ facts }) {
     h('button', { type: 'button', className: 'bt-mini bt-fail-copy', onClick: copy }, copied ? h(CheckIcon) : h(CopyIcon), copied ? t('Copied') : t('Copy')))
 }
 
+// The route codes DSH raises for a model or a key the main chose, and the codes the
+// repair card speaks for them.
+const ROUTE_LEVEL_CODES = new Set(['NO_ADAPTER', 'MISSING_CREDENTIAL'])
+const MANAGED_CODES = new Set(['E_BOT_MODEL_UNAVAILABLE', 'E_BOT_MODEL_NO_KEY', 'E_BOT_EFFORT_UNAVAILABLE'])
+
 export function FailureCell({ node, sessionId, useRoster, useTurnClock, actions }) {
   const roster = useRoster(value => value)
   const data = node?.data ?? {}
@@ -163,9 +168,15 @@ export function FailureCell({ node, sessionId, useRoster, useTurnClock, actions 
   const [error, setError] = useState('')
   // A sign-in started here to leave a failing key route, with the model the Bot was on.
   const [joining, setJoining] = useState(null)
-  const blocked = bot?.blocked?.code === data.code ? bot.blocked : undefined
+  // A turn the main manages can fail on DSH's own route code, while the Bot's blocking
+  // record carries the code the main's choice deserves (turns.js maps it at turn end).
+  // The card then speaks that code, and the technical details still show what DSH said.
+  const blocked = bot?.blocked !== undefined
+    && (bot.blocked.code === data.code || (ROUTE_LEVEL_CODES.has(data.code) && MANAGED_CODES.has(bot.blocked.code)))
+    ? bot.blocked : undefined
+  const shown = blocked?.code ?? data.code
   const provider = blocked?.provider ?? providerOf(bot, roster)
-  const text = failureText(data.code, { name: bot?.name ?? t('This Bot'), provider: providerName(roster, provider), status: blocked?.status, ref: bot?.model })
+  const text = failureText(shown, { name: bot?.name ?? t('This Bot'), provider: providerName(roster, provider), status: blocked?.status, ref: bot?.model })
   const facts = failureFacts(data, blocked)
   const current = bot !== undefined && currentPart(bot) === sessionId && !later
   // The key route never takes the account's credential, so a sign-in alone leaves the Bot
@@ -211,13 +222,13 @@ export function FailureCell({ node, sessionId, useRoster, useTurnClock, actions 
     'sign-in-again': () => actions.signIn(),
     model: actions.showDetails ? () => actions.showDetails(sessionId) : undefined,
   }
-  const fixes = fixesFor(data.code, { canSignIn, official, topUp: topUp !== undefined, onAccount: provider === ACCOUNT }).filter(fix => fix === 'top-up' || runs[fix] !== undefined)
+  const fixes = fixesFor(shown, { canSignIn, official, topUp: topUp !== undefined, onAccount: provider === ACCOUNT }).filter(fix => fix === 'top-up' || runs[fix] !== undefined)
   // A turn another Bot asked for answers that Bot, which was already told it failed.
   // Retry would answer the user's last message instead, so it is not offered.
   const asked = isHiddenTurn(roster, sessionId, data.turn)
-  const retrying = !asked && typeof actions.resume === 'function' && retryShown(data.code, blocked)
+  const retrying = !asked && typeof actions.resume === 'function' && retryShown(shown, blocked)
   // Once a credential failure is fixed, going on is the next step.
-  const retryFirst = retrying && (fixes.length === 0 || CREDENTIAL_CODES.has(data.code))
+  const retryFirst = retrying && (fixes.length === 0 || CREDENTIAL_CODES.has(shown))
   const resume = () => {
     setRetry('busy')
     setError('')

@@ -12,6 +12,7 @@ import { absoluteLinks } from './links.js'
 import { splitRef, textOf } from './text.js'
 import { viaOf } from '../shared/im-platforms.js'
 import { reminderText } from './schedules.js'
+import { remoteError } from './joined-prompt.js'
 
 // Failures only the user can fix: a key, a sign-in, a balance. They block the Bot
 // until it is fixed (`bot.blocked`, for the repair card).
@@ -159,23 +160,33 @@ export const promisesWork = text => typeof text === 'string' && text.trim().leng
 // the local key card, which says nothing about the main. Every prompt of such a Bot is
 // checked first, so private chats, Threads and group Sessions all refuse before a model
 // call and the turn reports the code the repair card is for.
-async function refuseManagedRoute(rt, sessionId) {
+// The main chose a thinking level this machine's model does not serve. DSH would run the
+// turn at the model's default level without saying so, so the prompt is refused here
+// instead: the composer shows the message and keeps the draft. A model or a key the main
+// chose is not refused here -- that failure has to come from a turn, where the repair card
+// can show it (see managedFailure below).
+async function refuseManagedEffort(rt, sessionId) {
   if (typeof sessionId !== 'string' || sessionId === '') return
   let bot
   try {
     const self = typeof rt.selfOf === 'function' ? rt.selfOf(sessionId) : sessionId
     bot = rt.botOf?.(self ?? sessionId)
   } catch { return }
-  // A joined row runs on its node, not here; only a Bot this process serves is checked.
   if (bot === undefined || bot.managedBy !== 'hub' || bot.origin === 'joined') return
-  const ref = await rt.desiredModel?.(bot)
-  if (ref !== undefined) await rt.desiredEffort?.(bot, ref)
+  if (bot.effort === undefined || bot.effort === null) return
+  let ref
+  try { ref = await rt.desiredModel?.(bot) } catch { return }
+  if (ref === undefined) return
+  let supported = true
+  try { await rt.desiredEffort?.(bot, ref) } catch { supported = false }
+  if (supported) return
+  throw await remoteError('E_BOT_EFFORT_UNAVAILABLE', `The thinking level ${bot.effort} is not available for ${ref} on this machine. Change it on the main.`, { reason: 'MANAGED_EFFORT_UNAVAILABLE' })
 }
 
 export function installPromptReasons(rt, placeOf) {
   const { ctx } = rt
   wrapControllerMethod(ctx, ctx.sessionController, 'prompt', prompt => async function (request, ...rest) {
-    await refuseManagedRoute(rt, request?.sessionId)
+    await refuseManagedEffort(rt, request?.sessionId)
     try {
       return await prompt.call(this, request, ...rest)
     } catch (error) {
@@ -663,6 +674,22 @@ export function install(rt) {
     const room = rt.roomOf(rt.groupOwners.get(id)?.roomId) ?? rt.roomOf(id)
     return room ? `group "${room.name}"` : 'own chat'
   }
+  // DSH names the route that failed; the repair card of a Bot the main manages speaks the
+  // main's three codes. The mapping is taken only when the main's own answer raises the
+  // same trouble, so a node's local problem is never reported as the main's.
+  const ROUTE_LEVEL_CODES = new Set(['NO_ADAPTER', 'MISSING_CREDENTIAL'])
+  const managedFailure = (id, failure) => {
+    if (failure === undefined || !ROUTE_LEVEL_CODES.has(failure.code)) return failure
+    const bot = rt.botOf(rt.selfOf(id))
+    if (bot === undefined || bot.managedBy !== 'hub' || bot.origin === 'joined') return failure
+    let code
+    try { code = rt.mainRouteCode?.(bot) } catch { code = undefined }
+    if (code === undefined) return failure
+    if (failure.code === 'MISSING_CREDENTIAL' && code !== 'E_BOT_MODEL_NO_KEY') return failure
+    if (failure.code === 'NO_ADAPTER' && code !== 'E_BOT_MODEL_UNAVAILABLE' && code !== 'E_BOT_MODEL_NO_KEY') return failure
+    return { ...failure, code }
+  }
+
   const noteTurnFailure = (id, failure) => {
     rt.noteFailure({
       source: 'turn',
@@ -1102,7 +1129,7 @@ export function install(rt) {
           }).catch(error => rt.warn('ds-bot: handing back a result failed: %s', error))
         }
         const reason = event.data?.reason
-        const failure = reason?.kind === 'error' && !switched ? turnFailure(reason.error) : undefined
+        const failure = reason?.kind === 'error' && !switched ? managedFailure(id, turnFailure(reason.error)) : undefined
         if (failure !== undefined) noteTurnFailure(id, failure)
         // A route that is not a model endpoint refuses every generation; the failed
         // Session's own request names it, so it is refused everywhere from now on.
