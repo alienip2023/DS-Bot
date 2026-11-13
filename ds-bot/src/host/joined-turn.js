@@ -3,6 +3,10 @@
 // agent task, and does not run a model on this Mac.
 import { randomUUID } from 'node:crypto'
 import { joinedShadow, shadowId } from './roster-join.js'
+import {
+  allocateTurn, ensureMirrorSession, hasPromptRequest, mirrorStateOf,
+  mirrorTurnFail, mirrorTurnFinish, mirrorTurnStart,
+} from './mirror.js'
 
 export const BRIDGE_DOWN_TEXT = '副机仍在执行，桥已断'
 // How long a turn waits for the node's answer. A node Bot that calls tools takes minutes (the
@@ -18,6 +22,45 @@ export function joinedTimeoutFrom(value) {
   return Number.isInteger(value) && value >= 1000 && value <= MAX_TIMER_MS ? value : JOINED_TURN_TIMEOUT_MS
 }
 const SKIP_ROLES = new Set(['reply', 'report', 'kickoff', 'continue', 'update'])
+const MIRROR_RPC_PREFIX = 'joined:'
+
+// A Bot-to-Bot message is a real exchange on the joined Bot's page too. Open a mirror turn
+// before the frame goes out so the page shows the request at once; close it with the answer,
+// or with the visible failure line. `duplicate` means this exchange is already on the page
+// (a retried delivery): the turn is not opened again. Any mirror failure is a warning only —
+// it must never block the dispatch itself.
+async function openMirrorTurn(rt, bot, text, xid) {
+  try {
+    const session = await ensureMirrorSession(rt, bot)
+    const rpcId = MIRROR_RPC_PREFIX + xid
+    if (hasPromptRequest(session, rpcId)) return { duplicate: true }
+    const turn = allocateTurn(session)
+    mirrorTurnStart(session, { turn, step: 1, userText: text ?? '', rpcId })
+    return { session, turn, state: mirrorStateOf(rt, bot.id) }
+  } catch (error) {
+    rt.warn?.('ds-bot: a Bot-to-Bot message for %s was not mirrored: %s', bot.id, error?.message ?? error)
+    return undefined
+  }
+}
+
+function closeMirrorTurn(rt, mirror, botId, { text, seq, error } = {}) {
+  if (mirror?.session === undefined) return
+  try {
+    if (error !== undefined) {
+      mirrorTurnFail(mirror.session, {
+        turn: mirror.turn, step: 1, code: error.code, message: error.message,
+        closedTurns: mirror.state.closedTurns,
+      })
+    } else {
+      mirrorTurnFinish(mirror.session, {
+        turn: mirror.turn, step: 1, botText: text ?? '', botId, nodeSeq: seq, ...mirror.state,
+      })
+    }
+  } catch (caught) {
+    rt.warn?.('ds-bot: a Bot-to-Bot reply for %s was not mirrored: %s', botId, caught?.message ?? caught)
+  }
+}
+
 
 export function joinedDispatchRole(role) {
   return !SKIP_ROLES.has(role)
@@ -93,9 +136,14 @@ export async function handleJoinedTurn(rt, msg = {}) {
   const row = rt.state?.bots?.[id]
   if (!row || row.id !== to.id) return { ok: false, error: 'joined shadow not on roster' }
   const xid = trimmed(exchangeId) || randomUUID()
+  const opened = await openMirrorTurn(rt, to, text, xid)
+  // A retried delivery is already on the page: dispatch again (the node's exchange is keyed by
+  // xid), but do not open a second turn there.
+  const mirror = opened?.duplicate === true ? undefined : opened
   let registry
   try { registry = rt.ctx?.get?.('remote-agent:registry') } catch { registry = undefined }
   if (!registry || typeof registry.send !== 'function') {
+    closeMirrorTurn(rt, mirror, to.id, { error: { code: 'bridge-down', message: BRIDGE_DOWN_TEXT } })
     await replyToSender(rt, { fromId, toId, exchangeId: xid, work, text: BRIDGE_DOWN_TEXT })
     return { ok: false, error: 'bridge-down' }
   }
@@ -104,19 +152,23 @@ export async function handleJoinedTurn(rt, msg = {}) {
   const sent = registry.send(nodeId, 'bot/turn', { nodeId, remoteBotId, exchangeId: xid, text: text ?? '' })
   if (sent !== true) {
     wait.cancel()
+    closeMirrorTurn(rt, mirror, to.id, { error: { code: 'bridge-down', message: BRIDGE_DOWN_TEXT } })
     await replyToSender(rt, { fromId, toId, exchangeId: xid, work, text: BRIDGE_DOWN_TEXT })
     return { ok: false, error: 'bridge-down' }
   }
   const result = await wait.pending
   if (!result || result.error === 'bridge-down') {
+    closeMirrorTurn(rt, mirror, to.id, { error: { code: result?.error ?? 'bot-turn-lost', message: BRIDGE_DOWN_TEXT } })
     await replyToSender(rt, { fromId, toId, exchangeId: xid, work, text: BRIDGE_DOWN_TEXT })
     return { ok: false, error: result?.error ?? 'bot-turn-lost' }
   }
   if (result.ok === false) {
     const error = result.error ?? 'bot-turn-failed'
+    closeMirrorTurn(rt, mirror, to.id, { error: { code: error, message: `副机没有接上：${error}` } })
     await replyToSender(rt, { fromId, toId, exchangeId: xid, work, text: `副机没有接上：${error}` })
     return { ok: false, error }
   }
+  closeMirrorTurn(rt, mirror, to.id, { text: result.text, seq: result.seq })
   await replyToSender(rt, { fromId, toId, exchangeId: xid, work, text: result.text ?? '' })
   return xid
 }
