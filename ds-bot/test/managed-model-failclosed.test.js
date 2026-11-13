@@ -78,17 +78,20 @@ test('A7c a managed Bot whose route cannot be applied is blocked, and the card l
 // ── A10: the node receiver ───────────────────────────────────────────────────
 function receiverWorld({ missing = [], models = ['deepseek'] } = {}) {
   const created = []
+  const bots = []
   const saves = []
   const rt = {
     ctx: { get: () => undefined, llm: { listProviders: () => models.map(id => ({ id })) } },
     missingKeys: async () => new Set(missing),
     createBot: async (options) => {
       created.push(options)
-      return { id: 'node-bot-1', name: options.name, role: options.role }
+      const bot = { id: `node-bot-${bots.length + 1}`, name: options.name, role: options.role }
+      bots.push(bot)
+      return bot
     },
     save: async () => { saves.push(Date.now()) },
   }
-  return { rt, accept: createBotCreateReceiver(rt), created, saves }
+  return { rt, accept: createBotCreateReceiver(rt), created, bots, saves }
 }
 
 test('A10 a Bot created for an unkeyed provider is refused with bot-create-model-no-key', async () => {
@@ -99,18 +102,34 @@ test('A10 a Bot created for an unkeyed provider is refused with bot-create-model
 })
 
 test('A10b a hub-created Bot records managedBy and uses defaultEffort when no effort was named', async () => {
-  const { accept, created, saves } = receiverWorld()
+  const { accept, created, bots, saves } = receiverWorld()
   const result = await accept({ name: 'Node Bot', modelRef: 'deepseek/deepseek-v4-pro', managedBy: 'hub', defaultEffort: 'high' })
   assert.equal(result.ok, true)
   assert.equal(created[0].effort, 'high', 'the hub default becomes the Bot effort')
   assert.equal(created[0].model, 'deepseek/deepseek-v4-pro')
+  assert.equal(bots[0].managedBy, 'hub', 'the row says the main owns its model')
   assert.equal(saves.length, 1, 'the managed marker is saved with the row')
 })
 
-test('A10c an explicit effort wins over the hub default, and a local create keeps no marker', async () => {
-  const { accept, created } = receiverWorld()
+// An older remote-agent validates bot/create with a fixed field list and drops the
+// ownership marker before the node's receiver sees it (0.10.1-fork.74 does exactly
+// that). The receiver is the node end of the hub's create only, so a frame without
+// the marker is still the main's Bot: losing the marker silently restores the local
+// fallback that the marker exists to prevent.
+test('A10d a bot/create that arrives without the ownership marker still records managedBy', async () => {
+  const { accept, bots, saves } = receiverWorld()
+  const result = await accept({ name: 'Old Protocol Bot', modelRef: 'deepseek/deepseek-v4-pro', effort: null, workDir: null })
+  assert.equal(result.ok, true)
+  assert.equal(bots[0].managedBy, 'hub', 'a hub-created Bot never loses the marker to an older frame')
+  assert.ok(saves.length >= 1, 'the marker is saved with the row')
+})
+
+test('A10c an explicit effort wins over the hub default, and a create marked null stays unmanaged', async () => {
+  const { accept, created, bots } = receiverWorld()
   await accept({ name: 'Node Bot', modelRef: 'deepseek/deepseek-v4-pro', effort: 'low', managedBy: 'hub', defaultEffort: 'high' })
-  await accept({ name: 'Local Bot', modelRef: 'deepseek/deepseek-v4-pro', defaultEffort: 'high' })
+  await accept({ name: 'Local Bot', modelRef: 'deepseek/deepseek-v4-pro', defaultEffort: 'high', managedBy: null })
   assert.equal(created[0].effort, 'low')
   assert.equal(created[1].effort, 'high')
+  assert.equal(bots[0].managedBy, 'hub')
+  assert.equal(bots[1].managedBy, undefined, 'an explicit null is the only way to say "not the main\'s"')
 })

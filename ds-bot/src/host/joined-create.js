@@ -199,7 +199,13 @@ export function createBotCreateReceiver(rt) {
     // `defaultEffort` is the hub's pick when the creator named none; `effort` still wins.
     const defaultEffort = typeof spec?.defaultEffort === 'string' && spec.defaultEffort !== '' ? spec.defaultEffort.slice(0, 64) : null
     const effort = spec?.effort ?? defaultEffort ?? null
-    const managedBy = spec?.managedBy === 'hub' ? 'hub' : undefined
+    // This receiver is the node end of the hub's `bot/create` and nothing else, so every Bot
+    // it makes was chosen by the main. An older remote-agent validates the frame with a fixed
+    // field list and drops the marker before it gets here (0.10.1-fork.74 does); an absent
+    // marker must therefore still mean "the main owns this model", because losing it silently
+    // restores the local fallback the marker exists to prevent. Only an explicit null — the
+    // frame said this Bot is not the main's — keeps it local.
+    const managedBy = spec?.managedBy === null ? undefined : 'hub'
     const workDir = spec?.workDir ?? null
     const instructions = spec?.instructions ?? null
 
