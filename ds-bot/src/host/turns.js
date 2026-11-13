@@ -675,18 +675,19 @@ export function install(rt) {
     return room ? `group "${room.name}"` : 'own chat'
   }
   // DSH names the route that failed; the repair card of a Bot the main manages speaks the
-  // main's three codes. The mapping is taken only when the main's own answer raises the
-  // same trouble, so a node's local problem is never reported as the main's.
-  const ROUTE_LEVEL_CODES = new Set(['NO_ADAPTER', 'MISSING_CREDENTIAL'])
+  // main's codes. Such a Bot runs here on the model and the key the main chose, so a route
+  // failure is that choice's own outcome and the code alone decides the card. Reading the
+  // catalog here would also fail the first turn after a start, when nothing is listed yet;
+  // it is never listed and never waited for. A local Bot, a local agent route and a failure
+  // already coded E_BOT_MODEL_NO_KEY keep what DSH raised.
+  const MANAGED_ROUTE_CODES = new Map([['NO_ADAPTER', 'E_BOT_MODEL_UNAVAILABLE'], ['MISSING_CREDENTIAL', 'E_BOT_MODEL_NO_KEY']])
   const managedFailure = (id, failure) => {
-    if (failure === undefined || !ROUTE_LEVEL_CODES.has(failure.code)) return failure
+    if (failure === undefined) return failure
+    const code = MANAGED_ROUTE_CODES.get(failure.code)
+    if (code === undefined) return failure
     const bot = rt.botOf(rt.selfOf(id))
     if (bot === undefined || bot.managedBy !== 'hub' || bot.origin === 'joined') return failure
-    let code
-    try { code = rt.mainRouteCode?.(bot) } catch { code = undefined }
-    if (code === undefined) return failure
-    if (failure.code === 'MISSING_CREDENTIAL' && code !== 'E_BOT_MODEL_NO_KEY') return failure
-    if (failure.code === 'NO_ADAPTER' && code !== 'E_BOT_MODEL_UNAVAILABLE' && code !== 'E_BOT_MODEL_NO_KEY') return failure
+    if (rt.isLocalAgentRef?.(bot.model) === true) return failure
     return { ...failure, code }
   }
 

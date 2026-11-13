@@ -52,8 +52,7 @@ function world({ missing = [] } = {}) {
 }
 
 async function failTurn({ rt, emit }, id, code, message = 'route failed') {
-  // The mapping reads the catalog as last listed; a cold cache changes no card.
-  await rt.catalog()
+  // A failed turn must not list the catalog to know which card to show.
   emit(id, 'turn/start', { turn: 1 })
   emit(id, 'turn/end', { turn: 1, reason: { kind: 'error', error: { code, message } } })
 }
@@ -79,6 +78,27 @@ test('a failure already coded E_BOT_MODEL_NO_KEY is never replaced', async () =>
   w.rt.state.bots.b1 = { id: 'b1', name: 'Node Bot', model: 'deepseek/deepseek-v4-pro', managedBy: 'hub' }
   await failTurn(w, 'b1', 'E_BOT_MODEL_NO_KEY', 'the main has no key')
   assert.equal(w.rt.state.bots.b1.blocked?.code, 'E_BOT_MODEL_NO_KEY')
+})
+
+test('with a cold catalog both route codes still map, and no failed turn lists it', async () => {
+  const w = world()
+  assert.equal(w.rt.cachedCatalog().length, 0, 'nothing has listed the catalog in this process')
+  w.rt.state.bots.b1 = { id: 'b1', name: 'Node Bot', model: 'gone/model', managedBy: 'hub' }
+  w.rt.state.bots.b2 = { id: 'b2', name: 'Keyless Bot', model: 'deepseek/deepseek-v4-pro', managedBy: 'hub' }
+  await failTurn(w, 'b1', 'NO_ADAPTER')
+  await failTurn(w, 'b2', 'MISSING_CREDENTIAL', 'no API key for provider deepseek')
+  assert.equal(w.rt.state.bots.b1.blocked?.code, 'E_BOT_MODEL_UNAVAILABLE')
+  assert.equal(w.rt.state.bots.b2.blocked?.code, 'E_BOT_MODEL_NO_KEY')
+  assert.equal(w.rt.cachedCatalog().length, 0, 'the failed turns never listed the catalog')
+})
+
+test('a Bot the main put on a local agent keeps the route code', async () => {
+  const w = world()
+  w.rt.isLocalAgentRef = ref => typeof ref === 'string' && ref.startsWith('local-codex-cli/')
+  w.rt.state.bots.b1 = { id: 'b1', name: 'Local Agent Bot', model: 'local-codex-cli/gpt-5', managedBy: 'hub' }
+  await failTurn(w, 'b1', 'NO_ADAPTER')
+  assert.equal(w.rt.state.bots.b1.blocked, undefined, 'a local agent route is not the main model card')
+  assert.equal(w.failures[0].code, 'NO_ADAPTER')
 })
 
 test('a Bot made on this machine keeps the route code and gets no managed card', async () => {

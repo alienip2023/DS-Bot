@@ -315,23 +315,6 @@ export function install(rt) {
     return undefined
   }
 
-  // What the main's own answer would raise, read from the catalog as last listed: the
-  // turn-end mapping (turns.js) cannot wait for a fresh listing, and a cold cache says
-  // nothing, so no card is changed on a guess.
-  function mainRouteCode(bot) {
-    if (bot?.managedBy !== 'hub' || bot.origin === 'joined' || !bot.model) return undefined
-    const entries = catalogCache.value
-    if (entries.length === 0 || isLocal(bot.model)) return undefined
-    const entry = entries.find(candidate => candidate.ref === bot.model)
-    if (entry === undefined) return 'E_BOT_MODEL_UNAVAILABLE'
-    if (entry.needsKey === true) return 'E_BOT_MODEL_NO_KEY'
-    if (bot.effort !== undefined && bot.effort !== null) {
-      const efforts = entry.reasoning?.efforts
-      if (Array.isArray(efforts) && efforts.length > 0 && !efforts.some(effort => effort.id === bot.effort)) return 'E_BOT_EFFORT_UNAVAILABLE'
-    }
-    return undefined
-  }
-
   // A thinking level id, or a name only one level of the model has, like resolveModel.
   async function resolveEffort(ref, text) {
     const wanted = String(text ?? '').trim()
@@ -509,7 +492,7 @@ export function install(rt) {
 
   Object.assign(rt, {
     catalog, cachedCatalog: () => answerable(catalogCache.value), cachedDefault: () => pickDefault(catalogCache.value),
-    defaultRef, defaultModel, defaultBotModel, defaultEffort, isUsable, resolveModel, desiredModel, reasoningOf, resolveEffort, desiredEffort, mainRouteCode,
+    defaultRef, defaultModel, defaultBotModel, defaultEffort, isUsable, resolveModel, desiredModel, reasoningOf, resolveEffort, desiredEffort,
     selectSessionModel, applyModel, applyThreadModel, waitForModel, syncModels, routeRefused, dropCatalog, assembleLlm,
   })
 }
