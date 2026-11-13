@@ -75,6 +75,41 @@ test('A7c a managed Bot whose route cannot be applied is blocked, and the card l
   assert.equal(bot.blocked, undefined, 'the block lifts once the route applies')
 })
 
+test('A8b a managed Bot with no chosen thinking level applies its model without one', async () => {
+  const rt = world()
+  const routes = []
+  Object.assign(rt, {
+    state: { bots: {}, threads: {} },
+    save: async () => {},
+    chatOf: () => 'session-1',
+    groupSessionsOf: () => [],
+  })
+  rt.ctx.sessionController = {
+    selectModel: async ({ sessionId, provider, model, reasoningEffort }) => {
+      routes.push({ sessionId, provider, model, reasoningEffort })
+      return { selected: { provider, model } }
+    },
+  }
+  const bot = { id: 'b1', name: 'Node Bot', model: 'deepseek/deepseek-v4-pro', effort: null, managedBy: 'hub' }
+  rt.state.bots = { b1: bot }
+  assert.equal(await rt.desiredEffort(bot, bot.model), undefined, 'null means no level was chosen')
+  assert.equal(await rt.applyModel(bot), 'deepseek/deepseek-v4-pro')
+  assert.equal(bot.blocked, undefined, 'nothing is blocked for a level nobody chose')
+  assert.deepEqual(routes, [{ sessionId: 'session-1', provider: 'deepseek', model: 'deepseek-v4-pro', reasoningEffort: undefined }], 'the route carries no level')
+  assert.equal(bot.appliedEffort, undefined)
+})
+
+test('A8c a managed Bot still fails on a level its model does not serve', async () => {
+  const rt = world()
+  Object.assign(rt, { state: { bots: {}, threads: {} }, save: async () => {}, chatOf: () => 'session-1', groupSessionsOf: () => [] })
+  rt.ctx.sessionController = { selectModel: async () => ({}) }
+  const bot = { id: 'b1', name: 'Node Bot', model: 'deepseek/deepseek-v4-pro', effort: 'max', managedBy: 'hub' }
+  rt.state.bots = { b1: bot }
+  await rejectsWith(rt.applyModel(bot), 'E_BOT_EFFORT_UNAVAILABLE')
+  assert.equal(bot.blocked?.code, 'E_BOT_EFFORT_UNAVAILABLE', 'a chosen level that is not served is still fatal')
+  assert.equal(bot.appliedModel, undefined)
+})
+
 // ── A10: the node receiver ───────────────────────────────────────────────────
 function receiverWorld({ missing = [], models = ['deepseek'] } = {}) {
   const created = []

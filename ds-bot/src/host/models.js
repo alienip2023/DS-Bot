@@ -302,11 +302,13 @@ export function install(rt) {
   }
 
   // The thinking level a Bot asked for, when the model it runs on serves it; else the
-  // model's own default applies. A level the model does not have is ignored, never
-  // sent: an explicit effort a provider does not know is a hard refusal there. A Bot the
-  // main created fails instead of quietly running at the model's default level.
+  // model's own default applies. A row with no level chosen stores null (bot-store and
+  // joined-create both write null), so null is unset, not a level named "null". A level
+  // the model does not have is ignored, never sent: an explicit effort a provider does
+  // not know is a hard refusal there. A Bot the main created fails instead of quietly
+  // running at the model's default level.
   async function desiredEffort(bot, ref) {
-    if (bot.effort === undefined || ref === undefined) return undefined
+    if (bot.effort === undefined || bot.effort === null || ref === undefined) return undefined
     const reasoning = await reasoningOf(ref)
     if (reasoning?.efforts?.some(effort => effort.id === bot.effort) === true) return bot.effort
     if (bot.managedBy === 'hub') {
