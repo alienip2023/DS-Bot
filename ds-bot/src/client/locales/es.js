@@ -2367,3 +2367,23 @@ Object.assign(ES, {
   "{provider} has no API key on this machine, so {name} did not run.": "{provider} no tiene clave de API en este equipo, así que {name} no se ejecutó.",
   "The thinking level the main chose is not supported by {ref}, so this turn did not fall back.": "El nivel de razonamiento que eligió el principal no es compatible con {ref}, así que este turno no se ejecutó con otro.",
 })
+
+// Remote node concurrency (Settings → Remote nodes).
+Object.assign(ES, {
+  'Remote nodes': 'Nodos remotos',
+  'How many tasks each online node runs at once. The node applies a change immediately, without a restart.': 'Cuántas tareas ejecuta cada nodo en línea a la vez. El nodo aplica el cambio al instante, sin reiniciar.',
+  'No remote node is online right now.': 'Ahora mismo no hay ningún nodo remoto en línea.',
+  'Loading…': 'Cargando…',
+  'Applied: {count} at a time': 'Aplicado: {count} a la vez',
+  'Sent, waiting for the node to confirm…': 'Enviado, esperando la confirmación del nodo…',
+  'This node\'s version does not support a custom limit. It keeps running {count} at a time.': 'La versión de este nodo no admite un límite personalizado. Sigue ejecutando {count} a la vez.',
+  'The node refused the change.': 'El nodo rechazó el cambio.',
+  'Not set. The node runs its own default of {count} at a time.': 'Sin definir. El nodo usa su valor predeterminado de {count} a la vez.',
+  'The node does not report its queue yet.': 'Este nodo aún no informa de su cola.',
+  '{running} running of {limit}, {queued} queued': '{running}/{limit} en ejecución, {queued} en cola',
+  '{text} — the queue looks stuck': '{text}: la cola parece atascada',
+  'Enter a whole number from 1 to 64.': 'Introduce un número entero de 1 a 64.',
+  'Tasks at once on {node}': 'Tareas a la vez en {node}',
+  'Saving…': 'Guardando…',
+  'Save': 'Guardar',
+})

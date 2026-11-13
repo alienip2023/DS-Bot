@@ -51,6 +51,7 @@ import * as mirrorGuard from './src/host/mirror-guard.js'
 import { joinedTimeoutFrom } from './src/host/joined-turn.js'
 import * as joinedCreate from './src/host/joined-create.js'
 import * as configSource from './src/host/config-source.js'
+import * as nodeConfig from './src/host/node-config.js'
 import * as joinedPage from './src/host/joined-page.js'
 import * as phone from './src/host/phone.js'
 import * as mobile from './src/host/mobile.js'
@@ -73,7 +74,7 @@ export const inject = ['llm', 'tools', 'systemPrompt', 'sessionController', 'ses
 // install. Listeners run and tools are listed in registration order, so this order holds:
 // usage meters model requests after every listener that rewrites them. privacy checks a
 // call before the hooks of tools do, so a closed call never reaches a card they show.
-export const MODULES = [diagnostics, store, ledger, models, providers, permissions, turns, steer, handoffs, requests, delivery, workerBridge, rosterJoin, roster, federation, folders, privacy, agents, prompt, timeContext, hostContext, tools, chatIndex, groups, goals, approvals, resume, memory, parts, images, avatarLibrary, secrets, connectors, capabilities, learning, schedules, browser, browserPlugins, computer, usage, update, dshUpdate, thinking, threadQueue, mobile, feed, phone, im, channel, joinedTurn, joinedPrompt, threadPrompt, mirrorGuard, joinedCreate, configSource, joinedPage, officeSkills, goalSkills, localAgents]
+export const MODULES = [diagnostics, store, ledger, models, providers, permissions, turns, steer, handoffs, requests, delivery, workerBridge, rosterJoin, roster, federation, folders, privacy, agents, prompt, timeContext, hostContext, tools, chatIndex, groups, goals, approvals, resume, memory, parts, images, avatarLibrary, secrets, connectors, capabilities, learning, schedules, browser, browserPlugins, computer, usage, update, dshUpdate, thinking, threadQueue, mobile, feed, phone, im, channel, joinedTurn, joinedPrompt, threadPrompt, mirrorGuard, joinedCreate, configSource, nodeConfig, joinedPage, officeSkills, goalSkills, localAgents]
 
 export function apply(ctx, config = {}) {
   createRuntime(ctx, config)

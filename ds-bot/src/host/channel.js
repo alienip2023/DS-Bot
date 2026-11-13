@@ -637,6 +637,20 @@ export function install(rt) {
         // Threads inside one Bot: each has its own Session, history and place in the queue.
         // Whether this hub mirrors another machine's Bots, and at what level. `set` is a
         // write and stays out of READS; the client only reads it.
+        // How many tasks each remote node runs at once. Read lists every online node
+        // with its saved/applied limit and queue snapshot; a write pushes `node/config`
+        // to that node and reports what the node actually applied.
+        case 'node-config': {
+          await rt.load()
+          if (body.maxConcurrent !== undefined || body.nodeId !== undefined) {
+            try {
+              return ok(await rt.setNodeConcurrency(String(body.nodeId ?? ''), body.maxConcurrent))
+            } catch (error) {
+              return fail(error?.message ?? String(error), error?.code ?? 'bot/invalid')
+            }
+          }
+          return ok(await rt.nodeConcurrencyView())
+        }
         case 'federation': {
           await rt.load()
           if (body.level !== undefined) {

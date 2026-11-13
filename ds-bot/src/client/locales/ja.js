@@ -2331,3 +2331,23 @@ Object.assign(JA, {
   "{provider} has no API key on this machine, so {name} did not run.": "{provider} の API キーがこのマシンにないため、{name} は実行されませんでした。",
   "The thinking level the main chose is not supported by {ref}, so this turn did not fall back.": "メインが選んだ思考レベルは {ref} ではサポートされていないため、今回のターンは代替で実行されませんでした。",
 })
+
+// Remote node concurrency (Settings → Remote nodes).
+Object.assign(JA, {
+  'Remote nodes': 'リモートノード',
+  'How many tasks each online node runs at once. The node applies a change immediately, without a restart.': '各オンラインノードが同時に実行するタスク数。変更は再起動なしでノードにすぐ反映されます。',
+  'No remote node is online right now.': '現在オンラインのリモートノードはありません。',
+  'Loading…': '読み込み中…',
+  'Applied: {count} at a time': '反映済み：同時 {count} 件',
+  'Sent, waiting for the node to confirm…': '送信済み、ノードの確認待ち…',
+  'This node\'s version does not support a custom limit. It keeps running {count} at a time.': 'このノードのバージョンは上限の変更に対応していません。同時 {count} 件のまま動作します。',
+  'The node refused the change.': 'ノードが変更を拒否しました。',
+  'Not set. The node runs its own default of {count} at a time.': '未設定。ノードは既定の同時 {count} 件で動作します。',
+  'The node does not report its queue yet.': 'このノードはまだキューを報告していません。',
+  '{running} running of {limit}, {queued} queued': '{running}/{limit} 実行中、{queued} 件待ち',
+  '{text} — the queue looks stuck': '{text} — キューが詰まっている可能性があります',
+  'Enter a whole number from 1 to 64.': '1〜64 の整数を入力してください。',
+  'Tasks at once on {node}': '{node} の同時実行数',
+  'Saving…': '保存中…',
+  'Save': '保存',
+})

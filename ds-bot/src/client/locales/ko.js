@@ -2367,3 +2367,23 @@ Object.assign(KO, {
   "{provider} has no API key on this machine, so {name} did not run.": "{provider}에 이 컴퓨터의 API 키가 없어 {name}이(가) 실행되지 않았습니다.",
   "The thinking level the main chose is not supported by {ref}, so this turn did not fall back.": "메인이 선택한 사고 수준을 {ref}이(가) 지원하지 않아 이번 턴은 대체 실행되지 않았습니다.",
 })
+
+// Remote node concurrency (Settings → Remote nodes).
+Object.assign(KO, {
+  'Remote nodes': '원격 노드',
+  'How many tasks each online node runs at once. The node applies a change immediately, without a restart.': '각 온라인 노드가 한 번에 실행하는 작업 수입니다. 변경 사항은 재시작 없이 노드에 즉시 적용됩니다.',
+  'No remote node is online right now.': '현재 온라인인 원격 노드가 없습니다.',
+  'Loading…': '불러오는 중…',
+  'Applied: {count} at a time': '적용됨: 동시 {count}개',
+  'Sent, waiting for the node to confirm…': '전송됨, 노드 확인 대기 중…',
+  'This node\'s version does not support a custom limit. It keeps running {count} at a time.': '이 노드의 버전은 사용자 지정 한도를 지원하지 않습니다. 동시 {count}개로 계속 실행됩니다.',
+  'The node refused the change.': '노드가 변경을 거부했습니다.',
+  'Not set. The node runs its own default of {count} at a time.': '설정 안 됨. 노드는 자체 기본값인 동시 {count}개로 실행합니다.',
+  'The node does not report its queue yet.': '이 노드는 아직 대기열을 보고하지 않습니다.',
+  '{running} running of {limit}, {queued} queued': '{running}/{limit} 실행 중, {queued}개 대기',
+  '{text} — the queue looks stuck': '{text} — 대기열이 막힌 것 같습니다',
+  'Enter a whole number from 1 to 64.': '1~64 사이의 정수를 입력하세요.',
+  'Tasks at once on {node}': '{node}의 동시 작업 수',
+  'Saving…': '저장 중…',
+  'Save': '저장',
+})
