@@ -17,7 +17,7 @@
 // is `${message} (${code})` except for the two attachment-invalid codes.
 import { joinedShadow } from './roster-join.js'
 import { ensureMirrorSession, mirrorStateOf, hasPromptRequest } from './mirror.js'
-import { startPageTurn, stopPageTurn, failureText } from './executor.js'
+import { startPageTurn, stopPageTurn, failureText, flushLateReplies } from './executor.js'
 import { JOINED_TURN_TIMEOUT_MS } from './joined-turn.js'
 import { dropJoinedMirrorQueues, waitForJoinedMirror } from './joined-mirror-writer.js'
 import { installRunning } from './joined-running.js'
@@ -76,6 +76,10 @@ export async function promptText(content) {
 
 export function install(rt) {
   const { ctx } = rt
+  // The Bot-to-Bot writer closes turns in joined-mirror-writer.js; when a late node answer is
+  // waiting behind that turn it re-arms itself through this hook (the writer must not import
+  // the executor, which already imports the writer).
+  rt.flushLateReplies = botId => flushLateReplies(rt, botId)
   // Late-reply listeners (executor.js armLateReply) end with the plugin.
   // Unloading also drops the replies still waiting for an open page turn to end, and nothing
   // new is armed afterwards: a page turn that ends later writes no late reply.
@@ -86,6 +90,7 @@ export function install(rt) {
     rt.joinedLateQueue?.clear()
     // Buffered Bot-to-Bot page writes cannot be written after unload; warn and drop, never a half turn.
     dropJoinedMirrorQueues(rt)
+    delete rt.flushLateReplies
   }, 'ds-bot: joined late reply listeners')
   const controller = ctx?.sessionController
   // The phone's Stop (turns.js stopChat) ends a joined Bot's page turn through the same call.

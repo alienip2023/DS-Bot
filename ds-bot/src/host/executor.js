@@ -304,7 +304,11 @@ function armLateReply({ rt, bot, session, state, prepared }) {
         rt.warn?.('ds-bot: a late node reply for Bot %s was not written: %s', bot.id, error?.message ?? error)
       }
     }
-    if (rt.joinedInFlight?.has(bot.id)) {
+    // A late answer writes a whole new turn (mirrorLateReply -> allocateTurn), so it must wait
+    // for EITHER writer to finish: the page turn (joinedInFlight) or a Bot-to-Bot turn
+    // (mirrorTurnOpen). Writing inside an open Bot-to-Bot turn would close it as interrupted and
+    // leave the exchange's own finish to fail a strict restore.
+    if (rt.joinedInFlight?.has(bot.id) || mirrorTurnOpen(rt, bot.id)) {
       if (!rt.joinedLateQueue) rt.joinedLateQueue = new Map()
       rt.joinedLateQueue.set(bot.id, [...(rt.joinedLateQueue.get(bot.id) ?? []), write])
     } else write()
@@ -313,9 +317,12 @@ function armLateReply({ rt, bot, session, state, prepared }) {
   rt.joinedLate.add(dispose)
 }
 
-function flushLateReplies(rt, botId) {
+export function flushLateReplies(rt, botId) {
   const queued = rt.joinedLateQueue?.get(botId)
-  if (!queued) return
+  if (!queued || queued.length === 0) return
+  // Woken by the Bot-to-Bot writer closing a turn: another queued exchange may have opened the
+  // next turn in the same drain, so re-check both writers instead of writing blindly.
+  if (rt.joinedInFlight?.has(botId) || mirrorTurnOpen(rt, botId)) return
   rt.joinedLateQueue.delete(botId)
   for (const write of queued) write()
 }

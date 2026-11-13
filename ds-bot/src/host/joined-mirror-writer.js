@@ -118,6 +118,9 @@ export function closeJoinedMirror(rt, mirror, { text, seq, error } = {}) {
   writer.open = null
   drainJoinedMirror(rt, mirror.botId)
   wakeOne(writer)
+  // A late node answer queued behind this turn may write now. The hook is installed by
+  // joined-prompt.js (flushLateReplies in executor.js); the writer never imports the executor.
+  rt.flushLateReplies?.(mirror.botId)
 }
 
 function writeQueued(rt, item) {
@@ -161,7 +164,12 @@ export function drainJoinedMirror(rt, botId) {
       rt.warn?.('ds-bot: a queued Bot-to-Bot mirror turn for %s was not written: %s', botId, err?.message ?? err)
     }
   }
-  if (writer.queue.length === 0 && writer.open === null) wakeOne(writer)
+  if (writer.queue.length === 0 && writer.open === null) {
+    wakeOne(writer)
+    // The closed turn may have been the only thing holding a late node answer back; the queue
+    // can also still hold exchanges whose outcome has not arrived, so flush checks again.
+    rt.flushLateReplies?.(botId)
+  }
 }
 
 /** Drop buffered writes that will never be written (the plugin is unloading). Warn, never half-write. */
