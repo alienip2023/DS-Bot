@@ -1750,6 +1750,26 @@ Object.assign(ZH, {
   'Message…': '消息…',
 })
 
+// Remote node concurrency (Settings → Remote nodes).
+Object.assign(ZH, {
+  'Remote nodes': '远程节点',
+  'How many tasks each online node runs at once. The node applies a change immediately, without a restart.': '每台在线节点同时跑多少个任务。改完节点立即生效，不用重启。',
+  'No remote node is online right now.': '现在没有在线的远程节点。',
+  'Loading…': '加载中…',
+  'Applied: {count} at a time': '已生效：同时 {count} 个',
+  'Sent, waiting for the node to confirm…': '已下发，等节点确认…',
+  'This node\'s version does not support a custom limit. It keeps running {count} at a time.': '这个节点的版本不支持自定义上限，它仍按同时 {count} 个运行。',
+  'The node refused the change.': '节点拒绝了这次修改。',
+  'Not set. The node runs its own default of {count} at a time.': '未设置。节点按自己的默认值同时跑 {count} 个。',
+  'The node does not report its queue yet.': '这个节点还没上报队列情况。',
+  '{running} running of {limit}, {queued} queued': '{running}/{limit} 在跑，{queued} 个排队',
+  '{text} — the queue looks stuck': '{text} —— 队列疑似堵死',
+  'Enter a whole number from 1 to 64.': '请输入 1 到 64 的整数。',
+  'Tasks at once on {node}': '{node} 同时跑几个任务',
+  'Saving…': '保存中…',
+  'Save': '保存',
+})
+
 const ZH_TW = convertDict(ZH)
 const HOST_ERRORS_ZH_TW = convertHostErrors(HOST_ERRORS)
 

@@ -2366,3 +2366,23 @@ Object.assign(DE, {
   "{provider} has no API key on this machine, so {name} did not run.": "{provider} hat auf diesem Rechner keinen API-Schlüssel, daher wurde {name} nicht ausgeführt.",
   "The thinking level the main chose is not supported by {ref}, so this turn did not fall back.": "Die vom Haupt gewählte Denkstufe wird von {ref} nicht unterstützt, daher lief dieser Durchlauf nicht ersatzweise.",
 })
+
+// Remote node concurrency (Settings → Remote nodes).
+Object.assign(DE, {
+  'Remote nodes': 'Entfernte Knoten',
+  'How many tasks each online node runs at once. The node applies a change immediately, without a restart.': 'Wie viele Aufgaben jeder verbundene Knoten gleichzeitig ausführt. Eine Änderung wirkt sofort, ohne Neustart.',
+  'No remote node is online right now.': 'Derzeit ist kein entfernter Knoten online.',
+  'Loading…': 'Wird geladen…',
+  'Applied: {count} at a time': 'Angewendet: {count} gleichzeitig',
+  'Sent, waiting for the node to confirm…': 'Gesendet, warte auf die Bestätigung des Knotens…',
+  'This node\'s version does not support a custom limit. It keeps running {count} at a time.': 'Die Version dieses Knotens unterstützt kein eigenes Limit. Er läuft weiter mit {count} gleichzeitig.',
+  'The node refused the change.': 'Der Knoten hat die Änderung abgelehnt.',
+  'Not set. The node runs its own default of {count} at a time.': 'Nicht gesetzt. Der Knoten nutzt seinen Standard von {count} gleichzeitig.',
+  'The node does not report its queue yet.': 'Dieser Knoten meldet seine Warteschlange noch nicht.',
+  '{running} running of {limit}, {queued} queued': '{running}/{limit} laufen, {queued} in der Warteschlange',
+  '{text} — the queue looks stuck': '{text} — die Warteschlange scheint zu hängen',
+  'Enter a whole number from 1 to 64.': 'Gib eine ganze Zahl von 1 bis 64 ein.',
+  'Tasks at once on {node}': 'Aufgaben gleichzeitig auf {node}',
+  'Saving…': 'Wird gespeichert…',
+  'Save': 'Speichern',
+})

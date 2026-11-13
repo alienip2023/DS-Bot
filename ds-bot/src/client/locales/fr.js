@@ -2330,3 +2330,23 @@ Object.assign(FR, {
   "{provider} has no API key on this machine, so {name} did not run.": "{provider} n'a pas de clé API sur cette machine ; {name} n'a donc pas été exécuté.",
   "The thinking level the main chose is not supported by {ref}, so this turn did not fall back.": "Le niveau de réflexion choisi par le principal n'est pas pris en charge par {ref} ; ce tour n'a donc pas été exécuté autrement.",
 })
+
+// Remote node concurrency (Settings → Remote nodes).
+Object.assign(FR, {
+  'Remote nodes': 'Nœuds distants',
+  'How many tasks each online node runs at once. The node applies a change immediately, without a restart.': 'Combien de tâches chaque nœud en ligne exécute en même temps. Le nœud applique le changement immédiatement, sans redémarrage.',
+  'No remote node is online right now.': 'Aucun nœud distant n\'est en ligne pour le moment.',
+  'Loading…': 'Chargement…',
+  'Applied: {count} at a time': 'Appliqué : {count} à la fois',
+  'Sent, waiting for the node to confirm…': 'Envoyé, en attente de la confirmation du nœud…',
+  'This node\'s version does not support a custom limit. It keeps running {count} at a time.': 'La version de ce nœud ne prend pas en charge de limite personnalisée. Il continue avec {count} à la fois.',
+  'The node refused the change.': 'Le nœud a refusé la modification.',
+  'Not set. The node runs its own default of {count} at a time.': 'Non défini. Le nœud utilise sa valeur par défaut de {count} à la fois.',
+  'The node does not report its queue yet.': 'Ce nœud ne signale pas encore sa file d\'attente.',
+  '{running} running of {limit}, {queued} queued': '{running}/{limit} en cours, {queued} en attente',
+  '{text} — the queue looks stuck': '{text} — la file d\'attente semble bloquée',
+  'Enter a whole number from 1 to 64.': 'Saisissez un nombre entier de 1 à 64.',
+  'Tasks at once on {node}': 'Tâches à la fois sur {node}',
+  'Saving…': 'Enregistrement…',
+  'Save': 'Enregistrer',
+})
