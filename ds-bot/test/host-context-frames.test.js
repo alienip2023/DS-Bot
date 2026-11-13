@@ -49,7 +49,7 @@ describe('N-1 I6: frames carry no environment', () => {
     const created = frames.filter(frame => frame.type === 'bot/create')
     assert.equal(created.length, 1)
     const keys = Object.keys(created[0].payload)
-    assert.deepEqual(keys.sort(), ['effort', 'instructions', 'modelRef', 'name', 'nodeId', 'requestId', 'role', 'workDir'])
+    assert.deepEqual(keys.sort(), ['defaultEffort', 'effort', 'instructions', 'managedBy', 'modelRef', 'name', 'nodeId', 'requestId', 'role', 'workDir'])
     assert.deepEqual(keys.filter(key => ENV_KEY.test(key)), [])
   })
 })

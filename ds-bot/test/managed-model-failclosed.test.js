@@ -1,0 +1,116 @@
+// A Bot the main created runs the model and thinking level the main chose, or stops with a
+// code the repair card shows. It never silently falls back; a Bot made on the node itself
+// still does, so single-machine use is unchanged. The node receiver is exercised through its
+// real entry point (createBotCreateReceiver), not by calling desiredModel alone.
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { install } from '../src/host/models.js'
+import { createBotCreateReceiver } from '../src/host/joined-create.js'
+
+const PROVIDERS = {
+  deepseek: [{ id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash' }, { id: 'deepseek-v4-pro' }],
+  ollama: [{ id: 'kimi-k3' }],
+}
+
+function world({ missing = [], efforts = [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }] } = {}) {
+  const ctx = {
+    llm: {
+      listProviders: () => Object.keys(PROVIDERS).map(id => ({ id })),
+      listModels: async id => PROVIDERS[id],
+      resolveModelInfo: async () => (efforts === undefined ? undefined : { reasoning: { efforts, defaultEffort: 'low' } }),
+    },
+    get: () => undefined,
+  }
+  const rt = { ctx, state: { bots: {} }, warn: () => {}, missingKeys: async () => new Set(missing) }
+  install(rt)
+  return rt
+}
+
+const rejectsWith = (promise, code) => assert.rejects(promise, (error) => {
+  assert.equal(error.code, code)
+  return true
+})
+
+test('A7 a managed Bot whose model is gone fails closed instead of running another model', async () => {
+  const rt = world()
+  await rejectsWith(rt.desiredModel({ model: 'gone/model', managedBy: 'hub' }), 'E_BOT_MODEL_UNAVAILABLE')
+  assert.equal(await rt.desiredModel({ model: 'deepseek/deepseek-v4-pro', managedBy: 'hub' }), 'deepseek/deepseek-v4-pro')
+})
+
+test('A7b a managed Bot whose provider lost its key fails with E_BOT_MODEL_NO_KEY', async () => {
+  const rt = world({ missing: ['deepseek'] })
+  await rejectsWith(rt.desiredModel({ model: 'deepseek/deepseek-v4-pro', managedBy: 'hub' }), 'E_BOT_MODEL_NO_KEY')
+  assert.equal(await rt.desiredModel({ model: 'deepseek/deepseek-v4-pro' }), 'deepseek/deepseek-v4-pro', 'a local Bot keeps its own model')
+})
+
+test('A8 a managed Bot whose thinking level is not served fails instead of running the default level', async () => {
+  const rt = world()
+  await rejectsWith(rt.desiredEffort({ model: 'deepseek/deepseek-v4-pro', effort: 'max', managedBy: 'hub' }, 'deepseek/deepseek-v4-pro'), 'E_BOT_EFFORT_UNAVAILABLE')
+  assert.equal(await rt.desiredEffort({ model: 'deepseek/deepseek-v4-pro', effort: 'low', managedBy: 'hub' }, 'deepseek/deepseek-v4-pro'), 'low')
+})
+
+test('A9 a Bot made on the node itself keeps the old fallback', async () => {
+  const rt = world({ missing: ['deepseek'] })
+  assert.equal(await rt.desiredModel({ model: 'gone/model', appliedModel: 'ollama/kimi-k3' }), 'ollama/kimi-k3', 'falls back to the last model it ran on')
+  assert.equal(await rt.desiredModel({ model: 'deepseek/deepseek-v4-pro' }), 'deepseek/deepseek-v4-pro', 'its own model stays its own')
+  assert.equal(await rt.desiredEffort({ model: 'deepseek/deepseek-v4-pro', effort: 'max' }, 'deepseek/deepseek-v4-pro'), undefined, 'an unknown level is ignored, not fatal')
+})
+
+test('A7c a managed Bot whose route cannot be applied is blocked, and the card lifts when it can', async () => {
+  const rt = world()
+  const saves = []
+  Object.assign(rt, {
+    state: { bots: {}, threads: {} },
+    save: async () => { saves.push(1) },
+    chatOf: () => 'session-1',
+    groupSessionsOf: () => [],
+  })
+  rt.ctx.sessionController = { selectModel: async () => ({ selected: { provider: 'deepseek', model: 'deepseek-v4-pro' } }) }
+  const bot = { id: 'b1', name: 'Node Bot', model: 'gone/model', managedBy: 'hub' }
+  await rejectsWith(rt.applyModel(bot), 'E_BOT_MODEL_UNAVAILABLE')
+  assert.deepEqual({ code: bot.blocked?.code }, { code: 'E_BOT_MODEL_UNAVAILABLE' }, 'the repair card reads this code')
+  assert.equal(saves.length, 1, 'the block is on disk')
+  bot.model = 'deepseek/deepseek-v4-pro'
+  await rt.applyModel(bot)
+  assert.equal(bot.blocked, undefined, 'the block lifts once the route applies')
+})
+
+// ── A10: the node receiver ───────────────────────────────────────────────────
+function receiverWorld({ missing = [], models = ['deepseek'] } = {}) {
+  const created = []
+  const saves = []
+  const rt = {
+    ctx: { get: () => undefined, llm: { listProviders: () => models.map(id => ({ id })) } },
+    missingKeys: async () => new Set(missing),
+    createBot: async (options) => {
+      created.push(options)
+      return { id: 'node-bot-1', name: options.name, role: options.role }
+    },
+    save: async () => { saves.push(Date.now()) },
+  }
+  return { rt, accept: createBotCreateReceiver(rt), created, saves }
+}
+
+test('A10 a Bot created for an unkeyed provider is refused with bot-create-model-no-key', async () => {
+  const { accept, created } = receiverWorld({ missing: ['deepseek'] })
+  const result = await accept({ name: 'Node Bot', modelRef: 'deepseek/deepseek-v4-pro', managedBy: 'hub', defaultEffort: 'high' })
+  assert.deepEqual(result, { ok: false, error: 'bot-create-model-no-key' })
+  assert.equal(created.length, 0, 'nothing is created for a model that cannot answer')
+})
+
+test('A10b a hub-created Bot records managedBy and uses defaultEffort when no effort was named', async () => {
+  const { accept, created, saves } = receiverWorld()
+  const result = await accept({ name: 'Node Bot', modelRef: 'deepseek/deepseek-v4-pro', managedBy: 'hub', defaultEffort: 'high' })
+  assert.equal(result.ok, true)
+  assert.equal(created[0].effort, 'high', 'the hub default becomes the Bot effort')
+  assert.equal(created[0].model, 'deepseek/deepseek-v4-pro')
+  assert.equal(saves.length, 1, 'the managed marker is saved with the row')
+})
+
+test('A10c an explicit effort wins over the hub default, and a local create keeps no marker', async () => {
+  const { accept, created } = receiverWorld()
+  await accept({ name: 'Node Bot', modelRef: 'deepseek/deepseek-v4-pro', effort: 'low', managedBy: 'hub', defaultEffort: 'high' })
+  await accept({ name: 'Local Bot', modelRef: 'deepseek/deepseek-v4-pro', defaultEffort: 'high' })
+  assert.equal(created[0].effort, 'low')
+  assert.equal(created[1].effort, 'high')
+})

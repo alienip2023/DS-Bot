@@ -245,5 +245,17 @@ describe('P1b1: bot-create-targets endpoint maps node models', () => {
     assert.equal(node.models[0].ref, 'openai/gpt-4o', 'ref must be built by the mapper')
     assert.deepEqual(node.models[0].efforts, [{ id: 'low', name: 'Low' }], 'efforts must survive the endpoint')
     assert.deepEqual(node.models[1].efforts, [], 'model without efforts must get []')
+    assert.equal(node.configStale, false, 'a node with no sync state is not stale')
+    assert.equal(node.appliedRevision, null, 'no applied revision yet')
+  })
+
+  it('P4-endpoint-sync: the entry reports the config state the push loop tracks', async () => {
+    // Knife: drop configStale/appliedRevision from the map → both assertions below go red.
+    const { rt, call } = makeChannelRt([{ nodeId: 'node-a', hostname: 'machine-a', models: [], defaultModel: null }])
+    rt.configSyncStatus = nodeId => (nodeId === 'node-a' ? { configStale: true, appliedRevision: 7, lastError: 'push-failed' } : undefined)
+    const res = await call('bot-create-targets', {})
+    assert.equal(res.ok, true)
+    assert.equal(res.value[0].configStale, true, 'a stale node is reported as stale')
+    assert.equal(res.value[0].appliedRevision, 7, 'the revision the node acknowledged is passed through')
   })
 })
