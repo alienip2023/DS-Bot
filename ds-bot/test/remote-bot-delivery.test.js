@@ -97,7 +97,15 @@ async function start(seed) {
   installJoinedTurn(rt)
   const tool = (name, args, sessionId) => rt.teamTools.find(def => def.name === name).execute(args, { agent: { id: sessionId } })
   await tool('list_bots', {}, 'a')
-  const stop = async () => { await ctx.dispose(); rmSync(home, { recursive: true, force: true, maxRetries: 5 }) }
+  const stop = async () => {
+    // A delivered request opens a work whose 30-minute delegate timer is a ref'd timeout
+    // (handoffs.js openWork). Production clears it by the reply or by the timer itself; a
+    // test home has no later reply, so the timer would be the one handle keeping this
+    // process alive. Dropping the works clears those timers before the runtime is disposed.
+    for (const id of Object.keys(rt.state?.works ?? {})) rt.dropWork(id)
+    await ctx.dispose()
+    rmSync(home, { recursive: true, force: true, maxRetries: 5 })
+  }
   return { rt, ctx, registry, frames, sessions, resolved, tool, stop }
 }
 
