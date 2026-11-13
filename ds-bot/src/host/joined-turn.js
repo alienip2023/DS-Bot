@@ -170,7 +170,7 @@ function recordReply(rt, { exchangeId, fromId, toId, text, answered }) {
   else if (answered) rows[earlier] = entry
 }
 
-async function replyToSender(rt, { fromId, toId, exchangeId, work, text, answered = true }) {
+export async function replyToSender(rt, { fromId, toId, exchangeId, work, text, answered = true }) {
   const shadow = rt.botOf?.(toId)
   const earlier = recordedReply(rt, exchangeId)
   // This module now has an outcome for the work, so close it the way the local reply path does.
