@@ -248,10 +248,17 @@ export function mirrorLateReply(session, { step = 1, botText, botId, nodeSeq, se
 }
 
 /** Per-Bot idempotency state shared by every path that mirrors a joined Bot's turns. */
-export function mirrorStateOf(rt, botId) {
+export function mirrorStateOf(rt, botId, session) {
   if (!rt._mirrorState) rt._mirrorState = new Map()
   let state = rt._mirrorState.get(botId)
   if (!state) { state = { seenKeys: new Set(), closedKeys: new Set(), seenSteps: new Set(), closedTurns: new Set() }; rt._mirrorState.set(botId, state) }
+  // The mirror Session can be rebuilt while the runtime lives on, and its turn numbers restart
+  // at 1. closedTurns carried over from the previous Session would mark a real turn as already
+  // closed and leave it open, so that bookkeeping starts fresh for each Session object.
+  if (session !== undefined && state.session !== session) {
+    state.session = session
+    state.closedTurns = new Set()
+  }
   return state
 }
 

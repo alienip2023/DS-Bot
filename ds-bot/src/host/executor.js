@@ -14,6 +14,7 @@ import { randomUUID } from 'node:crypto'
 import { joinedShadow } from './roster-join.js'
 import { listenBotTurnResult, JOINED_TURN_TIMEOUT_MS, JOINED_LATE_WINDOW_MS } from './joined-turn.js'
 import { mirrorTurn, allocateTurn, mirrorTurnStart, mirrorTurnFinish, mirrorTurnFail, mirrorTurnAbort, mirrorLateReply } from './mirror.js'
+import { drainJoinedMirror, mirrorTurnOpen } from './joined-mirror-writer.js'
 
 /**
  * Error codes thrown by send() / deliverTurn():
@@ -340,6 +341,9 @@ function flushLateReplies(rt, botId) {
  */
 export function startPageTurn({ rt, bot, text, requestId, session, step = 1, state = {}, tracker, timeoutMs }) {
   if (!rt.joinedInFlight) rt.joinedInFlight = new Map()
+  // A Bot-to-Bot exchange writing this Session must finish first; its writer is short-lived, the
+  // page path waits for it (joined-prompt.js waitForJoinedMirror) before calling here.
+  if (mirrorTurnOpen(rt, bot.id)) throw new ExecutorError('E_BUSY', 'a turn for this Bot is still in flight')
   if (rt.joinedInFlight.has(bot.id)) throw new ExecutorError('E_BUSY', 'a turn for this Bot is still in flight')
   const claim = { requestId, abort: undefined }
   rt.joinedInFlight.set(bot.id, claim)
@@ -353,6 +357,9 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
     if (rt.joinedInFlight.get(bot.id) !== claim) return
     rt.joinedInFlight.delete(bot.id)
     if (announced) { announced = false; rt.joinedRunning?.(bot, false) }
+    // Buffered Bot-to-Bot writes for this Bot become writable the moment the page turn is
+    // released, in this same tick, before any late node reply is written.
+    drainJoinedMirror(rt, bot.id)
     flushLateReplies(rt, bot.id)
   }
 

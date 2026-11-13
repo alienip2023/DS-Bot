@@ -19,6 +19,7 @@ import { joinedShadow } from './roster-join.js'
 import { ensureMirrorSession, mirrorStateOf, hasPromptRequest } from './mirror.js'
 import { startPageTurn, stopPageTurn, failureText } from './executor.js'
 import { JOINED_TURN_TIMEOUT_MS } from './joined-turn.js'
+import { dropJoinedMirrorQueues, waitForJoinedMirror } from './joined-mirror-writer.js'
 import { installRunning } from './joined-running.js'
 import { wrapControllerMethod } from './controller-wrap.js'
 
@@ -83,6 +84,8 @@ export function install(rt) {
     for (const dispose of rt.joinedLate ?? []) dispose()
     rt.joinedLate?.clear()
     rt.joinedLateQueue?.clear()
+    // Buffered Bot-to-Bot page writes cannot be written after unload; warn and drop, never a half turn.
+    dropJoinedMirrorQueues(rt)
   }, 'ds-bot: joined late reply listeners')
   const controller = ctx?.sessionController
   // The phone's Stop (turns.js stopChat) ends a joined Bot's page turn through the same call.
@@ -104,8 +107,11 @@ export function install(rt) {
 
     let turn
     try {
+      // A Bot-to-Bot exchange may be writing this Session right now; it finishes first, so the
+      // page turn never takes a turn someone else has open.
+      await waitForJoinedMirror(rt, bot.id, rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS)
       turn = startPageTurn({
-        rt, bot, text, requestId: request.requestId, session, state: mirrorStateOf(rt, bot.id),
+        rt, bot, text, requestId: request.requestId, session, state: mirrorStateOf(rt, bot.id, session),
         tracker: rt.turnTracker,
         timeoutMs: rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS,
       })

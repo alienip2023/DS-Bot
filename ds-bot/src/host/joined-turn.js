@@ -4,9 +4,9 @@
 import { randomUUID } from 'node:crypto'
 import { joinedShadow, shadowId } from './roster-join.js'
 import {
-  allocateTurn, ensureMirrorSession, hasPromptRequest, mirrorStateOf,
-  mirrorTurnFail, mirrorTurnFinish, mirrorTurnStart,
+  ensureMirrorSession, hasPromptRequest, mirrorStateOf,
 } from './mirror.js'
+import { beginJoinedMirror, closeJoinedMirror } from './joined-mirror-writer.js'
 
 export const BRIDGE_DOWN_TEXT = '副机仍在执行，桥已断'
 // How long a turn waits for the node's answer. A node Bot that calls tools takes minutes (the
@@ -34,9 +34,10 @@ async function openMirrorTurn(rt, bot, text, xid) {
     const session = await ensureMirrorSession(rt, bot)
     const rpcId = MIRROR_RPC_PREFIX + xid
     if (hasPromptRequest(session, rpcId)) return { duplicate: true }
-    const turn = allocateTurn(session)
-    mirrorTurnStart(session, { turn, step: 1, userText: text ?? '', rpcId })
-    return { session, turn, state: mirrorStateOf(rt, bot.id) }
+    const state = mirrorStateOf(rt, bot.id, session)
+    // A page turn may hold this Session: beginJoinedMirror then buffers the exchange until the
+    // page turn ends, so the two writers never take turns on the same log (joined-mirror-writer.js).
+    return beginJoinedMirror(rt, bot, session, { text, rpcId, state })
   } catch (error) {
     rt.warn?.('ds-bot: a Bot-to-Bot message for %s was not mirrored: %s', bot.id, error?.message ?? error)
     return undefined
@@ -44,21 +45,8 @@ async function openMirrorTurn(rt, bot, text, xid) {
 }
 
 function closeMirrorTurn(rt, mirror, botId, { text, seq, error } = {}) {
-  if (mirror?.session === undefined) return
-  try {
-    if (error !== undefined) {
-      mirrorTurnFail(mirror.session, {
-        turn: mirror.turn, step: 1, code: error.code, message: error.message,
-        closedTurns: mirror.state.closedTurns,
-      })
-    } else {
-      mirrorTurnFinish(mirror.session, {
-        turn: mirror.turn, step: 1, botText: text ?? '', botId, nodeSeq: seq, ...mirror.state,
-      })
-    }
-  } catch (caught) {
-    rt.warn?.('ds-bot: a Bot-to-Bot reply for %s was not mirrored: %s', botId, caught?.message ?? caught)
-  }
+  if (mirror === undefined) return
+  closeJoinedMirror(rt, mirror, { text, seq, error })
 }
 
 
