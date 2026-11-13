@@ -153,11 +153,6 @@ function GeneralPage({ roster, actions, run, dsh }) {
           onPick: ref => run(actions.setPrefs({ defaultBotModel: ref })),
         }),
         prefs.defaultBotModel ? h('button', { type: 'button', className: 'bt-soft bt-soft-sm', onClick: () => run(actions.setPrefs({ defaultBotModel: null })) }, t('Reset')) : null)),
-    // M2: the inventory switch. On, Bots created on a node machine appear here as
-    // read-only, dispatchable rows; off, those rows are cleared at once.
-    h(SetSection, { key: 'cross-machine', title: t('Other machines') },
-      h(SetRow, { label: t('Bots on other machines') },
-        h(Switch, { label: t('Bots on other machines'), on: prefs.nodeInventory === true, onChange: on => run(actions.setNodeInventory(on)) }))),
     h(SetSection, { key: 'input', title: t('Input') },
       h(SetRow, { label: t('Enter sends message') },
         h(Switch, { label: t('Enter sends message'), on: prefs.enterToSend !== false, onChange: enterToSend => run(actions.setPrefs({ enterToSend })) }))),

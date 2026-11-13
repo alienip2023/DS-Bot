@@ -5,13 +5,11 @@
 // openSession; actions.openJoinedHome makes sure that session exists first and reports a
 // failure where the user can see it. The old dialog (openJoinedChat) is no longer a path.
 
-// A row whose Bot lives on another machine: joined (mirror Session here) or node
-// (inventory row reported by that machine). Both open through openJoinedHome; neither
-// has a local Session of its own.
+// A row whose Bot lives on another machine: a joined row (mirror Session here). It opens
+// through openJoinedHome because it has no local Session of its own.
 export function remoteHomeOf(bot) {
   if (bot === null || typeof bot !== 'object') return false
-  return (bot.origin === 'joined' && bot.worker?.home === 'remote')
-    || (bot.origin === 'node' && bot.worker?.home === 'node')
+  return bot.origin === 'joined' && bot.worker?.home === 'remote'
 }
 
 export function botRowClick(joined, id, actions) {

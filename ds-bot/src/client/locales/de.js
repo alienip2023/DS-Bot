@@ -265,8 +265,6 @@ export const DE = {
   'Change and start a new part': 'Ändern und neuen Abschnitt starten',
   // Local agents page
   'Local agents': 'Lokale Agenten',
-  'Other machines': 'Andere Computer',
-  'Bots on other machines': 'Bots auf anderen Computern',
   'This DSH cannot register local agent routes.': 'Dieses DSH kann keine Routen für lokale Agenten registrieren.',
   'Detected agents': 'Erkannte Agenten',
   Refresh: 'Aktualisieren',

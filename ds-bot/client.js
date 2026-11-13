@@ -381,8 +381,6 @@ var JA = {
   "The privacy rules of a private Bot do not cover the tools of a local agent.": "プライベート Bot のプライバシー規則は、ローカルエージェント独自のツールには適用されません。",
   "Change and start a new part": "変更して新しいパートを開始",
   "Local agents": "ローカルエージェント",
-  "Other machines": "他のコンピューター",
-  "Bots on other machines": "他のコンピューター上の Bot",
   "This DSH cannot register local agent routes.": "この DSH ではローカルエージェントのルートを登録できません。",
   "Detected agents": "検出されたエージェント",
   "Refresh": "更新",
@@ -2710,8 +2708,6 @@ var KO = {
   "Change and start a new part": "변경 후 새 구간 시작",
   // Local agents page
   "Local agents": "로컬 Agent",
-  "Other machines": "다른 컴퓨터",
-  "Bots on other machines": "다른 컴퓨터의 Bot",
   "This DSH cannot register local agent routes.": "이 DSH에서는 로컬 Agent 경로를 등록할 수 없습니다.",
   "Detected agents": "감지된 Agent",
   Refresh: "새로고침",
@@ -5079,8 +5075,6 @@ var ES = {
   "Change and start a new part": "Cambiar e iniciar nueva sección",
   // Local agents page
   "Local agents": "Agentes locales",
-  "Other machines": "Otras máquinas",
-  "Bots on other machines": "Bots en otras máquinas",
   "This DSH cannot register local agent routes.": "Este DSH no puede registrar rutas de agentes locales.",
   "Detected agents": "Agentes detectados",
   Refresh: "Actualizar",
@@ -7443,8 +7437,6 @@ var FR = {
   "The privacy rules of a private Bot do not cover the tools of a local agent.": "Les règles de confidentialité d’un Bot privé ne couvrent pas les outils d’un agent local.",
   "Change and start a new part": "Modifier et démarrer une nouvelle partie",
   "Local agents": "Agents locaux",
-  "Other machines": "Autres ordinateurs",
-  "Bots on other machines": "Bots sur d'autres ordinateurs",
   "This DSH cannot register local agent routes.": "Ce DSH ne peut pas enregistrer de routes d’agent local.",
   "Detected agents": "Agents détectés",
   "Refresh": "Actualiser",
@@ -9772,8 +9764,6 @@ var DE = {
   "Change and start a new part": "Ändern und neuen Abschnitt starten",
   // Local agents page
   "Local agents": "Lokale Agenten",
-  "Other machines": "Andere Computer",
-  "Bots on other machines": "Bots auf anderen Computern",
   "This DSH cannot register local agent routes.": "Dieses DSH kann keine Routen für lokale Agenten registrieren.",
   "Detected agents": "Erkannte Agenten",
   Refresh: "Aktualisieren",
@@ -12158,8 +12148,6 @@ var ZH = {
   "Change and start a new part": "更换并开新的一段",
   // Local agents page
   "Local agents": "本地 Agent",
-  "Other machines": "其他电脑",
-  "Bots on other machines": "其他电脑上的 Bot",
   "This DSH cannot register local agent routes.": "这个 DSH 不能注册本地 Agent 路由。",
   "Detected agents": "已检测到的 Agent",
   Refresh: "刷新",
@@ -25461,7 +25449,7 @@ var CONNECTOR_CSS = `
 // src/client/row-actions.js
 function remoteHomeOf(bot) {
   if (bot === null || typeof bot !== "object") return false;
-  return bot.origin === "joined" && bot.worker?.home === "remote" || bot.origin === "node" && bot.worker?.home === "node";
+  return bot.origin === "joined" && bot.worker?.home === "remote";
 }
 function botRowClick(joined, id, actions) {
   if (joined) {
@@ -27898,7 +27886,7 @@ var waitingFor = (roster, waits) => {
   return names.length === 0 ? "" : t("Waiting for {names}", { names: names.join(t(" and ")) });
 };
 function ThreadRow({ thread, bot, actions, useSessionRetainInfo, index, botActive }) {
-  const joined = bot.origin === "joined" && bot.worker?.home === "remote" || bot.worker?.home === "node";
+  const joined = bot.origin === "joined" && bot.worker?.home === "remote";
   const sessionId = thread.isMain === true ? bot.sessionId ?? bot.id : thread.sessionId;
   const active = useSessionRetainInfo(sessionId, (info) => (info?.retainedBy?.mainView ?? 0) > 0) || thread.isMain === true && botActive === true;
   return (0, import_react35.createElement)("button", {
@@ -27918,7 +27906,7 @@ function ThreadRow({ thread, bot, actions, useSessionRetainInfo, index, botActiv
   }, (0, import_react35.createElement)("span", { className: "bt-agent-sub-title" }, thread.title));
 }
 function ThreadList({ bot, threads, status, actions, useSessionRetainInfo, botActive, onRetry }) {
-  const joined = bot.origin === "joined" && bot.worker?.home === "remote" || bot.worker?.home === "node";
+  const joined = bot.origin === "joined" && bot.worker?.home === "remote";
   const all = Array.isArray(threads) ? threads : [];
   const visible = sortThreads(all.filter((thread) => thread?.archived !== true));
   const list = visible.length > 0 ? visible : [{
@@ -28020,10 +28008,9 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
   };
   const pinned = bot.pinned === true && !tile;
   const joined = bot.origin === "joined" && bot.worker?.home === "remote";
-  const nodeBot = bot.origin === "node" && bot.worker?.home === "node";
   const remoteHome = remoteHomeOf(bot);
   const peer = bot.origin === "peer" && bot.worker?.home === "hub";
-  const machine = joined ? [bot.worker.hostname || bot.worker.nodeId, bot.worker.online === false ? "离线" : ""].filter(Boolean).join(" · ") : nodeBot || peer ? [bot.worker?.hostname || bot.worker?.nodeId || "", bot.worker?.online === false ? "离线" : "在线"].filter(Boolean).join(" · ") : "";
+  const machine = joined ? [bot.worker.hostname || bot.worker.nodeId, bot.worker.online === false ? "离线" : ""].filter(Boolean).join(" · ") : peer ? [bot.worker?.hostname || bot.worker?.nodeId || "", bot.worker?.online === false ? "离线" : "在线"].filter(Boolean).join(" · ") : "";
   const label = [bot.name, machine, main ? t("Main Bot") : "", pinned ? t("Pinned") : "", running || away ? t("Working") : "", waitsFor, approval ? t("Waiting for your approval") : alert ? t("Waiting for your answer") : "", unread ? t("Unread activity") : ""].filter(Boolean).join(", ");
   if (tile && wide) {
     return (0, import_react35.createElement)("div", { className: "bt-tile-wrap", ref: bindPointerMenu(actions.openMenu, () => ({ kind: "bot", id })) }, (0, import_react35.createElement)(
@@ -34905,17 +34892,6 @@ function GeneralPage({ roster, actions, run: run2, dsh }) {
           onPick: (ref) => run2(actions.setPrefs({ defaultBotModel: ref }))
         }),
         prefs.defaultBotModel ? (0, import_react49.createElement)("button", { type: "button", className: "bt-soft bt-soft-sm", onClick: () => run2(actions.setPrefs({ defaultBotModel: null })) }, t("Reset")) : null
-      )
-    ),
-    // M2: the inventory switch. On, Bots created on a node machine appear here as
-    // read-only, dispatchable rows; off, those rows are cleared at once.
-    (0, import_react49.createElement)(
-      SetSection,
-      { key: "cross-machine", title: t("Other machines") },
-      (0, import_react49.createElement)(
-        SetRow,
-        { label: t("Bots on other machines") },
-        (0, import_react49.createElement)(Switch, { label: t("Bots on other machines"), on: prefs.nodeInventory === true, onChange: (on) => run2(actions.setNodeInventory(on)) })
       )
     ),
     (0, import_react49.createElement)(
@@ -42505,9 +42481,6 @@ function apply(ctx) {
   const actions = {
     ...teamActions({ call, after, partFor, roster, ui: ui2, live, cards, heldCards, turnClock, panelFolded, openSession: (id) => actions.openSession(id), ...sessionProbes(ctx, quietly) }),
     learningAnswer: (id, approve) => after(call("learning-answer", { id, approve })),
-    // M2: the node-inventory switch. Off clears the node rows on the server at once.
-    setNodeInventory: (enabled) => after(call("node-inventory", { enabled })),
-    nodeInventory: () => call("node-inventory"),
     // The full-pane overlays sit above the conversation, so opening one must dismiss them
     // or the click appears to do nothing.
     isAgentSession: (id) => isAgentSessionId(id),

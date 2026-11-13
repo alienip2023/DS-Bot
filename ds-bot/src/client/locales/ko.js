@@ -265,8 +265,6 @@ export const KO = {
   'Change and start a new part': '변경 후 새 구간 시작',
   // Local agents page
   'Local agents': '로컬 Agent',
-  'Other machines': '다른 컴퓨터',
-  'Bots on other machines': '다른 컴퓨터의 Bot',
   'This DSH cannot register local agent routes.': '이 DSH에서는 로컬 Agent 경로를 등록할 수 없습니다.',
   'Detected agents': '감지된 Agent',
   Refresh: '새로고침',

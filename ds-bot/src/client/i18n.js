@@ -292,8 +292,6 @@ const ZH = {
   'Change and start a new part': '更换并开新的一段',
   // Local agents page
   'Local agents': '本地 Agent',
-  'Other machines': '其他电脑',
-  'Bots on other machines': '其他电脑上的 Bot',
   'This DSH cannot register local agent routes.': '这个 DSH 不能注册本地 Agent 路由。',
   'Detected agents': '已检测到的 Agent',
   Refresh: '刷新',
