@@ -3,6 +3,7 @@
 // send must return the answer instead of writing a local exchange.
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { DELEGATE_TIMEOUT_MS } from '../src/host/constants.js'
 import { inventory, seedTeam, settle, startWorld } from './node-inventory-world.js'
 
 const NODE_BOT = 'node:n1:rb1'
@@ -47,14 +48,39 @@ test('D13 the reply a node turn produces comes back to the sender as a message',
   assert.notEqual(w.rt.state.works[xid], undefined, 'the request opened a work')
   w.registry.emit('botTurnResult', { exchangeId: xid, ok: true, text: 'finished', seq: 2 })
   await settle()
-  // Like a joined reply, the answer is an exchange for the sender; the work itself stays
-  // open until the sender's next turn reads the answer (turns.js takenWork), so it can
-  // never be settled behind that turn's back.
+  // Like a joined reply, the answer is an exchange for the sender and the work it answers is
+  // settled at once (joined-turn.js closes it in replyToSender). A work left open here would
+  // make the 30-minute delegate timer tell the sender that work it was already answered on had
+  // timed out — the very report that left a stale blame line next to a delivered answer.
   const reply = w.rt.state.exchanges.find(entry => entry.replyTo === xid)
   assert.equal(reply.text, 'finished')
   assert.equal(reply.from, NODE_BOT)
   assert.equal(reply.to, 'a')
-  assert.notEqual(w.rt.state.works[xid], undefined)
+  assert.equal(w.rt.state.works[xid], undefined, 'the answer settled the work')
+})
+
+test('D13b a settled node work sends no timeout notice when the delegate window passes', async (t) => {
+  const w = await startWorld(nodeTeam())
+  t.after(w.stop)
+  // From here on the delegate timer this work starts is ours to advance: the product's clock is
+  // untouched, the test drives it.
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  await w.rt.teamTools.find(def => def.name === 'message_bot')
+    .execute({ to: 'NodeOne', message: 'work' }, { agent: { id: 'a' } })
+  const xid = botTurn(w).payload.exchangeId
+  assert.notEqual(w.rt.state.works[xid], undefined, 'the request opened a work')
+  w.registry.emit('botTurnResult', { exchangeId: xid, ok: true, text: 'finished', seq: 2 })
+  await settle()
+  // The notice a delegate timeout sends goes out through deliver: watching that edge is what
+  // tells a cleared timer from one that fired but could not reach the sender's Session.
+  const sent = []
+  const deliver = w.rt.deliver
+  w.rt.deliver = async (message) => { sent.push(message); return deliver(message) }
+  t.mock.timers.tick(DELEGATE_TIMEOUT_MS)
+  await settle()
+  assert.equal(sent.some(message => /did not reply within 30 minutes/.test(message.text ?? '')), false,
+    'no timeout notice for work already answered')
+  assert.equal(w.rt.state.works[xid], undefined)
 })
 
 test('D14 the page send returns the node answer without a local exchange or Thread', async (t) => {
