@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { SNAPSHOT_TRUNCATED } from '../src/host/memory-entries.js'
-import { fakeLink, snapshot, startNode } from './memory-node-ctx.js'
+import { fakeLink, settle, snapshot, startNode } from './memory-node-ctx.js'
 
 const freshHome = () => mkdtempSync(join(tmpdir(), 'ds-bot-m4node-'))
 
@@ -107,4 +107,42 @@ test('a federated section is frozen for the Session and refreshed for the next o
   assert.match(section('b1'), /- first/)
   assert.doesNotMatch(section('b1'), /- second/)
   assert.match(section('b2'), /- second/)
+})
+
+test('applying a snapshot persists it by itself, so a crash right after keeps it', async (t) => {
+  const home = freshHome()
+  const first = startNode({ home, link: fakeLink() })
+  await first.rt.load()
+  await first.rt.memoryNode.apply(snapshot(6, { team: '- survived the crash' }))
+
+  // No further write happens here: the state on disk must already carry the cache.
+  // Without its own save, the next queue write would be what persists it, and a
+  // process that dies first would come back at the old seq and the old text.
+  const disk = JSON.parse(readFileSync(join(home, 'state.json'), 'utf8'))
+  assert.equal(disk.memoryCache.seq, 6)
+  assert.match(disk.memoryCache.team, /- survived the crash/)
+
+  await first.stop({ keep: true })
+  const second = startNode({ home, link: fakeLink({ online: false }) })
+  t.after(() => second.stop())
+  await second.rt.load()
+  assert.equal(second.rt.memoryNode.status().seq, 6)
+  assert.match(second.section('b1'), /- survived the crash/)
+})
+
+test('a restarted node tells the hub the applied seq it has on disk', async (t) => {
+  const home = freshHome()
+  const first = startNode({ home, link: fakeLink() })
+  await first.rt.load()
+  await first.rt.memoryNode.apply(snapshot(7, { team: '- seven' }))
+  await first.stop({ keep: true })
+
+  const link = fakeLink({ online: true })
+  const second = startNode({ home, link })
+  t.after(() => second.stop())
+  await second.rt.load()
+  await settle()
+
+  const hello = link.sent.filter(frame => frame.type === 'mem/hello').at(-1)
+  assert.equal(hello.payload.appliedSeq, 7)
 })

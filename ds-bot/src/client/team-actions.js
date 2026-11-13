@@ -124,6 +124,10 @@ export function teamActions({ call, after, partFor, roster, ui, live, cards, hel
     closeSettings: () => { ui.set(state => (state.settings ? { ...state, settings: null } : state)) },
     openMemory: (id) => { ui.set(state => ({ ...state, memory: id, menu: null, palette: null })) },
     closeMemory: () => { ui.set(state => (state.memory ? { ...state, memory: null } : state)) },
+    // The hub's three-layer panel: team, machines, and their Bots. A separate dialog
+    // from a Bot's own memory, so the old memory-view screen stays as it was.
+    openMemoryHub: () => { ui.set(state => ({ ...state, memoryHub: true, menu: null, palette: null })) },
+    closeMemoryHub: () => { ui.set(state => (state.memoryHub ? { ...state, memoryHub: false } : state)) },
     openConnectors: () => { ui.set(state => ({ ...state, settings: { page: 'connectors', id: null }, menu: null, palette: null, newChat: null })) },
     setPanelView: (view) => {
       if (view !== 'details' && view !== 'browser' && view !== 'side') return
@@ -299,6 +303,12 @@ export function teamActions({ call, after, partFor, roster, ui, live, cards, hel
     memoryForget: (id, entry) => call('memory-forget', { ...memoryOf(id), scope: entry.scope, topic: entry.topic, text: entry.text }),
     memoryHistory: (id, before) => call('memory-history', { ...memoryOf(id), ...(before === undefined ? {} : { before }) }),
     memoryRestore: (id, rowId) => call('memory-restore', { ...memoryOf(id), id: rowId }),
+    // The hub endpoints of §3.2: a scope is {kind:'team'}, {kind:'node',nodeId} or
+    // {kind:'bot',nodeId,remoteBotId}; the answer is the same entries shape as memory-view.
+    memoryHubScopes: () => call('memory-hub-scopes'),
+    memoryHubView: (scope) => call('memory-hub-view', { scope }),
+    memoryHubAdd: (scope, text) => call('memory-hub-add', { scope, text }),
+    memoryHubForget: (scope, text) => call('memory-hub-forget', { scope, text }),
     diagnostics: payload => call('diagnostics', payload),
     diagnosticsLog: () => call('diagnostics-log'),
     diagnosticsClear: () => call('diagnostics-clear'),

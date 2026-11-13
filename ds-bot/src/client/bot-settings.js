@@ -16,6 +16,7 @@ import { AvatarLibraryPanel, avatarImage } from './avatar-library.js'
 import { useMemoryCount } from './memory-panel.js'
 import { SPRING_SHAPE, SPRING_TAP, spring, useGlide, useLinger } from './motion.js'
 import { t } from './i18n.js'
+import { canFederate, memoryBackendChoices } from './memory-backends.js'
 
 const capitalize = word => word[0].toUpperCase() + word.slice(1)
 
@@ -255,10 +256,7 @@ export function BotSettingsForm({ bot, roster, actions, run }) {
               },
               'aria-label': t('Memory backend'),
             },
-              h('option', { value: 'auto' }, t('Auto Detect')),
-              h('option', { value: 'mneme' }, t('dsh-mneme (Force)')),
-              h('option', { value: 'file' }, t('File Memory (Force)')),
-              h('option', { value: 'none' }, t('Disabled')))))
+              memoryBackendChoices({ federate: canFederate(roster) }).map(choice => h('option', { key: choice.value, value: choice.value }, t(choice.label))))))
       : null,
     h(Card, { title: t('Privacy') },
       h(SwitchRow, {

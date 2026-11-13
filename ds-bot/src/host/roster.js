@@ -63,6 +63,23 @@ function cleanBrowserGrants(input) {
 export function install(rt) {
   const { ctx, defaults, state } = rt
 
+  // Whether this machine is a node joined to a hub, which is the only place where a
+  // Bot can keep federated memory: the frame has to have somewhere to go.
+  function nodeIdentity() {
+    try {
+      const policy = ctx?.get?.('remote-agent:node-policy') ?? ctx?.['remote-agent:node-policy']
+      const nodeId = typeof policy?.nodeId === 'string' ? policy.nodeId.trim() : ''
+      return nodeId === '' ? undefined : nodeId
+    } catch { return undefined }
+  }
+
+  // A federated backend chosen where there is no node would save writes nothing can
+  // deliver (P10): refuse it instead of storing a backend that cannot work.
+  function federationProblem(memory) {
+    if (memory?.backend !== 'federation' || nodeIdentity() !== undefined) return undefined
+    return codedError('memory/federation-requires-node', 'Federated memory only exists on a node joined to a hub; this machine has no node identity, so the Bot keeps its memory here.')
+  }
+
   let bootstrapping = null
 
   // The team folder is DS Bot's own: deleted, it is made again before a Session needs it.
@@ -215,6 +232,8 @@ export function install(rt) {
     if (clash) throw new Error(`${dir} is in or around the folder of ${clash.name}, a private Bot, so ${cleanName} cannot work there`)
     if (!main && (section !== undefined || sectionId !== undefined)) resolveSectionInput({ section, sectionId }, { allowCreate: false })
     const memory = cleanMemoryConfig(memoryConfig)
+    const cannotFederate = federationProblem(memory)
+    if (cannotFederate !== undefined) throw cannotFederate
     const id = await createSession(cleanName, { dir })
     try {
       const resolvedSecId = !main ? resolveSectionInput({ section, sectionId }) : undefined
@@ -496,6 +515,11 @@ export function install(rt) {
     }
     if (patch.section !== undefined || patch.sectionId !== undefined) {
       resolveSectionInput({ section: patch.section, sectionId: patch.sectionId }, { allowCreate: false })
+    }
+    // Checked before anything is changed: a refused backend must not leave half a patch behind.
+    if (patch.memoryConfig !== undefined && patch.memoryConfig !== null) {
+      const cannotFederate = federationProblem(cleanMemoryConfig(patch.memoryConfig))
+      if (cannotFederate !== undefined) throw cannotFederate
     }
     const browserGrants = patch.browserGrants === undefined ? undefined : cleanBrowserGrants(patch.browserGrants)
     // Checked first, so a folder, model or level that does not pass leaves the rest
@@ -847,6 +871,11 @@ export function install(rt) {
     }
     if (patch.section !== undefined || patch.sectionId !== undefined) {
       resolveSectionInput({ section: patch.section, sectionId: patch.sectionId }, { allowCreate: false })
+    }
+    // Checked before anything is changed: a refused backend must not leave half a patch behind.
+    if (patch.memoryConfig !== undefined && patch.memoryConfig !== null) {
+      const cannotFederate = federationProblem(cleanMemoryConfig(patch.memoryConfig))
+      if (cannotFederate !== undefined) throw cannotFederate
     }
     // A Bot's own permissions are the user's to set, so a group's are too.
     if (patch.permission !== undefined && actorId !== undefined) throw new Error(`Only the user can set the permissions of "${room.name}"`)

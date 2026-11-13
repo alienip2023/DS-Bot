@@ -59,7 +59,9 @@ const MEMORY_LIMIT_MIN = 1_000
 const MEMORY_LIMIT_MAX = 200_000
 
 export function errorCode(error) {
-  if (typeof error?.code === 'string' && error.code.startsWith('bot/')) return error.code
+  // `memory/*` codes are the federated memory API's own refusals (for example
+  // `memory/federation-requires-node`); the screen shows the code beside the message.
+  if (typeof error?.code === 'string' && (error.code.startsWith('bot/') || error.code.startsWith('memory/'))) return error.code
   return isInternal(error) ? 'bot/internal' : 'bot/refused'
 }
 
@@ -304,6 +306,9 @@ export function install(rt) {
     browser: rt.browserEnabled,
     // False when config.memory turns memory off: no Memory row or panel.
     memory: rt.memoryEnabled !== false,
+    // This machine's side of federated memory: whether its Bots may choose that
+    // backend (a node), and whether it has machines to show (a hub).
+    memoryFederation: rt.memoryFederationView?.() ?? { nodeId: null, canFederate: false, hub: false },
     // Set while another dsh host holds the team (store.js): why this one cannot change it.
     readOnly: rt.readOnly() ?? null,
     // IM connections (settings → IM): one per chat-app bot the user added.

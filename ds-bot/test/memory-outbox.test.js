@@ -115,3 +115,33 @@ test('a hub without memory-sync/1 fails closed instead of queueing', async (t) =
   assert.equal(rt.memoryNode.outbox().length, 0)
   assert.equal(writes(link).length, 0)
 })
+
+test('a non-terminal refusal keeps the entry and a terminal one lets it go', async (t) => {
+  const link = fakeLink({ online: false })
+  const { rt, tool, stop } = startNode({ link })
+  t.after(() => stop())
+  await rt.load()
+  await tool('remember', { text: '- retry me' })
+  assert.equal(rt.memoryNode.outbox().length, 1)
+
+  // The hub answered, but could not write: the request stays and keeps its id, so the
+  // next attempt replays the same inbox answer instead of writing twice.
+  link.hub.fail = 'memory/failed'
+  link.goUp()
+  assert.equal(await rt.memoryNode.flush(), 0)
+  assert.equal(rt.memoryNode.outbox().length, 1)
+
+  // A terminal code means the hub will never take it: drop it rather than retry forever.
+  link.hub.fail = 'memory/too-large'
+  assert.equal(await rt.memoryNode.flush(), 1)
+  assert.equal(rt.memoryNode.outbox().length, 0)
+
+  // A good answer still dequeues: the terminal code only governs the stuck item.
+  link.goDown()
+  link.hub.fail = undefined
+  await tool('remember', { text: '- accepted now' })
+  assert.equal(rt.memoryNode.outbox().length, 1)
+  link.goUp()
+  assert.equal(await rt.memoryNode.flush(), 1)
+  assert.equal(rt.memoryNode.outbox().length, 0)
+})

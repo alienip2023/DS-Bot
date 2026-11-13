@@ -550,9 +550,11 @@ export function install(rt) {
       ...(scope.nodeId === undefined ? {} : { nodeId: scope.nodeId }),
       ...(scope.kind === 'bot' ? { remoteBotId: scope.botId } : {}),
       entries,
-      sizes: { [tag]: bodySize(files[0] ?? { entries: [] }) },
+      // Every file of this scope counts, not just MEMORY.md: a scope's topics are
+      // part of what it keeps, and the panel shows the whole of it.
+      sizes: { [tag]: files.reduce((total, file) => total + bodySize(file), 0) },
       limits: { ...MEMORY_LIMITS, [tag]: host.mainLimit(scope) },
-      keys: { [tag]: host.logKeyOf(scope) ?? 'team' },
+      keys: { [tag]: host.logKeyOf(scope) },
       summary: null,
       fresh: entries.length === 0,
       summarizing: false,
@@ -587,25 +589,41 @@ export function install(rt) {
     return await view({ scope })
   }
 
+  // The three layers the panel opens on: the team, every machine the hub has heard
+  // from, and each machine's Bots. Counts are read from disk here, once, when the
+  // panel asks — nothing on a tick and nothing per turn.
   async function scopes() {
     const fed = federation()
     const online = new Set(memoryNodes(registryOf()))
     const ids = allMemoryNodeIds()
     const count = files => files.reduce((total, file) => total + file.entries.length, 0)
+    const nodes = []
+    for (const nodeId of ids) {
+      const record = fed.nodes[nodeId] ?? {}
+      const bots = []
+      for (const bot of botsOn(nodeId)) {
+        const remoteBotId = bot.worker?.remoteBotId
+        if (remoteBotId === undefined) continue
+        bots.push({
+          remoteBotId,
+          name: bot.name,
+          entries: count(await host.readScope({ kind: 'bot', nodeId, botId: remoteBotId })),
+        })
+      }
+      nodes.push({
+        nodeId,
+        hostname: hostnameOf(nodeId),
+        online: online.has(nodeId),
+        lastSeq: record.lastSeq ?? 0,
+        sentSeq: record.sentSeq ?? 0,
+        lastSeen: record.lastSeen ?? null,
+        entries: count(await host.readScope({ kind: 'node', nodeId })),
+        bots,
+      })
+    }
     return {
       team: { entries: count(await host.readScope({ kind: 'team' })) },
-      nodes: ids.map((nodeId) => {
-        const record = fed.nodes[nodeId] ?? {}
-        return {
-          nodeId,
-          hostname: hostnameOf(nodeId),
-          online: online.has(nodeId),
-          lastSeq: record.lastSeq ?? 0,
-          sentSeq: record.sentSeq ?? 0,
-          lastSeen: record.lastSeen ?? null,
-          bots: botsOn(nodeId).map(bot => ({ remoteBotId: bot.worker.remoteBotId, name: bot.name, entries: 0 })),
-        }
-      }),
+      nodes,
     }
   }
 
@@ -643,6 +661,14 @@ export function install(rt) {
     const found = nodeLinkOf()
     return Boolean(found !== undefined && found.isOnline === true)
   }
+  // What the settings screen needs to decide two things: whether this machine is a
+  // node (so its Bots can keep federated memory), and whether it is a hub (so the
+  // three-layer panel has machines to show).
+  const memoryFederationView = () => ({
+    nodeId: nodeIdOf() ?? null,
+    canFederate: nodeIdOf() !== undefined && !nodePrefOff(),
+    hub: registryOf() !== undefined,
+  })
   function nodeCapable() {
     const found = nodeLinkOf()
     if (found === undefined) return false
@@ -933,6 +959,7 @@ export function install(rt) {
 
   Object.assign(rt, {
     memoryHubEndpoint,
+    memoryFederationView,
     memoryHub: Object.freeze({
       enabled: true,
       seq,
@@ -948,6 +975,7 @@ export function install(rt) {
     // section use those two and never read a file.
     memoryNode: Object.freeze({
       enabled: () => !nodePrefOff(),
+      nodeId: () => nodeIdOf(),
       status: nodeStatus,
       cached: nodeCached,
       write: nodeWrite,

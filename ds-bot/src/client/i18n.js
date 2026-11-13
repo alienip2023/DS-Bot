@@ -1094,6 +1094,18 @@ const ZH = {
   'Nothing is saved for this group yet': '这个群还没有记住任何内容',
   'A group keeps the decisions, rules, and facts its work needs, for its members to read here. Tell it below, or in the group.': '群会记住工作需要的决定、规则和事实，只有群成员在这个群里会读。可以在下面告诉它，也可以在群里说。',
   'Team memory': '团队记忆',
+  'Federated memory': '联邦记忆',
+  'Federated (hub nodes)': '联邦记忆（接入 Hub 的节点）',
+  'Team, machines, and their Bots': '团队、机器与它们的 Bot',
+  'Machines': '机器',
+  'Online': '在线',
+  'Offline': '离线',
+  'Applied {last} · sent {sent}': '已应用 {last} · 已发送 {sent}',
+  'last seen {time}': '最后在线 {time}',
+  'No Bots from this machine yet': '这台机器还没有 Bot',
+  'Add an entry to {scope}': '添加到{scope}',
+  'Added to {scope}': '已添加到{scope}',
+  'This machine has no node identity': '这台机器没有节点身份',
   'Every Bot reads it': '所有 Bot 都会读',
   'Group memory': '群记忆',
   'Only its members read it': '只有群成员会读',
@@ -1769,6 +1781,9 @@ Object.assign(ZH, {
   'Tasks at once on {node}': '{node} 同时跑几个任务',
   'Saving…': '保存中…',
   'Save': '保存',
+  'Back to the machines': '返回机器列表',
+  'No machines have joined yet': '还没有机器接入',
+  'Its own memory': '该 Bot 自己的记忆',
 })
 
 const ZH_TW = convertDict(ZH)

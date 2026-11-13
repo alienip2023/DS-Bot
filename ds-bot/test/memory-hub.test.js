@@ -253,3 +253,33 @@ test('a remote add writes its own folder and never the root MEMORY.md', async (t
   assert.equal(rt.memoryHub.snapshotOf('n1').team, undefined)
   assert.match(readFileSync(dir('nodes', 'n1', 'bots', 'rb1', 'MEMORY.md'), 'utf8'), /remote only/)
 })
+
+test('the panel counts every file of a scope and names a remote scope by its own key', async (t) => {
+  const { rt, registry, close } = await hub({ nodes: [{ nodeId: 'n1', hostname: 'studio' }], roster: [rosterFor('n1', ['rb1'], 'studio')] })
+  t.after(close)
+
+  await rt.memoryHubEndpoint('memory-hub-add', { scope: 'team', text: '- interview notes', topic: 'work' })
+  const onlyTopic = await rt.memoryHubEndpoint('memory-hub-view', { scope: { kind: 'team' } })
+  assert.equal(onlyTopic.keys.team, 'team')
+  await rt.memoryHubEndpoint('memory-hub-add', { scope: 'team', text: '- standing rule' })
+  const team = await rt.memoryHubEndpoint('memory-hub-view', { scope: { kind: 'team' } })
+  // MEMORY.md plus the topic file: a scope's size is all of it, not files[0].
+  assert.ok(team.sizes.team > onlyTopic.sizes.team, `${team.sizes.team} vs ${onlyTopic.sizes.team}`)
+  assert.ok(team.sizes.team > Buffer.byteLength('- standing rule\n'), String(team.sizes.team))
+
+  await registry.emitAsync('memoryWrite', writeFrame('n1', 'rb1', 'req-panel', { text: '- node line' }))
+  const node = await rt.memoryHubEndpoint('memory-hub-view', { scope: { kind: 'node', nodeId: 'n1' } })
+  assert.equal(node.keys.node, 'node:n1')
+  assert.notEqual(node.keys.node, 'team')
+  const bot = await rt.memoryHubEndpoint('memory-hub-view', { scope: { kind: 'bot', nodeId: 'n1', remoteBotId: 'rb1' } })
+  assert.equal(bot.keys.own, 'joined:n1:rb1')
+
+  const scopes = await rt.memoryHubEndpoint('memory-hub-scopes', {})
+  assert.equal(scopes.nodes[0].hostname, 'studio')
+  assert.equal(scopes.nodes[0].bots[0].entries, 1)
+  assert.equal(scopes.nodes[0].entries, 0)
+
+  await rt.memoryHubEndpoint('memory-hub-add', { scope: { kind: 'node', nodeId: 'n1' }, text: '- node panel line' })
+  const after = await rt.memoryHubEndpoint('memory-hub-scopes', {})
+  assert.equal(after.nodes[0].entries, 1)
+})

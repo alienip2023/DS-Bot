@@ -13,6 +13,7 @@ import { modelOf } from './model-menu.js'
 import { BotModelMenu } from './node-models.js'
 import { FolderMenu } from './folder-menu.js'
 import { MemoryRow } from './memory-panel.js'
+import { MemoryHubRow } from './memory-hub-panel.js'
 import { ScheduleSummary } from './schedules.js'
 import { useGlide, useMorph } from './motion.js'
 import { MemberApprovals, MemberState, StopMemberWork, StopRoomWork, useMemberWork, workState } from './member-status.js'
@@ -337,6 +338,8 @@ export function DetailsDrawer({ sessionId, startRenaming, startTab, hasStrip, ro
           ? h(About, { key: 'about', text: bot.instructions })
           : h('button', { key: 'about', type: 'button', className: 'bt-more', onClick: () => setView('settings') }, t('Add instructions in Bot settings')),
         roster.memory === false ? null : h(MemoryRow, { key: 'memory', owner: { id: bot.id, name: bot.name }, actions }),
+        // Only a hub has machines to show: a node's own screen offers its Bot memory only.
+        roster.memory !== false && roster.memoryFederation?.hub === true ? h(MemoryHubRow, { key: 'memory-hub', actions }) : null,
         usage ? h('div', { key: 'usage' }, h('div', { className: 'bt-section-title' }, t('Usage')),
           h('div', { className: 'bt-kv' }, h('span', null, bot.name), h('span', null, usage))) : null,
         h(ScheduleSummary, { key: 'routines', bot, actions }),

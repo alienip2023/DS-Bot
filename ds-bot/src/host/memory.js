@@ -1299,14 +1299,27 @@ export function install(rt) {
   }
   const federationUnavailable = () => {
     if (rt.memoryNode === undefined) return 'Federated memory is not available in this Bot\'s host.'
+    // Federation is a way to reach the hub, and only a node has a hub to reach. A
+    // Bot on the hub's own machine has no node identity: a write would sit in an
+    // outbox nothing can deliver, so it is refused here before it is queued.
+    const nodeId = typeof rt.memoryNode.nodeId === 'function' ? rt.memoryNode.nodeId() : undefined
+    if (nodeId === undefined || nodeId === '') return 'Federated memory only exists on a node joined to a hub; this machine has no node identity, so it keeps memory locally instead.'
     if (rt.memoryNode.enabled() === false) return 'Federated memory is turned off on this node (prefs.memoryFederation=false).'
     return undefined
+  }
+  // A write has to tell the two apart: "this machine can never federate" is a code
+  // the caller can act on, while a turned-off preference is a plain refusal.
+  const federationStopped = () => {
+    const stopped = federationUnavailable()
+    if (stopped === undefined) return undefined
+    const noNode = rt.memoryNode === undefined || (typeof rt.memoryNode.nodeId === 'function' && !rt.memoryNode.nodeId())
+    return { message: stopped, code: noNode ? 'memory/federation-unsupported' : REFUSED }
   }
   const federationLabel = scope => (scope === 'own' ? 'your memory' : scope === 'node' ? 'this node\'s memory' : 'the team memory')
 
   async function federationRemember(args, caller) {
-    const stopped = federationUnavailable()
-    if (stopped !== undefined) throw refused(stopped)
+    const stopped = federationStopped()
+    if (stopped !== undefined) throw new MemoryWriteError(stopped.message, stopped.code)
     const target = federationTarget(args.scope, true)
     if (target.error !== undefined) throw new MemoryWriteError(target.error, target.code ?? REFUSED)
     const text = cleanEntry(args.text)
@@ -1339,8 +1352,8 @@ export function install(rt) {
   }
 
   async function federationForget(args, caller) {
-    const stopped = federationUnavailable()
-    if (stopped !== undefined) throw refused(stopped)
+    const stopped = federationStopped()
+    if (stopped !== undefined) throw new MemoryWriteError(stopped.message, stopped.code)
     const target = federationTarget(args.scope, true)
     if (target.error !== undefined) throw new MemoryWriteError(target.error, target.code ?? REFUSED)
     const { topic, error } = topicArg(args.topic)
