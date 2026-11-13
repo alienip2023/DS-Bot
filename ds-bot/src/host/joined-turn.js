@@ -136,20 +136,55 @@ export function exposeBotStopReceiver(ctx, accept) {
   try { ctx?.provide?.('remote-agent:bot-stop', accept) } catch { /* registry plugin may be absent */ }
 }
 
-export async function replyToSender(rt, { fromId, toId, exchangeId, work, text }) {
-  const shadow = rt.botOf?.(toId)
-  if (shadow?.worker) shadow.worker.lastReply = { exchangeId, text, at: Date.now() }
-  if (rt.state && Array.isArray(rt.state.exchanges)) {
-    rt.state.exchanges.push({
-      id: exchangeId,
-      from: toId,
-      to: fromId ?? toId,
-      text,
-      role: 'reply',
-      replyTo: exchangeId,
-      time: Date.now(),
-    })
+// The texts this module sends when a dispatch produced no answer. A reply row with any other
+// text is the node's answer, and a later failure must never take its place.
+const saysNoAnswer = text => text === BRIDGE_DOWN_TEXT || String(text ?? '').startsWith('副机没有接上：')
+
+// What the ledger already holds for an exchange. A retried delivery carries the same exchange
+// id, and after a restart it has to find the row the first one wrote.
+function recordedReply(rt, exchangeId) {
+  const rows = rt.state?.exchanges
+  if (!Array.isArray(rows)) return undefined
+  const row = rows.find(other => other?.id === exchangeId && other?.role === 'reply')
+  return row === undefined ? undefined : { text: row.text, answered: !saysNoAnswer(row.text) }
+}
+
+// One row per exchange: a retried delivery writes its outcome into the row it already has, so
+// the ledger keeps one row where the exchange is and a late answer can fill in that row.
+function recordReply(rt, { exchangeId, fromId, toId, text, answered }) {
+  const rows = rt.state?.exchanges
+  if (!Array.isArray(rows)) return
+  // A dispatch with no sender is not an exchange between two Bots: nothing to record for it.
+  if (typeof fromId !== 'string' || fromId === '') return
+  const earlier = rows.findIndex(other => other?.id === exchangeId)
+  const entry = {
+    id: exchangeId,
+    from: toId,
+    to: fromId,
+    text,
+    role: 'reply',
+    replyTo: exchangeId,
+    time: Date.now(),
   }
+  if (earlier === -1) rows.push(entry)
+  else if (answered) rows[earlier] = entry
+}
+
+async function replyToSender(rt, { fromId, toId, exchangeId, work, text, answered = true }) {
+  const shadow = rt.botOf?.(toId)
+  const earlier = recordedReply(rt, exchangeId)
+  // This module now has an outcome for the work, so close it the way the local reply path does.
+  // Left open, the 30-minute delegate timer would tell the sender that work already answered
+  // had timed out, and a retried dispatch would do it again.
+  const closed = earlier?.answered === true && answered === false ? earlier.text : text
+  rt.closeWork?.(exchangeId, shadow?.name, closed)
+  if (answered === false && earlier !== undefined) {
+    // The sender has already heard about this exchange — an answer, or an earlier failure. A
+    // replayed dispatch that failed again says nothing new and must not overwrite the row.
+    return
+  }
+  if (shadow?.worker) shadow.worker.lastReply = { exchangeId, text, at: Date.now() }
+  recordReply(rt, { exchangeId, fromId, toId, text, answered })
   const sender = fromId ? rt.botOf?.(fromId) : undefined
   if (!sender || sender.id === toId) return
   await rt.deliver?.({
@@ -181,7 +216,7 @@ export async function handleJoinedTurn(rt, msg = {}) {
   try { registry = rt.ctx?.get?.('remote-agent:registry') } catch { registry = undefined }
   if (!registry || typeof registry.send !== 'function') {
     closeMirrorTurn(rt, mirror, to.id, { error: { code: 'bridge-down', message: BRIDGE_DOWN_TEXT } })
-    await replyToSender(rt, { fromId, toId, exchangeId: xid, work, text: BRIDGE_DOWN_TEXT })
+    await replyToSender(rt, { fromId, toId, exchangeId: xid, work, text: BRIDGE_DOWN_TEXT, answered: false })
     return { ok: false, error: 'bridge-down' }
   }
   const timeoutMs = Number.isFinite(msg.timeoutMs) ? msg.timeoutMs : (rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS)
@@ -190,19 +225,19 @@ export async function handleJoinedTurn(rt, msg = {}) {
   if (sent !== true) {
     wait.cancel()
     closeMirrorTurn(rt, mirror, to.id, { error: { code: 'bridge-down', message: BRIDGE_DOWN_TEXT } })
-    await replyToSender(rt, { fromId, toId, exchangeId: xid, work, text: BRIDGE_DOWN_TEXT })
+    await replyToSender(rt, { fromId, toId, exchangeId: xid, work, text: BRIDGE_DOWN_TEXT, answered: false })
     return { ok: false, error: 'bridge-down' }
   }
   const settle = async (result) => {
     if (!result || result.error === 'bridge-down') {
       closeMirrorTurn(rt, mirror, to.id, { error: { code: result?.error ?? 'bot-turn-lost', message: BRIDGE_DOWN_TEXT } })
-      await replyToSender(rt, { fromId, toId, exchangeId: xid, work, text: BRIDGE_DOWN_TEXT })
+      await replyToSender(rt, { fromId, toId, exchangeId: xid, work, text: BRIDGE_DOWN_TEXT, answered: false })
       return { ok: false, error: result?.error ?? 'bot-turn-lost' }
     }
     if (result.ok === false) {
       const error = result.error ?? 'bot-turn-failed'
       closeMirrorTurn(rt, mirror, to.id, { error: { code: error, message: `副机没有接上：${error}` } })
-      await replyToSender(rt, { fromId, toId, exchangeId: xid, work, text: `副机没有接上：${error}` })
+      await replyToSender(rt, { fromId, toId, exchangeId: xid, work, text: `副机没有接上：${error}`, answered: false })
       return { ok: false, error }
     }
     closeMirrorTurn(rt, mirror, to.id, { text: result.text, seq: result.seq })

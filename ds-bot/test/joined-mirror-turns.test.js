@@ -133,7 +133,9 @@ test('the same exchange id never opens a second turn on the page', async () => {
   assert.equal(await retry, 'ex-4')
   assert.equal(w.session.log.filter(event => event.type === 'turn/start').length, 1)
   assert.deepEqual(texts(w.session, 'assistant/message'), ['pong'])
-  assert.equal(w.rt.state.exchanges.length, 2, 'the sender still hears about each delivery')
+  // One row per exchange: the retry's answer fills the row the first delivery wrote.
+  assert.equal(w.rt.state.exchanges.length, 1, 'the retry keeps one ledger row for the exchange')
+  assert.equal(w.rt.state.exchanges[0].text, 'pong again', 'the answer the retry brought back is the one kept')
 })
 
 test('a mirror that cannot be opened only warns and never blocks the dispatch', async () => {
