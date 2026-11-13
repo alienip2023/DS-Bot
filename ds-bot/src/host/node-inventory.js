@@ -232,7 +232,12 @@ export async function clearNodeInventory(rt, nodeId) {
   await rt.load()
   const rows = Object.values(rt.state.bots ?? {}).filter(bot => isNodeBot(bot)
     && (nodeId === undefined || bot.worker?.nodeId === nodeId))
-  if (rows.length === 0) return 0
+  if (rows.length === 0) {
+    // Nothing to delete, but the caller may have changed the switch: persist that too,
+    // or a restart brings back an "on" pref that was already turned off.
+    await rt.save()
+    return 0
+  }
   for (const row of rows) delete rt.state.bots[row.id]
   await rt.save()
   return rows.length

@@ -1,6 +1,8 @@
 // M2: the node-inventory switch must be reachable, not just a pref default. These tests
 // drive the real channel endpoint, the real runtime and the provider dsh-remote-agent reads.
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { test } from 'node:test'
 import { inventory, NODE_BOT, seedTeam, startWorld } from './node-inventory-world.js'
 
@@ -77,4 +79,25 @@ test('S3 the provider lists local Bots only', async (t) => {
   await w.call('node-inventory', { enabled: true })
   const ids = w.ctx.get('remote-agent:node-bots').list().map(bot => bot.id)
   assert.deepEqual(ids.sort(), ['a', 'l1'])
+})
+
+test('S4 turning the switch off with no rows still persists the off state', async (t) => {
+  const w = await startWorld(seed())
+  t.after(w.stop)
+  const on = await w.call('node-inventory', { enabled: true })
+  assert.equal(on.value.enabled, true)
+  assert.equal(w.rt.state.prefs.nodeInventory, true)
+
+  // No inventory has arrived: there is no row to delete. The off state itself must still
+  // reach the disk, otherwise a restart brings the switch back on.
+  const off = await w.call('node-inventory', { enabled: false })
+  assert.equal(off.value.enabled, false)
+  assert.equal(off.value.applied, 0)
+  assert.equal(w.rt.state.prefs.nodeInventory, false)
+
+  const disk = JSON.parse(readFileSync(join(w.home, 'state.json'), 'utf8'))
+  assert.equal(disk.prefs.nodeInventory, false, 'the off state is on disk')
+
+  await w.rt.load()
+  assert.equal(w.rt.state.prefs.nodeInventory, false, 'a reload keeps it off')
 })
