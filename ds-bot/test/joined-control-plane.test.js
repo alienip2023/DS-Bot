@@ -34,6 +34,11 @@ function team() {
         readonly: true, worker: { hubId: 'h1', home: 'hub' }, createdAt: 3,
       },
       b: { id: 'b', name: 'Local', role: 'Help', sessionId: 'b', createdAt: 4 },
+      w: {
+        id: 'w', name: 'Bridge', type: 'remote-worker', sessionId: 'w',
+        worker: { nodeId: 'n2', remoteBotId: 'rw1', hostname: 'box-2', home: 'remote', online: true },
+        createdAt: 5,
+      },
     },
     rooms: {}, agents: {}, exchanges: [], exchangeTurns: {}, works: {}, questions: {}, prefs: {}, revision: 0,
   }
@@ -165,6 +170,16 @@ test('run-stats on a joined Bot reports the remote turn state without a mirror S
   const running = await w.call('run-stats', { botId: REMOTE })
   assert.equal(running.value.running, true)
   assert.equal(running.value.startedAt, 1234)
+})
+
+test('run-stats leaves a worker-bridge Bot on its local projection path', async (t) => {
+  const w = await start(team())
+  t.after(w.stop)
+  const result = await w.call('run-stats', { botId: 'w' })
+  assert.equal(result.ok, true)
+  assert.equal(result.value, null, 'no projections service → the local answer, not the remote structure')
+  assert.equal(result.value?.remote, undefined)
+  assert.deepEqual(w.resolved, [], 'the local path without projections resolves no Session')
 })
 
 test('run-stats keeps the local projection path for a local Bot', async (t) => {

@@ -512,9 +512,12 @@ export function install(rt) {
           await rt.load()
           const bot = rt.botOf(String(body.botId ?? ''))
           if (bot === undefined) return fail('Unknown Bot', 'bot/not-found')
-          // A Bot on another machine has no local Session here: chatOf falls back to the
-          // joined id and resolveAgent would throw. Its turn state is what this hub knows.
-          if (bot.origin === 'joined' || bot.type === 'remote-worker') {
+          // A Bot joined from another hub has no local Session here: chatOf falls back to
+          // the joined id and resolveAgent would throw. Its turn state is what this hub
+          // knows. A worker-bridge Bot (type 'remote-worker', not joined) still owns its
+          // local Session and projections: its work runs through remote_task, so the remote
+          // structure would report it as never running (see the control-plane review).
+          if (bot.origin === 'joined') {
             const claim = rt.joinedInFlight?.get?.(bot.id)
             return ok({
               remote: true,
