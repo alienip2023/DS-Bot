@@ -49,7 +49,8 @@ test('an older snapshot never rewinds the cache, while the same seq may refresh 
   assert.doesNotMatch(section('b1'), /- four/)
 
   // The hub may push the same seq again after a reconnect: the text is refreshed, the
-  // applied seq does not move. A Session that has not rendered yet sees the new text.
+  // applied seq does not move, and the applied time does. The same Session re-renders,
+  // because its freeze is keyed on that time.
   assert.deepEqual(await rt.memoryNode.apply(snapshot(5, { team: '- five again' })), { applied: true, seq: 5 })
   assert.equal(rt.memoryNode.cached(rt.state.bots.b1).seq, 5)
   assert.match(section('b2'), /- five again/)
@@ -95,17 +96,27 @@ test('the cache, the outbox and the applied seq survive a restart', async (t) =>
   assert.equal(second.rt.memoryNode.outbox()[0].text, 'queued while offline')
 })
 
-test('a federated section is frozen for the Session and refreshed for the next one', async (t) => {
+test('a federated section re-renders in the same Session once a newer snapshot is applied', async (t) => {
   const { rt, section, stop } = startNode({ link: fakeLink() })
   t.after(() => stop())
   await rt.load()
 
-  await rt.memoryNode.apply(snapshot(1, { bots: { b1: { text: '- first' }, b2: { text: '- first' } } }))
-  assert.match(section('b1'), /- first/)
-  await rt.memoryNode.apply(snapshot(2, { bots: { b1: { text: '- second' }, b2: { text: '- second' } } }))
-  // The same Session keeps the text it was frozen with; a new one sees the newer cache.
-  assert.match(section('b1'), /- first/)
-  assert.doesNotMatch(section('b1'), /- second/)
+  await rt.memoryNode.apply(snapshot(1, { node: '- first entry', bots: { b1: { text: '- first' }, b2: { text: '- first' } } }))
+  const first = section('b1')
+  assert.match(first, /- first entry/)
+  const at = rt.memoryNode.cached(rt.state.bots.b1).at
+  // `cached.at` is Date.now() at apply time; two applies in the same millisecond would
+  // share it, which is not a snapshot the hub can produce a turn apart.
+  await new Promise(resolve => setTimeout(resolve, 5))
+
+  await rt.memoryNode.apply(snapshot(2, { node: '- second entry', bots: { b1: { text: '- second' }, b2: { text: '- second' } } }))
+  assert.ok(rt.memoryNode.cached(rt.state.bots.b1).at > at)
+  // A joined Bot has no way to open a new thread, so the same Session must see the new
+  // snapshot on its next turn.
+  const second = section('b1')
+  assert.match(second, /- second entry/)
+  assert.doesNotMatch(second, /- first entry/)
+  assert.notEqual(second, first)
   assert.match(section('b2'), /- second/)
 })
 

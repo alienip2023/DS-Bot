@@ -910,15 +910,19 @@ export function install(rt) {
     ]
     return { text: lines.join('\n'), failed: false }
   }
-  // 联邦后端的段落也按 Session 冻结：缓存更新后，进行中的对话仍看到同一份文本，
-  // 和文件记忆的快照语义一致；新的一轮对话才会读到新快照。
-  /** @type {Map<string, string>} */
+  // 联邦段落按快照失效，而不是按 Session 永久冻结：joined Bot 在客户端没有「新建线程」，
+  // 远端 Bot 的 Main 会话是唯一入口，hub 写入后必须在同一会话的下一回合读到新快照。
+  // 失效键是节点应用快照的时间 `cached.at`（memory-federation.js 的 nodeSnapshot 每次应用
+  // 都刷新它，同 seq 重推也刷新）；同一 at 复用已渲染文本，at 变化必须重渲染。marks 变化
+  // 仍重渲染。文件记忆那套 frozen/snapshotPath 不在这里。
+  /** @type {Map<string, { text: string, at: number }>} */
   const frozenFederation = new Map()
   function federationSectionFor(sessionId, bot) {
     const marks = [teamRule(rt.isMain(bot.id), writesTeam(bot.id), rt.isPrivate(bot.id))]
     const holds = text => marks.every(mark => text.includes(mark))
+    const at = Number(rt.memoryNode?.cached(bot)?.at) || 0
     const kept = frozenFederation.get(sessionId)
-    if (kept !== undefined && holds(kept)) return kept
+    if (kept !== undefined && kept.at === at && holds(kept.text)) return kept.text
     if (rt.memoryNode === undefined || rt.memoryNode.enabled() === false) {
       return ['# Your memory', memoryRules(reviewOn), ...marks, '', 'Federated memory is turned off on this node, so there is no memory to show.'].join('\n')
     }
@@ -929,7 +933,7 @@ export function install(rt) {
       rt.warn('ds-bot: federated memory section for %s could not be rendered: %s', bot.name, error?.message ?? error)
       text = ['# Your memory', memoryRules(reviewOn), ...marks, '', 'Federated memory is unavailable until this node and its hub can be read again.'].join('\n')
     }
-    if (holds(text)) frozenFederation.set(sessionId, text)
+    if (holds(text)) frozenFederation.set(sessionId, { text, at })
     return text
   }
 
