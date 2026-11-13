@@ -85,6 +85,12 @@ export function createSendUser(rt, { textOfContent, getMirrorState, ctx } = {}) 
   return async function sendUser({ sessionId: ref, content, requestId = randomUUID() }) {
     // Joined shadow: ensureMirrorSession + startPageTurn (user message on the page first, node answer after)
     const directBot = rt.botOf(ref)
+    // A node row has no local Session either: the page's turn goes over the wire and the
+    // answer is returned here, not written into a mirror Session.
+    if (directBot?.origin === 'node') {
+      const text = _textOfContent(content)
+      return rt.sendNodePageTurn(directBot.id, text, requestId)
+    }
     const joinedBot = joinedShadow(directBot) ? directBot
       : joinedShadow(rt.bySessionId(ref)) ? rt.bySessionId(ref)
       : null
@@ -492,6 +498,9 @@ export function install(rt) {
           return ok(await rt.earlierPage(String(body.sessionId ?? ''), body.cursor ?? undefined))
         case 'chat': {
           await rt.load()
+          // A node-owned Bot has no local Session or Thread: its history lives on the node.
+          const nodeChatBot = rt.botOf(String(body.botId ?? ''))
+          if (nodeChatBot?.origin === 'node') return ok(await rt.joinedChatPage(nodeChatBot.id, body.cursor))
           // A Thread other than Main reads its own Session; Main keeps the Bot's chat page.
           if (typeof body.threadId === 'string' && body.threadId !== '') {
             const bot = rt.botOf(String(body.botId ?? ''))
@@ -586,6 +595,7 @@ export function install(rt) {
           await rt.load()
           const updateTarget = rt.botOf?.(body.id)
           if (updateTarget && updateTarget.origin === 'peer') return fail('This Bot belongs to another machine and is read-only', 'bot/refused')
+          if (updateTarget && updateTarget.origin === 'node') return fail('This Bot lives on another machine and is managed there', 'bot/refused')
           if (updateTarget && updateTarget.origin === 'joined' && updateTarget.worker?.home === 'remote' && typeof rt.joinedUpdateBot === 'function') {
             const updateResult = await rt.joinedUpdateBot(body.id, body)
             if (!updateResult.ok) return fail(updateResult.error, 'bot/refused')
@@ -620,6 +630,7 @@ export function install(rt) {
         case 'delete-bot':
           await rt.load()
           if (rt.botOf?.(body.id)?.origin === 'peer') return fail('This Bot belongs to another machine and is read-only', 'bot/refused')
+          if (rt.botOf?.(body.id)?.origin === 'node') return fail('This Bot lives on another machine; stop it there instead', 'bot/refused')
           await rt.deleteBot(body.id)
           return ok(view())
         // Threads inside one Bot: each has its own Session, history and place in the queue.
@@ -1182,6 +1193,7 @@ export function install(rt) {
           if (bot === undefined) return fail('Unknown Bot', 'bot/not-found')
           // Joined shadows live on the remote node; a new part is a no-op on the hub.
           if (bot.origin === 'joined' && bot.worker?.home === 'remote') return ok(true)
+          if (bot.origin === 'node') return ok(true)
           return ok(await rt.newPart(rt.chatOf(bot.id)))
         }
         case 'bot-open-part': {

@@ -136,7 +136,7 @@ export function exposeBotStopReceiver(ctx, accept) {
   try { ctx?.provide?.('remote-agent:bot-stop', accept) } catch { /* registry plugin may be absent */ }
 }
 
-async function replyToSender(rt, { fromId, toId, exchangeId, work, text }) {
+export async function replyToSender(rt, { fromId, toId, exchangeId, work, text }) {
   const shadow = rt.botOf?.(toId)
   if (shadow?.worker) shadow.worker.lastReply = { exchangeId, text, at: Date.now() }
   if (rt.state && Array.isArray(rt.state.exchanges)) {

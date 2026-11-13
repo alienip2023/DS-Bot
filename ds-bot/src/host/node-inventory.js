@@ -10,6 +10,8 @@
 // The node side of the same feature is the `remote-agent:node-bots` provider that
 // dsh-remote-agent reads. Both halves run in the same dsh process on a node, which
 // is why the provider is a ctx service rather than a file.
+import { randomUUID } from 'node:crypto'
+import { listenBotTurnResult, replyToSender } from './joined-turn.js'
 
 export const NODE_TURN_TIMEOUT_MS = 600_000
 // A report arrives about every 5s; a row missing from twelve of them (~60s) is gone.
@@ -249,6 +251,117 @@ export async function markNodeOffline(rt, nodeId) {
   return changed
 }
 
+// ── dispatch and page turns ──────────────────────────────────────────────────
+
+function nodeTargetOf(rt, botId) {
+  const bot = rt.botOf?.(botId)
+  if (!isNodeBot(bot)) return undefined
+  const nodeId = bot.worker?.nodeId
+  const remoteBotId = bot.worker?.remoteBotId
+  if (typeof nodeId !== 'string' || nodeId === '' || typeof remoteBotId !== 'string' || remoteBotId === '') return undefined
+  return { bot, nodeId, remoteBotId }
+}
+
+function coded(message, code) {
+  return Object.assign(new Error(message), { code })
+}
+
+/**
+ * Send one bot/turn to the node that owns the Bot and wait for its answer. Shared by
+ * message_bot delivery and the page's send endpoint; the two differ only in what they
+ * do with the answer (replyToSender vs. returning it).
+ */
+async function runNodeTurn(rt, botId, textOfTurn, { exchangeId, timeoutMs = NODE_TURN_TIMEOUT_MS } = {}) {
+  const target = nodeTargetOf(rt, botId)
+  if (target === undefined) throw coded('This Bot does not name a node and cannot be reached from here', 'E_NODE_BOT_LOCAL')
+  if (target.bot.worker.online === false) throw coded(`${target.bot.name} is on ${target.bot.worker.hostname || target.nodeId}, which is offline right now`, 'E_NODE_OFFLINE')
+  const registry = registryOf(rt)
+  if (!registry || typeof registry.send !== 'function') throw coded('The bridge to that machine is not available', 'E_NODE_BRIDGE_DOWN')
+  const wait = listenBotTurnResult(registry, exchangeId, target.nodeId, timeoutMs)
+  let sent = false
+  try {
+    sent = registry.send(target.nodeId, 'bot/turn', {
+      nodeId: target.nodeId,
+      remoteBotId: target.remoteBotId,
+      exchangeId,
+      text: textOfTurn,
+    }) === true
+  } catch {
+    sent = false
+  }
+  if (!sent) {
+    wait.cancel?.()
+    throw coded('The bridge to that machine is down; the turn was not sent', 'E_NODE_BRIDGE_DOWN')
+  }
+  const result = await wait.pending
+  if (result === undefined) throw coded(`${target.bot.name} did not answer within ${Math.round(timeoutMs / 1000)}s`, 'E_NODE_TIMEOUT')
+  if (result.ok !== true) throw coded(result.error ?? `${target.bot.name} failed on its machine`, 'E_NODE_FAILED')
+  return { target, text: typeof result.text === 'string' ? result.text : '' }
+}
+
+/**
+ * Delivery from another Bot. The reply goes back through replyToSender, exactly like a
+ * joined turn; no mirror Session is opened because a node row has no page here yet.
+ */
+export async function handleNodeTurn(rt, { fromId, toId, text: body, exchangeId, work }) {
+  // The caller gets its receipt as soon as the frame is on the wire; the answer arrives
+  // later as a new message, exactly like a joined turn with defer. Awaiting the node here
+  // would block the sending Bot's tool call for up to ten minutes.
+  const target = nodeTargetOf(rt, toId)
+  const fail = async (message, code) => {
+    try {
+      await replyToSender(rt, { fromId, toId, exchangeId, work, text: `⚠ 无法送达节点：${message}` })
+    } catch (error) {
+      rt.warn?.('ds-bot: node failure not recorded: %s', error?.message ?? String(error))
+    }
+    return { ok: false, error: code }
+  }
+  if (target === undefined) return fail('this Bot does not name a node', 'E_NODE_BOT_LOCAL')
+  if (target.bot.worker.online === false) {
+    return fail(`${target.bot.name} is on ${target.bot.worker.hostname || target.nodeId}, which is offline right now`, 'E_NODE_OFFLINE')
+  }
+  const registry = registryOf(rt)
+  if (!registry || typeof registry.send !== 'function') return fail('the bridge to that machine is not available', 'E_NODE_BRIDGE_DOWN')
+  const wait = listenBotTurnResult(registry, exchangeId, target.nodeId, NODE_TURN_TIMEOUT_MS)
+  let sent = false
+  try {
+    sent = registry.send(target.nodeId, 'bot/turn', {
+      nodeId: target.nodeId,
+      remoteBotId: target.remoteBotId,
+      exchangeId,
+      text: body,
+    }) === true
+  } catch {
+    sent = false
+  }
+  if (!sent) {
+    wait.cancel?.()
+    return fail('the bridge to that machine is down; the turn was not sent', 'E_NODE_BRIDGE_DOWN')
+  }
+  void (async () => {
+    const result = await wait.pending
+    const text = result === undefined
+      ? `⚠ 节点在 ${Math.round(NODE_TURN_TIMEOUT_MS / 1000)} 秒内没有回复`
+      : result.ok === true ? (typeof result.text === 'string' ? result.text : '') : `⚠ 无法送达节点：${result.error ?? 'the node failed'}`
+    try {
+      await replyToSender(rt, { fromId, toId: target.bot.id, exchangeId, work, text })
+    } catch (error) {
+      rt.warn?.('ds-bot: node reply not recorded: %s', error?.message ?? String(error))
+    }
+  })()
+  return { ok: true, exchangeId }
+}
+
+/**
+ * The page's own send. The page has no local Session to answer into, so the answer is
+ * returned to the caller (channel `send`) and rendered by the page; it is never written
+ * to state.exchanges.
+ */
+export async function sendNodePageTurn(rt, botId, body, requestId = randomUUID()) {
+  const { target, text: answer } = await runNodeTurn(rt, botId, body, { exchangeId: requestId })
+  return { ok: true, botId: target.bot.id, text: answer, requestId }
+}
+
 // ── install ──────────────────────────────────────────────────────────────────
 
 const subscribed = new WeakSet()
@@ -281,5 +394,7 @@ export function install(rt) {
   } catch { /* a host without provide (an old runtime) cannot report; the hub side still works */ }
   rt.applyNodeInventory = (inventory) => applyInventory(rt, inventory)
   rt.clearNodeInventory = (nodeId) => clearNodeInventory(rt, nodeId)
+  rt.handleNodeTurn = (spec) => handleNodeTurn(rt, spec)
+  rt.sendNodePageTurn = (botId, body, requestId) => sendNodePageTurn(rt, botId, body, requestId)
   rt.nodeBots = () => Object.values(rt.state?.bots ?? {}).filter(isNodeBot)
 }

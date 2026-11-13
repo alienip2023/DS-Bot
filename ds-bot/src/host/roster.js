@@ -334,6 +334,7 @@ export function install(rt) {
     // A peer row is a read-only shadow of another machine's Bot: nothing here may make
     // Threads, Sessions or models for it (docs/thread-model.md §1; t9a-brief §3).
     if (bot.origin === 'peer') throw codedError('E_SHADOW_READONLY', 'This Bot belongs to another machine and is read-only')
+    if (bot.origin === 'node') throw codedError('E_NODE_BOT_LOCAL', 'This Bot lives on another machine and is managed there')
     const rows = threadsOfBot(state, bot.id)
     if (rows.length >= MAX_THREADS_PER_BOT) {
       throw codedError('bot/refused', `A Bot keeps at most ${MAX_THREADS_PER_BOT} threads`)
@@ -493,6 +494,7 @@ export function install(rt) {
     // The roster of another machine is owned there; editing a shadow here would be lost
     // on its next report.
     if (bot.origin === 'peer') throw codedError('E_SHADOW_READONLY', 'This Bot belongs to another machine and is read-only')
+    if (bot.origin === 'node') throw codedError('E_NODE_BOT_LOCAL', 'This Bot lives on another machine and is managed there')
     if (patch.browserGrants !== undefined && actorId !== undefined) {
       throw new Error(`Only the user can set what ${bot.name} may do in the browser`)
     }
@@ -1009,6 +1011,7 @@ export function install(rt) {
     // Never destroy a local Session for a Bot that has none, and never tell the node to
     // delete a Bot it owns: a shadow leaves only when its machine stops reporting it.
     if (bot.origin === 'peer') throw codedError('E_SHADOW_READONLY', 'This Bot belongs to another machine and is read-only')
+    if (bot.origin === 'node') throw codedError('E_NODE_BOT_LOCAL', 'This Bot lives on another machine and is managed there')
     // Before the Bot and its group Sessions leave the state, which the archive reads.
     const archived = rt.archiveBotMemory(id)
     const current = rt.chatOf(id)

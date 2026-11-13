@@ -91,10 +91,12 @@ export function install(rt) {
         const model = bot.appliedModel ?? bot.model
         const section = sectionNameOf(bot.sectionId)
         const shadow = bot.origin === 'peer'
-        const tags = [bot.role, section ? `section "${section}"` : '', model ? `model ${model}` : '', bot.workDir ? `works in ${bot.workDir}` : '', rt.isMain(bot.id) ? 'Main Bot' : '', bot.private === true ? 'private' : '', shadow ? `read-only, on ${bot.worker?.hostname || 'another machine'}` : '', bot.id === self ? 'you' : ''].filter(Boolean).join(', ')
+        const remoteNode = bot.origin === 'node'
+        const onMachine = bot.worker?.hostname || 'another machine'
+        const tags = [bot.role, section ? `section "${section}"` : '', model ? `model ${model}` : '', bot.workDir ? `works in ${bot.workDir}` : '', rt.isMain(bot.id) ? 'Main Bot' : '', bot.private === true ? 'private' : '', shadow ? `read-only, on ${onMachine}` : '', remoteNode ? `on ${onMachine}, managed there` : '', bot.id === self ? 'you' : ''].filter(Boolean).join(', ')
         const job = bot.instructions ? ` — ${bot.instructions.split('\n')[0].slice(0, 120)}` : ''
-        // A shadow has no live turn here; asking would only name a Session that is not ours.
-        const now = bot.id === self || shadow ? '' : `\n  now: ${rt.statusOf(bot.id)}`
+        // A remote row has no live turn here; asking would only name a Session that is not ours.
+        const now = bot.id === self || shadow || remoteNode ? '' : `\n  now: ${rt.statusOf(bot.id)}`
         return `- ${bot.name}${tags ? ` (${tags})` : ''}${job}${now}`
       })
       if (lines.length === 0) return 'No Bots yet.'
@@ -346,6 +348,11 @@ export function install(rt) {
       // A peer row is a read-only shadow of another machine's Bot: it has no local turn and no
       // control channel back to that machine in this release.
       if (target.origin === 'peer') refuse(`${target.name} belongs to another machine and is read-only here, so it cannot be stopped from this hub.`)
+      // A node-owned Bot's turn runs on its machine. This release has no stop frame for it,
+      // so say so instead of passing the local "not running" answer off as the truth.
+      if (target.origin === 'node') {
+        refuse(`${target.name} runs on ${target.worker?.hostname || target.worker?.nodeId || 'another machine'}, and a turn there cannot be stopped from this machine yet (E_NODE_STOP_UNSUPPORTED).`)
+      }
       if (target.origin === 'joined') {
         const nodeId = String(target.worker?.nodeId ?? '').trim()
         const remoteBotId = String(target.worker?.remoteBotId ?? '').trim()
