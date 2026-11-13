@@ -190,9 +190,27 @@ export function install(rt) {
   const TEAM = { kind: 'team' }
   const ownScope = botId => ({ kind: 'bot', botId })
   const groupScope = roomId => ({ kind: 'group', roomId })
+  // The keys of the scopes that cross a machine boundary. They are keys only: a key never
+  // becomes a path segment (see `scopeDir`), so `a:b/c` cannot choose its own folder.
+  // In a log row the key names the scope, and `nodeId` names the node whose log holds
+  // it, so a remote row never lands in the team's log.
+  const logKeyOf = (scope) => {
+    const local = scopeKey(scope)
+    if (local !== undefined) return local
+    if (scope.kind === 'node') return nodeKey(scope.nodeId)
+    if (scope.kind === 'bot' && scope.nodeId !== undefined) return remoteBotKey(scope.nodeId, scope.botId)
+    return undefined
+  }
+  const logPlaceOf = scope => (scope.nodeId === undefined ? {} : { nodeId: scope.nodeId, ...(scope.kind === 'bot' ? { remoteBotId: scope.botId } : {}) })
   const dirOf = scope => scopeDir(root, scope)
   // A private Bot's before/after text never goes into the team-wide change log.
-  const journalFor = (scope, op) => {
+  // A remote scope has its own log under the node: the hub is the only writer of it,
+  // and none of its rows go into the team log.
+  const journalFor = (scope, op, nodeId) => {
+    if (nodeId !== undefined) {
+      const dir = join(root, 'nodes', safeScopeId(nodeId))
+      return { path: join(dir, 'journal.jsonl'), torn: join(dir, 'journal.torn') }
+    }
     const botId = scope?.startsWith('bot:') ? scope.slice(4) : undefined
     const archived = (state.privateArchives ?? []).find(entry => entry.id === botId)
     if (op === 'archive' || (botId === undefined || (!rt.isPrivate(botId) && archived === undefined))) return { path: journalPath, torn: tornPath }
@@ -329,7 +347,7 @@ export function install(rt) {
   // kept beside the log as the evidence it is, the log is cut back to the rows that
   // are whole, and the row after it starts on a line of its own.
   async function journalRow(row) {
-    const { path, torn } = journalFor(row.scope, row.op)
+    const { path, torn } = journalFor(row.scope, row.op, row.nodeId)
     const text = readJournal(path)
     if (journalled(text, row.id)) return false
     const cut = text.lastIndexOf('\n') + 1
@@ -387,6 +405,8 @@ export function install(rt) {
   // A move or tidy can change the resident entries even when its journal row
   // describes a topic or an entire batch. Record the actual change once here.
   function mainChanges(scope, steps, row) {
+    // Only this host's scopes have a MEMORY.md whose before/after the panel undoes.
+    if (!/^(team$|bot:|group:)/.test(String(scope ?? ''))) return undefined
     const path = join(dirOf(journalScope(scope)), MAIN)
     const step = steps.findLast(item => item.path === relativePath(root, path))
     if (step === undefined) return undefined
@@ -464,7 +484,10 @@ export function install(rt) {
     const readOnly = rt.readOnly()
     if (readOnly !== undefined) throw new Error(`Memory cannot change now: ${readOnly}`)
     const botActor = actor?.id === 'user' ? undefined : actor?.id
-    const gone = [scope.kind === 'bot' ? scope.botId : undefined, botActor].some(id => id !== undefined && rt.botOf(id) === undefined)
+    // A remote Bot's scope names the Bot on its node, not a Bot of this host: only a
+    // local scope (this host's own Bot) can be "gone".
+    const scopeBot = scope.kind === 'bot' && scope.nodeId === undefined ? scope.botId : undefined
+    const gone = [scopeBot, botActor].some(id => id !== undefined && rt.botOf(id) === undefined)
     if (gone) throw Object.assign(new Error('That Bot has been deleted'), { code: GONE })
     if (scope.kind === 'group' && rt.roomOf(scope.roomId) === undefined) throw Object.assign(new Error('That group chat has been deleted'), { code: GONE })
     const denied = botActor === undefined ? undefined : writeDenied(scope, botActor)
@@ -497,6 +520,18 @@ export function install(rt) {
   function writeDenied(scope, botId) {
     if (scope.kind === 'team') return writesTeam(botId) ? undefined : 'Only Main Bots and group admins write the team memory. Tell a Main Bot with message_bot what the team should know.'
     if (scope.kind === 'group') return rt.roomOf(scope.roomId)?.members.includes(botId) ? undefined : 'Only the members of a group chat write its memory.'
+    // A node's memory is shared by the Bots on that node; only a Main Bot here writes
+    // it from elsewhere.
+    if (scope.kind === 'node') {
+      const nodeId = rt.botOf(botId)?.worker?.home === 'remote' ? rt.botOf(botId).worker.nodeId : undefined
+      return nodeId === scope.nodeId || rt.isMain(botId) ? undefined : 'Only the Bots on that node write its memory.'
+    }
+    // A remote Bot's own memory: that Bot on that node, or a Main Bot here.
+    if (scope.nodeId !== undefined) {
+      const worker = rt.botOf(botId)?.worker
+      const remoteBotId = worker?.home === 'remote' && worker.nodeId === scope.nodeId ? worker.remoteBotId : undefined
+      return remoteBotId === scope.botId || rt.isMain(botId) ? undefined : 'Only that remote Bot (or a Main Bot here) can change its memory.'
+    }
     if (scope.botId !== botId && !rt.isMain(botId)) return 'Only a Main Bot can change another Bot\'s memory. Use message_bot to tell that Bot instead.'
     return undefined
   }
@@ -629,7 +664,7 @@ export function install(rt) {
     const steps = target === main
       ? [writeStep(main.path, joinLines(room.lines))]
       : [writeStep(target.path, joinLines(written)), ...(room.lines === mainLines ? [] : [writeStep(main.path, joinLines(room.lines))])]
-    await publish({ op: 'add', scope: scopeKey(scope), steps: [...steps, ...room.steps], row: { op: 'add', scope: scopeKey(scope), file: target.file, ...actorOf(actor), after: line, ...movedRow(room) } })
+    await publish({ op: 'add', scope: scopeKey(scope), steps: [...steps, ...room.steps], row: { op: 'add', scope: logKeyOf(scope), ...logPlaceOf(scope), file: target.file, ...actorOf(actor), after: line, ...movedRow(room) } })
     noteNews(scope, actor, 'add', line)
     const where = target === main ? MAIN : fresh ? `the new topic [[${name}]], linked from MEMORY.md` : `topic [[${name}]]`
     const after = target === main ? room.lines : written
@@ -665,7 +700,7 @@ export function install(rt) {
         op: 'replace',
         scope: scopeKey(scope),
         steps: [writeStep(old.file.path, joinLines(room.lines)), ...room.steps],
-        row: { op: 'replace', scope: scopeKey(scope), file: old.file.file, ...actorOf(actor), before, after: line, ...movedRow(room) },
+        row: { op: 'replace', scope: logKeyOf(scope), ...logPlaceOf(scope), file: old.file.file, ...actorOf(actor), before, after: line, ...movedRow(room) },
       })
       noteNews(scope, actor, 'replace', line)
       return { changed: true, file: old.file, message: `Updated in ${label} (${fileName(old.file)}): "${old.text}" is now "${text}".${movedNote(room)}` }
@@ -699,7 +734,7 @@ export function install(rt) {
       op: 'remove',
       scope: scopeKey(scope),
       steps,
-      row: { op: 'remove', scope: scopeKey(scope), file: old.file.file, ...actorOf(actor), before, ...(empty ? { removedTopic: true } : {}) },
+      row: { op: 'remove', scope: logKeyOf(scope), ...logPlaceOf(scope), file: old.file.file, ...actorOf(actor), before, ...(empty ? { removedTopic: true } : {}) },
     })
     noteNews(scope, actor, 'remove', before)
     return { changed: true, file: old.file, message: `Removed from ${label} (${fileName(old.file)}): "${old.text}", all of it, so save again with remember any part that is still true. The change log keeps a copy.${empty ? ` The topic [[${old.file.topic}]] was empty, so it is gone too.` : ''}` }
@@ -716,14 +751,18 @@ export function install(rt) {
       // A change that was interrupted is finished first, so the archive holds it.
       await recoverPending()
       await unlink(join(root, 'summaries', `${safeId(botId)}.json`)).catch(() => {})
-      const dir = dirOf(ownScope(botId))
+      // A remote Bot's memory lives under its node, and is archived from there: the
+      // node's tree keeps its shape, the archived folder still holds every entry.
+      const remote = bot?.worker?.home === 'remote' ? bot.worker : undefined
+      const scope = remote === undefined ? ownScope(botId) : { kind: 'bot', nodeId: remote.nodeId, botId: remote.remoteBotId ?? botId }
+      const dir = dirOf(scope)
       if (!existsSync(dir)) return
       const name = `${safeId(botId)}-${new Date().toISOString().replace(/[:.]/g, '-')}`
       await mkdir(join(root, 'archive'), { recursive: true })
       await rename(dir, join(root, 'archive', name))
       // The memory is in the archive from here: a log row that cannot be written must not
       // hide where it went, which the privacy guard needs to keep a private archive closed.
-      await journalRow({ id: randomUUID(), time: new Date().toISOString(), op: 'archive', scope: scopeKey(ownScope(botId)), actor: 'user', actorName: 'user', botName: bot?.name, to: `archive/${name}` })
+      await journalRow({ id: randomUUID(), time: new Date().toISOString(), op: 'archive', scope: logKeyOf(scope), ...logPlaceOf(scope), actor: 'user', actorName: 'user', botName: bot?.name, to: `archive/${name}` })
         .catch(error => rt.warn('ds-bot: archive of the memory of %s not logged: %s', bot?.name ?? botId, error))
       return join(root, 'archive', name)
     }).catch(error => rt.warn('ds-bot: memory of %s not archived: %s', bot?.name ?? botId, error))
@@ -1616,7 +1655,7 @@ export function install(rt) {
         const left = main.links.includes(shared) ? remaining : addLink(remaining, shared)
         steps.push(writeStep(join(dirOf(scope), to), joinLines(insertEntry(base, line))), writeStep(main.path, joinLines(left)))
       }
-      await publish({ op: 'move', scope: scopeKey(scope), steps, row: { op: 'move', scope: scopeKey(scope), file: old.file.file, to, ...actorOf(USER), after: line } })
+      await publish({ op: 'move', scope: scopeKey(scope), steps, row: { op: 'move', scope: logKeyOf(scope), ...logPlaceOf(scope), file: old.file.file, to, ...actorOf(USER), after: line } })
     })
     return await memoryView(panelBody(panel))
   }
@@ -1661,7 +1700,7 @@ export function install(rt) {
       const lines = [...old.file.lines]
       const before = lines[old.line]
       lines[old.line] = line
-      await publish({ op: 'replace', scope: scopeKey(scope), steps: [writeStep(old.file.path, joinLines(lines))], row: { op: 'replace', scope: scopeKey(scope), file: old.file.file, ...actorOf(USER), before, after: line } })
+      await publish({ op: 'replace', scope: scopeKey(scope), steps: [writeStep(old.file.path, joinLines(lines))], row: { op: 'replace', scope: logKeyOf(scope), ...logPlaceOf(scope), file: old.file.file, ...actorOf(USER), before, after: line } })
     })
     return await memoryView(panelBody(panel))
   }
@@ -1776,7 +1815,7 @@ export function install(rt) {
       const label = labelOf(scope)
       const files = loadScope(scope)
       const target = files.find(file => file.file === row.file)
-      const base = { scope: scopeKey(scope), file: row.file, ...actorOf(USER), restored: row.id }
+      const base = { scope: logKeyOf(scope), ...logPlaceOf(scope), file: row.file, ...actorOf(USER), restored: row.id }
       const steps = []
 
       if (row.op === 'add') {
@@ -1907,5 +1946,12 @@ export function install(rt) {
   Object.assign(rt, {
     memoryEnabled: true, renewMemory, archiveBotMemory, archiveGroupMemory, memoryEndpoint, memoryEdit, memoryAdd, memoryReviews,
     memoryNews: () => Object.fromEntries(news), botShot, tidyMemoryNow: tidyNow,
+    // The one write path of the files that the hub's memory federation reuses. A
+    // remote change goes through the same `queued` line as a local one; the adapter
+    // never opens a second writer.
+    memoryHost: Object.freeze({
+      TEAM, ownScope, groupScope, dirOf, mainLimit, loadScope, readScope: scope => settled(() => loadScope(scope)),
+      addEntry, replaceEntry, removeEntry, entryProblem, secretEntry, logKeyOf, logPlaceOf,
+    }),
   })
 }

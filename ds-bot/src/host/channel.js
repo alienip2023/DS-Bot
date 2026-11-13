@@ -904,6 +904,13 @@ export function install(rt) {
         case 'memory-restore':
           await rt.load()
           return ok(await rt.memoryEndpoint(endpoint, body))
+        // The federated memory of remote nodes, on this host (memory-federation.js).
+        case 'memory-hub-scopes':
+        case 'memory-hub-view':
+        case 'memory-hub-add':
+        case 'memory-hub-forget':
+          await rt.load()
+          return ok(await rt.memoryHubEndpoint(endpoint, body))
         case 'learning-answer':
           await rt.load()
           return ok(await rt.learningEndpoint(endpoint, body))
