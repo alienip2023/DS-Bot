@@ -343,6 +343,7 @@ var JA = {
   "Switch": "切り替え",
   "Back to DS Bot": "DS Bot に戻る",
   "{model} is not available anymore. Pick another model for me.": "{model} は現在利用できません。別のモデルを選んでください。",
+  "{model} is not available anymore. Change it on the main.": "{model} は現在利用できません。メイン側でモデルを変更してください。",
   "Hi, I'm {name}. I don't have a model yet. How do you want to set one up?": "こんにちは、{name} です。まだモデルが設定されていません。どのように設定しますか？",
   "Hi, I'm {name}. Pick a model for me first. You can change it later in my details.": "こんにちは、{name} です。まずは使用するモデルを選んでください。後から詳細画面で変更できます。",
   "Hi, I'm {name}. I need a {provider} API key before I can start.": "こんにちは、{name} です。始めるには {provider} の API キーが必要です。",
@@ -2672,6 +2673,7 @@ var KO = {
   "Switch": "전환",
   "Back to DS Bot": "DS Bot로 돌아가기",
   "{model} is not available anymore. Pick another model for me.": "{model} 모델을 더 이상 사용할 수 없습니다. 다른 모델을 선택해 주세요.",
+  "{model} is not available anymore. Change it on the main.": "{model} 모델을 더 이상 사용할 수 없습니다. 메인에서 모델을 변경해 주세요.",
   "Hi, I'm {name}. I don't have a model yet. How do you want to set one up?": "안녕하세요, {name}입니다. 아직 사용할 모델이 없습니다. 어떻게 설정할까요?",
   "Hi, I'm {name}. Pick a model for me first. You can change it later in my details.": "안녕하세요, {name}입니다. 먼저 사용할 모델을 선택해 주세요. 나중에 상세 정보에서 변경할 수 있습니다.",
   "Hi, I'm {name}. I need a {provider} API key before I can start.": "안녕하세요, {name}입니다. 시작하려면 {provider} API 키가 필요합니다.",
@@ -5044,6 +5046,7 @@ var ES = {
   "Switch": "Cambiar",
   "Back to DS Bot": "Volver a DS Bot",
   "{model} is not available anymore. Pick another model for me.": "{model} ya no está disponible. Elige otro modelo para mí.",
+  "{model} is not available anymore. Change it on the main.": "{model} ya no está disponible. Cámbialo en el principal.",
   "Hi, I'm {name}. I don't have a model yet. How do you want to set one up?": "Hola, soy {name}. Aún no tengo un modelo. ¿Cómo quieres configurarlo?",
   "Hi, I'm {name}. Pick a model for me first. You can change it later in my details.": "Hola, soy {name}. Elige primero un modelo para mí. Podrás cambiarlo después en mis detalles.",
   "Hi, I'm {name}. I need a {provider} API key before I can start.": "Hola, soy {name}. Necesito una clave API de {provider} antes de empezar.",
@@ -7414,6 +7417,7 @@ var FR = {
   "Switch": "Basculer",
   "Back to DS Bot": "Retour à DS Bot",
   "{model} is not available anymore. Pick another model for me.": "{model} n’est plus disponible. Choisissez-moi un autre modèle.",
+  "{model} is not available anymore. Change it on the main.": "{model} n’est plus disponible. Changez-le sur le principal.",
   "Hi, I'm {name}. I don't have a model yet. How do you want to set one up?": "Bonjour, je suis {name}. Je n’ai pas encore de modèle. Comment souhaitez-vous en configurer un ?",
   "Hi, I'm {name}. Pick a model for me first. You can change it later in my details.": "Bonjour, je suis {name}. Choisissez-moi d’abord un modèle. Vous pourrez le modifier plus tard dans mes détails.",
   "Hi, I'm {name}. I need a {provider} API key before I can start.": "Bonjour, je suis {name}. J’ai besoin d’une clé API {provider} avant de pouvoir commencer.",
@@ -9743,6 +9747,7 @@ var DE = {
   "Switch": "Wechseln",
   "Back to DS Bot": "Zurück zu DS Bot",
   "{model} is not available anymore. Pick another model for me.": "{model} ist nicht mehr verfügbar. Wähle bitte ein anderes Modell für mich aus.",
+  "{model} is not available anymore. Change it on the main.": "{model} ist nicht mehr verfügbar. Ändere es auf der Hauptinstanz.",
   "Hi, I'm {name}. I don't have a model yet. How do you want to set one up?": "Hallo, ich bin {name}. Ich habe noch kein Modell. Wie möchtest du eines einrichten?",
   "Hi, I'm {name}. Pick a model for me first. You can change it later in my details.": "Hallo, ich bin {name}. Wähle zuerst ein Modell für mich aus. Du kannst es später in meinen Details ändern.",
   "Hi, I'm {name}. I need a {provider} API key before I can start.": "Hallo, ich bin {name}. Ich benötige einen {provider}-API-Schlüssel, bevor ich loslegen kann.",
@@ -12132,6 +12137,7 @@ var ZH = {
   "Switch": "切换",
   "Back to DS Bot": "返回 DS Bot",
   "{model} is not available anymore. Pick another model for me.": "{model} 已经不可用了。给我换一个模型吧。",
+  "{model} is not available anymore. Change it on the main.": "{model} 已经不可用了。请在主控上换模型。",
   "Hi, I'm {name}. I don't have a model yet. How do you want to set one up?": "你好，我是 {name}。我还没有可用的模型。你想怎么配置？",
   "Hi, I'm {name}. Pick a model for me first. You can change it later in my details.": "你好，我是 {name}。先给我选一个模型吧，以后可以在我的详情里换。",
   "Hi, I'm {name}. I need a {provider} API key before I can start.": "你好，我是 {name}。开始之前，我需要一个 {provider} API key。",
@@ -22046,8 +22052,9 @@ function ModelChoiceDock({ sessionId, useRoster, actions }) {
   const usable = models.filter((model) => !model.needsKey);
   const lost = bot.model ? !models.some((model) => model.ref === bot.model) : false;
   if (bot.model && (!lost || models.length === 0)) return null;
-  const keyFor = usable.length === 0 && actions.setProviderKey ? models.find((model) => model.needsKey) : void 0;
-  const manage = manageModels(actions);
+  const managedLost = lost && bot.managedBy === "hub";
+  const keyFor = managedLost ? void 0 : usable.length === 0 && actions.setProviderKey ? models.find((model) => model.needsKey) : void 0;
+  const manage = managedLost ? void 0 : manageModels(actions);
   const pick2 = (ref) => {
     setBusy(ref);
     setError("");
@@ -22056,8 +22063,8 @@ function ModelChoiceDock({ sessionId, useRoster, actions }) {
       void actions.refreshModels?.();
     }).finally(() => setBusy(""));
   };
-  const text2 = lost ? t("{model} is not available anymore. Pick another model for me.", { model: bot.model.split("/").slice(1).join("/") }) : keyFor ? t("Hi, I'm {name}. I need a {provider} API key before I can start.", { name: bot.name, provider: keyFor.providerName ?? keyFor.provider }) : usable.length === 0 ? t("Hi, I'm {name}. I don't have a model yet. How do you want to set one up?", { name: bot.name }) : t("Hi, I'm {name}. Pick a model for me first. You can change it later in my details.", { name: bot.name });
-  const choices = usable.length === 0 ? setupChoices(actions).map(([label, run2]) => (0, import_react19.createElement)("button", { key: label, type: "button", className: "bt-model-chip", onClick: run2 }, label)) : [
+  const text2 = managedLost ? t("{model} is not available anymore. Change it on the main.", { model: bot.model.split("/").slice(1).join("/") }) : lost ? t("{model} is not available anymore. Pick another model for me.", { model: bot.model.split("/").slice(1).join("/") }) : keyFor ? t("Hi, I'm {name}. I need a {provider} API key before I can start.", { name: bot.name, provider: keyFor.providerName ?? keyFor.provider }) : usable.length === 0 ? t("Hi, I'm {name}. I don't have a model yet. How do you want to set one up?", { name: bot.name }) : t("Hi, I'm {name}. Pick a model for me first. You can change it later in my details.", { name: bot.name });
+  const choices = managedLost ? [] : usable.length === 0 ? setupChoices(actions).map(([label, run2]) => (0, import_react19.createElement)("button", { key: label, type: "button", className: "bt-model-chip", onClick: run2 }, label)) : [
     ...groupModels(usable).map(([provider, list]) => (0, import_react19.createElement)(
       "div",
       { key: list[0].provider ?? provider, className: "bt-model-choice-group", role: "group", "aria-label": provider },
@@ -22092,7 +22099,7 @@ function ModelChoiceDock({ sessionId, useRoster, actions }) {
         )
       )
     ),
-    keyFor ? (0, import_react19.createElement)(ModelKeyCard, { key: keyFor.provider, model: keyFor, actions }) : (0, import_react19.createElement)("div", { className: "bt-model-chips", role: "group", "aria-label": t("Choose a model") }, choices),
+    keyFor ? (0, import_react19.createElement)(ModelKeyCard, { key: keyFor.provider, model: keyFor, actions }) : choices.length > 0 ? (0, import_react19.createElement)("div", { className: "bt-model-chips", role: "group", "aria-label": t("Choose a model") }, choices) : null,
     error ? (0, import_react19.createElement)("div", { className: "bt-secret-error bt-model-error", role: "alert" }, error) : null
   );
 }

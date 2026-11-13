@@ -221,6 +221,7 @@ export const JA = {
   "Switch": "切り替え",
   "Back to DS Bot": "DS Bot に戻る",
   "{model} is not available anymore. Pick another model for me.": "{model} は現在利用できません。別のモデルを選んでください。",
+  "{model} is not available anymore. Change it on the main.": "{model} は現在利用できません。メイン側でモデルを変更してください。",
   "Hi, I'm {name}. I don't have a model yet. How do you want to set one up?": "こんにちは、{name} です。まだモデルが設定されていません。どのように設定しますか？",
   "Hi, I'm {name}. Pick a model for me first. You can change it later in my details.": "こんにちは、{name} です。まずは使用するモデルを選んでください。後から詳細画面で変更できます。",
   "Hi, I'm {name}. I need a {provider} API key before I can start.": "こんにちは、{name} です。始めるには {provider} の API キーが必要です。",

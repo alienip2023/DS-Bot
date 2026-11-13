@@ -224,6 +224,7 @@ export const KO = {
   'Switch': '전환',
   'Back to DS Bot': 'DS Bot로 돌아가기',
   '{model} is not available anymore. Pick another model for me.': '{model} 모델을 더 이상 사용할 수 없습니다. 다른 모델을 선택해 주세요.',
+  '{model} is not available anymore. Change it on the main.': '{model} 모델을 더 이상 사용할 수 없습니다. 메인에서 모델을 변경해 주세요.',
   "Hi, I'm {name}. I don't have a model yet. How do you want to set one up?": '안녕하세요, {name}입니다. 아직 사용할 모델이 없습니다. 어떻게 설정할까요?',
   "Hi, I'm {name}. Pick a model for me first. You can change it later in my details.": '안녕하세요, {name}입니다. 먼저 사용할 모델을 선택해 주세요. 나중에 상세 정보에서 변경할 수 있습니다.',
   "Hi, I'm {name}. I need a {provider} API key before I can start.": '안녕하세요, {name}입니다. 시작하려면 {provider} API 키가 필요합니다.',

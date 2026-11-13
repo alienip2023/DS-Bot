@@ -472,12 +472,19 @@ export function install(rt) {
     })
   }
 
-  async function updateBot(id, patch, actorId, fromSessionId) {
+  async function updateBot(id, patch, actorId, fromSessionId, { allowManagedModel = false } = {}) {
     const bot = rt.botOf(id)
     if (bot === undefined) throw new Error('Unknown Bot')
     // The roster of another machine is owned there; editing a shadow here would be lost
     // on its next report.
     if (bot.origin === 'peer') throw codedError('E_SHADOW_READONLY', 'This Bot belongs to another machine and is read-only')
+    // The main owns a managed Bot's model and thinking level. A write made where the Bot runs
+    // would silently diverge from the row the main shows — §49 saw the node run one model
+    // while both rows still named another. Only the hub's own `bot/update` frame (received by
+    // the node's bot-update receiver) may change them.
+    if ((patch.model !== undefined || patch.effort !== undefined) && bot.managedBy === 'hub' && allowManagedModel !== true) {
+      throw codedError('E_BOT_MODEL_MANAGED_BY_HUB', `${bot.name}'s model and thinking level are chosen on the main, not on this machine`)
+    }
     if (patch.browserGrants !== undefined && actorId !== undefined) {
       throw new Error(`Only the user can set what ${bot.name} may do in the browser`)
     }

@@ -228,7 +228,8 @@ export function createBotUpdateReceiver(rt) {
       if (spec.effort !== null) patch.effort = spec.effort
       if (spec.instructions !== null) patch.instructions = spec.instructions
       if (spec.workDir !== null) patch.workDir = spec.workDir
-      const bot = await rt.updateBot(remoteBotId, patch)
+      // The hub is the one writer allowed to change a managed Bot's model and level.
+      const bot = await rt.updateBot(remoteBotId, patch, undefined, undefined, { allowManagedModel: true })
       if (!bot) return { ok: false, error: 'bot-update-not-found' }
       return { ok: true, model: bot.model ?? null, effort: bot.effort ?? null, instructions: bot.instructions ?? null, workDir: bot.workDir ?? null }
     } catch (err) {

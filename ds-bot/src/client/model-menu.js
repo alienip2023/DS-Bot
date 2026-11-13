@@ -432,9 +432,13 @@ export function ModelChoiceDock({ sessionId, useRoster, actions }) {
   const lost = bot.model ? !models.some(model => model.ref === bot.model) : false
   // An unknown catalog (none listed) cannot tell a lost model from a slow provider.
   if (bot.model && (!lost || models.length === 0)) return null
+  // A Bot the main manages does not pick its model here: a local pick would silently
+  // diverge from the row the main shows (§49). The dock only says where the change
+  // belongs, with nothing focusable to pick — keyboard included.
+  const managedLost = lost && bot.managedBy === 'hub'
   // The missing key is taken here, through the host.
-  const keyFor = usable.length === 0 && actions.setProviderKey ? models.find(model => model.needsKey) : undefined
-  const manage = manageModels(actions)
+  const keyFor = managedLost ? undefined : usable.length === 0 && actions.setProviderKey ? models.find(model => model.needsKey) : undefined
+  const manage = managedLost ? undefined : manageModels(actions)
   const pick = (ref) => {
     setBusy(ref)
     setError('')
@@ -443,14 +447,18 @@ export function ModelChoiceDock({ sessionId, useRoster, actions }) {
       .finally(() => setBusy(''))
   }
   // The pick reads as the Bot's own first message, with the choices as replies under it.
-  const text = lost
+  const text = managedLost
+    ? t('{model} is not available anymore. Change it on the main.', { model: bot.model.split('/').slice(1).join('/') })
+    : lost
     ? t('{model} is not available anymore. Pick another model for me.', { model: bot.model.split('/').slice(1).join('/') })
     : keyFor
       ? t("Hi, I'm {name}. I need a {provider} API key before I can start.", { name: bot.name, provider: keyFor.providerName ?? keyFor.provider })
       : usable.length === 0
         ? t("Hi, I'm {name}. I don't have a model yet. How do you want to set one up?", { name: bot.name })
         : t("Hi, I'm {name}. Pick a model for me first. You can change it later in my details.", { name: bot.name })
-  const choices = usable.length === 0
+  const choices = managedLost
+    ? []
+    : usable.length === 0
     ? setupChoices(actions).map(([label, run]) => h('button', { key: label, type: 'button', className: 'bt-model-chip', onClick: run }, label))
     : [
         ...groupModels(usable).map(([provider, list]) => h('div', { key: list[0].provider ?? provider, className: 'bt-model-choice-group', role: 'group', 'aria-label': provider },
@@ -471,7 +479,9 @@ export function ModelChoiceDock({ sessionId, useRoster, actions }) {
           h('div', { className: 'bt-bubble' }, text)))),
     keyFor
       ? h(ModelKeyCard, { key: keyFor.provider, model: keyFor, actions })
-      : h('div', { className: 'bt-model-chips', role: 'group', 'aria-label': t('Choose a model') }, choices),
+      : choices.length > 0
+        ? h('div', { className: 'bt-model-chips', role: 'group', 'aria-label': t('Choose a model') }, choices)
+        : null,
     error ? h('div', { className: 'bt-secret-error bt-model-error', role: 'alert' }, error) : null)
 }
 

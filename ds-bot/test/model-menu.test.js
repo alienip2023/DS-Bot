@@ -40,9 +40,9 @@ function nodes(tree, match) {
 }
 
 // `harness`: the window has Settings and DSH's onboarding editors to send the user to.
-function dock(models, { model, ready = true, harness = true } = {}) {
+function dock(models, { model, ready = true, harness = true, managedBy } = {}) {
   const picked = []
-  const bot = { id: 'chief', name: 'Chief', model }
+  const bot = { id: 'chief', name: 'Chief', model, ...(managedBy === undefined ? {} : { managedBy }) }
   const roster = { ready, byId: { chief: bot }, models, defaultModel: models[0]?.ref }
   const tree = ModelChoiceDock({
     sessionId: bot.id, useRoster: select => select(roster),
@@ -92,6 +92,30 @@ test('an unavailable model offers the same provider groups', () => {
   const { tree } = dock(models, { model: 'gone/flash' })
   assert.deepEqual(nodes(tree, node => node.props.className === 'bt-model-choice-group').map(group => group.props['aria-label']), ['DeepSeek', 'Ollama'])
   assert.ok(nodes(tree, node => node.props.className === 'bt-bubble')[0].children[0].includes('not available anymore'))
+})
+
+// §49: the node's dock let a managed Bot be re-pointed locally, and the node row then
+// disagreed with the main's. The dock says where the change belongs and offers nothing
+// focusable — no chips, no key card, no Manage models — so keyboard activation cannot pick.
+test('a managed Bot whose model is gone says to change it on the main, with no local choice', () => {
+  const { tree, picked } = dock(models, { model: 'm3probe/ling-mini', managedBy: 'hub' })
+  assert.match(nodes(tree, node => node.props.className === 'bt-bubble')[0].children[0], /Change it on the main/)
+  assert.equal(nodes(tree, node => node.props.className === 'bt-model-choice-group').length, 0)
+  assert.equal(nodes(tree, node => node.type === 'button').length, 0, 'nothing in the dock can be focused and picked')
+  assert.equal(nodes(tree, node => node.props.className === 'bt-model-key').length, 0)
+  assert.deepEqual(picked, [])
+})
+
+test('a managed Bot with a keyless catalog still gets no local model choice', () => {
+  const keyless = [{ ref: 'official/flash', provider: 'official', providerName: 'DeepSeek', name: 'DeepSeek Flash', needsKey: true }]
+  const { tree } = dock(keyless, { model: 'm3probe/ling-mini', managedBy: 'hub' })
+  assert.equal(nodes(tree, node => node.props.className === 'bt-model-key').length, 0)
+  assert.equal(nodes(tree, node => node.type === 'button').length, 0)
+})
+
+test('a local Bot with an unavailable model still gets the local choice', () => {
+  const { tree } = dock(models, { model: 'gone/flash' })
+  assert.ok(nodes(tree, node => node.props.className === 'bt-model-choice-group').length > 0)
 })
 
 test('an empty catalog offers setup choices, and a ready model needs no choice dock', () => {

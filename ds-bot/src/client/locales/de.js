@@ -224,6 +224,7 @@ export const DE = {
   'Switch': 'Wechseln',
   'Back to DS Bot': 'Zurück zu DS Bot',
   '{model} is not available anymore. Pick another model for me.': '{model} ist nicht mehr verfügbar. Wähle bitte ein anderes Modell für mich aus.',
+  '{model} is not available anymore. Change it on the main.': '{model} ist nicht mehr verfügbar. Ändere es auf der Hauptinstanz.',
   "Hi, I'm {name}. I don't have a model yet. How do you want to set one up?": 'Hallo, ich bin {name}. Ich habe noch kein Modell. Wie möchtest du eines einrichten?',
   "Hi, I'm {name}. Pick a model for me first. You can change it later in my details.": 'Hallo, ich bin {name}. Wähle zuerst ein Modell für mich aus. Du kannst es später in meinen Details ändern.',
   "Hi, I'm {name}. I need a {provider} API key before I can start.": 'Hallo, ich bin {name}. Ich benötige einen {provider}-API-Schlüssel, bevor ich loslegen kann.',

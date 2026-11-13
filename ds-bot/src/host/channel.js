@@ -596,7 +596,14 @@ export function install(rt) {
             if (!updateResult.ok) return fail(updateResult.error, 'bot/refused')
             return ok(updateResult)
           }
-          return ok(await rt.updateBot(body.id, body))
+          try {
+            return ok(await rt.updateBot(body.id, body))
+          } catch (error) {
+            // A managed Bot's model is the main's: name that refusal so the client can say
+            // where to change it, instead of the generic "refused" the dialog would show.
+            if (error?.code === 'E_BOT_MODEL_MANAGED_BY_HUB') return fail(error.message, 'bot/managed-model')
+            throw error
+          }
         }
         // Give up one wait for a hand-off that will not come back: only that sub-work
         // closes, with an explicit result for the work above it.
