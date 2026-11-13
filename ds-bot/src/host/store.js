@@ -129,13 +129,14 @@ export function install(rt) {
     for (const key of Object.keys(state)) delete state[key]
     Object.assign(state, JSON.parse(EMPTY), parsed ?? {})
     state.prefs ??= {}
-    // Bot custom groups: must always be an object, never undefined/null.
-    if (state.groups === null || typeof state.groups !== 'object' || Array.isArray(state.groups)) state.groups = {}
+    // Set by the groups → sections migration below; declared before the first use of
+    // `migrated` because that expression may read it.
+    let groupsMigrated = false
     // Teams saved before the DSH Agent existed carry no `agents`; corrupt values reset.
     if (state.agents === null || typeof state.agents !== 'object' || Array.isArray(state.agents)) state.agents = {}
     // `computer` is the computer-use switch; absent or corrupt means off.
     if (state.computer === null || typeof state.computer !== 'object' || Array.isArray(state.computer)) state.computer = {}
-    let migrated = !hadCapabilities
+    let migrated = !hadCapabilities || groupsMigrated
     if (ensureFederationState(state)) migrated = true
     if (state.capabilities === null || typeof state.capabilities !== 'object' || Array.isArray(state.capabilities)) {
       state.capabilities = { items: {} }
@@ -190,6 +191,35 @@ export function install(rt) {
           ...(sec.collapsed === true ? { collapsed: true } : {}),
           ...(SECTION_COLORS.includes(sec.color) ? { color: sec.color } : {}),
         }))
+    }
+    // One-time migration of this fork's custom Bot groups (state.groups) into upstream's
+    // sections model: groups with members become sections in their saved order, and their
+    // members move in by sectionId. Empty or corrupt groups leave nothing behind, and the
+    // old field (plus the per-Bot groupId) is dropped so it can never come back.
+    if (state.groups !== undefined) {
+      groupsMigrated = true
+      const groups = state.groups !== null && typeof state.groups === 'object' && !Array.isArray(state.groups)
+        ? Object.values(state.groups).filter(group => group !== null && typeof group === 'object' && Array.isArray(group.botIds) && group.botIds.length > 0)
+        : []
+      groups.sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+      const used = new Set(state.sections.map(sec => sec.id))
+      for (const group of groups) {
+        let id = typeof group.id === 'string' && group.id !== '' && !used.has(group.id) ? group.id : 'section'
+        while (used.has(id)) id = `${id}-1`
+        used.add(id)
+        const name = (typeof group.name === 'string' && group.name.trim() ? group.name.trim() : 'Section').slice(0, SECTION_NAME_MAX)
+        state.sections.push({
+          id,
+          name,
+          ...(group.collapsed === true ? { collapsed: true } : {}),
+          ...(SECTION_COLORS.includes(group.color) ? { color: group.color } : {}),
+        })
+        for (const botId of group.botIds) {
+          if (state.bots[botId] !== undefined) state.bots[botId].sectionId = id
+        }
+      }
+      delete state.groups
+      for (const bot of Object.values(state.bots)) delete bot.groupId
     }
     const sectionIds = new Set(state.sections.map(sec => sec.id))
     for (const entry of [...Object.values(state.bots), ...Object.values(state.rooms), ...Object.values(state.agents)]) {

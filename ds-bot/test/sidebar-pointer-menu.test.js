@@ -74,13 +74,12 @@ function teamRoster() {
     roomsById: {},
     ready: true,
     mainBotId: 'lead',
-    groups: { fleet: { id: 'fleet', name: '执行机', botIds: ['worker'], order: 0, collapsed: false } },
     exchangeTurns: {},
   }
 }
 
 function propsFor(opened) {
-  const names = ['openSession', 'openAgent', 'openAgentSession', 'newAgentSession', 'openPalette', 'openNewChat', 'toggleSidebar', 'toggleLeftHidden', 'clearUnread', 'renameGroup', 'deleteBotGroup', 'toggleBotGroup', 'createBotGroup', 'setLeftDrawer', 'landOn']
+  const names = ['openSession', 'openAgent', 'openAgentSession', 'newAgentSession', 'openPalette', 'openNewChat', 'toggleSidebar', 'toggleLeftHidden', 'clearUnread', 'setLeftDrawer', 'landOn']
   const actions = Object.fromEntries(names.map(name => [name, () => {}]))
   actions.openMenu = (menu) => { opened.push(menu) }
   return {
@@ -110,7 +109,7 @@ function walk(node, visit) {
 function renderedRows(TeamSidebar, opened) {
   const found = []
   walk(TeamSidebar(propsFor(opened)), (node) => {
-    if (node.type?.name === 'BotRow' || node.type?.name === 'GroupHeaderRow') found.push(node.type(node.props))
+    if (node.type?.name === 'BotRow') found.push(node.type(node.props))
   })
   return found
 }
@@ -177,7 +176,7 @@ test('disk source: a wide bot-row right-click opens kind bot at the click', asyn
   assert.equal(opened.at(-1).y, 22)
 })
 
-test('disk source: the main-bot tile and the group header use the same pointer path', async () => {
+test('disk source: the main-bot tile uses the same pointer path', async () => {
   const { TeamSidebar } = await loadSidebar()
   const opened = []
   const rows = renderedRows(TeamSidebar, opened)
@@ -191,19 +190,7 @@ test('disk source: the main-bot tile and the group header use the same pointer p
   assert.equal(opened[0]?.id, 'lead')
   assert.equal(opened[0]?.x, 12)
   assert.equal(tileEvent.defaultPrevented, true)
-  const header = flat.find(el => el.props?.className === 'bt-group-header')
-  assert.equal(typeof header?.props.ref, 'function')
-  const headerBound = bind(header.props.ref)
-  const headerEvent = pointer(headerBound.dom.window, 'pointerdown', { button: 2, clientX: 12, clientY: 40 })
-  headerBound.el.dispatchEvent(headerEvent)
-  const group = opened.at(-1)
-  assert.equal(group.kind, 'group')
-  assert.equal(group.id, 'fleet')
-  assert.equal(group.name, '执行机')
-  assert.equal(group.x, 12)
-  assert.equal(group.y, 40)
-  assert.equal(typeof group.onRename, 'function')
-  assert.equal(headerEvent.defaultPrevented, true)
+  assert.equal(flat.some(el => el.props?.className === 'bt-group-header'), false, 'the custom group header is gone')
 })
 
 test('disk source: the kebab still opens the same menu from the button rect', async () => {
@@ -212,7 +199,7 @@ test('disk source: the kebab still opens the same menu from the button rect', as
   const flat = renderedRows(TeamSidebar, opened).flatMap(elementsOf)
   const isKebab = (el) => el.props?.children === '⋮' || (Array.isArray(el.props?.children) && el.props.children.includes('⋮'))
   const kebabs = flat.filter(isKebab)
-  assert.equal(kebabs.length >= 2, true)
+  assert.equal(kebabs.length >= 1, true)
   for (const kebab of kebabs) {
     const event = {
       prevented: false,
@@ -226,10 +213,9 @@ test('disk source: the kebab still opens the same menu from the button rect', as
     assert.equal(event.stopped, true)
     assert.equal(opened.at(-1).x, 7)
     assert.equal(opened.at(-1).y, 19)
-    assert.equal(['bot', 'group'].includes(opened.at(-1).kind), true)
+    assert.equal(opened.at(-1).kind, 'bot')
   }
   assert.equal(opened.some(menu => menu.kind === 'bot' && menu.id === 'worker'), true)
-  assert.equal(opened.some(menu => menu.kind === 'group' && menu.id === 'fleet'), true)
 })
 
 test('deleting the bot-row pointer handler turns the same clientX assertion red', async () => {

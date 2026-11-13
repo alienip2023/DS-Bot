@@ -1,8 +1,9 @@
-// s50 (D1 = A): the sidebar of the merged build shows upstream's sections (state.sections) AND this fork's custom Bot
-// groups (state.groups: collapsible header, delete, rename, "+ 新建分组") — the groups render old-style with the
-// ungrouped rows, sections render as SectionBlocks, and a Bot row still opens a joined (remote) Bot through
-// openJoinedHome while carrying upstream's drag handle. The REAL TeamSidebar is bundled from disk and rendered with a
-// stand-in React, every component expanded to plain elements.
+// The merged sidebar has one grouping model: upstream's sections (state.sections). This fork's
+// custom Bot groups (state.groups) were removed — a roster that still carries the old field must
+// render no group headers and no "+ 新建分组" row. Sections render as SectionBlocks, and a Bot row
+// still opens a joined (remote) Bot through openJoinedHome while carrying upstream's drag handle.
+// The REAL TeamSidebar is bundled from disk and rendered with a stand-in React, every component
+// expanded to plain elements.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { dirname } from 'node:path'
@@ -68,7 +69,7 @@ function roster({ sections = [], groups = {}, extraBots = [] } = {}) {
 }
 
 function render(TeamSidebar, rosterValue, calls = []) {
-  const names = ['openSession', 'openJoinedHome', 'openAgent', 'openAgentSession', 'newAgentSession', 'openPalette', 'openNewChat', 'toggleSidebar', 'toggleLeftHidden', 'clearUnread', 'renameGroup', 'deleteBotGroup', 'toggleBotGroup', 'createBotGroup', 'saveSection', 'reorderSections', 'deleteSection', 'moveToSection', 'setLeftDrawer', 'openMenu']
+  const names = ['openSession', 'openJoinedHome', 'openAgent', 'openAgentSession', 'newAgentSession', 'openPalette', 'openNewChat', 'toggleSidebar', 'toggleLeftHidden', 'clearUnread', 'saveSection', 'reorderSections', 'deleteSection', 'moveToSection', 'setLeftDrawer', 'openMenu']
   const actions = Object.fromEntries(names.map(name => [name, (...args) => { calls.push([name, ...args]) }]))
   const props = {
     wide: true, actions,
@@ -86,27 +87,12 @@ const hasRow = (tree, id) => rowOf(tree, id) !== undefined
 const SECTIONS = [{ id: 's1', name: 'Work', collapsed: false, order: 0 }]
 const GROUPS = { fleet: { id: 'fleet', name: '执行机', botIds: ['g1bot'], order: 0, collapsed: false } }
 
-test('M-side-groups: custom Bot groups keep their header, member rows and the "+ 新建分组" row next to upstream sections', async () => {
+test('M-side-no-groups: a roster that still carries state.groups renders no group header and no new-group row', async () => {
   const { TeamSidebar } = await loadSidebar()
-  const calls = []
-  const tree = render(TeamSidebar, roster({ sections: SECTIONS, groups: GROUPS }), calls)
-  const headers = find(tree, node => node.name === 'GroupHeaderRow')
-  assert.equal(headers.length, 1)
-  assert.equal(headers[0].props.group.id, 'fleet')
-  assert.equal(headers[0].props.wideContent, true, 'the header is told the sidebar is wide')
-  assert.equal(find(tree, node => node.name === 'NewGroupRow').length, 1)
-  assert.equal(hasRow(tree, 'g1bot'), true, 'a member of an open group is listed under the header')
-  // the header's controls reach the group endpoints
-  const toggle = find(headers[0], node => node.props?.role === 'button' && node.props?.['aria-expanded'] !== undefined)[0]
-  toggle.props.onClick()
-  assert.deepEqual([...calls.at(-1)], ['toggleBotGroup', 'fleet'])
-})
-
-test('M-side-collapsed: a collapsed group lists its header but not its members', async () => {
-  const { TeamSidebar } = await loadSidebar()
-  const tree = render(TeamSidebar, roster({ sections: SECTIONS, groups: { fleet: { ...GROUPS.fleet, collapsed: true } } }))
-  assert.equal(find(tree, node => node.name === 'GroupHeaderRow').length, 1)
-  assert.equal(hasRow(tree, 'g1bot'), false)
+  const tree = render(TeamSidebar, roster({ sections: SECTIONS, groups: GROUPS }))
+  assert.equal(find(tree, node => node.name === 'GroupHeaderRow').length, 0)
+  assert.equal(find(tree, node => node.name === 'NewGroupRow').length, 0)
+  assert.equal(hasRow(tree, 'g1bot'), true, 'a former group member is an ordinary ungrouped row now')
 })
 
 test('M-side-sections: a Bot with a sectionId is listed in its section, the others with the ungrouped', async () => {
@@ -120,16 +106,16 @@ test('M-side-sections: a Bot with a sectionId is listed in its section, the othe
   assert.ok(ungrouped, 'with sections present the ungrouped rows sit in the drop area')
   assert.equal(hasRow(ungrouped, 'a'), true)
   assert.equal(hasRow(ungrouped, 'b'), false, 'a Bot in a section is not listed twice')
-  assert.equal(find(ungrouped, node => node.name === 'GroupHeaderRow').length, 1, 'the group header lists with the ungrouped (D1 = A)')
+  assert.equal(find(ungrouped, node => node.name === 'GroupHeaderRow').length, 0)
 })
 
-test('M-side-no-sections: without sections the list is the fork.76 list — groups, rows, new-group row, no section area', async () => {
+test('M-side-no-sections: without sections every Bot and the joined Bot are plain rows, with no group rows', async () => {
   const { TeamSidebar } = await loadSidebar()
   const tree = render(TeamSidebar, roster({ groups: GROUPS }))
   assert.equal(find(tree, node => node.name === 'SectionBlock').length, 0)
   assert.equal(find(tree, node => node.props?.className === 'bt-sec-ungrouped').length, 0)
-  assert.equal(find(tree, node => node.name === 'GroupHeaderRow').length, 1)
-  assert.equal(find(tree, node => node.name === 'NewGroupRow').length, 1)
+  assert.equal(find(tree, node => node.name === 'GroupHeaderRow').length, 0)
+  assert.equal(find(tree, node => node.name === 'NewGroupRow').length, 0)
   for (const id of ['a', 'b', 'g1bot', joinedBot.id]) assert.equal(hasRow(tree, id), true, id)
 })
 
@@ -158,7 +144,7 @@ test('M-side-drag: a Bot row is draggable in the wide list (upstream drag-to-sec
   assert.equal(hasRow(tree, 'lead'), false)
 })
 
-test('M-side-group-and-section: a Bot that is in a group AND a section is listed once, in the section', async () => {
+test('M-side-group-and-section: a legacy group membership never competes with a section — the Bot is listed once, in its section', async () => {
   const { TeamSidebar } = await loadSidebar()
   const r = roster({ sections: SECTIONS, groups: { fleet: { ...GROUPS.fleet, botIds: ['b'] } } })
   const tree = render(TeamSidebar, r)
