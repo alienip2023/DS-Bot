@@ -87,6 +87,55 @@ export function listenBotTurnResult(registry, exchangeId, nodeId, timeoutMs) {
   return { pending, cancel: () => finish({ ok: false, error: 'bridge-down', exchangeId }), received: () => received }
 }
 
+// The stop control plane: `stop_bot` asks the node to end a running turn (bot/stop), and the
+// node answers bot/stop-result. A node that is offline fails the wait at once; a node that is
+// simply old never answers, so the caller gets undefined after the timeout.
+export function listenBotStopResult(registry, requestId, nodeId, timeoutMs) {
+  let settled = false
+  let resolve
+  const pending = new Promise((res) => { resolve = res })
+  const finish = (value) => {
+    if (settled) return
+    settled = true
+    clearTimeout(timer)
+    registry.off?.('botStopResult', onResult)
+    registry.off?.('nodeOffline', onOffline)
+    resolve(value)
+  }
+  const onResult = (payload) => {
+    if (payload?.requestId !== requestId) return
+    finish(payload)
+  }
+  const onOffline = (payload) => {
+    if (payload?.nodeId && payload.nodeId !== nodeId) return
+    finish({ ok: false, stopped: false, error: 'bridge-down' })
+  }
+  const timer = setTimeout(() => finish(undefined), timeoutMs)
+  timer.unref?.()
+  registry.on?.('botStopResult', onResult)
+  registry.on?.('nodeOffline', onOffline)
+  return { pending, cancel: () => finish({ ok: false, stopped: false, error: 'bridge-down' }) }
+}
+
+// Node side of bot/stop: the node's own ds-bot cancels the turn of the named local Bot.
+// `rt.stopChat` covers both a local Agent turn and a joined page turn (turns.js).
+export function createBotStopReceiver(rt) {
+  return async ({ remoteBotId } = {}) => {
+    const id = typeof remoteBotId === 'string' ? remoteBotId.trim() : ''
+    if (id === '') return { ok: false, stopped: false, error: 'bot-stop-missing-bot' }
+    if (typeof rt.stopChat !== 'function') return { ok: false, stopped: false, error: 'bot-stop-unavailable' }
+    try {
+      return { ok: true, stopped: (await rt.stopChat(id)) === true }
+    } catch (error) {
+      return { ok: false, stopped: false, error: error?.message ?? 'bot-stop-failed' }
+    }
+  }
+}
+
+export function exposeBotStopReceiver(ctx, accept) {
+  try { ctx?.provide?.('remote-agent:bot-stop', accept) } catch { /* registry plugin may be absent */ }
+}
+
 async function replyToSender(rt, { fromId, toId, exchangeId, work, text }) {
   const shadow = rt.botOf?.(toId)
   if (shadow?.worker) shadow.worker.lastReply = { exchangeId, text, at: Date.now() }
@@ -271,6 +320,7 @@ export function install(rt) {
   rt.handleJoinedTurn = (msg) => handleJoinedTurn(rt, msg)
   const accept = createBotTurnReceiver(rt)
   exposeBotTurnReceiver(rt.ctx, accept)
+  exposeBotStopReceiver(rt.ctx, createBotStopReceiver(rt))
   // wrapSendUser(rt) — removed in S2-2: channel.install already routes joined bots
   // through ensureMirrorSession + executor.deliverTurn. Calling wrapSendUser here
   // would overwrite rt.sendUser and bypass the mirror session path entirely.

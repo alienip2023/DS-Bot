@@ -3,6 +3,7 @@
 import { randomUUID } from 'node:crypto'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { readAvatar } from './avatar.js'
+import { listenBotStopResult } from './joined-turn.js'
 import { COLORS, EXTRA_COLORS, MESSAGE_INLINE_MAX, ROOM_MODES, SOURCE_KIND } from './constants.js'
 import { within } from './folders.js'
 import { absoluteLinks } from './links.js'
@@ -342,6 +343,35 @@ export function install(rt) {
       const target = rt.findBot(args.bot)
       if (target === undefined) refuse(`No Bot named ${args.bot}. Team: ${Object.values(state.bots).map(bot => bot.name).join(', ')}`)
       if (target.id === sender.id) refuse('You cannot stop yourself.')
+      // A peer row is a read-only shadow of another machine's Bot: it has no local turn and no
+      // control channel back to that machine in this release.
+      if (target.origin === 'peer') refuse(`${target.name} belongs to another machine and is read-only here, so it cannot be stopped from this hub.`)
+      if (target.origin === 'joined') {
+        const nodeId = String(target.worker?.nodeId ?? '').trim()
+        const remoteBotId = String(target.worker?.remoteBotId ?? '').trim()
+        const where = String(target.worker?.hostname ?? '').trim() || nodeId || 'its machine'
+        if (nodeId === '' || remoteBotId === '') refuse(`${target.name} has no remote identity recorded, so it cannot be stopped from this hub.`)
+        let registry
+        try { registry = rt.ctx?.get?.('remote-agent:registry') } catch { registry = undefined }
+        if (!registry || typeof registry.send !== 'function') refuse(`${target.name} runs on ${where}, and the bridge to that machine is not available right now.`)
+        const why = String(args.reason ?? '').trim() || 'Stop what you are doing; the previous turn was ended on purpose. Acknowledge briefly.'
+        const requestId = randomUUID()
+        const wait = listenBotStopResult(registry, requestId, nodeId, 15_000)
+        let sent
+        try { sent = registry.send(nodeId, 'bot/stop', { nodeId, remoteBotId, requestId }) } catch { sent = false }
+        if (sent !== true) {
+          wait.cancel()
+          refuse(`${target.name} runs on ${where}, and the bridge to that machine is down, so its turn could not be stopped.`)
+        }
+        const answer = await wait.pending
+        if (answer === undefined) refuse(`${target.name} did not answer the stop request within 15s; its turn may still be running on ${where}.`)
+        if (answer.ok !== true) refuse(`${target.name} could not be stopped on ${where}: ${answer.error ?? 'the node refused the request'}.`)
+        if (answer.stopped !== true) refuse(`${target.name} is not running right now on ${where}, so there is nothing to stop.`)
+        // The page turn, if one was waiting, ends here; a Bot-to-Bot wait is left to its own result.
+        rt.stopJoinedTurn?.(target.id)
+        await rt.deliver({ fromId: sender.id, toId: target.id, text: why, role: 'stopped', joinedAsync: true, ...callerRoom(exec) })
+        return `Stopped ${target.name} on ${where}. It is told why in a new turn, whose reply comes back to you.`
+      }
       const { running } = activeSessions(target.id)
       if (running.length === 0) refuse(`${target.name} is not running right now, so there is nothing to stop. Use message_bot to reach it.`)
       for (const sessionId of running) {

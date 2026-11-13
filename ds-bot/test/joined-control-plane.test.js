@@ -1,0 +1,154 @@
+// The control plane for a Bot that runs on another machine: stop_bot must reach the node
+// (bot/stop) instead of answering "not running" from a local live table, and run-stats must
+// report the remote turn state instead of resolving a mirror Session that may not exist.
+// Everything here drives the real runtime, the real tools and the real channel endpoint.
+import assert from 'node:assert/strict'
+import EventEmitter from 'node:events'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { test } from 'node:test'
+import { createRuntime } from '../index.js'
+import { fakeContext } from './fake-ctx.js'
+import { install as installJoinedTurn, createBotStopReceiver } from '../src/host/joined-turn.js'
+
+const { Session } = await import('@deepseek-ai/dsh-session')
+
+const settle = async (times = 6) => { for (let i = 0; i < times; i += 1) await new Promise(resolve => setImmediate(resolve)) }
+
+const REMOTE = 'joined:n1:rb1'
+
+function team() {
+  return {
+    version: 1,
+    mainBotIds: ['a'],
+    bots: {
+      a: { id: 'a', name: 'Chief', role: 'Boss', sessionId: 'a', createdAt: 1 },
+      [REMOTE]: {
+        id: REMOTE, name: 'Remote', origin: 'joined', type: 'remote-worker',
+        worker: { nodeId: 'n1', remoteBotId: 'rb1', hostname: 'box-1', home: 'remote', online: true },
+        createdAt: 2,
+      },
+      'peer:h1:pb1': {
+        id: 'peer:h1:pb1', name: 'Peer', origin: 'peer', type: 'remote-worker',
+        readonly: true, worker: { hubId: 'h1', home: 'hub' }, createdAt: 3,
+      },
+      b: { id: 'b', name: 'Local', role: 'Help', sessionId: 'b', createdAt: 4 },
+    },
+    rooms: {}, agents: {}, exchanges: [], exchangeTurns: {}, works: {}, questions: {}, prefs: {}, revision: 0,
+  }
+}
+
+async function start(seed) {
+  const home = mkdtempSync(join(tmpdir(), 'ds-bot-control-plane-'))
+  writeFileSync(join(home, 'state.json'), JSON.stringify(seed))
+  const ctx = fakeContext()
+  const sessions = new Map()
+  const resolved = []
+  Object.assign(ctx, {
+    llm: { listProviders: () => [], listModels: async () => [], resolveModelInfo: async () => ({}) },
+    workspaceRegistry: { get: () => undefined, resolveByPath: async () => undefined, create: async path => ({ id: 'w1', path }), archiveSession: async () => {} },
+    sessionController: {
+      create: async () => ({ sessionId: 'mirror-j' }),
+      resolveAgent: async (sessionId) => {
+        resolved.push(sessionId)
+        if (!sessions.has(sessionId)) throw new Error(`session "${sessionId}" not found`)
+        const session = sessions.get(sessionId)
+        return { agent: { session, id: sessionId, status: 'idle', followup() {}, steer() {}, inject() {}, cancel() {}, async whenIdle() {}, inbox: { nextStep: [], nextTurn: [], remove: () => false } } }
+      },
+      selectModel: async () => {},
+      page: async () => ({ records: [], hasMore: false }),
+    },
+    sessionTitle: { rename: async () => {} },
+    sessions: { flush: async () => {}, messageProjections: [] },
+  })
+  const register = ctx.connection.fetch.register
+  ctx.connection.fetch.register = (options) => { ctx.route = options; return register(options) }
+  const rt = createRuntime(ctx, { home })
+  const registry = new EventEmitter()
+  const frames = []
+  let queue = true
+  registry.send = (nodeId, type, payload) => { frames.push({ nodeId, type, payload }); return queue }
+  const get = ctx.get.bind(ctx)
+  ctx.get = key => (key === 'remote-agent:registry' ? registry : get(key))
+  rt.createSession = async () => {
+    const sid = 'mirror-j'
+    if (!sessions.has(sid)) sessions.set(sid, new Session(sid))
+    return sid
+  }
+  installJoinedTurn(rt)
+  const call = async (endpoint, payload) => (await ctx.route.fetch(new Request('http://localhost/api/bot', {
+    method: 'POST', body: JSON.stringify({ endpoint, payload }),
+  }))).json()
+  const tool = (name, args, sessionId) => rt.teamTools.find(def => def.name === name).execute(args, { agent: { id: sessionId } })
+  await tool('list_bots', {}, 'a')
+  const stop = async () => {
+    for (const id of Object.keys(rt.state?.works ?? {})) rt.dropWork(id)
+    await ctx.dispose()
+    rmSync(home, { recursive: true, force: true, maxRetries: 5 })
+  }
+  return { rt, ctx, registry, frames, sessions, resolved, call, tool, stop, setQueue: (v) => { queue = v } }
+}
+
+test('stop_bot on a joined Bot sends bot/stop and reports the node\'s answer', async (t) => {
+  const w = await start(team())
+  t.after(w.stop)
+  const pending = w.tool('stop_bot', { bot: 'Remote', reason: 'stop now' }, 'a')
+  await settle()
+  const frame = w.frames.find(f => f.type === 'bot/stop')
+  assert.ok(frame, 'bot/stop must go to the node')
+  assert.equal(frame.nodeId, 'n1')
+  assert.equal(frame.payload.remoteBotId, 'rb1')
+  assert.equal(typeof frame.payload.requestId, 'string')
+  assert.ok(!w.resolved.includes(REMOTE), 'the shadow id is never resolved as a local Session')
+
+  w.registry.emit('botStopResult', { requestId: frame.payload.requestId, ok: true, stopped: true })
+  const reply = await pending
+  assert.equal(reply, 'Stopped Remote on box-1. It is told why in a new turn, whose reply comes back to you.')
+  const told = w.frames.find(f => f.type === 'bot/turn')
+  assert.ok(told, 'the stopped Bot is told why through the existing turn path')
+  assert.equal(told.payload.text, 'stop now')
+})
+
+test('stop_bot on a joined Bot that is not running refuses with the node\'s answer', async (t) => {
+  const w = await start(team())
+  t.after(w.stop)
+  const pending = w.tool('stop_bot', { bot: 'Remote' }, 'a')
+  await settle()
+  const frame = w.frames.find(f => f.type === 'bot/stop')
+  w.registry.emit('botStopResult', { requestId: frame.payload.requestId, ok: true, stopped: false })
+  await assert.rejects(pending, /is not running right now on box-1/)
+})
+
+test('stop_bot on a joined Bot with the bridge down does not pretend it stopped', async (t) => {
+  const w = await start(team())
+  t.after(w.stop)
+  w.setQueue(false)
+  await assert.rejects(w.tool('stop_bot', { bot: 'Remote' }, 'a'), /bridge to that machine is down/)
+  assert.equal(w.frames.filter(f => f.type === 'bot/stop').length, 1)
+})
+
+test('stop_bot refuses a peer row instead of sending a frame', async (t) => {
+  const w = await start(team())
+  t.after(w.stop)
+  // The load drops peer rows while federation is off; put one back to reach the guard.
+  w.rt.state.bots['peer:h1:pb1'] = {
+    id: 'peer:h1:pb1', name: 'Peer', origin: 'peer', type: 'remote-worker',
+    readonly: true, worker: { hubId: 'h1', home: 'hub' }, createdAt: 3,
+  }
+  await assert.rejects(w.tool('stop_bot', { bot: 'Peer' }, 'a'), /read-only here/)
+  assert.equal(w.frames.length, 0)
+})
+
+test('the node receiver stops the local turn and reports whether one was running', async () => {
+  const ran = []
+  const stopped = createBotStopReceiver({ stopChat: async (id) => { ran.push(id); return true } })
+  assert.deepEqual(await stopped({ remoteBotId: 'session-x' }), { ok: true, stopped: true })
+  const idle = createBotStopReceiver({ stopChat: async () => false })
+  assert.deepEqual(await idle({ remoteBotId: 'session-x' }), { ok: true, stopped: false })
+  const broken = createBotStopReceiver({ stopChat: async () => { throw new Error('nope') } })
+  const failed = await broken({ remoteBotId: 'session-x' })
+  assert.equal(failed.ok, false)
+  assert.match(failed.error, /nope/)
+  assert.deepEqual(ran, ['session-x'])
+})
