@@ -121,6 +121,44 @@ const EMPTY = 'memory/empty'
 const NEWS_TEXT_MAX = 160
 
 
+// Ids are Session ids; anything else becomes a hash, so no id can leave the folder.
+const LEGACY_ID = /^[\w-]{1,128}$/
+const legacySafeId = id => (LEGACY_ID.test(String(id)) ? String(id) : createHash('sha256').update(String(id)).digest('hex').slice(0, 32))
+// A remote node or Bot id comes from another machine: keep it readable when it is
+// already a plain name, and otherwise map every other character to `_` and append a
+// hash of the original. The hash keeps two different ids from sharing a directory
+// after sanitising, and no id can walk out of `memory/nodes/`.
+const SCOPED_ID = /^[A-Za-z0-9_-]{1,128}$/
+export function safeScopeId(id) {
+  const value = String(id)
+  if (SCOPED_ID.test(value)) return value
+  const plain = value.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64) || 'id'
+  return `${plain}-${createHash('sha256').update(value).digest('hex').slice(0, 8)}`
+}
+// Keys of the scopes that cross a machine boundary. They are keys only: a key never
+// becomes a path segment (see `scopeDir`), so `a:b/c` cannot choose its own folder.
+export const nodeKey = nodeId => `node:${nodeId}`
+export const remoteBotKey = (nodeId, botId) => `joined:${nodeId}:${botId}`
+// The keys of the scopes this machine keeps in files, unchanged: team, this host's
+// group chats, and this host's own Bots. Remote scopes get the two functions above.
+export function scopeKey(scope) {
+  if (scope?.kind === 'team') return 'team'
+  if (scope?.kind === 'group') return `group:${scope.roomId}`
+  if (scope?.kind === 'bot' && scope.nodeId === undefined) return `bot:${scope.botId}`
+  return undefined
+}
+// The directory of a scope. `root` is `<home>/memory`. A remote Bot lives under its
+// node, so one node's tree can be archived or dropped as a unit.
+export function scopeDir(root, scope) {
+  if (scope?.kind === 'team') return join(root, 'team')
+  if (scope?.kind === 'group') return join(root, 'groups', legacySafeId(scope.roomId))
+  if (scope?.kind === 'node') return join(root, 'nodes', safeScopeId(scope.nodeId))
+  if (scope?.kind === 'bot' && scope.nodeId !== undefined) {
+    return join(root, 'nodes', safeScopeId(scope.nodeId), 'bots', safeScopeId(scope.botId))
+  }
+  return join(root, 'bots', legacySafeId(scope?.botId))
+}
+
 export function install(rt) {
   const { ctx, config, home, state } = rt
 
@@ -147,13 +185,12 @@ export function install(rt) {
   const dayFormat = new Intl.DateTimeFormat('en-CA', { ...(config.timeZone ? { timeZone: config.timeZone } : {}), year: 'numeric', month: '2-digit', day: '2-digit' })
   const today = () => dayFormat.format(Date.now())
 
-  // Ids are Session ids; anything else becomes a hash, so no id can leave the folder.
-  const safeId = id => (/^[\w-]{1,128}$/.test(id) ? id : createHash('sha256').update(String(id)).digest('hex').slice(0, 32))
+  // The same rule for summaries, snapshots and archives; remote ids use `safeScopeId`.
+  const safeId = legacySafeId
   const TEAM = { kind: 'team' }
   const ownScope = botId => ({ kind: 'bot', botId })
   const groupScope = roomId => ({ kind: 'group', roomId })
-  const dirOf = scope => (scope.kind === 'team' ? join(root, 'team') : scope.kind === 'group' ? join(root, 'groups', safeId(scope.roomId)) : join(root, 'bots', safeId(scope.botId)))
-  const scopeKey = scope => (scope.kind === 'team' ? 'team' : scope.kind === 'group' ? `group:${scope.roomId}` : `bot:${scope.botId}`)
+  const dirOf = scope => scopeDir(root, scope)
   // A private Bot's before/after text never goes into the team-wide change log.
   const journalFor = (scope, op) => {
     const botId = scope?.startsWith('bot:') ? scope.slice(4) : undefined

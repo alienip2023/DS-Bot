@@ -5,8 +5,55 @@ import { createHash, randomBytes } from 'node:crypto'
 // Sizes, in characters of entry text: metadata does not count. Each MEMORY.md rides in
 // every request of a conversation, so its size is what a scope may always have in view;
 // the user can change these three (prefs.memoryLimits). A topic is read whole in one
-// recall. An entry holds one fact.
-export const MEMORY_LIMITS = { entry: 300, group: 12_000, bot: 8_000, team: 4_000, topic: 16_000, topics: 40 }
+// recall. An entry holds one fact. `node` and the remote `bot` scopes have no files on
+// this machine yet, but they are written by the same path when they do; `snapshot` is
+// the whole rendered memory a node receives, across team, node and Bot sections.
+export const MEMORY_LIMITS = { entry: 300, group: 12_000, bot: 8_000, node: 8_000, team: 4_000, topic: 16_000, topics: 40, snapshot: 32_768 }
+// The line a section carries when the snapshot budget cut it. It is markdown so a
+// model reads it as a note, not as another memory entry.
+export const SNAPSHOT_TRUNCATED = '[memory truncated: the rest did not fit the snapshot budget]'
+// The order sections are kept in when the snapshot does not fit: what everyone reads
+// first, then what the machine reads, then what one Bot reads.
+const SNAPSHOT_RANK = { team: 0, node: 1, bot: 2 }
+
+// Cut `text` to `budget` characters without leaving half a line, then say it was cut.
+// A section that gets no budget at all still carries the marker, so a reader can tell
+// "nothing here" from "left out".
+function cutSection(text, budget) {
+  if (budget <= 0) return SNAPSHOT_TRUNCATED
+  const head = text.slice(0, budget)
+  const at = head.lastIndexOf('\n')
+  const kept = (at === -1 ? head : head.slice(0, at + 1)).replace(/\s+$/, '')
+  return kept === '' ? SNAPSHOT_TRUNCATED : `${kept}\n\n${SNAPSHOT_TRUNCATED}`
+}
+
+// Fit rendered memory sections into the snapshot budget. Sections are taken in
+// team → node → bot order whatever order they arrive in; the first one that does not
+// fit is cut at a line boundary and marked, and every later section is dropped with
+// `truncated: true`. `size` counts the characters kept.
+export function fitSnapshot(sections, limit = MEMORY_LIMITS.snapshot) {
+  const ordered = sections
+    .map((section, index) => ({ section, index }))
+    .sort((a, b) => (SNAPSHOT_RANK[a.section?.kind] ?? 3) - (SNAPSHOT_RANK[b.section?.kind] ?? 3) || a.index - b.index)
+    .map(({ section }) => section)
+  let left = Math.max(0, limit)
+  let truncated = false
+  let size = 0
+  const kept = ordered.map((section) => {
+    const text = typeof section?.text === 'string' ? section.text : ''
+    if (!truncated && text.length <= left) {
+      left -= text.length
+      size += text.length
+      return { ...section, text, truncated: false }
+    }
+    truncated = true
+    const cut = cutSection(text, left)
+    size += cut.length
+    left = 0
+    return { ...section, text: cut, truncated: true }
+  })
+  return { sections: kept, truncated, size }
+}
 // What one MEMORY.md may take of the model's window, however large the size is set.
 export const WINDOW_SHARE = 0.02
 

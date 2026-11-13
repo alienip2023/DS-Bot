@@ -2622,11 +2622,12 @@ test('a memory call names the current part of the Bot chat', async (t) => {
 })
 
 test('a Bot\'s memory backend comes from its own setting, then the host default, then auto', () => {
-  assert.deepEqual(MEMORY_BACKENDS, ['auto', 'mneme', 'file', 'none'])
+  assert.deepEqual(MEMORY_BACKENDS, ['auto', 'mneme', 'file', 'federation', 'none'])
   const bot = backend => ({ name: 'B', memoryConfig: { backend } })
   assert.equal(memoryBackendOf({}, bot('mneme')), 'mneme')
   assert.equal(memoryBackendOf({}, bot('file')), 'file')
   assert.equal(memoryBackendOf({}, bot('none')), 'none')
+  assert.equal(memoryBackendOf({}, bot('federation')), 'federation')
   // auto 由这台机器上有没有 dsh-mneme 决定，测试里只断言它落在两个真实后端之一。
   assert.ok(['mneme', 'file'].includes(memoryBackendOf({}, bot('auto'))))
   // Bot 自己的选择覆盖这台机器的默认。

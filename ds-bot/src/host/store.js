@@ -23,7 +23,7 @@ export function install(rt) {
   const { ctx, home, statePath } = rt
 
   /** @type {{version:2, workspaceId?:string, mainBotIds:string[], bots:Record<string,any>, threads:Record<string,any>, privateArchives:any[], rooms:Record<string,any>, agents:Record<string,any>, sections:any[], capabilities:{items:Record<string,any>}, exchanges:any[], exchangeTurns:Record<string,number[]>, revision:number}} */
-  const state = { version: STATE_VERSION, mainBotIds: [], bots: {}, threads: {}, privateArchives: [], rooms: {}, agents: {}, sections: [], capabilities: { items: {} }, exchanges: [], exchangeTurns: {}, works: {}, requests: {}, questions: {}, views: {}, closedCards: {}, prefs: {}, nodeLimits: {}, switching: {}, federation: { version: 1, hubId: null, peersAt: 0, inbox: {}, outbox: {}, seen: {}, seq: 0, allowPeerToMain: false, lastError: null }, revision: 0 }
+  const state = { version: STATE_VERSION, mainBotIds: [], bots: {}, threads: {}, privateArchives: [], rooms: {}, agents: {}, sections: [], capabilities: { items: {} }, exchanges: [], exchangeTurns: {}, works: {}, requests: {}, questions: {}, views: {}, closedCards: {}, prefs: {}, nodeLimits: {}, switching: {}, federation: { version: 1, hubId: null, peersAt: 0, inbox: {}, outbox: {}, seen: {}, seq: 0, allowPeerToMain: false, lastError: null }, memoryFederation: { seq: 0, schemaVersion: 1, nodes: {}, inbox: {} }, revision: 0 }
   let loaded = null
   let writing = Promise.resolve()
   const { warn } = rt
@@ -139,6 +139,7 @@ export function install(rt) {
     // `computer` is the computer-use switch; absent or corrupt means off.
     if (state.computer === null || typeof state.computer !== 'object' || Array.isArray(state.computer)) state.computer = {}
     let migrated = !hadCapabilities || groupsMigrated
+    if (migrateMemoryFederation(state)) migrated = true
     if (ensureFederationState(state)) migrated = true
     if (state.capabilities === null || typeof state.capabilities !== 'object' || Array.isArray(state.capabilities)) {
       state.capabilities = { items: {} }
@@ -710,6 +711,52 @@ export function install(rt) {
       }
     },
   })
+}
+
+// Memory federation (M4 S1): the hub keeps the sequence that says how fresh a node's
+// copy is, and the last sequence each node acknowledged. This migration only fills the
+// shape; it never renumbers a sequence that is already there, so a restart cannot make
+// a node believe its old snapshot is newer than it is. Running it twice leaves the
+// state byte-identical, and it never touches the peer `federation` field beside it.
+export function migrateMemoryFederation(state) {
+  let changed = false
+  const value = state.memoryFederation
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    state.memoryFederation = { seq: 0, schemaVersion: 1, nodes: {}, inbox: {} }
+    return true
+  }
+  if (!Number.isInteger(value.seq) || value.seq < 0) {
+    value.seq = 0
+    changed = true
+  }
+  if (value.schemaVersion !== 1) {
+    value.schemaVersion = 1
+    changed = true
+  }
+  if (value.nodes === null || typeof value.nodes !== 'object' || Array.isArray(value.nodes)) {
+    value.nodes = {}
+    changed = true
+  }
+  for (const [nodeId, entry] of Object.entries(value.nodes)) {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      value.nodes[nodeId] = { lastSeq: 0, sentSeq: 0 }
+      changed = true
+      continue
+    }
+    if (!Number.isInteger(entry.lastSeq) || entry.lastSeq < 0) {
+      entry.lastSeq = 0
+      changed = true
+    }
+    if (!Number.isInteger(entry.sentSeq) || entry.sentSeq < 0) {
+      entry.sentSeq = 0
+      changed = true
+    }
+  }
+  if (value.inbox === null || typeof value.inbox !== 'object' || Array.isArray(value.inbox)) {
+    value.inbox = {}
+    changed = true
+  }
+  return changed
 }
 
 // v1 → v2 (docs/thread-model.md §1.3): every Bot gets its default Main thread, and
