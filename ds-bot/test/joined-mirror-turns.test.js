@@ -135,3 +135,19 @@ test('the same exchange id never opens a second turn on the page', async () => {
   assert.deepEqual(texts(w.session, 'assistant/message'), ['pong'])
   assert.equal(w.rt.state.exchanges.length, 2, 'the sender still hears about each delivery')
 })
+
+test('a mirror that cannot be opened only warns and never blocks the dispatch', async () => {
+  const w = makeWorld()
+  w.rt.resolveAgent = async () => { throw new Error('damaged mirror log') }
+  const pending = handleJoinedTurn(w.rt, {
+    fromId: w.local.id, toId: w.shadow.id, text: 'still deliver', exchangeId: 'ex-5', role: 'request',
+  })
+  await settle()
+  assert.equal(w.frames.length, 1, 'the node still gets the message')
+  w.answer()
+  assert.equal(await pending, 'ex-5', 'the delivery result is unaffected')
+  assert.equal(w.warnings.length, 1)
+  assert.match(w.warnings[0][0], /was not mirrored/)
+  assert.equal(w.session.log.length, 0, 'nothing was written to the broken mirror')
+  assert.equal(w.rt.state.exchanges.at(-1).text, 'pong', 'the exchange record is still written')
+})
