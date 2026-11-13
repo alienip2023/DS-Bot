@@ -512,6 +512,18 @@ export function install(rt) {
           await rt.load()
           const bot = rt.botOf(String(body.botId ?? ''))
           if (bot === undefined) return fail('Unknown Bot', 'bot/not-found')
+          // A Bot on another machine has no local Session here: chatOf falls back to the
+          // joined id and resolveAgent would throw. Its turn state is what this hub knows.
+          if (bot.origin === 'joined' || bot.type === 'remote-worker') {
+            const claim = rt.joinedInFlight?.get?.(bot.id)
+            return ok({
+              remote: true,
+              nodeId: bot.worker?.nodeId ?? null,
+              hostname: bot.worker?.hostname ?? null,
+              running: claim !== undefined,
+              startedAt: Number.isFinite(claim?.startedAt) ? claim.startedAt : null,
+            })
+          }
           const projections = ctx.get?.('sessionProjections')
           if (projections === undefined) return ok(null)
           const agent = await rt.resolveAgent(rt.chatOf(bot.id))

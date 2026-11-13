@@ -352,7 +352,7 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
   // page path waits for it (joined-prompt.js waitForJoinedMirror) before calling here.
   if (mirrorTurnOpen(rt, bot.id)) throw new ExecutorError('E_BUSY', 'a turn for this Bot is still in flight')
   if (rt.joinedInFlight.has(bot.id)) throw new ExecutorError('E_BUSY', 'a turn for this Bot is still in flight')
-  const claim = { requestId, abort: undefined }
+  const claim = { requestId, abort: undefined, startedAt: Date.now() }
   rt.joinedInFlight.set(bot.id, claim)
   // The page shows the Bot as running (and offers Stop) from the moment the user's message is
   // on the page until the slot is released (joined-running.js).

@@ -152,3 +152,26 @@ test('the node receiver stops the local turn and reports whether one was running
   assert.match(failed.error, /nope/)
   assert.deepEqual(ran, ['session-x'])
 })
+
+test('run-stats on a joined Bot reports the remote turn state without a mirror Session', async (t) => {
+  const w = await start(team())
+  t.after(w.stop)
+  const result = await w.call('run-stats', { botId: REMOTE })
+  assert.equal(result.ok, true)
+  assert.deepEqual(result.value, { remote: true, nodeId: 'n1', hostname: 'box-1', running: false, startedAt: null })
+  assert.ok(!w.resolved.includes(REMOTE), 'no local Session was resolved for the shadow')
+
+  w.rt.joinedInFlight = new Map([[REMOTE, { requestId: 'r1', abort() {}, startedAt: 1234 }]])
+  const running = await w.call('run-stats', { botId: REMOTE })
+  assert.equal(running.value.running, true)
+  assert.equal(running.value.startedAt, 1234)
+})
+
+test('run-stats keeps the local projection path for a local Bot', async (t) => {
+  const w = await start(team())
+  t.after(w.stop)
+  const result = await w.call('run-stats', { botId: 'b' })
+  assert.equal(result.ok, true)
+  assert.equal(result.value, null, 'no projections service in this harness → the local answer is null')
+  assert.deepEqual(w.resolved, [], 'a local Bot with no projections service is not resolved either')
+})
