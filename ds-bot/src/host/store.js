@@ -23,7 +23,7 @@ export function install(rt) {
   const { ctx, home, statePath } = rt
 
   /** @type {{version:2, workspaceId?:string, mainBotIds:string[], bots:Record<string,any>, threads:Record<string,any>, privateArchives:any[], rooms:Record<string,any>, agents:Record<string,any>, sections:any[], capabilities:{items:Record<string,any>}, exchanges:any[], exchangeTurns:Record<string,number[]>, revision:number}} */
-  const state = { version: STATE_VERSION, mainBotIds: [], bots: {}, threads: {}, privateArchives: [], rooms: {}, agents: {}, sections: [], capabilities: { items: {} }, exchanges: [], exchangeTurns: {}, works: {}, requests: {}, questions: {}, views: {}, closedCards: {}, prefs: {}, switching: {}, federation: { version: 1, hubId: null, peersAt: 0, inbox: {}, outbox: {}, seen: {}, seq: 0, allowPeerToMain: false, lastError: null }, revision: 0 }
+  const state = { version: STATE_VERSION, mainBotIds: [], bots: {}, threads: {}, privateArchives: [], rooms: {}, agents: {}, sections: [], capabilities: { items: {} }, exchanges: [], exchangeTurns: {}, works: {}, requests: {}, questions: {}, views: {}, closedCards: {}, prefs: { nodeInventory: false }, switching: {}, nodeInventory: { lastError: null, appliedAt: 0 }, federation: { version: 1, hubId: null, peersAt: 0, inbox: {}, outbox: {}, seen: {}, seq: 0, allowPeerToMain: false, lastError: null }, revision: 0 }
   let loaded = null
   let writing = Promise.resolve()
   const { warn } = rt
@@ -528,7 +528,7 @@ export function install(rt) {
     bySessionIdMap.clear()
     bySessionIdFullMap.clear()
     for (const bot of Object.values(state.bots)) {
-      // A peer row is a shadow: `chatOf` would name its id as if it were a Session.
+      // A peer/node row is a shadow: `chatOf` would name its id as if it were a Session.
       if (bot.origin === 'peer') continue
       for (const segment of bot.segments ?? []) pastOwners.set(segment.sessionId, { botId: bot.id })
       chatOwners.set(chatOf(bot.id), bot.id)
@@ -680,7 +680,7 @@ export function migrateThreads(state, now = Date.now()) {
   }
   for (const bot of Object.values(state.bots ?? {})) {
     if (bot === null || typeof bot !== 'object' || typeof bot.id !== 'string' || bot.id === '') continue
-    // A peer row is a shadow of another machine's Bot: it has no Session and so no Thread.
+    // A peer/node row is a shadow of another machine's Bot: it has no Session and so no Thread.
     if (bot.origin === 'peer') continue
     const id = mainThreadId(bot.id)
     if (threadOf(state, id) === undefined) {
