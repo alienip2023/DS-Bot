@@ -29867,15 +29867,16 @@ var BY_CODE = {
   "memory/federation-unsupported": () => t("Federated memory is not available here: this machine is not a node, or the hub does not support it. Nothing was saved."),
   "bot-create-model-unknown": () => t("This machine does not have the selected model. Pick another one."),
   "bot-create-model-no-key": () => t("This machine has the model, but its provider has no key. Add the key on that machine, or pick another model."),
-  "bot-create-node-unknown": () => t("That machine is no longer connected. Pick another one."),
+  "node-unknown": () => t("That machine is no longer connected. Pick another one."),
   "bot-create-unavailable": () => t("Creating a Bot on a remote machine is not available here."),
   "bot-create-workdir-denied": () => t("That folder is outside the folders this machine allows. Pick one inside them.")
 };
 function failureText2(failure) {
   const code = typeof failure?.code === "string" ? failure.code : void 0;
-  const localize = code === void 0 ? void 0 : BY_CODE[code];
+  const message = typeof failure?.message === "string" ? failure.message : void 0;
+  const localize = (code !== void 0 ? BY_CODE[code] : void 0) ?? (message !== void 0 ? BY_CODE[message] : void 0);
   if (localize !== void 0) return localize();
-  return hostText(failure?.message ?? String(failure));
+  return hostText(message ?? String(failure));
 }
 
 // src/client/permission-picker.js

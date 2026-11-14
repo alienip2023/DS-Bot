@@ -7,14 +7,16 @@ const BY_CODE = {
   'memory/federation-unsupported': () => t('Federated memory is not available here: this machine is not a node, or the hub does not support it. Nothing was saved.'),
   'bot-create-model-unknown': () => t('This machine does not have the selected model. Pick another one.'),
   'bot-create-model-no-key': () => t('This machine has the model, but its provider has no key. Add the key on that machine, or pick another model.'),
-  'bot-create-node-unknown': () => t('That machine is no longer connected. Pick another one.'),
+  'node-unknown': () => t('That machine is no longer connected. Pick another one.'),
   'bot-create-unavailable': () => t('Creating a Bot on a remote machine is not available here.'),
   'bot-create-workdir-denied': () => t('That folder is outside the folders this machine allows. Pick one inside them.'),
 }
 
 export function failureText(failure) {
   const code = typeof failure?.code === 'string' ? failure.code : undefined
-  const localize = code === undefined ? undefined : BY_CODE[code]
+  const message = typeof failure?.message === 'string' ? failure.message : undefined
+  // create-bot wraps the specific code in message and sends code 'bot/refused'.
+  const localize = (code !== undefined ? BY_CODE[code] : undefined) ?? (message !== undefined ? BY_CODE[message] : undefined)
   if (localize !== undefined) return localize()
-  return hostText(failure?.message ?? String(failure))
+  return hostText(message ?? String(failure))
 }

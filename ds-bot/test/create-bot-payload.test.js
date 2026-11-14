@@ -183,6 +183,15 @@ test('M-create-local-then-node: switching the Machine to a node after choosing a
   assert.equal(String(body.model).startsWith('local-'), false)
 })
 
+test('M-create-effort-cleared: picking another model drops the effort of the previous one', async () => {
+  const m = await mount()
+  await m.act(tree => named(tree, 'ModelMenu')[0].props.onPickEffort('high'))
+  await m.act(tree => named(tree, 'ModelMenu')[0].props.onPick('piion/m1'))
+  await m.act(tree => m.createButton(tree).props.onClick())
+  assert.equal(m.created[0].model, 'piion/m1')
+  assert.equal(m.created[0].effort, undefined, 'an effort belongs to the model it was picked for')
+})
+
 test('M-create-node-picker: the picker of a node-side Bot is the NODE catalog as reported — local- names of either spelling included', async () => {
   const targets = [{ nodeId: 'n1', hostname: 'node-1', online: true, defaultModel: null, models: [
     NODE_MODEL,
