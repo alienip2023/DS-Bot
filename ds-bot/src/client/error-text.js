@@ -5,6 +5,11 @@ import { hostText, t } from './i18n.js'
 const BY_CODE = {
   'memory/federation-requires-node': () => t('Federated memory needs a node joined to a hub. This machine has no node identity, so the Bot keeps its memory here.'),
   'memory/federation-unsupported': () => t('Federated memory is not available here: this machine is not a node, or the hub does not support it. Nothing was saved.'),
+  'bot-create-model-unknown': () => t('This machine does not have the selected model. Pick another one.'),
+  'bot-create-model-no-key': () => t('This machine has the model, but its provider has no key. Add the key on that machine, or pick another model.'),
+  'bot-create-node-unknown': () => t('That machine is no longer connected. Pick another one.'),
+  'bot-create-unavailable': () => t('Creating a Bot on a remote machine is not available here.'),
+  'bot-create-workdir-denied': () => t('That folder is outside the folders this machine allows. Pick one inside them.'),
 }
 
 export function failureText(failure) {

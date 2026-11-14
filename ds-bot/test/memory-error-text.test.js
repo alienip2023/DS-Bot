@@ -20,3 +20,24 @@ test('an unknown code keeps the host message', () => {
   assert.equal(failureText(coded('Something broke.', 'memory/other')), 'Something broke.')
   assert.equal(failureText(new Error('No code here.')), 'No code here.')
 })
+
+test('a node that lacks the chosen model is shown in local wording', () => {
+  assert.equal(
+    failureText(coded('bot-create-model-unknown', 'bot-create-model-unknown')),
+    'This machine does not have the selected model. Pick another one.',
+  )
+})
+
+test('a node whose provider has no key is shown in local wording', () => {
+  assert.equal(
+    failureText(coded('bot-create-model-no-key', 'bot-create-model-no-key')),
+    'This machine has the model, but its provider has no key. Add the key on that machine, or pick another model.',
+  )
+})
+
+test('a node that dropped offline is shown in local wording', () => {
+  assert.equal(
+    failureText(coded('bot-create-node-unknown', 'bot-create-node-unknown')),
+    'That machine is no longer connected. Pick another one.',
+  )
+})

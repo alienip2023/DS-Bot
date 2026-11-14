@@ -2482,7 +2482,13 @@ Object.assign(JA, {
   "Its own memory": "その Bot のメモリ",
   "This machine has no node identity": "このマシンにはノード ID がありません",
   "Federated memory needs a node joined to a hub. This machine has no node identity, so the Bot keeps its memory here.": "連合メモリにはハブにつながったノードが必要です。このマシンにはノード ID がないため、この Bot のメモリはここに残ります。",
-  "Federated memory is not available here: this machine is not a node, or the hub does not support it. Nothing was saved.": "ここでは連合メモリを使えません。このマシンがノードではないか、ハブが対応していません。何も保存されませんでした。"
+  "Federated memory is not available here: this machine is not a node, or the hub does not support it. Nothing was saved.": "ここでは連合メモリを使えません。このマシンがノードではないか、ハブが対応していません。何も保存されませんでした。",
+  "This machine does not have the selected model. Pick another one.": "このマシンには選んだモデルがありません。選び直してください。",
+  "This machine has the model, but its provider has no key. Add the key on that machine, or pick another model.": "このマシンにはモデルがありますが、プロバイダにキーがありません。そのマシンでキーを追加するか、別のモデルを選んでください。",
+  "That machine is no longer connected. Pick another one.": "そのマシンはもう接続されていません。選び直してください。",
+  "Creating a Bot on a remote machine is not available here.": "ここではリモートマシンに Bot を作れません。",
+  "That folder is outside the folders this machine allows. Pick one inside them.": "そのフォルダはこのマシンが許可する範囲の外です。範囲内のものを選んでください。",
+  "This machine's model catalog has not synced yet.": "このマシンのモデル一覧はまだ同期されていません。"
 });
 
 // src/client/locales/ko.js
@@ -4891,7 +4897,13 @@ Object.assign(KO, {
   "Its own memory": "해당 Bot의 메모리",
   "This machine has no node identity": "이 머신에는 노드 ID가 없습니다",
   "Federated memory needs a node joined to a hub. This machine has no node identity, so the Bot keeps its memory here.": "연합 메모리는 허브에 연결된 노드가 필요합니다. 이 머신에는 노드 ID가 없어서 이 Bot의 메모리는 여기에 남습니다.",
-  "Federated memory is not available here: this machine is not a node, or the hub does not support it. Nothing was saved.": "여기서는 연합 메모리를 쓸 수 없습니다. 이 머신이 노드가 아니거나 허브가 지원하지 않습니다. 아무것도 저장되지 않았습니다."
+  "Federated memory is not available here: this machine is not a node, or the hub does not support it. Nothing was saved.": "여기서는 연합 메모리를 쓸 수 없습니다. 이 머신이 노드가 아니거나 허브가 지원하지 않습니다. 아무것도 저장되지 않았습니다.",
+  "This machine does not have the selected model. Pick another one.": "이 머신에는 선택한 모델이 없습니다. 다시 선택하세요.",
+  "This machine has the model, but its provider has no key. Add the key on that machine, or pick another model.": "이 머신에는 모델이 있지만 제공자에 키가 없습니다. 그 머신에 키를 추가하거나 다른 모델을 선택하세요.",
+  "That machine is no longer connected. Pick another one.": "그 머신은 더 이상 연결되어 있지 않습니다. 다시 선택하세요.",
+  "Creating a Bot on a remote machine is not available here.": "여기서는 원격 머신에 Bot을 만들 수 없습니다.",
+  "That folder is outside the folders this machine allows. Pick one inside them.": "그 폴더는 이 머신이 허용하는 범위 밖입니다. 범위 안의 것을 선택하세요.",
+  "This machine's model catalog has not synced yet.": "이 머신의 모델 목록이 아직 동기화되지 않았습니다."
 });
 
 // src/client/locales/es.js
@@ -7300,7 +7312,13 @@ Object.assign(ES, {
   "Its own memory": "Su propia memoria",
   "This machine has no node identity": "Esta máquina no tiene identidad de nodo",
   "Federated memory needs a node joined to a hub. This machine has no node identity, so the Bot keeps its memory here.": "La memoria federada necesita un nodo conectado a un hub. Esta máquina no tiene identidad de nodo, así que la memoria de este Bot se queda aquí.",
-  "Federated memory is not available here: this machine is not a node, or the hub does not support it. Nothing was saved.": "La memoria federada no está disponible aquí: esta máquina no es un nodo, o el hub no la admite. No se guardó nada."
+  "Federated memory is not available here: this machine is not a node, or the hub does not support it. Nothing was saved.": "La memoria federada no está disponible aquí: esta máquina no es un nodo, o el hub no la admite. No se guardó nada.",
+  "This machine does not have the selected model. Pick another one.": "Esta máquina no tiene el modelo elegido. Elige otro.",
+  "This machine has the model, but its provider has no key. Add the key on that machine, or pick another model.": "Esta máquina tiene el modelo, pero su proveedor no tiene clave. Añade la clave en esa máquina o elige otro modelo.",
+  "That machine is no longer connected. Pick another one.": "Esa máquina ya no está conectada. Elige otra.",
+  "Creating a Bot on a remote machine is not available here.": "Aquí no se puede crear un Bot en una máquina remota.",
+  "That folder is outside the folders this machine allows. Pick one inside them.": "Esa carpeta está fuera de las que esta máquina permite. Elige una dentro.",
+  "This machine's model catalog has not synced yet.": "El catálogo de modelos de esta máquina aún no se ha sincronizado."
 });
 
 // src/client/locales/fr.js
@@ -9664,7 +9682,13 @@ Object.assign(FR, {
   "Its own memory": "Sa propre mémoire",
   "This machine has no node identity": "Cette machine n’a pas d’identité de nœud",
   "Federated memory needs a node joined to a hub. This machine has no node identity, so the Bot keeps its memory here.": "La mémoire fédérée exige un nœud relié à un hub. Cette machine n’a pas d’identité de nœud, donc la mémoire de ce Bot reste ici.",
-  "Federated memory is not available here: this machine is not a node, or the hub does not support it. Nothing was saved.": "La mémoire fédérée n’est pas disponible ici : cette machine n’est pas un nœud, ou le hub ne la prend pas en charge. Rien n’a été enregistré."
+  "Federated memory is not available here: this machine is not a node, or the hub does not support it. Nothing was saved.": "La mémoire fédérée n’est pas disponible ici : cette machine n’est pas un nœud, ou le hub ne la prend pas en charge. Rien n’a été enregistré.",
+  "This machine does not have the selected model. Pick another one.": "Cette machine n’a pas le modèle choisi. Choisissez-en un autre.",
+  "This machine has the model, but its provider has no key. Add the key on that machine, or pick another model.": "Cette machine a le modèle, mais son fournisseur n’a pas de clé. Ajoutez la clé sur cette machine, ou choisissez un autre modèle.",
+  "That machine is no longer connected. Pick another one.": "Cette machine n’est plus connectée. Choisissez-en une autre.",
+  "Creating a Bot on a remote machine is not available here.": "On ne peut pas créer un Bot sur une machine distante ici.",
+  "That folder is outside the folders this machine allows. Pick one inside them.": "Ce dossier est hors des dossiers autorisés par cette machine. Choisissez-en un dedans.",
+  "This machine's model catalog has not synced yet.": "Le catalogue de modèles de cette machine n’est pas encore synchronisé."
 });
 
 // src/client/locales/de.js
@@ -12073,7 +12097,13 @@ Object.assign(DE, {
   "Its own memory": "Sein eigenes Gedächtnis",
   "This machine has no node identity": "Diese Maschine hat keine Knotenidentität",
   "Federated memory needs a node joined to a hub. This machine has no node identity, so the Bot keeps its memory here.": "Föderiertes Gedächtnis braucht einen Knoten, der mit einem Hub verbunden ist. Diese Maschine hat keine Knotenidentität, deshalb bleibt das Gedächtnis dieses Bots hier.",
-  "Federated memory is not available here: this machine is not a node, or the hub does not support it. Nothing was saved.": "Föderiertes Gedächtnis ist hier nicht verfügbar: Diese Maschine ist kein Knoten, oder der Hub unterstützt es nicht. Es wurde nichts gespeichert."
+  "Federated memory is not available here: this machine is not a node, or the hub does not support it. Nothing was saved.": "Föderiertes Gedächtnis ist hier nicht verfügbar: Diese Maschine ist kein Knoten, oder der Hub unterstützt es nicht. Es wurde nichts gespeichert.",
+  "This machine does not have the selected model. Pick another one.": "Diese Maschine hat das gewählte Modell nicht. Wähle ein anderes.",
+  "This machine has the model, but its provider has no key. Add the key on that machine, or pick another model.": "Diese Maschine hat das Modell, aber der Anbieter hat keinen Schlüssel. Füge den Schlüssel auf dieser Maschine hinzu oder wähle ein anderes Modell.",
+  "That machine is no longer connected. Pick another one.": "Diese Maschine ist nicht mehr verbunden. Wähle eine andere.",
+  "Creating a Bot on a remote machine is not available here.": "Hier kann kein Bot auf einer entfernten Maschine erstellt werden.",
+  "That folder is outside the folders this machine allows. Pick one inside them.": "Dieser Ordner liegt außerhalb der erlaubten Ordner dieser Maschine. Wähle einen darin.",
+  "This machine's model catalog has not synced yet.": "Der Modellkatalog dieser Maschine ist noch nicht synchronisiert."
 });
 
 // src/client/i18n.js
@@ -13188,6 +13218,12 @@ var ZH = {
   "This machine has no node identity": "这台机器没有节点身份",
   "Federated memory needs a node joined to a hub. This machine has no node identity, so the Bot keeps its memory here.": "联邦记忆需要一台接入 hub 的节点；这台机器没有节点身份，所以这个 Bot 的记忆留在这里。",
   "Federated memory is not available here: this machine is not a node, or the hub does not support it. Nothing was saved.": "这里无法使用联邦记忆：这台机器不是节点，或 hub 不支持联邦记忆。没有保存任何内容。",
+  "This machine does not have the selected model. Pick another one.": "这台机器上没有所选模型，请重新选择。",
+  "This machine has the model, but its provider has no key. Add the key on that machine, or pick another model.": "这台机器有这个模型，但它的服务商没有密钥。在那台机器上补密钥，或换一个模型。",
+  "That machine is no longer connected. Pick another one.": "那台机器已经断开，请重新选择。",
+  "Creating a Bot on a remote machine is not available here.": "这里不能在远程机器上新建 Bot。",
+  "That folder is outside the folders this machine allows. Pick one inside them.": "这个目录不在这台机器允许的目录里，请换一个。",
+  "This machine's model catalog has not synced yet.": "这台机器的模型目录还没同步过来。",
   "Every Bot reads it": "所有 Bot 都会读",
   "Group memory": "群记忆",
   "Only its members read it": "只有群成员会读",
@@ -29828,7 +29864,12 @@ function threadHomeGuard({ roster, mainView, threadBotOfSession, threadOwnerOf, 
 // src/client/error-text.js
 var BY_CODE = {
   "memory/federation-requires-node": () => t("Federated memory needs a node joined to a hub. This machine has no node identity, so the Bot keeps its memory here."),
-  "memory/federation-unsupported": () => t("Federated memory is not available here: this machine is not a node, or the hub does not support it. Nothing was saved.")
+  "memory/federation-unsupported": () => t("Federated memory is not available here: this machine is not a node, or the hub does not support it. Nothing was saved."),
+  "bot-create-model-unknown": () => t("This machine does not have the selected model. Pick another one."),
+  "bot-create-model-no-key": () => t("This machine has the model, but its provider has no key. Add the key on that machine, or pick another model."),
+  "bot-create-node-unknown": () => t("That machine is no longer connected. Pick another one."),
+  "bot-create-unavailable": () => t("Creating a Bot on a remote machine is not available here."),
+  "bot-create-workdir-denied": () => t("That folder is outside the folders this machine allows. Pick one inside them.")
 };
 function failureText2(failure) {
   const code = typeof failure?.code === "string" ? failure.code : void 0;
@@ -30207,7 +30248,8 @@ function CreateBot({ roster, actions, start, brief = "", onBack, canGoBack, onCr
   const clash = roster.bots.some((bot) => bot.name.toLowerCase() === finalName.toLowerCase());
   const problem = nameProblem(finalName);
   const nodeRoster = isRemoteNode ? { ...roster, models: (remoteNodes.find((node) => node.nodeId === targetNodeId)?.models ?? []).map((m) => ({ ref: m.ref, provider: m.provider, name: m.name, providerName: m.provider })) } : roster;
-  const blocked = busy || clash || Boolean(problem) || local && chosen === "";
+  const nodeCatalogEmpty = isRemoteNode && nodeRoster.models.length === 0;
+  const blocked = busy || clash || Boolean(problem) || local && chosen === "" || nodeCatalogEmpty;
   const create = async () => {
     if (blocked) return;
     setError("");
@@ -30348,13 +30390,24 @@ function CreateBot({ roster, actions, start, brief = "", onBack, canGoBack, onCr
         {
           className: "bt-input",
           value: targetNodeId,
-          onChange: (e) => setTargetNodeId(e.target.value),
+          onChange: (e) => {
+            const next = e.target.value;
+            setTargetNodeId(next);
+            if (next === "") return;
+            const node = remoteNodes.find((n) => n.nodeId === next);
+            const refs = (node?.models ?? []).map((m) => m.ref);
+            if (refs.includes(model)) return;
+            if (node?.defaultModel && refs.includes(node.defaultModel)) {
+              setModel(node.defaultModel);
+              setEffort(void 0);
+            }
+          },
           "aria-label": t("Machine")
         },
         (0, import_react38.createElement)("option", { value: "" }, t("This machine")),
         remoteNodes.map((n) => (0, import_react38.createElement)("option", { key: n.nodeId, value: n.nodeId }, n.hostname ?? n.nodeId))
       ),
-      (0, import_react38.createElement)("span", { className: "bt-note" }, targetNodeId ? t("The Bot will be created on the selected remote machine.") : remoteNodes.length === 0 ? t("No connected remote machines yet.") : t("Create the Bot on this machine, or pick a connected remote machine."))
+      (0, import_react38.createElement)("span", { className: "bt-note" }, targetNodeId ? nodeCatalogEmpty ? t("This machine's model catalog has not synced yet.") : t("The Bot will be created on the selected remote machine.") : remoteNodes.length === 0 ? t("No connected remote machines yet.") : t("Create the Bot on this machine, or pick a connected remote machine."))
     ),
     !isRemoteNode ? (0, import_react38.createElement)(
       "div",

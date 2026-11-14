@@ -2404,4 +2404,10 @@ Object.assign(KO, {
   "This machine has no node identity": "이 머신에는 노드 ID가 없습니다",
   "Federated memory needs a node joined to a hub. This machine has no node identity, so the Bot keeps its memory here.": "연합 메모리는 허브에 연결된 노드가 필요합니다. 이 머신에는 노드 ID가 없어서 이 Bot의 메모리는 여기에 남습니다.",
   "Federated memory is not available here: this machine is not a node, or the hub does not support it. Nothing was saved.": "여기서는 연합 메모리를 쓸 수 없습니다. 이 머신이 노드가 아니거나 허브가 지원하지 않습니다. 아무것도 저장되지 않았습니다.",
+  "This machine does not have the selected model. Pick another one.": "이 머신에는 선택한 모델이 없습니다. 다시 선택하세요.",
+  "This machine has the model, but its provider has no key. Add the key on that machine, or pick another model.": "이 머신에는 모델이 있지만 제공자에 키가 없습니다. 그 머신에 키를 추가하거나 다른 모델을 선택하세요.",
+  "That machine is no longer connected. Pick another one.": "그 머신은 더 이상 연결되어 있지 않습니다. 다시 선택하세요.",
+  "Creating a Bot on a remote machine is not available here.": "여기서는 원격 머신에 Bot을 만들 수 없습니다.",
+  "That folder is outside the folders this machine allows. Pick one inside them.": "그 폴더는 이 머신이 허용하는 범위 밖입니다. 범위 안의 것을 선택하세요.",
+  "This machine's model catalog has not synced yet.": "이 머신의 모델 목록이 아직 동기화되지 않았습니다.",
 })

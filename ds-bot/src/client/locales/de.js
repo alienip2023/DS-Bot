@@ -2404,4 +2404,10 @@ Object.assign(DE, {
   "This machine has no node identity": "Diese Maschine hat keine Knotenidentität",
   "Federated memory needs a node joined to a hub. This machine has no node identity, so the Bot keeps its memory here.": "Föderiertes Gedächtnis braucht einen Knoten, der mit einem Hub verbunden ist. Diese Maschine hat keine Knotenidentität, deshalb bleibt das Gedächtnis dieses Bots hier.",
   "Federated memory is not available here: this machine is not a node, or the hub does not support it. Nothing was saved.": "Föderiertes Gedächtnis ist hier nicht verfügbar: Diese Maschine ist kein Knoten, oder der Hub unterstützt es nicht. Es wurde nichts gespeichert.",
+  "This machine does not have the selected model. Pick another one.": "Diese Maschine hat das gewählte Modell nicht. Wähle ein anderes.",
+  "This machine has the model, but its provider has no key. Add the key on that machine, or pick another model.": "Diese Maschine hat das Modell, aber der Anbieter hat keinen Schlüssel. Füge den Schlüssel auf dieser Maschine hinzu oder wähle ein anderes Modell.",
+  "That machine is no longer connected. Pick another one.": "Diese Maschine ist nicht mehr verbunden. Wähle eine andere.",
+  "Creating a Bot on a remote machine is not available here.": "Hier kann kein Bot auf einer entfernten Maschine erstellt werden.",
+  "That folder is outside the folders this machine allows. Pick one inside them.": "Dieser Ordner liegt außerhalb der erlaubten Ordner dieser Maschine. Wähle einen darin.",
+  "This machine's model catalog has not synced yet.": "Der Modellkatalog dieser Maschine ist noch nicht synchronisiert.",
 })

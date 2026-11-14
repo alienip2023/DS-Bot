@@ -110,3 +110,51 @@ test('on Local agent, Create waits for a CLI', () => {
   button('DS Bot model').props.onClick()
   assert.equal(button('Create').props.disabled, false)
 })
+
+test('switching to a node moves the model onto that node\'s default', () => {
+  render({ models: MODELS, prefs: { defaultBotModel: 'ds/flash' } })
+  const calls = []
+  props.actions = {
+    botCreateTargets: () => Promise.resolve({ nodes: [
+      { nodeId: 'n1', hostname: 'box', defaultModel: 'node/beta', models: [{ ref: 'node/alpha', name: 'Alpha' }, { ref: 'node/beta', name: 'Beta' }] },
+    ] }),
+    createBot: (payload) => { calls.push(payload); return Promise.resolve({ id: 'b1' }) },
+  }
+  // The harness never runs effects, so feed the node list the way the effect would.
+  const machine = collect(n => n.type === 'select' && n.props['aria-label'] === 'Machine')[0]
+  // The node list lives in state; set it through the setter the effect uses.
+  // remoteNodes is the 18th useState (index 17); the harness numbers slots by hook order.
+  slots[17] = [
+    { nodeId: 'n1', hostname: 'box', defaultModel: 'node/beta', models: [{ ref: 'node/alpha' }, { ref: 'node/beta' }] },
+  ]
+  machine.props.onChange({ target: { value: 'n1' } })
+  // The select's onChange closed over the previous render's remoteNodes, which was empty.
+  // Re-read it after the state write so it sees the node list, as a real re-render would.
+  const machineNow = collect(n => n.type === 'select' && n.props['aria-label'] === 'Machine')[0]
+  machineNow.props.onChange({ target: { value: 'n1' } })
+  button('Create').props.onClick()
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].model, 'node/beta', 'the hub default must not be sent to a node that lacks it')
+  assert.equal(calls[0].nodeId, 'n1')
+})
+
+test('a node with no default keeps the current model', () => {
+  render({ models: MODELS, prefs: { defaultBotModel: 'ds/flash' } })
+  const calls = []
+  props.actions = { createBot: (payload) => { calls.push(payload); return Promise.resolve({ id: 'b1' }) } }
+  slots[17] = [{ nodeId: 'n3', hostname: 'plain', defaultModel: null, models: [{ ref: 'node/alpha' }] }]
+  const machine = collect(n => n.type === 'select' && n.props['aria-label'] === 'Machine')[0]
+  machine.props.onChange({ target: { value: 'n3' } })
+  button('Create').props.onClick()
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].model, 'ds/flash', 'without a node default the hub choice stays; the node reports unknown itself')
+})
+
+test('a node with an empty catalog disables Create and says so', () => {
+  render({ models: MODELS })
+  slots[17] = [{ nodeId: 'n2', hostname: 'empty', models: [] }]
+  const machine = collect(n => n.type === 'select' && n.props['aria-label'] === 'Machine')[0]
+  machine.props.onChange({ target: { value: 'n2' } })
+  assert.equal(button('Create').props.disabled, true)
+  assert.match(flatten(concrete).join(' '), /model catalog has not synced yet/)
+})

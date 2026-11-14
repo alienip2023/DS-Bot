@@ -2368,4 +2368,10 @@ Object.assign(JA, {
   "This machine has no node identity": "このマシンにはノード ID がありません",
   "Federated memory needs a node joined to a hub. This machine has no node identity, so the Bot keeps its memory here.": "連合メモリにはハブにつながったノードが必要です。このマシンにはノード ID がないため、この Bot のメモリはここに残ります。",
   "Federated memory is not available here: this machine is not a node, or the hub does not support it. Nothing was saved.": "ここでは連合メモリを使えません。このマシンがノードではないか、ハブが対応していません。何も保存されませんでした。",
+  "This machine does not have the selected model. Pick another one.": "このマシンには選んだモデルがありません。選び直してください。",
+  "This machine has the model, but its provider has no key. Add the key on that machine, or pick another model.": "このマシンにはモデルがありますが、プロバイダにキーがありません。そのマシンでキーを追加するか、別のモデルを選んでください。",
+  "That machine is no longer connected. Pick another one.": "そのマシンはもう接続されていません。選び直してください。",
+  "Creating a Bot on a remote machine is not available here.": "ここではリモートマシンに Bot を作れません。",
+  "That folder is outside the folders this machine allows. Pick one inside them.": "そのフォルダはこのマシンが許可する範囲の外です。範囲内のものを選んでください。",
+  "This machine's model catalog has not synced yet.": "このマシンのモデル一覧はまだ同期されていません。",
 })

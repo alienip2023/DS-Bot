@@ -74,7 +74,8 @@ export function CreateBot({ roster, actions, start, brief = '', onBack, canGoBac
   const nodeRoster = isRemoteNode
     ? { ...roster, models: (remoteNodes.find(node => node.nodeId === targetNodeId)?.models ?? []).map(m => ({ ref: m.ref, provider: m.provider, name: m.name, providerName: m.provider })) }
     : roster
-  const blocked = busy || clash || Boolean(problem) || (local && chosen === '')
+  const nodeCatalogEmpty = isRemoteNode && nodeRoster.models.length === 0
+  const blocked = busy || clash || Boolean(problem) || (local && chosen === '') || nodeCatalogEmpty
   const create = async () => {
     if (blocked) return
     setError('')
@@ -153,13 +154,26 @@ export function CreateBot({ roster, actions, start, brief = '', onBack, canGoBac
       h('span', { className: 'bt-field-label' }, t('Machine')),
       h('select', {
         className: 'bt-input', value: targetNodeId,
-        onChange: e => setTargetNodeId(e.target.value),
+        onChange: e => {
+          const next = e.target.value
+          setTargetNodeId(next)
+          if (next === '') return
+          const node = remoteNodes.find(n => n.nodeId === next)
+          const refs = (node?.models ?? []).map(m => m.ref)
+          if (refs.includes(model)) return
+          if (node?.defaultModel && refs.includes(node.defaultModel)) {
+            setModel(node.defaultModel)
+            setEffort(undefined)
+          }
+        },
         'aria-label': t('Machine'),
       },
         h('option', { value: '' }, t('This machine')),
         remoteNodes.map(n => h('option', { key: n.nodeId, value: n.nodeId }, n.hostname ?? n.nodeId))),
       h('span', { className: 'bt-note' }, targetNodeId
-        ? t('The Bot will be created on the selected remote machine.')
+        ? (nodeCatalogEmpty
+          ? t('This machine\'s model catalog has not synced yet.')
+          : t('The Bot will be created on the selected remote machine.'))
         : remoteNodes.length === 0
           ? t('No connected remote machines yet.')
           : t('Create the Bot on this machine, or pick a connected remote machine.'))),
