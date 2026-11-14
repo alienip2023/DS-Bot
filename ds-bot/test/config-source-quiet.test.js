@@ -41,15 +41,16 @@ function world() {
   store.settings = { describe: () => [{ ns: 'llm-pi-ai', value: { providers: profiles } }] }
   let modelReads = 0
   let model = 'alpha/m1'
+  const answer = async () => { modelReads += 1; return rt.state?.prefs?.defaultBotModel ?? model }
   const rt = {
     ctx, dshHome: home,
     warn: (...args) => warns.push(format(...args)),
-    defaultBotModel: async () => { modelReads += 1; return model },
+    defaultBotModel: answer,
   }
   const pushes = []
   store['remote-agent:config-sync'] = { source: null, setSource(fn) { this.source = fn }, sendPush(nodeId) { pushes.push(nodeId); return true } }
   store['remote-agent:registry'] = { onlineNodes: () => [{ nodeId: 'n1' }], getNode: () => undefined, on: () => {} }
-  return { rt, store, warns, profiles, pushes, modelReads: () => modelReads, builds: () => credReads.n, setModel: value => { model = value } }
+  return { rt, store, warns, profiles, pushes, modelReads: () => modelReads, builds: () => credReads.n, setModel: value => { model = value }, restore() { rt.defaultBotModel = answer } }
 }
 
 const skipped = warns => warns.filter(line => line.startsWith('ds-bot: config-source skipped'))
@@ -135,4 +136,44 @@ test('a hint that cannot be read falls back to a full build', async (t) => {
   t.mock.timers.tick(5_000)
   await flush()
   assert.ok(w.builds() > built, 'a hint that cannot be read rebuilds instead of trusting the cache')
+})
+
+test('a throw is not cached: the next tick reads the default model again', async (t) => {
+  const w = world()
+  await settled(t, w)
+  const asked = w.modelReads()
+  // A changed hint forces a read. The read throws, and that failure must not count as a
+  // check: the following tick, with the hint now still, has to read again.
+  // One function throughout, so its identity never moves: the only thing that can make
+  // the next tick read again is the cleared check time.
+  let threw = 0
+  let fail = true
+  w.rt.defaultBotModel = async () => {
+    threw += 1
+    if (fail) throw new Error('catalog down')
+    return 'alpha/m2'
+  }
+  w.profiles.gamma = { api: 'openai-completions', apiKeyEnv: 'GAMMA_KEY', models: [{ id: 'g1' }] }
+  t.mock.timers.tick(5_000)
+  await flush()
+  assert.equal(w.store['remote-agent:config-sync'].source('n1').defaultModel, null)
+  assert.equal(threw, 1, 'the changed hint read once, and it threw')
+
+  fail = false
+  t.mock.timers.tick(5_000)
+  await flush()
+  assert.equal(threw, 2, 'the next tick reads again instead of reusing the failure')
+  assert.equal(w.store['remote-agent:config-sync'].source('n1').defaultModel, 'alpha/m2')
+})
+
+test('a changed default-model preference rebuilds and pushes on its own', async (t) => {
+  const w = world()
+  await settled(t, w)
+  w.pushes.length = 0
+  const built = w.builds()
+  w.rt.state = { prefs: { defaultBotModel: 'alpha/m2' } }
+  t.mock.timers.tick(5_000)
+  await flush()
+  assert.ok(w.builds() > built, 'the preference is part of the hint, so a change rebuilds')
+  assert.deepEqual(w.pushes, ['n1'])
 })

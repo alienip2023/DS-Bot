@@ -417,7 +417,13 @@ export function install(rt) {
       if (typeof ref === 'string' && ref !== '' && !/embedding/i.test(ref)) {
         defaultModel = ref
       } else { defaultModel = null }
-    } catch { defaultModel = null }
+    } catch {
+      // A throw is not an answer. Leaving the check time set would cache the failure
+      // against this same hint until it moved or the TTL lapsed; clearing it makes the
+      // next tick read again.
+      defaultModel = null
+      defaultModelCheckedAt = 0
+    }
   }
   // ── Change detection ─────────────────────────────────────────────────────
   // A provider added, a key replaced or the team's default model changed shows up only in
@@ -476,7 +482,9 @@ export function install(rt) {
     // The answering function is part of the signal: a caller that swaps it (a test, or a
     // runtime that rebinds it) is a change no file shows. A lapsed cache is one too.
     const fnMoved = rt.defaultBotModel !== defaultModelFn
-    const lapsed = Date.now() - defaultModelCheckedAt >= DEFAULT_MODEL_TTL_MS
+    // `defaultModelCheckedAt === 0` is "never checked", including a check that threw and
+    // was cleared: that must read again on the next tick, not wait out the TTL.
+    const lapsed = defaultModelCheckedAt === 0 || Date.now() - defaultModelCheckedAt >= DEFAULT_MODEL_TTL_MS
     if (hint === undefined || fnMoved || lapsed || `${hint}\n${defaultModel ?? ''}` !== lastHint) await refreshDefault({ force: true })
     const settled = hint === undefined ? undefined : `${hint}\n${defaultModel ?? ''}`
     if (settled !== undefined && settled === lastHint && hintedFingerprint !== null) return hintedFingerprint
