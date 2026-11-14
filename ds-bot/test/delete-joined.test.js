@@ -53,7 +53,7 @@ describe('S23c: delete joined bot + roster recreate protection', () => {
     const report = { nodeId: 'n1', online: true, hostname: 'host1', bots: [{ id: 'rb2', name: 'Bot2', role: 'Worker' }] }
     applyRosterReport(state, report)
     assert.equal(state.bots['joined:n1:rb1']?.worker?.missingFromReport, true, 'absent bot must be marked missingFromReport')
-    assert.equal(state.bots['joined:n1:rb2']?.worker?.missingFromReport, undefined, 'present bot must NOT be marked missingFromReport')
+    assert.equal(state.bots['joined:n1:rb2']?.worker?.missingFromReport, false, 'present bot must be cleared, not left missingFromReport')
   })
 
   it('S57-B-delete-send: joinedDeleteBot sends bot/delete to node registry', async () => {

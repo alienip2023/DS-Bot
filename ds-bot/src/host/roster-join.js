@@ -22,11 +22,15 @@ export function reportableBots(bots) {
     if (bot.type === 'remote-worker') return []
     const id = typeof bot.id === 'string' ? bot.id.trim() : ''
     if (id === '') return []
-    return [{
+    const entry = {
       id,
       name: typeof bot.name === 'string' ? bot.name : '',
       role: typeof bot.role === 'string' ? bot.role : '',
-    }]
+    }
+    // Omit rather than send null/empty/over-long: the hub must not clear a known model.
+    const model = typeof bot.model === 'string' ? bot.model.trim() : ''
+    if (model !== '' && model.length <= 128) entry.model = model
+    return [entry]
   })
 }
 
@@ -47,6 +51,7 @@ export function applyRosterReport(state, report, now = Date.now()) {
     if (Array.isArray(state.deletedJoinedIds) && state.deletedJoinedIds.includes(id)) continue
     seenIds.add(id)
     const existing = state.bots[id]
+    const reportedModel = typeof bot.model === 'string' ? bot.model.trim() : ''
     const row = {
       ...(existing ?? {}),
       id,
@@ -64,8 +69,12 @@ export function applyRosterReport(state, report, now = Date.now()) {
         home: 'remote',
         online,
         lastSeen: now,
+        // Seen in this report: the missing flag must not stick from an earlier absence.
+        missingFromReport: false,
       },
     }
+    // No model in this report keeps existing?.model. Do not write null or ''.
+    if (reportedModel !== '') row.model = reportedModel
     state.bots[id] = row
     // A shadow row without a Main Thread would route its messages to nowhere.
     ensureMainThread(state, row)
