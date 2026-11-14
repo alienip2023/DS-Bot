@@ -38,9 +38,9 @@
 | `bot`（本机） | `{kind:'bot', botId}` | `memory/bots/<safeBotId>/`（不变） | `bot:<botId>` |
 | `bot`（远端） | `{kind:'bot', nodeId, botId}` | `memory/nodes/<safeNodeId>/bots/<safeBotId>/` | `joined:<nodeId>:<remoteBotId>` |
 
-- 远端 Bot 的 `botId` 直接用主控的 joined 影子 id（`joined:<nodeId>:<remoteBotId>`），与 roster 行一一对应；不再引入第二种远端行 id。
-- `scopeKey` 只负责本机既有三值；远端新增 `remoteBotKey`/`nodeKey` 两个纯函数，不把带冒号的组合塞进 `scopeKey`，避免 journal/UI 解析歧义。
-- `dirOf` 三分支扩成四分支；`journalFor` 对远端 Bot 走 `memory/nodes/<nodeId>/journal.jsonl`，不写 team 日志。
+- 远端 Bot 的 `botId` 直接用主控的 joined 影子 id，与 roster 行一一对应。
+- `scopeKey(scope)` 只产本机三值（`memory.js:144-149`）：`team`、`group:<roomId>`、`bot:<botId>`，仅当 `nodeId === undefined`；其余一律返回 `undefined`，不产出 `joined:`。远端 key 由独立纯函数产出：`nodeKey(nodeId) = node:<id>`、`remoteBotKey(nodeId, botId) = joined:<nodeId>:<botId>`；`scopeDir` 用 `nodeId !== undefined` 判远端，与 `remoteBotKey` 同源。
+- `dirOf` 三分支扩成四分支；远端 journal 由 **hub 单写者**写 `memory/nodes/<nodeId>/journal.jsonl`，不进 team 变更日志（节点不持有 journal）。
 - 本机 Bot 目录**不迁移**：它已经有历史，移动会打断快照和 journal。
 
 ### 1.3 state 字段
@@ -68,7 +68,11 @@ state.memoryOutbox = []       // FIFO，≤200
 - `EMPTY`（`store.js:25`）加默认值；`state.version` 仍为 2，未知字段旧版本忽略。
 - **快照按 Bot 分段**：同一节点可挂多个 Bot，`bots` 必须是映射；单段 `bot` 字符串会把同节点 Bot 的记忆互相覆盖。
 - **seq 是全局失效信号**：写/删成功即 `seq+1`；hub 对受影响节点去抖 500ms 推一次 `mem/snapshot`，节点 `ack` 后更新 `lastSeq`；`sentSeq` 用于重连时判断是否需要补发。
-- `migrateMemoryFederation(state)`：补默认、清过期 inbox（7 天 / 1000 条）、把 `seq` 归一到非负整数；幂等。
+- **safe 规则**：`safeScopeId(id)` 对 `/^[A-Za-z0-9_-]{1,128}$/` 原样返回；否则把 `[^A-Za-z0-9_-]` 替换为 `_`、`slice(0,64)`、追加 `-` 与 sha256 前 8 位。本机 `group`/`bot` 仍用 `legacySafeId`，历史路径不变。已知限制：该映射**理论上非单射**（一个纯安全字面 id 可能等于另一个 id 的 sanitized 形），hash 后缀已把实际碰撞概率压到可忽略。
+- **`nodeId` 必须是有业务意义的字符串，永远不为 `null`**：`scopeKey` 用 `=== undefined` 判本机，`scopeDir` 用 `!== undefined` 判远端；传 `null` 会让两边劈叉（远端 Bot 掉进 `memory/nodes/null`，key 变成 `undefined`）。
+- **inbox 过期清理是 S3 的实现项**，不是 S1 已完成项：当前全仓尚无 inbox 生产者，S1 的 `migrateMemoryFederation` 只补默认、把 `seq` 归一到非负整数；7 天 / 1000 条清理放到 S3 与真实写入一起做。
+- **删除语义**：节点侧对 team 的 `forget` 直接拒绝；`archive` 只隐藏、不物理删；Bot 删除走 archive，无墓碑。
+- `migrateMemoryFederation(state)`：补默认、把 `seq` 归一到非负整数；幂等。
 
 ### 1.4 迁移与回滚
 
@@ -89,7 +93,7 @@ state.memoryOutbox = []       // FIFO，≤200
 | `bot:<b>`（远端） | 该 Bot、hub Main | 该 Bot；hub Main 可删改 |
 | `group` | 群成员（本机） | 群成员（本机），不进联邦 |
 
-- team 追加 v1 **不开放给节点**：team 会进入所有 Bot 的系统提示，单台节点被攻陷即可对所有 Bot 做提示注入，限流+审计挡不住一条精心构造的条目。节点收到 `mem/write` 且 `scope.kind==='team'` 时由 hub 返回 `memory/team-read-only`，节点 UI 也隐藏该入口；后续若要放开，另加每节点 `teamAppend` 开关并单独成片。
+- team 追加 v1 **不开放给节点**：team 会进入所有 Bot 的系统提示，单台节点被攻陷即可对所有 Bot 做提示注入，限流+审计挡不住一条精心构造的条目。**双端拒写**：节点侧工具路由在发帧前先拒（`memory/team-read-only`），hub 侧 `writeDenied` 联邦分支再判一次；两处都有测试，不能只靠 UI 隐藏。后续若要放开，另加每节点 `teamAppend` 开关并单独成片。
 - 权限在 **hub 侧**判定（`writeDenied` 的联邦分支），节点只发 `source`，不能自证；读越权在 hub 侧过滤，节点拿到的快照只含它可见的 section。
 - 远端 Bot 只能读写自己的 `bot` scope 与本节点 `node` scope；不能指定任意 `nodeId`。
 
@@ -98,13 +102,13 @@ state.memoryOutbox = []       // FIFO，≤200
 | 位置 | 现状 | M4 改法 |
 |---|---|---|
 | `src/host/memory.js:906` | `ctx.systemPrompt.section` 注册 `bot-memory` | 不变，仍走 `sectionFor` |
-| `src/host/memory.js:844` `sectionFor` | `backendOf(bot)!=='file'` 直接返回 `''`（`:848`） | 增 `federation` 分支：从 `state.memoryCache` 取该 Bot 的 team/node/bot 三段，按 Session 冻结（复用 `frozen` Map，`memory.js:817`），不读文件、不发网络 |
+| `src/host/memory.js:844` `sectionFor` | `backendOf(bot)!=='file'` 直接返回 `''`（`:848`） | 增 `federation` 分支：从 `state.memoryCache` 取该 Bot 的 team/node/bot 三段，按 `rt.memoryNode.cached(bot).at` 失效（同一 `at` 且 marks 仍成立才复用已渲染文本，`at` 变化或角色变化都重渲染），`enabled()` / `memoryNode === undefined` 判断前置到复用之前；joined Bot 无新建线程入口，必须同会话可见；不读文件、不发网络 |
 | `src/host/memory.js:776` `memorySection` | 拼 own + team | 新增 `federationSection(bot)`：拼三段，段首标 `(memory last synced … ago)` |
 | `src/host/memory.js:1213` `readScopes` | own/group/team | 联邦后端时读 `memoryCache`；`scope:'team'` 仍可单读；`group` 返回不可用 |
 | `src/host/memory.js:446` `namedScope` | own/group/team/Bot 名 | 联邦后端下 `own` 指向 `joined:<nodeId>:<botId>`；不接受任意 node 名 |
-| `src/host/memory.js:460` `writeDenied` | Main/群管理员 | hub 侧联邦分支：team 维持 Main/管理员；node/bot 按 §2.1；节点侧只做本地预检，最终以 hub 返回为准 |
+| `src/host/memory.js:460` `writeDenied` | Main/群管理员 | hub 侧联邦分支：team 维持 Main/管理员；node/bot 按 §2.1；节点侧先拒 team，hub 侧二次判定，最终以 hub 返回为准 |
 | `src/host/memory.js:1145/1186/1225` | `remember/forget/recall` | 联邦后端转调 adapter（同一组工具名，不改用户体验）；team 写在节点侧先被 `memory/team-read-only` 拒绝 |
-| `src/host/tools.js:908` | 非 file 后端不注册三工具 | file 与 federation 都注册 |
+| `src/host/tools.js:908` | 非 file 后端不注册三工具 | file 与 federation 都注册；federation 下 team 写调用在路由层先拒，不发 `mem/write` |
 | `src/host/memory-review.js:236/257` | 只 review file 后端 | **federation v1 不启用自动 review**（已拍板）；门保持只认 file |
 | `src/host/memory-tidy.js` | 文件记忆整理 | 联邦后端禁用 tidy（面板置灰），M4 不做远端整理 |
 | `src/host/memory.js:1414` `panelOf` / `:1449` `memoryView` | 只认本机 bot/room | 新增 hub 面板端点（§3），不改旧端点 |
@@ -124,7 +128,7 @@ state.memoryOutbox = []       // FIFO，≤200
 | 方向 | 类型 | 载荷 | 应答 |
 |---|---|---|---|
 | node→hub | `mem/hello` | `{appliedSeq}` | `mem/snapshot` |
-| hub→node | `mem/snapshot` | `{seq, team, node, bots:{<remoteBotId>:{text,truncated?}}, truncated?}`（渲染后的 markdown，总 ≤32KB） | — |
+| hub→node | `mem/snapshot` | `{seq, team, node, bots:{<remoteBotId>:{text,truncated?}}, truncated?, truncatedAt?}`（渲染后的 markdown，按 team→node→bot 截到 32KB） | — |
 | node→hub | `mem/read` | `{requestId, remoteBotId, scope, query?, topic?, limit?}` | `mem/read-result` |
 | hub→node | `mem/read-result` | `{requestId, ok, seq, entries?, topic?, text?, error?}` | — |
 | node→hub | `mem/write` | `{requestId, remoteBotId, op（add / replace / forget）, scope, text?, replace?, topic?, until?, pin?, always?}` | `mem/write-result` |
@@ -133,6 +137,9 @@ state.memoryOutbox = []       // FIFO，≤200
 
 - 通道选择：**独立 `mem/*`，不复用 config-sync**。config-sync 是 hub→node 的配置面（providers/defaultModel/plugins），有 revision/apply/rollback 语义；记忆是 node→hub 的用户内容，方向和生命周期都不同。传输复用现有 registry/relay 与 `remote-agent:peer-link` 的连接事件，但帧、校验、state 都独立。
 - **快照带渲染后的正文**，不是条目 JSON：节点直接用这段文本注入，格式化、预算、密钥过滤都只在 hub 做一次；`mem/read` 才返回条目，供 recall 与面板。
+- **快照永远全量**：不做增量 diff，每次推送都是完整渲染结果；节点以整份替换缓存，seq 只用于判断新旧。
+- **超限与截断顺序**：写入超限直接拒绝并报错（`memory/too-large`，不静默丢条目）；快照超 32KB 时按 **team → node → bot** 的顺序保留，在**行边界**截断，被截段带 `SNAPSHOT_TRUNCATED`。
+- **marker 不计入 budget**：因此 `size` 可以超过 `limit`。验收官实测：`limit=100`、三段各 100 时总量为 220（200 正文 + 两行 marker）；第一段超预算后，后续段各留一行 marker，而不是空串。
 - caps：`memory-sync/1`；无此 cap 的节点不显示联邦入口、不发帧。
 - E2E：`mem/*` 全部进 `E2E_REQUIRED_TYPES`（含正文）。
 - 身份：`nodeId` 取连接；`remoteBotId` 必须在该节点最近一次 roster 的 joined 行里，否则 `memory/not-on-roster`。
@@ -163,12 +170,13 @@ state.memoryOutbox = []       // FIFO，≤200
 ### S1 数据层（ds-bot）
 
 - 文件：`src/host/memory.js`（`dirOf`/`scopeKey`/`journalFor`/`loadScope`）、`src/host/store.js`（EMPTY、migrate）、`src/host/constants.js`（`MEMORY_BACKENDS` 加 `federation`）。
-- 测试：`test/memory-scopes.test.js` —— 四种 scope 的路径、旧 state 载入、迁移幂等、私有 Bot 不进 node 目录。
+- 测试：`test/memory-scopes.test.js` —— 四种 scope 的路径、`safeScopeId` 的 128/特殊字符/legacy 分支、`nodeId:null` 被拒、旧 state 载入、迁移幂等、私有 Bot 不进 node 目录。
 - 验收：现有单机记忆回归全绿；新目录不产生文件；删除新字段可回滚。
-- 风险：`safeId` 哈希会让排障路径不可读，日志必须打印原始 id 与 scopeKey。
+- 风险：`safeScopeId` 的 hash 后缀会让排障路径不可读，日志必须打印原始 id 与 scopeKey；映射理论非单射（见 §1.3）。
 
 ### S2 ra 通道
 
+- **前置说明**：`MEMORY_BACKENDS` 在 S1 已含 `federation`，但 S2/S4 接通前该后端**不可用**：经 host API 把 Bot 设成 `federation`，会让该 Bot 的记忆工具与注入段落直接消失（`sectionFor` 返回空、工具不注册）。这是中间态，不是缺陷；GUI 仍是四个值（`auto/mneme/file/none`），S1 不新增第五个可见选项。
 - 文件：`lib/protocol.js`（常量 + 4 个 validator）、`lib/node/memory-link.js`（新，send/on/online）、`lib/node/dispatch.js`（snapshot/read-result/write-result）、`lib/node/index.js`（caps、绑定、hello）、`lib/node/transport.js`（E2E 集合）、`lib/hub/registry-ingest.js`（四类 node→hub 事件 + 连接 nodeId 校验）。
 - 测试：`test/memory-protocol.test.js`、`test/memory-ingest-auth.test.js`。
 - 验收：坏帧丢弃不抛；冒充帧整帧丢；无 cap 不发；E2E 未建立拒收正文帧。
@@ -176,17 +184,19 @@ state.memoryOutbox = []       // FIFO，≤200
 
 ### S3 主控服务（ds-bot）
 
-- 文件：新增 `src/host/memory-federation.js`（hub 部分）；`memory.js` 需导出 `loadScope/addEntry/replaceEntry/removeEntry` 供复用；`channel.js` 新端点；`index.js` 模块顺序放 `memory` 之后。
-- 测试：`test/memory-hub.test.js`、`test/memory-hub-dedupe.test.js` —— 快照生成、seq 递增、`<nodeId>:<requestId>` 去重、replace 多匹配 `memory/ambiguous`、团队只读、权限拒绝、save 失败回滚。
-- 验收：用假节点发 `mem/write`，hub 文件出现条目、seq+1、重复 requestId 只写一次；`mem/read` 只返回该 Bot 可见 scope；改 team 后 500ms 内有 snapshot 推送。
+- 文件：新增 `src/host/memory-federation.js`（hub 部分，含远端 journal 单写者）；`memory.js` 需导出 `loadScope/addEntry/replaceEntry/removeEntry` 供复用；`channel.js` 新端点；`index.js` 模块顺序放 `memory` 之后。
+- 测试：`test/memory-hub.test.js`、`test/memory-hub-dedupe.test.js` —— 全量快照与截断顺序、seq 递增、`<nodeId>:<requestId>` 去重、inbox 过期清理（7 天 / 1000 条）、replace 多匹配 `memory/ambiguous`、团队二次拒绝、archive 不物理删、save 失败回滚。
+- 验收：用假节点发 `mem/write`，hub 文件出现条目、seq+1、重复 requestId 只写一次；`mem/read` 只返回该 Bot 可见 scope；改 team 后 500ms 内有全量 snapshot 推送；inbox 超期/超量能清到 1000 条以内。
+- 职责：hub 侧第二次拒 team 写；远端 journal 只由 hub 写；删除/归档走 archive、无墓碑；inbox 清理归本片。
 - 风险：hub 写路径必须继续走 `queued`（`memory.js:214`）单写者，不能在 adapter 里另开写队列。
 
 ### S4 节点适配（ds-bot）
 
 - 文件：`memory-federation.js`（节点部分：cache/outbox/adapter）、`memory.js`（`sectionFor`/`readScopes`/`writeDenied` 分支、三工具路由）、`joined-create.js`（`bot/create` 带 `memoryConfig`）、客户端后端设置项。
-- 测试：`test/memory-node-cache.test.js`、`test/memory-outbox.test.js`、`test/memory-injection.test.js` —— 缓存注入、stale 标记、离线队列、重连只落一次、team 写被拒、mneme Bot 拒绝。
+- 测试：`test/memory-node-cache.test.js`、`test/memory-outbox.test.js`、`test/memory-injection.test.js` —— 缓存注入、stale 标记、离线队列、重连只落一次、**节点侧先拒 team**（不发帧）、hub 二次拒绝、mneme Bot 拒绝。
 - 验收：节点断网写两条 → 队列；重连后 hub 出现两条且各一次；`sectionFor` 输出含 team/node/bot 三段（多 Bot 节点互不串）；本地 Bot 不受影响。
-- 风险：`sectionFor` 每轮渲染都会跑，缓存读取必须是内存读，不能触发网络；冻结语义要保住 provider 前缀缓存。
+- 职责：节点工具路由先拒 team 写（`memory/team-read-only`），不把帧发到 hub；`federation` 后端在 S2/S4 接通前不可用，见 S2 前置说明。
+- 风险：`sectionFor` 每轮渲染都会跑，缓存读取必须是内存读，不能触发网络；新语义下缓存保活方式：同一 `at` 时复用已渲染结果（provider 前缀缓存随渲染结果一起复用），`syncedAgo` 文案同样只在 `at` 变化时重算；`at` 变化或 `enabled()` 状态变化时重渲染，之前的缓存无效。
 
 ### S5 面板（ds-bot client）
 
@@ -208,18 +218,20 @@ state.memoryOutbox = []       // FIFO，≤200
 |---|---|---|
 | provider / key / defaultModel / plugins | config-sync（hub→node） | 只下发给节点，不回传 |
 | Bot 身份（id/name/role/model/在线） | roster 的 joined 影子行 | 是，面板展示与路由用 |
-| team 记忆 | `mem/*`（hub→node 快照） | 是，所有节点可见；节点只读 |
+| team 记忆 | `mem/*`（hub→node 全量快照） | 是，所有节点可见；节点只读（工具层与 hub 双重拒绝） |
 | node 记忆 | `mem/*` | 只发给该节点；其他节点看不到 |
 | bot 记忆（远端） | `mem/*` | 只发给该 Bot 所在节点 |
 | bot 记忆（本机） | 本地文件 | 不出主控 |
 | group 记忆 | 本地文件 | 不出机器 |
 | 私有 Bot 记忆 | 本地文件 | 完全不出，不进快照 |
 | mneme 记忆 | mneme 本地 | 完全不出，不迁移、不改 mneme |
+| 远端记忆 journal | hub 单写者写 `memory/nodes/<nodeId>/journal.jsonl` | 不出主控 |
+| 记忆删除/归档 | `archive/` 与状态位 | 不物理删、无墓碑 |
 | works / exchanges | 本机 state | 不因记忆同步而传输 |
 
 - 本轮只覆盖 **roster 上报的 joined 影子行**；其他行类型不在 M4 v1 范围。
 - 记忆条目里如果出现 key/token，沿用 `secretEntry`（`memory.js:466`）拒绝；hub 落盘前再跑一次 `rt.redactSecrets`。
-- 快照只带渲染后的 markdown，不带 journal、路径、其他 scope 的条目；单段 32KB 上限，超出置 `truncated`。
+- 快照只带渲染后的 markdown，不带 journal、路径、其他 scope 的条目；总 32KB，按 team→node→bot 的行边界截断，marker 不计预算。
 
 ## 6. 最大风险
 
