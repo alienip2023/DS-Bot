@@ -157,7 +157,15 @@ export function CreateBot({ roster, actions, start, brief = '', onBack, canGoBac
         onChange: e => {
           const next = e.target.value
           setTargetNodeId(next)
-          if (next === '') return
+          // Back on this machine, a model that only exists on the node must not be sent to the hub.
+          if (next === '') {
+            const hubRefs = (roster.models ?? []).map(m => m.ref)
+            if (!hubRefs.includes(model)) {
+              setModel(startModel(roster))
+              setEffort(undefined)
+            }
+            return
+          }
           const node = remoteNodes.find(n => n.nodeId === next)
           const refs = (node?.models ?? []).map(m => m.ref)
           if (refs.includes(model)) return

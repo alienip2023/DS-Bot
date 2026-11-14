@@ -30393,7 +30393,14 @@ function CreateBot({ roster, actions, start, brief = "", onBack, canGoBack, onCr
           onChange: (e) => {
             const next = e.target.value;
             setTargetNodeId(next);
-            if (next === "") return;
+            if (next === "") {
+              const hubRefs = (roster.models ?? []).map((m) => m.ref);
+              if (!hubRefs.includes(model)) {
+                setModel(startModel(roster));
+                setEffort(void 0);
+              }
+              return;
+            }
             const node = remoteNodes.find((n) => n.nodeId === next);
             const refs = (node?.models ?? []).map((m) => m.ref);
             if (refs.includes(model)) return;

@@ -138,6 +138,24 @@ test('switching to a node moves the model onto that node\'s default', () => {
   assert.equal(calls[0].nodeId, 'n1')
 })
 
+test('switching back to this machine restores a hub model', () => {
+  render({ models: MODELS, prefs: { defaultBotModel: 'ds/flash' } })
+  const calls = []
+  props.actions = { createBot: (payload) => { calls.push(payload); return Promise.resolve({ id: 'b1' }) } }
+  slots[17] = [
+    { nodeId: 'n1', hostname: 'box', defaultModel: 'node/beta', models: [{ ref: 'node/alpha' }, { ref: 'node/beta' }] },
+  ]
+  const machine = collect(n => n.type === 'select' && n.props['aria-label'] === 'Machine')[0]
+  machine.props.onChange({ target: { value: 'n1' } })
+  collect(n => n.type === 'select' && n.props['aria-label'] === 'Machine')[0].props.onChange({ target: { value: 'n1' } })
+  // The user changes their mind and creates on this machine instead.
+  collect(n => n.type === 'select' && n.props['aria-label'] === 'Machine')[0].props.onChange({ target: { value: '' } })
+  button('Create').props.onClick()
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].model, 'ds/flash', 'a node-only model must not be sent to the hub')
+  assert.equal(calls[0].nodeId, undefined)
+})
+
 test('a node with no default keeps the current model', () => {
   render({ models: MODELS, prefs: { defaultBotModel: 'ds/flash' } })
   const calls = []
