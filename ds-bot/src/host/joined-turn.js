@@ -90,6 +90,9 @@ export function listenBotTurnResult(registry, exchangeId, nodeId, timeoutMs) {
   }
   const onOffline = (payload) => {
     if (payload?.nodeId && payload.nodeId !== nodeId) return
+    // The node was stopped on purpose. A drop that follows is the stop taking effect, not a
+    // bridge that went down while the turn was still running.
+    if (stoppedNodes.has(nodeId)) { finish({ ok: false, error: 'stopped', exchangeId }); return }
     finish({ ok: false, error: 'bridge-down', exchangeId })
   }
   const timer = setTimeout(() => finish(undefined), timeoutMs)
@@ -106,7 +109,14 @@ export function listenBotTurnResult(registry, exchangeId, nodeId, timeoutMs) {
  * the waiter already gone and is dropped. Stopping again, or stopping a node with nothing in
  * flight, settles nothing. Returns how many exchanges were settled.
  */
+// A stop settles the exchanges in flight at that moment, but the receipt that tells the Bot why
+// is delivered afterwards and opens a new exchange on the same node. A nodeOffline that arrives
+// before that receipt is answered is not a bridge that went down: the node was stopped on
+// purpose. Remember the node so an exchange opened after the settle is closed as stopped too.
+const stoppedNodes = new Set()
+
 export function settleStoppedTurns(registry, nodeId) {
+  stoppedNodes.add(nodeId)
   const tracked = inflightByNode.get(nodeId)
   if (!tracked || tracked.size === 0) return 0
   const waiting = [...tracked.values()]

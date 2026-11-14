@@ -166,23 +166,24 @@ test('stop_bot settles the exchange still in flight, and a late nodeOffline writ
   const frame = w.frames.find(f => f.type === 'bot/stop')
   w.registry.emit('botStopResult', { requestId: frame.payload.requestId, ok: true, stopped: true })
   await pending
-  // The late frames arrive after the stop. For the exchange the stop settled they are dropped.
-  // The deliver after the settle opens a new exchange, the notice that tells the Bot why, and a
-  // node drop before that notice is answered is a bridge-down for the new exchange only.
+  // The receipt that tells the Bot why is a new exchange, opened after the settle. A node drop
+  // before it is answered is the stop taking effect, not a bridge that went down, so it must not
+  // write the bridge-down line either. The assertions cover every exchange and the mirror.
   w.registry.emit('nodeOffline', { nodeId: 'n1' })
   w.registry.emit('botTurnResult', { exchangeId, ok: true, text: 'late result the stop already closed', seq: 4 })
   await settle(40)
 
   assert.deepEqual(await inflight, { ok: false, error: 'stopped' }, 'the exchange still in flight ends as stopped')
   const replies = w.rt.state.exchanges.filter(row => row.replyTo === exchangeId)
-  assert.equal(replies.length, 1, 'the sender is told once, and the late frames add nothing for this exchange')
+  assert.equal(replies.length, 1, 'the sender is told once')
   assert.equal(replies[0].text, STOPPED_TEXT, 'the receipt says it was stopped')
-  assert.equal(replies.some(row => row.text === BRIDGE_DOWN_TEXT), false, 'the bridge-down line is not written for the exchange the stop settled')
+  assert.equal(w.rt.state.exchanges.some(row => row.text === BRIDGE_DOWN_TEXT), false, 'no exchange is reported as a bridge that went down')
   assert.equal(w.rt.state.exchanges.some(row => row.text === 'late result the stop already closed'), false, 'the late result is not delivered')
 
   const mirror = w.sessions.get('mirror-j')
   const assistant = mirror.log.filter(event => event.type === 'assistant/message')
     .map(event => event.data.message?.content?.map(part => part.text ?? '').join('') ?? '')
+  assert.equal(assistant.some(text => text.includes(BRIDGE_DOWN_TEXT)), false, 'the mirror never shows the bridge-down line')
   assert.ok(assistant.some(text => text.includes('已停止等待节点')), 'the mirror shows the stop card')
   assert.ok(mirror.log.some(event => event.type === 'turn/end' && event.data?.reason?.kind === 'aborted'), 'the mirror closes the stopped turn as aborted, not failed')
 })
