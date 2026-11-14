@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { createRuntime } from '../index.js'
 import { fakeContext } from './fake-ctx.js'
-import { install as installJoinedTurn, createBotStopReceiver } from '../src/host/joined-turn.js'
+import { install as installJoinedTurn, createBotStopReceiver, BRIDGE_DOWN_TEXT, STOPPED_TEXT } from '../src/host/joined-turn.js'
 
 const { Session } = await import('@deepseek-ai/dsh-session')
 
@@ -57,7 +57,8 @@ async function start(seed) {
       create: async () => ({ sessionId: 'mirror-j' }),
       resolveAgent: async (sessionId) => {
         resolved.push(sessionId)
-        if (!sessions.has(sessionId)) throw new Error(`session "${sessionId}" not found`)
+        // A Bot's own chat is not a Session this fixture created, but a reply still has to land there.
+        if (!sessions.has(sessionId) && sessionId !== 'a' && sessionId !== 'b') throw new Error(`session "${sessionId}" not found`)
         const session = sessions.get(sessionId)
         return { agent: { session, id: sessionId, status: 'idle', followup() {}, steer() {}, inject() {}, cancel() {}, async whenIdle() {}, inbox: { nextStep: [], nextTurn: [], remove: () => false } } }
       },
@@ -143,6 +144,47 @@ test('stop_bot refuses a peer row instead of sending a frame', async (t) => {
   }
   await assert.rejects(w.tool('stop_bot', { bot: 'Peer' }, 'a'), /read-only here/)
   assert.equal(w.frames.length, 0)
+})
+
+// The stop has to reach the exchange through the tool, not through a direct call to
+// settleStoppedTurns. Deleting the call in tools.js must turn this red.
+test('stop_bot settles the exchange still in flight, and a late nodeOffline writes nothing', async (t) => {
+  const w = await start(team())
+  t.after(w.stop)
+  // The shadow has no mirror session yet, and this fixture's createSession only resolves
+  // once something asks for it. Without that, the dispatch waits forever before the frame.
+  const mirrorReady = w.rt.createSession(REMOTE + ' (mirror)')
+  const inflight = w.rt.deliver({ fromId: 'a', toId: REMOTE, text: 'keep going', role: 'request' })
+  await mirrorReady
+  await settle(40)
+  const turn = w.frames.find(f => f.type === 'bot/turn')
+  assert.ok(turn, 'the exchange reached the node before it was stopped')
+
+  const exchangeId = turn.payload.exchangeId
+  const pending = w.tool('stop_bot', { bot: 'Remote', reason: 'stop now' }, 'a')
+  await settle()
+  const frame = w.frames.find(f => f.type === 'bot/stop')
+  w.registry.emit('botStopResult', { requestId: frame.payload.requestId, ok: true, stopped: true })
+  await pending
+  // The late frames arrive after the stop. For the exchange the stop settled they are dropped.
+  // The deliver after the settle opens a new exchange, the notice that tells the Bot why, and a
+  // node drop before that notice is answered is a bridge-down for the new exchange only.
+  w.registry.emit('nodeOffline', { nodeId: 'n1' })
+  w.registry.emit('botTurnResult', { exchangeId, ok: true, text: 'late result the stop already closed', seq: 4 })
+  await settle(40)
+
+  assert.deepEqual(await inflight, { ok: false, error: 'stopped' }, 'the exchange still in flight ends as stopped')
+  const replies = w.rt.state.exchanges.filter(row => row.replyTo === exchangeId)
+  assert.equal(replies.length, 1, 'the sender is told once, and the late frames add nothing for this exchange')
+  assert.equal(replies[0].text, STOPPED_TEXT, 'the receipt says it was stopped')
+  assert.equal(replies.some(row => row.text === BRIDGE_DOWN_TEXT), false, 'the bridge-down line is not written for the exchange the stop settled')
+  assert.equal(w.rt.state.exchanges.some(row => row.text === 'late result the stop already closed'), false, 'the late result is not delivered')
+
+  const mirror = w.sessions.get('mirror-j')
+  const assistant = mirror.log.filter(event => event.type === 'assistant/message')
+    .map(event => event.data.message?.content?.map(part => part.text ?? '').join('') ?? '')
+  assert.ok(assistant.some(text => text.includes('已停止等待节点')), 'the mirror shows the stop card')
+  assert.ok(mirror.log.some(event => event.type === 'turn/end' && event.data?.reason?.kind === 'aborted'), 'the mirror closes the stopped turn as aborted, not failed')
 })
 
 test('the node receiver stops the local turn and reports whether one was running', async () => {
