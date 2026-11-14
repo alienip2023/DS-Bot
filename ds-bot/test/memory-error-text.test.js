@@ -35,6 +35,27 @@ test('a node whose provider has no key is shown in local wording', () => {
   )
 })
 
+test('a create without a name is shown in local wording', () => {
+  assert.equal(
+    failureText(coded('bot-create-name-missing', 'bot/refused')),
+    'A Bot needs a name.',
+  )
+})
+
+test('a create without a machine is shown in local wording', () => {
+  assert.equal(
+    failureText(coded('bot-create-nodeId-missing', 'bot/refused')),
+    'Pick a machine first.',
+  )
+})
+
+test('a bridge that is down is shown in local wording', () => {
+  assert.equal(
+    failureText(coded('bridge-down', 'bot/refused')),
+    'The connection to that machine is down. Try again when it is back.',
+  )
+})
+
 test('a node that dropped offline is shown in local wording', () => {
   assert.equal(
     failureText(coded('node-unknown', 'bot/refused')),

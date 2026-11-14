@@ -2488,6 +2488,9 @@ Object.assign(JA, {
   "That machine is no longer connected. Pick another one.": "そのマシンはもう接続されていません。選び直してください。",
   "Creating a Bot on a remote machine is not available here.": "ここではリモートマシンに Bot を作れません。",
   "That folder is outside the folders this machine allows. Pick one inside them.": "そのフォルダはこのマシンが許可する範囲の外です。範囲内のものを選んでください。",
+  "A Bot needs a name.": "Bot には名前が必要です。",
+  "Pick a machine first.": "先にマシンを選んでください。",
+  "The connection to that machine is down. Try again when it is back.": "そのマシンへの接続が切れています。復旧してからやり直してください。",
   "This machine's model catalog has not synced yet.": "このマシンのモデル一覧はまだ同期されていません。"
 });
 
@@ -4903,6 +4906,9 @@ Object.assign(KO, {
   "That machine is no longer connected. Pick another one.": "그 머신은 더 이상 연결되어 있지 않습니다. 다시 선택하세요.",
   "Creating a Bot on a remote machine is not available here.": "여기서는 원격 머신에 Bot을 만들 수 없습니다.",
   "That folder is outside the folders this machine allows. Pick one inside them.": "그 폴더는 이 머신이 허용하는 범위 밖입니다. 범위 안의 것을 선택하세요.",
+  "A Bot needs a name.": "Bot에는 이름이 필요합니다.",
+  "Pick a machine first.": "먼저 머신을 선택하세요.",
+  "The connection to that machine is down. Try again when it is back.": "그 머신과의 연결이 끊어졌습니다. 복구된 뒤에 다시 시도하세요.",
   "This machine's model catalog has not synced yet.": "이 머신의 모델 목록이 아직 동기화되지 않았습니다."
 });
 
@@ -7318,6 +7324,9 @@ Object.assign(ES, {
   "That machine is no longer connected. Pick another one.": "Esa máquina ya no está conectada. Elige otra.",
   "Creating a Bot on a remote machine is not available here.": "Aquí no se puede crear un Bot en una máquina remota.",
   "That folder is outside the folders this machine allows. Pick one inside them.": "Esa carpeta está fuera de las que esta máquina permite. Elige una dentro.",
+  "A Bot needs a name.": "Un Bot necesita un nombre.",
+  "Pick a machine first.": "Elige primero una máquina.",
+  "The connection to that machine is down. Try again when it is back.": "La conexión con esa máquina está caída. Inténtalo de nuevo cuando vuelva.",
   "This machine's model catalog has not synced yet.": "El catálogo de modelos de esta máquina aún no se ha sincronizado."
 });
 
@@ -9688,6 +9697,9 @@ Object.assign(FR, {
   "That machine is no longer connected. Pick another one.": "Cette machine n’est plus connectée. Choisissez-en une autre.",
   "Creating a Bot on a remote machine is not available here.": "On ne peut pas créer un Bot sur une machine distante ici.",
   "That folder is outside the folders this machine allows. Pick one inside them.": "Ce dossier est hors des dossiers autorisés par cette machine. Choisissez-en un dedans.",
+  "A Bot needs a name.": "Un Bot a besoin d’un nom.",
+  "Pick a machine first.": "Choisissez d’abord une machine.",
+  "The connection to that machine is down. Try again when it is back.": "La connexion vers cette machine est coupée. Réessayez quand elle sera rétablie.",
   "This machine's model catalog has not synced yet.": "Le catalogue de modèles de cette machine n’est pas encore synchronisé."
 });
 
@@ -12103,6 +12115,9 @@ Object.assign(DE, {
   "That machine is no longer connected. Pick another one.": "Diese Maschine ist nicht mehr verbunden. Wähle eine andere.",
   "Creating a Bot on a remote machine is not available here.": "Hier kann kein Bot auf einer entfernten Maschine erstellt werden.",
   "That folder is outside the folders this machine allows. Pick one inside them.": "Dieser Ordner liegt außerhalb der erlaubten Ordner dieser Maschine. Wähle einen darin.",
+  "A Bot needs a name.": "Ein Bot braucht einen Namen.",
+  "Pick a machine first.": "Wähle zuerst eine Maschine.",
+  "The connection to that machine is down. Try again when it is back.": "Die Verbindung zu dieser Maschine ist unterbrochen. Versuche es erneut, wenn sie wieder da ist.",
   "This machine's model catalog has not synced yet.": "Der Modellkatalog dieser Maschine ist noch nicht synchronisiert."
 });
 
@@ -13223,6 +13238,9 @@ var ZH = {
   "That machine is no longer connected. Pick another one.": "那台机器已经断开，请重新选择。",
   "Creating a Bot on a remote machine is not available here.": "这里不能在远程机器上新建 Bot。",
   "That folder is outside the folders this machine allows. Pick one inside them.": "这个目录不在这台机器允许的目录里，请换一个。",
+  "A Bot needs a name.": "Bot 需要一个名字。",
+  "Pick a machine first.": "请先选择一台机器。",
+  "The connection to that machine is down. Try again when it is back.": "到那台机器的连接断了，恢复后再试。",
   "This machine's model catalog has not synced yet.": "这台机器的模型目录还没同步过来。",
   "Every Bot reads it": "所有 Bot 都会读",
   "Group memory": "群记忆",
@@ -29869,7 +29887,10 @@ var BY_CODE = {
   "bot-create-model-no-key": () => t("This machine has the model, but its provider has no key. Add the key on that machine, or pick another model."),
   "node-unknown": () => t("That machine is no longer connected. Pick another one."),
   "bot-create-unavailable": () => t("Creating a Bot on a remote machine is not available here."),
-  "bot-create-workdir-denied": () => t("That folder is outside the folders this machine allows. Pick one inside them.")
+  "bot-create-workdir-denied": () => t("That folder is outside the folders this machine allows. Pick one inside them."),
+  "bot-create-name-missing": () => t("A Bot needs a name."),
+  "bot-create-nodeId-missing": () => t("Pick a machine first."),
+  "bridge-down": () => t("The connection to that machine is down. Try again when it is back.")
 };
 function failureText2(failure) {
   const code = typeof failure?.code === "string" ? failure.code : void 0;

@@ -2409,5 +2409,8 @@ Object.assign(KO, {
   "That machine is no longer connected. Pick another one.": "그 머신은 더 이상 연결되어 있지 않습니다. 다시 선택하세요.",
   "Creating a Bot on a remote machine is not available here.": "여기서는 원격 머신에 Bot을 만들 수 없습니다.",
   "That folder is outside the folders this machine allows. Pick one inside them.": "그 폴더는 이 머신이 허용하는 범위 밖입니다. 범위 안의 것을 선택하세요.",
+  "A Bot needs a name.": "Bot에는 이름이 필요합니다.",
+  "Pick a machine first.": "먼저 머신을 선택하세요.",
+  "The connection to that machine is down. Try again when it is back.": "그 머신과의 연결이 끊어졌습니다. 복구된 뒤에 다시 시도하세요.",
   "This machine's model catalog has not synced yet.": "이 머신의 모델 목록이 아직 동기화되지 않았습니다.",
 })

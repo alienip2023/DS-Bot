@@ -2373,5 +2373,8 @@ Object.assign(JA, {
   "That machine is no longer connected. Pick another one.": "そのマシンはもう接続されていません。選び直してください。",
   "Creating a Bot on a remote machine is not available here.": "ここではリモートマシンに Bot を作れません。",
   "That folder is outside the folders this machine allows. Pick one inside them.": "そのフォルダはこのマシンが許可する範囲の外です。範囲内のものを選んでください。",
+  "A Bot needs a name.": "Bot には名前が必要です。",
+  "Pick a machine first.": "先にマシンを選んでください。",
+  "The connection to that machine is down. Try again when it is back.": "そのマシンへの接続が切れています。復旧してからやり直してください。",
   "This machine's model catalog has not synced yet.": "このマシンのモデル一覧はまだ同期されていません。",
 })

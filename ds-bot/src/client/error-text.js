@@ -10,6 +10,9 @@ const BY_CODE = {
   'node-unknown': () => t('That machine is no longer connected. Pick another one.'),
   'bot-create-unavailable': () => t('Creating a Bot on a remote machine is not available here.'),
   'bot-create-workdir-denied': () => t('That folder is outside the folders this machine allows. Pick one inside them.'),
+  'bot-create-name-missing': () => t('A Bot needs a name.'),
+  'bot-create-nodeId-missing': () => t('Pick a machine first.'),
+  'bridge-down': () => t('The connection to that machine is down. Try again when it is back.'),
 }
 
 export function failureText(failure) {

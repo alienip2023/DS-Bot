@@ -2409,5 +2409,8 @@ Object.assign(DE, {
   "That machine is no longer connected. Pick another one.": "Diese Maschine ist nicht mehr verbunden. Wähle eine andere.",
   "Creating a Bot on a remote machine is not available here.": "Hier kann kein Bot auf einer entfernten Maschine erstellt werden.",
   "That folder is outside the folders this machine allows. Pick one inside them.": "Dieser Ordner liegt außerhalb der erlaubten Ordner dieser Maschine. Wähle einen darin.",
+  "A Bot needs a name.": "Ein Bot braucht einen Namen.",
+  "Pick a machine first.": "Wähle zuerst eine Maschine.",
+  "The connection to that machine is down. Try again when it is back.": "Die Verbindung zu dieser Maschine ist unterbrochen. Versuche es erneut, wenn sie wieder da ist.",
   "This machine's model catalog has not synced yet.": "Der Modellkatalog dieser Maschine ist noch nicht synchronisiert.",
 })
