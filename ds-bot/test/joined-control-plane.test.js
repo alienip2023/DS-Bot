@@ -166,6 +166,13 @@ test('stop_bot settles the exchange still in flight, and a late nodeOffline writ
   const frame = w.frames.find(f => f.type === 'bot/stop')
   w.registry.emit('botStopResult', { requestId: frame.payload.requestId, ok: true, stopped: true })
   await pending
+  // The stop itself settles the exchange, before any node drop. The receipt opened below also
+  // marks the node, so a nodeOffline would end this exchange as stopped either way: checking
+  // after the drop would let a deleted settleStoppedTurns call slip through. The reply back to
+  // the sender flushes on a later turn, so give it that turn before reading.
+  await settle(40)
+  const settledByStop = await Promise.race([inflight, Promise.resolve('still-pending')])
+  assert.deepEqual(settledByStop, { ok: false, error: 'stopped' }, 'the stop itself settles the exchange still in flight')
   // The receipt that tells the Bot why is a new exchange, opened after the settle. A node drop
   // before it is answered is the stop taking effect, not a bridge that went down, so it must not
   // write the bridge-down line either. The assertions cover every exchange and the mirror.
