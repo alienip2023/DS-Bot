@@ -81,7 +81,7 @@ export function install(rt) {
   // length when it went as a file (attachLong). `work`: the work (handoffs.js) a
   // result that came back goes on with. `merged`: a request that takes in an earlier
   // one its recipient had not read, under that one's exchange.
-  async function deliver({ fromId, fromName: senderName, toId, sessionId, text, role, replyTo, roomId, audience, note, exchangeId = randomUUID(), steer = false, deferred = false, resumed = false, retried = false, resent = false, merged = false, abandoned = false, recordExchange = true, askedBy, fromRoomId, images = [], files = [], length, work, joinedTurn = false, joinedAsync = false }) {
+  async function deliver({ fromId, fromName: senderName, toId, sessionId, text, role, replyTo, roomId, audience, note, exchangeId = randomUUID(), steer = false, deferred = false, resumed = false, retried = false, resent = false, merged = false, abandoned = false, recordExchange = true, askedBy, fromRoomId, images = [], files = [], length, work, joinedTurn = false, joinedAsync = false, stopped = false }) {
     const from = rt.botOf(fromId)
     const to = rt.botOf(toId)
     if (to === undefined) throw new Error(`Unknown Bot ${toId}`)
@@ -104,7 +104,7 @@ export function install(rt) {
       const skip = role === 'reply' || role === 'report' || role === 'kickoff' || role === 'continue' || role === 'update'
       if (!skip && typeof rt.handleJoinedTurn === 'function') {
         await writeBook()
-        return rt.handleJoinedTurn({ fromId, toId, text, role, exchangeId, replyTo, work, ...(joinedAsync ? { defer: true } : {}) })
+        return rt.handleJoinedTurn({ fromId, toId, text, role, exchangeId, replyTo, work, ...(joinedAsync ? { defer: true } : {}), ...(stopped === true ? { stopped: true } : {}) })
       }
       return refused
     }

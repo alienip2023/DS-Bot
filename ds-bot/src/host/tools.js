@@ -374,7 +374,10 @@ export function install(rt) {
         // The deliver below opens a new exchange and is not one of those.
         rt.stopJoinedTurn?.(target.id)
         settleStoppedTurns(registry, nodeId)
-        await rt.deliver({ fromId: sender.id, toId: target.id, text: why, role: 'stopped', joinedAsync: true, ...callerRoom(exec) })
+        // The receipt below opens a new exchange after the settle. A node drop before the node
+        // answers it is the stop taking effect, so that one exchange closes as stopped. Nothing
+        // else on this node is: a later turn that really loses the bridge is still a bridge-down.
+        await rt.deliver({ fromId: sender.id, toId: target.id, text: why, role: 'stopped', stopped: true, joinedAsync: true, ...callerRoom(exec) })
         return `Stopped ${target.name} on ${where}. It is told why in a new turn, whose reply comes back to you.`
       }
       const { running } = activeSessions(target.id)

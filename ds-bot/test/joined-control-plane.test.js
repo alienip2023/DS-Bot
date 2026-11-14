@@ -188,6 +188,40 @@ test('stop_bot settles the exchange still in flight, and a late nodeOffline writ
   assert.ok(mirror.log.some(event => event.type === 'turn/end' && event.data?.reason?.kind === 'aborted'), 'the mirror closes the stopped turn as aborted, not failed')
 })
 
+// The stop only covers its own receipt. A turn opened afterwards that really loses the bridge is
+// still a bridge-down: remembering the node forever would report it as stopped. Deleting the line
+// that forgets the receipt's exchange once it settles must turn this red.
+test('a turn opened after the stop still reports a real bridge-down', async (t) => {
+  const w = await start(team())
+  t.after(w.stop)
+  const mirrorReady = w.rt.createSession(REMOTE + ' (mirror)')
+  const first = w.rt.deliver({ fromId: 'a', toId: REMOTE, text: 'keep going', role: 'request' })
+  await mirrorReady
+  await settle(40)
+
+  const pending = w.tool('stop_bot', { bot: 'Remote', reason: 'stop now' }, 'a')
+  await settle()
+  const frame = w.frames.find(f => f.type === 'bot/stop')
+  w.registry.emit('botStopResult', { requestId: frame.payload.requestId, ok: true, stopped: true })
+  await pending
+  w.registry.emit('nodeOffline', { nodeId: 'n1' })
+  await settle(40)
+  await first
+
+  // The node is back and a new turn is in flight. Its drop is a real bridge-down, not the stop.
+  const again = w.rt.deliver({ fromId: 'a', toId: REMOTE, text: 'go again', role: 'request' })
+  await settle(40)
+  const later = w.frames.filter(f => f.type === 'bot/turn').at(-1)
+  assert.ok(later, 'the later turn reached the node')
+  w.registry.emit('nodeOffline', { nodeId: 'n1' })
+  await settle(40)
+
+  assert.deepEqual(await again, { ok: false, error: 'bridge-down' }, 'a turn opened after the stop reports a real bridge-down')
+  const replies = w.rt.state.exchanges.filter(row => row.replyTo === later.payload.exchangeId)
+  assert.equal(replies.length, 1, 'the sender is told once')
+  assert.equal(replies[0].text, BRIDGE_DOWN_TEXT, 'the receipt says the bridge went down, not that the turn was stopped')
+})
+
 test('the node receiver stops the local turn and reports whether one was running', async () => {
   const ran = []
   const stopped = createBotStopReceiver({ stopChat: async (id) => { ran.push(id); return true } })
