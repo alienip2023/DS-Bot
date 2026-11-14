@@ -3,7 +3,7 @@
 // would describe a backend the node never runs.
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { createBotOnNode } from '../src/host/joined-create.js'
+import { createBotOnNode, install as installJoinedCreate } from '../src/host/joined-create.js'
 
 function registryWith(caps) {
   const listeners = new Map()
@@ -52,4 +52,117 @@ test('an explicit backend is sent to both an old and a new node', async () => {
       assert.deepEqual(registry.sent[0].data.memoryConfig, { backend }, `${caps} takes an explicit ${backend}`)
     }
   }
+})
+
+import { install as installChannel } from '../src/host/channel.js'
+
+// Fake registry with configurable online nodes and auto-reply botCreateResult.
+function makeRegistry(nodes = []) {
+  const listeners = {}
+  return {
+    _sent: [],
+    _nodes: nodes.slice(),
+    onlineNodes() { return this._nodes.slice() },
+    send(nid, type, data) {
+      this._sent.push({ nodeId: nid, type, data })
+      Promise.resolve().then(() => {
+        ;(listeners['botCreateResult'] ?? []).forEach(fn => fn({
+          requestId: data.requestId,
+          ok: true,
+          remoteBotId: 'remote-bot-1',
+          name: data.name,
+          role: data.role ?? '',
+        }))
+      })
+      return true
+    },
+    on(name, fn) { (listeners[name] ??= []).push(fn) },
+    off(name, fn) { listeners[name] = (listeners[name] ?? []).filter(f => f !== fn) },
+    emit(name, payload) { (listeners[name] ?? []).forEach(f => f(payload)) },
+  }
+}
+
+// Minimal rt following thinking.test.js api() pattern.
+function makeRt({ nodes = [] } = {}) {
+  const reg = makeRegistry(nodes)
+  const localCreated = []
+  const state = { revision: 0, bots: {}, rooms: {}, exchanges: [], questions: {}, agents: {}, secretRequests: {}, prefs: {}, mainBotIds: [] }
+  let route = null
+  const ctx = {
+    logger: { warn() {}, info() {} },
+    get(name) { return name === 'remote-agent:registry' ? reg : undefined },
+    on: () => () => {},
+    effect: execute => { execute() },
+    set() {},
+    tools: { register: () => () => {}, guard: () => () => {}, schemas: () => [] },
+    systemPrompt: { section: () => () => {} },
+    connection: { fetch: { register(r) { route = r; return () => {} } } },
+    llm: { listProviders: () => [] },
+  }
+  const rt = {
+    ctx,
+    state,
+    botCreateTimeoutMs: 500,
+    save: async () => {},
+    refresh: async () => {},
+    readOnly: () => undefined,
+    load: async () => {},
+    bootstrap: async () => {},
+    catalog: async () => {},
+    loadSecrets: async () => {},
+    cachedCatalog: () => [],
+    cachedDefault: () => undefined,
+    reasoningOf: () => undefined,
+    providersView: async () => ({}),
+    secretsView: () => ({}),
+    capabilityLibraryView: () => ({}),
+    activityView: () => ({}),
+    workView: () => ({}),
+    roomWorkView: () => ({}),
+    approvalsView: () => ({}),
+    waitingView: () => ({}),
+    turnsView: () => ({}),
+    memoryNews: () => ({}),
+    memoryReviews: () => ({}),
+    connectorsView: () => ({}),
+    capabilityStatusesView: () => ({}),
+    selfOf: () => undefined,
+    thinkingOf: async () => undefined,
+    warn() {},
+    // Fake local createBot
+    async createBot(opts) {
+      const id = `local-${opts.name ?? 'bot'}`
+      localCreated.push(opts)
+      state.bots[id] = { id, name: opts.name, role: opts.role ?? '' }
+      return state.bots[id]
+    },
+  }
+  // Wire createBotOnNode via joined-create install
+  installJoinedCreate(rt)
+  installChannel(rt)
+
+  const call = async (endpoint, payload) => {
+    const response = await route.fetch({
+      json: async () => ({ endpoint, payload }),
+      signal: new AbortController().signal,
+    })
+    return response.json()
+  }
+
+  return { rt, reg, call, localCreated }
+}
+
+
+test('bot-create-targets reports federates from the node caps', async () => {
+  const { call } = makeRt({ nodes: [
+    { nodeId: 'old', hostname: 'old-box', caps: ['bot-create/1'] },
+    { nodeId: 'new', hostname: 'new-box', hello: { caps: ['memory-sync/1', 'bot-create/1'] } },
+    { nodeId: 'bare', hostname: 'bare-box' },
+  ] })
+  const res = await call('bot-create-targets', {})
+  assert.equal(res.ok, true, JSON.stringify(res.error))
+  const byId = Object.fromEntries(res.value.map(n => [n.nodeId, n.federates]))
+  assert.equal(byId.old, false, 'a node without memory-sync/1 does not federate')
+  assert.equal(byId.new, true, 'a node that announces memory-sync/1 federates')
+  assert.equal(byId.bare, false, 'a node with no caps at all does not federate')
 })
