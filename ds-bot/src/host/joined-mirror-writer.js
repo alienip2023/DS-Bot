@@ -7,7 +7,7 @@
 // open, the exchange waits in this in-memory queue and is written start-then-result in
 // one tick when the page turn ends. Delivery and the reply to the sender are not
 // delayed — only the page write is buffered. The queue never enters state.json.
-import { allocateTurn, mirrorTurnStart, mirrorTurnFinish, mirrorTurnFail } from './mirror.js'
+import { allocateTurn, mirrorTurnStart, mirrorTurnFinish, mirrorTurnFail, mirrorTurnAbort } from './mirror.js'
 
 const writersOf = rt => {
   if (!rt._joinedMirrorWriters) rt._joinedMirrorWriters = new Map()
@@ -85,16 +85,18 @@ export function beginJoinedMirror(rt, bot, session, { text, rpcId, state }) {
  * Close a Bot-to-Bot mirror turn. `error` is {code, message} for a failed/timeout turn.
  * A queued exchange stores the outcome and is written later, in arrival order, by drain.
  */
-export function closeJoinedMirror(rt, mirror, { text, seq, error } = {}) {
+export function closeJoinedMirror(rt, mirror, { text, seq, error, stopped } = {}) {
   if (!mirror) return
   if (mirror.queued) {
-    mirror.item.outcome = { text, seq, error: error ?? null }
+    mirror.item.outcome = { text, seq, error: error ?? null, stopped: stopped === true }
     drainJoinedMirror(rt, mirror.item.botId)
     return
   }
   const writer = writerOf(rt, mirror.botId)
   try {
-    if (error) {
+    if (stopped === true) {
+      mirrorTurnAbort(mirror.session, { turn: mirror.turn, step: 1, closedTurns: mirror.state?.closedTurns })
+    } else if (error) {
       mirrorTurnFail(mirror.session, {
         turn: mirror.turn,
         step: 1,
@@ -127,6 +129,10 @@ function writeQueued(rt, item) {
   const turn = allocateTurn(item.session)
   mirrorTurnStart(item.session, { turn, step: 1, userText: item.text ?? '', rpcId: item.rpcId })
   const outcome = item.outcome ?? {}
+  if (outcome.stopped === true) {
+    mirrorTurnAbort(item.session, { turn, step: 1, closedTurns: item.state?.closedTurns })
+    return
+  }
   if (outcome.error) {
     mirrorTurnFail(item.session, {
       turn,

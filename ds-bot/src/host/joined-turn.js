@@ -9,6 +9,8 @@ import {
 import { beginJoinedMirror, closeJoinedMirror } from './joined-mirror-writer.js'
 
 export const BRIDGE_DOWN_TEXT = '副机仍在执行，桥已断'
+// What the sender is told when its exchange was settled by a stop, not by the node going away.
+export const STOPPED_TEXT = '已停止'
 // How long a turn waits for the node's answer. A node Bot that calls tools takes minutes (the
 // first tool call alone can run for over a minute), so the wait covers that; the node's reply
 // that still comes after this is not lost (executor.js startPageTurn writes it as a late reply).
@@ -16,6 +18,11 @@ export const JOINED_TURN_TIMEOUT_MS = 600_000
 // How long after a timeout a late bot/turn-result is still written into the mirror Session.
 export const JOINED_LATE_WINDOW_MS = 3_600_000
 const MAX_TIMER_MS = 2_147_483_647
+// Exchanges still waiting on a node, keyed by nodeId. A stop settles these by the exchange
+// itself; the bot/stop-result frame carries no exchangeId, so the association cannot be guessed
+// from the requestId. An exchange leaves the moment it settles, so a result or a nodeOffline
+// that arrives afterwards finds nothing to deliver to.
+const inflightByNode = new Map()
 
 /** `config.joinedTurnTimeoutMs`: whole milliseconds between 1s and the timer limit, else the default. */
 export function joinedTimeoutFrom(value) {
@@ -44,9 +51,9 @@ async function openMirrorTurn(rt, bot, text, xid) {
   }
 }
 
-function closeMirrorTurn(rt, mirror, botId, { text, seq, error } = {}) {
+function closeMirrorTurn(rt, mirror, botId, { text, seq, error, stopped } = {}) {
   if (mirror === undefined) return
-  closeJoinedMirror(rt, mirror, { text, seq, error })
+  closeJoinedMirror(rt, mirror, { text, seq, error, stopped })
 }
 
 
@@ -63,14 +70,19 @@ export function listenBotTurnResult(registry, exchangeId, nodeId, timeoutMs) {
   let received = false   // the node's answer for THIS exchange has arrived (not a cancel/timeout/offline)
   let resolve
   const pending = new Promise((res) => { resolve = res })
+  const tracked = inflightByNode.get(nodeId) ?? new Map()
+  inflightByNode.set(nodeId, tracked)
   const finish = (value) => {
     if (settled) return
     settled = true
     clearTimeout(timer)
     registry.off?.('botTurnResult', onResult)
     registry.off?.('nodeOffline', onOffline)
+    if (tracked.get(exchangeId) === finish) tracked.delete(exchangeId)
+    if (tracked.size === 0) inflightByNode.delete(nodeId)
     resolve(value)
   }
+  tracked.set(exchangeId, finish)
   const onResult = (payload) => {
     if (payload?.exchangeId !== exchangeId) return
     if (!settled) received = true
@@ -85,6 +97,21 @@ export function listenBotTurnResult(registry, exchangeId, nodeId, timeoutMs) {
   registry.on?.('botTurnResult', onResult)
   registry.on?.('nodeOffline', onOffline)
   return { pending, cancel: () => finish({ ok: false, error: 'bridge-down', exchangeId }), received: () => received }
+}
+
+/**
+ * A stop succeeded for this node. Settle every exchange still waiting on it as stopped, by the
+ * exchange itself — the stop frame carries no exchangeId, so nothing here is matched by
+ * requestId. A result or a nodeOffline for one of these exchanges that arrives afterwards finds
+ * the waiter already gone and is dropped. Stopping again, or stopping a node with nothing in
+ * flight, settles nothing. Returns how many exchanges were settled.
+ */
+export function settleStoppedTurns(registry, nodeId) {
+  const tracked = inflightByNode.get(nodeId)
+  if (!tracked || tracked.size === 0) return 0
+  const waiting = [...tracked.values()]
+  for (const finish of waiting) finish({ ok: false, error: 'stopped', exchangeId: undefined })
+  return waiting.length
 }
 
 // The stop control plane: `stop_bot` asks the node to end a running turn (bot/stop), and the
@@ -138,7 +165,7 @@ export function exposeBotStopReceiver(ctx, accept) {
 
 // The texts this module sends when a dispatch produced no answer. A reply row with any other
 // text is the node's answer, and a later failure must never take its place.
-const saysNoAnswer = text => text === BRIDGE_DOWN_TEXT || String(text ?? '').startsWith('副机没有接上：')
+const saysNoAnswer = text => text === BRIDGE_DOWN_TEXT || text === STOPPED_TEXT || String(text ?? '').startsWith('副机没有接上：')
 
 // What the ledger already holds for an exchange. A retried delivery carries the same exchange
 // id, and after a restart it has to find the row the first one wrote.
@@ -229,6 +256,14 @@ export async function handleJoinedTurn(rt, msg = {}) {
     return { ok: false, error: 'bridge-down' }
   }
   const settle = async (result) => {
+    if (result?.error === 'stopped') {
+      // Settled by a stop of this node, not by the node going away: close the mirror as stopped
+      // and tell the sender it was stopped. A late result or nodeOffline for this exchange finds
+      // the waiter already gone, so neither is written here.
+      closeMirrorTurn(rt, mirror, to.id, { stopped: true })
+      await replyToSender(rt, { fromId, toId, exchangeId: xid, work, text: STOPPED_TEXT, answered: false })
+      return { ok: false, error: 'stopped' }
+    }
     if (!result || result.error === 'bridge-down') {
       closeMirrorTurn(rt, mirror, to.id, { error: { code: result?.error ?? 'bot-turn-lost', message: BRIDGE_DOWN_TEXT } })
       await replyToSender(rt, { fromId, toId, exchangeId: xid, work, text: BRIDGE_DOWN_TEXT, answered: false })

@@ -4,7 +4,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import EventEmitter from 'node:events'
-import { handleJoinedTurn, BRIDGE_DOWN_TEXT } from '../src/host/joined-turn.js'
+import { handleJoinedTurn, settleStoppedTurns, BRIDGE_DOWN_TEXT } from '../src/host/joined-turn.js'
 import { shadowId } from '../src/host/roster-join.js'
 
 const { Session } = await import('@deepseek-ai/dsh-session')
@@ -46,7 +46,8 @@ function makeWorld({ timeoutMs = 50 } = {}) {
   const answer = (patch = {}) => emitter.emit('botTurnResult', {
     exchangeId: frames.at(-1).payload.exchangeId, ok: true, text: 'pong', seq: 3, ...patch,
   })
-  return { rt, shadow, local, session, frames, warnings, replies, answer }
+  const offline = () => emitter.emit('nodeOffline', { nodeId: 'n1' })
+  return { rt, shadow, local, session, frames, warnings, replies, emitter, answer, offline }
 }
 
 const events = session => session.log.map(event => event.type)
@@ -152,4 +153,53 @@ test('a mirror that cannot be opened only warns and never blocks the dispatch', 
   assert.match(w.warnings[0][0], /was not mirrored/)
   assert.equal(w.session.log.length, 0, 'nothing was written to the broken mirror')
   assert.equal(w.rt.state.exchanges.at(-1).text, 'pong', 'the exchange record is still written')
+})
+
+// stop_bot succeeded for this node. The exchange still in flight must be settled as stopped
+// by that exchange, not left waiting for nodeOffline to write the bridge-down line.
+test('stop 成功后，迟到的 nodeOffline 不再补发「副机仍在执行，桥已断」', async () => {
+  const w = makeWorld()
+  const pending = handleJoinedTurn(w.rt, {
+    fromId: w.local.id, toId: w.shadow.id, text: 'keep going', exchangeId: 'ex-stop', role: 'request',
+  })
+  await settle()
+  assert.equal(w.frames.length, 1, 'the turn reached the node before it was stopped')
+
+  const settled = settleStoppedTurns(w.rt.ctx.get('remote-agent:registry'), 'n1')
+  assert.equal(settled, 1, 'the exchange still in flight is settled by the stop')
+  assert.deepEqual(await pending, { ok: false, error: 'stopped' })
+
+  assert.equal(w.session.log.at(-1).data.reason.kind, 'aborted', 'the mirror closes as stopped, not failed')
+  const stopped = w.rt.state.exchanges.at(-1)
+  assert.equal(stopped.role, 'reply')
+  assert.equal(stopped.text === BRIDGE_DOWN_TEXT, false, 'a stop is not reported as a bridge that went down')
+  assert.equal(w.replies.length, 1, 'the sender is told once that the exchange was stopped')
+  assert.equal(w.replies[0].text === BRIDGE_DOWN_TEXT, false)
+  assert.equal(stopped.text, '已停止', 'the ledger keeps the stop as no answer, so a late failure cannot overwrite it')
+
+  const written = w.session.log.length
+  const replies = w.replies.length
+  w.offline()
+  w.answer({ text: 'late result the stop already closed' })
+  await settle()
+  assert.equal(w.session.log.length, written, 'a late nodeOffline writes nothing more')
+  assert.equal(w.replies.length, replies, 'a late result is not delivered to the sender')
+  assert.equal(texts(w.session, 'assistant/message').some(text => text === BRIDGE_DOWN_TEXT), false)
+  assert.equal(texts(w.session, 'assistant/message').includes('late result the stop already closed'), false)
+
+  // Stopping again finds nothing still in flight and writes nothing again.
+  assert.equal(settleStoppedTurns(w.rt.ctx.get('remote-agent:registry'), 'n1'), 0)
+  assert.equal(w.session.log.length, written)
+})
+
+test('stopping one node does not settle an exchange still in flight on another node', async () => {
+  const w = makeWorld()
+  const pending = handleJoinedTurn(w.rt, {
+    fromId: w.local.id, toId: w.shadow.id, text: 'not yours', exchangeId: 'ex-other', role: 'request',
+  })
+  await settle()
+  assert.equal(settleStoppedTurns(w.rt.ctx.get('remote-agent:registry'), 'n-other'), 0)
+  w.answer()
+  assert.equal(await pending, 'ex-other')
+  assert.equal(w.session.log.at(-1).data.reason.kind, 'completed', 'the other node\'s stop left this exchange alone')
 })

@@ -3,7 +3,7 @@
 import { randomUUID } from 'node:crypto'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { readAvatar } from './avatar.js'
-import { listenBotStopResult } from './joined-turn.js'
+import { listenBotStopResult, settleStoppedTurns } from './joined-turn.js'
 import { COLORS, EXTRA_COLORS, MESSAGE_INLINE_MAX, ROOM_MODES, SOURCE_KIND } from './constants.js'
 import { within } from './folders.js'
 import { absoluteLinks } from './links.js'
@@ -368,8 +368,12 @@ export function install(rt) {
         if (answer === undefined) refuse(`${target.name} did not answer the stop request within 15s; its turn may still be running on ${where}.`)
         if (answer.ok !== true) refuse(`${target.name} could not be stopped on ${where}: ${answer.error ?? 'the node refused the request'}.`)
         if (answer.stopped !== true) refuse(`${target.name} is not running right now on ${where}, so there is nothing to stop.`)
-        // The page turn, if one was waiting, ends here; a Bot-to-Bot wait is left to its own result.
+        // The page turn, if one was waiting, ends here. Every Bot-to-Bot exchange still waiting on
+        // this node is settled as stopped by its own exchange, so a nodeOffline or a result that
+        // arrives afterwards is dropped instead of being reported as a bridge that went down.
+        // The deliver below opens a new exchange and is not one of those.
         rt.stopJoinedTurn?.(target.id)
+        settleStoppedTurns(registry, nodeId)
         await rt.deliver({ fromId: sender.id, toId: target.id, text: why, role: 'stopped', joinedAsync: true, ...callerRoom(exec) })
         return `Stopped ${target.name} on ${where}. It is told why in a new turn, whose reply comes back to you.`
       }
