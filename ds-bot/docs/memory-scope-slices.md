@@ -140,7 +140,7 @@ state.memoryOutbox = []       // FIFO，≤200
 - **快照永远全量**：不做增量 diff，每次推送都是完整渲染结果；节点以整份替换缓存，seq 只用于判断新旧。
 - **超限与截断顺序**：写入超限直接拒绝并报错（`memory/too-large`，不静默丢条目）；快照超 32KB 时按 **team → node → bot** 的顺序保留，在**行边界**截断，被截段带 `SNAPSHOT_TRUNCATED`。
 - **marker 不计入 budget**：因此 `size` 可以超过 `limit`。验收官实测：`limit=100`、三段各 100 时总量为 220（200 正文 + 两行 marker）；第一段超预算后，后续段各留一行 marker，而不是空串。
-- caps：`memory-sync/1`；无此 cap 的节点不显示联邦入口、不发帧。
+- caps：`memory-sync/1`；无此 cap 的节点不发帧，新建 Bot 不写 `memoryConfig`、影子行也不写 `federation`，设置页给出「该节点 remote-agent 过旧」提示。已存在的行若切到 `federation`，hub 以 `bot-update-memory-unsupported` 拒绝并报错（不静默改），下拉仍列出该项。
 - E2E：`mem/*` 全部进 `E2E_REQUIRED_TYPES`（含正文）。
 - 身份：`nodeId` 取连接；`remoteBotId` 必须在该节点最近一次 roster 的 joined 行里，否则 `memory/not-on-roster`。
 - 只读模式（`rt.readOnly() !== undefined`）拒绝写，返回 `memory/read-only`。
