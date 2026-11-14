@@ -31,6 +31,12 @@ const rejectsWith = (promise, code) => assert.rejects(promise, (error) => {
   return true
 })
 
+test('A7d a joined shadow keeps the node model the hub catalog does not serve', async () => {
+  const rt = world()
+  const shadow = { origin: 'joined', managedBy: 'hub', worker: { home: 'remote' }, model: 'node/only' }
+  assert.equal(await rt.desiredModel(shadow), 'node/only')
+})
+
 test('A7 a managed Bot whose model is gone fails closed instead of running another model', async () => {
   const rt = world()
   await rejectsWith(rt.desiredModel({ model: 'gone/model', managedBy: 'hub' }), 'E_BOT_MODEL_UNAVAILABLE')

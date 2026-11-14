@@ -400,7 +400,14 @@ export function install(rt) {
     room.sessions[member.id] = id
     rt.groupOwners.set(id, { botId: member.id, roomId: room.id })
     delete room.seen[member.id]
-    const ref = await rt.desiredModel(member)
+    let ref = await rt.desiredModel(member)
+    // A joined member's model is the node's. This Session runs on the hub, which does
+    // not serve that ref, so it starts on the team's default instead of a route that
+    // can never answer. A ref the hub does serve stays.
+    if (member.origin === 'joined' && ref !== undefined) {
+      const served = (await rt.catalog?.())?.some(entry => entry.ref === ref) === true
+      if (!served) ref = rt.state?.prefs?.defaultBotModel ?? await rt.defaultModel()
+    }
     if (ref !== undefined) {
       const effort = await rt.desiredEffort(member, ref)
       await rt.selectSessionModel(id, { ...splitRef(ref), ...(effort === undefined ? {} : { reasoningEffort: effort }) })

@@ -2572,6 +2572,21 @@ test('a memory summary names the Bot chat on both of its tries', async (t) => {
   assert.deepEqual(requests.map(request => [request.sessionId, request.maxTokens, request.purpose]), [['b2', 16384, undefined], ['b2', 32768, undefined]])
 })
 
+test('a joined shadow whose model this machine does not serve summarises on the team default', async (t) => {
+  const home = mkdtempSync(join(tmpdir(), 'ds-bot-memory-'))
+  const team = structuredClone(TEAM)
+  team.prefs = { defaultBotModel: 'deepseek/v4' }
+  team.bots.jn = { id: 'jn', sessionId: 'jn', name: 'Node', role: '', origin: 'joined', managedBy: 'hub', model: 'node/only', instructions: '', createdAt: 5, worker: { nodeId: 'n1', remoteBotId: 'rb', home: 'remote' } }
+  writeFileSync(join(home, 'state.json'), JSON.stringify(team))
+  const { tool, call, requests, stop } = start({ home, replies: ['## Overview\nNothing yet.'] })
+  t.after(() => stop())
+  await tool('remember', { text: 'Lives on the node' }, 'jn')
+  await call('memory-view', { botId: 'jn', summarize: true })
+  await summarized(call, 'jn')
+  assert.equal(requests.length, 1, 'the summary must run')
+  assert.deepEqual([requests[0].provider, requests[0].model], ['deepseek', 'v4'], 'a node-only model falls back to the team default')
+})
+
 test('a memory panel question names the Bot chat', async (t) => {
   const { call, requests, stop } = start({ requireSession: true, replies: [JSON.stringify({ reply: 'You have no entries yet.', changes: [] })] })
   t.after(() => stop())

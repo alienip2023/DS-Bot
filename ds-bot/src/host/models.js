@@ -286,6 +286,10 @@ export function install(rt) {
   // something the user did not choose.
   async function desiredModel(bot) {
     if (!bot.model) return undefined
+    // A joined shadow's model is the node's: the hub catalog does not serve it, and
+    // treating that as unavailable stops the hub-side paths (the memory panel, a group
+    // Session) before they can fall back to a model this machine does run.
+    if (bot.origin === 'joined') return bot.model
     if (isLocal(bot.model)) return bot.model
     const entries = await catalog()
     const entry = entries.find(candidate => candidate.ref === bot.model)

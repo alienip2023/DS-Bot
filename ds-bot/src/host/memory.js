@@ -1613,7 +1613,14 @@ export function install(rt) {
     // A local agent CLI answers through its own subscription, not a model API:
     // its memory reads the team's default model when one is set.
     const team = rt.isLocalAgentRef?.(state.prefs.defaultBotModel) === true ? undefined : state.prefs.defaultBotModel
-    const ref = rt.isLocalAgentRef?.(desired) === true ? (team ?? null) : desired ?? await rt.defaultModel()
+    // A joined shadow keeps the node's model. The panel's summary runs on this machine,
+    // which does not serve that ref, so it uses the team's default instead of failing
+    // the view. A ref this machine does serve stays, so a shared model is unchanged.
+    let served = false
+    if (bot.origin === 'joined' && desired !== undefined) {
+      try { served = (await rt.catalog?.())?.some(entry => entry.ref === desired) === true } catch { served = false }
+    }
+    const ref = bot.origin === 'joined' && !served ? (team ?? await rt.defaultModel()) : rt.isLocalAgentRef?.(desired) === true ? (team ?? null) : desired ?? await rt.defaultModel()
     const route = ref === null ? undefined : splitRef(ref)
     if (route === undefined) throw new Error('No model is available. Add one in Settings > Models.')
     return route

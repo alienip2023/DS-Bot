@@ -197,6 +197,25 @@ test('a group Session made before the member\'s level applied gets it on the nex
   assert.deepEqual(host.selected, [{ sessionId: 'gb', provider: 'deepseek', model: 'v4-flash', reasoningEffort: 'low' }])
 })
 
+// A joined member's model lives on the node. The group Session runs here, so a ref
+// this machine does not serve starts on the team's default instead of a route that
+// can never answer. A ref the hub does serve keeps the member's own model.
+test('a joined member whose model this machine does not serve starts the group Session on the team default', async (t) => {
+  const llm = {
+    listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }],
+    listModels: async () => [{ id: 'v4-flash', name: 'v4-flash', inputModalities: ['text'] }],
+    resolveModelInfo: async () => ({ reasoning: { efforts: [{ id: 'low', name: 'Low' }], defaultEffort: 'low' } }),
+  }
+  const host = await start(t, { members: ['a', 'b'], sessions: { a: 'ga' } }, undefined, undefined,
+    { b: { origin: 'joined', worker: { home: 'remote', nodeId: 'n1' }, managedBy: 'hub', model: 'node/only' } }, llm,
+    { prefs: { defaultBotModel: 'deepseek/v4-flash' } })
+  // The node never answers a hub Session, so the turn itself does not start here.
+  // The model the Session was given is recorded as soon as it is made.
+  host.round('c1', host.say('@Writer 看一下'))
+  await settle(() => host.selected.length === 1)
+  assert.deepEqual(host.selected.at(-1), { sessionId: 's1', provider: 'deepseek', model: 'v4-flash' })
+})
+
 test('a member\'s group Session runs on the member\'s model and thinking level', async (t) => {
   const llm = {
     listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }],

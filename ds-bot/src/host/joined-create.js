@@ -114,10 +114,16 @@ export async function createBotOnNode(rt, { nodeId, name, role, modelRef = null,
   const timeoutMs = rt.botCreateTimeoutMs ?? BOT_CREATE_TIMEOUT_MS
   const wait = listenBotCreateResult(registry, requestId, nid, timeoutMs)
 
-  // Hub-side: resolve modelRef to provider/model using rt.resolveModel if available.
-  // A bare model id that maps to exactly one provider is normalised; unknown id → error.
+  // A ref the node's catalog already names exactly is the node's model, not the hub's:
+  // resolving it against the hub catalog rejects a model only the node serves, and the
+  // create never leaves this machine. A bare id (or a ref the node did not list, which
+  // only happens when the node published no catalog) is still normalised here; one the
+  // hub cannot name stays bot-create-model-unknown.
   let resolvedModelRef = modelRef ?? null
-  if (modelRef !== null && typeof rt.resolveModel === 'function') {
+  const nodeCatalog = Array.isArray(nodeRec.models) ? nodeRec.models : null
+  const nodeRefs = nodeCatalog === null ? [] : nodeCatalog.map(m => m.ref ?? `${m.provider ?? ''}/${m.id ?? ''}`)
+  const confirmedOnNode = modelRef !== null && nodeCatalog !== null && nodeCatalog.length > 0 && nodeRefs.includes(modelRef)
+  if (!confirmedOnNode && modelRef !== null && typeof rt.resolveModel === 'function') {
     try {
       resolvedModelRef = await rt.resolveModel(modelRef)
     } catch (err) {

@@ -74,6 +74,38 @@ test('2. createBotOnNode: unknown model ref → returns bot-create-model-unknown
   assert.equal(sent.length, 0, 'registry.send must NOT be called for unknown model')
 })
 
+// A model only the node serves is not in the hub catalog. Resolving it here rejects the
+// create before it is sent; the node's own catalog already named the ref exactly.
+test('2b. createBotOnNode: a model only the node serves is sent as-is and written on the shadow row', async () => {
+  const relay = { ready: true, send: () => true }
+  const registry = new NodeRegistry({ log() {}, relay })
+  const nodeRec = { nodeId: 'n1', online: true, lastSeen: 0, e2e: null, models: [{ ref: 'node/only', provider: 'node', id: 'only', name: 'Only' }] }
+  registry.nodes.set('n1', nodeRec)
+  registry.onlineNodes = () => [nodeRec]
+  const sent = []
+  registry.send = (nid, type, data) => {
+    sent.push({ nid, type, data })
+    Promise.resolve().then(() => registry.emit('botCreateResult', { requestId: data.requestId, ok: true, remoteBotId: 'bot-created', name: data.name, role: data.role ?? '' }))
+    return true
+  }
+
+  const { createBotOnNode } = await import('../src/host/joined-create.js')
+  const { shadowId } = await import('../src/host/roster-join.js')
+  const rt = makeRt({
+    ctx: { get: (n) => n === 'remote-agent:registry' ? registry : undefined },
+    botCreateTimeoutMs: 200,
+    save() {},
+    // The hub does not serve this model. Resolving it must not run for a ref the node listed.
+    resolveModel: async () => { throw new Error('Model node/only is not available') },
+  })
+
+  const result = await createBotOnNode(rt, { nodeId: 'n1', name: 'Alpha', role: '', modelRef: 'node/only' })
+  assert.equal(result.ok, true, `a node-only model must be created, got ${result.error}`)
+  assert.equal(sent.length, 1, 'the create must be dispatched')
+  assert.equal(sent[0].data.modelRef, 'node/only', 'the frame keeps the node ref, not a hub resolution')
+  assert.equal(rt.state.bots[shadowId('n1', 'bot-created')].model, 'node/only')
+})
+
 // ── 3. createBotUpdateReceiver: node-side updates bot and returns profile ──────
 test('3. createBotUpdateReceiver: updates bot and returns profile', async () => {
   const updated = []
