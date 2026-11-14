@@ -2319,6 +2319,7 @@ Object.assign(KO, {
   "Token": "토큰",
   "Enrollment token": "등록 토큰",
   "Memory Backend": "메모리 백엔드",
+  "This node's remote-agent is too old for federated memory.": "이 노드의 remote-agent가 너무 오래되어 연합 메모리를 지원하지 않습니다.",
   "Memory backend": "메모리 백엔드",
   "Auto Detect": "자동 감지",
   "dsh-mneme (Force)": "dsh-mneme(강제)",

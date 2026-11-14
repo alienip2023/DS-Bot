@@ -2283,6 +2283,7 @@ Object.assign(FR, {
   "Token": "Jeton",
   "Enrollment token": "Jeton d’enrôlement",
   "Memory Backend": "Moteur de mémoire",
+  "This node's remote-agent is too old for federated memory.": "Le remote-agent de ce nœud est trop ancien pour la mémoire fédérée.",
   "Memory backend": "Moteur de mémoire",
   "Auto Detect": "Détection automatique",
   "dsh-mneme (Force)": "dsh-mneme (forcé)",

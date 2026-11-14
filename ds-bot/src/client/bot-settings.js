@@ -197,6 +197,18 @@ export function BotSettingsForm({ bot, roster, actions, run }) {
   const privateHint = t('Other Bots cannot read its folder, memory or chats, and you approve what it shares with them.')
   const privacyHint = bot.private === true ? privateHint : isMainBot ? t('A Main Bot cannot be private.') : inGroup ? t('Leave its group chats before making it private.') : !bot.workDir ? t('Choose a working folder of its own first.') : privateHint
   const save = patch => run(actions.updateBot(bot.id, patch))
+  // A joined Bot's node may be too old to federate. The create targets carry that, and
+  // the panel says so instead of offering a backend the node would silently drop.
+  const [nodeCaps, setNodeCaps] = useState(null)
+  useEffect(() => {
+    if (!isJoinedRemote(bot) || typeof actions.botCreateTargets !== 'function') return undefined
+    let live = true
+    actions.botCreateTargets().then(res => { if (live) setNodeCaps(res?.nodes ?? res ?? []) }).catch(() => {})
+    return () => { live = false }
+  }, [bot.id])
+  const nodeId = bot.worker?.nodeId
+  const nodeEntry = Array.isArray(nodeCaps) ? nodeCaps.find(n => n.nodeId === nodeId) : undefined
+  const nodeTooOld = isJoinedRemote(bot) && nodeEntry !== undefined && nodeEntry.federates !== true
   const duplicate = () => run(actions.duplicateBot(bot.id).then(copy => actions.openSession(copy.id)))
   const remove = () => { if (confirming) void run(actions.deleteBot(bot.id)); else setConfirming(true) }
   // DSH settings can change the model list at any time; the hint should match it.
@@ -247,6 +259,9 @@ export function BotSettingsForm({ bot, roster, actions, run }) {
             : null,
           h('div', { className: 'bt-set-row bt-bs-row' },
             h('span', { className: 'bt-set-copy' }, h('span', { className: 'bt-bs-label' }, t('Memory Backend'))),
+            nodeTooOld
+              ? h('span', { className: 'bt-bs-hint' }, t('This node\'s remote-agent is too old for federated memory.'))
+              : null,
             h('select', {
               className: 'bt-input',
               value: bot.memoryConfig?.backend ?? 'auto',

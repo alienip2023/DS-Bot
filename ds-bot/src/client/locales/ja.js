@@ -2283,6 +2283,7 @@ Object.assign(JA, {
   "Token": "トークン",
   "Enrollment token": "登録トークン",
   "Memory Backend": "メモリバックエンド",
+  "This node's remote-agent is too old for federated memory.": "このノードの remote-agent は古すぎて、連邦メモリに対応していません。",
   "Memory backend": "メモリバックエンド",
   "Auto Detect": "自動検出",
   "dsh-mneme (Force)": "dsh-mneme（強制）",
