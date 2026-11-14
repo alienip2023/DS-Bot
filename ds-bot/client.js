@@ -2402,6 +2402,7 @@ Object.assign(JA, {
   "Token": "トークン",
   "Enrollment token": "登録トークン",
   "Memory Backend": "メモリバックエンド",
+  "This node's remote-agent is too old for federated memory.": "このノードの remote-agent は古すぎて、連邦メモリに対応していません。",
   "Memory backend": "メモリバックエンド",
   "Auto Detect": "自動検出",
   "dsh-mneme (Force)": "dsh-mneme（強制）",
@@ -4810,6 +4811,7 @@ Object.assign(KO, {
   "Token": "토큰",
   "Enrollment token": "등록 토큰",
   "Memory Backend": "메모리 백엔드",
+  "This node's remote-agent is too old for federated memory.": "이 노드의 remote-agent가 너무 오래되어 연합 메모리를 지원하지 않습니다.",
   "Memory backend": "메모리 백엔드",
   "Auto Detect": "자동 감지",
   "dsh-mneme (Force)": "dsh-mneme(강제)",
@@ -7218,6 +7220,7 @@ Object.assign(ES, {
   "Token": "Token",
   "Enrollment token": "Token de enrolamiento",
   "Memory Backend": "Motor de memoria",
+  "This node's remote-agent is too old for federated memory.": "El remote-agent de este nodo es demasiado antiguo y no admite la memoria federada.",
   "Memory backend": "Motor de memoria",
   "Auto Detect": "Detección automática",
   "dsh-mneme (Force)": "dsh-mneme (forzado)",
@@ -9581,6 +9584,7 @@ Object.assign(FR, {
   "Token": "Jeton",
   "Enrollment token": "Jeton d’enrôlement",
   "Memory Backend": "Moteur de mémoire",
+  "This node's remote-agent is too old for federated memory.": "Le remote-agent de ce nœud est trop ancien pour la mémoire fédérée.",
   "Memory backend": "Moteur de mémoire",
   "Auto Detect": "Détection automatique",
   "dsh-mneme (Force)": "dsh-mneme (forcé)",
@@ -11989,6 +11993,7 @@ Object.assign(DE, {
   "Token": "Token",
   "Enrollment token": "Registrierungs-Token",
   "Memory Backend": "Speicher-Backend",
+  "This node's remote-agent is too old for federated memory.": "Der remote-agent dieses Knotens ist zu alt für den föderierten Speicher.",
   "Memory backend": "Speicher-Backend",
   "Auto Detect": "Automatisch erkennen",
   "dsh-mneme (Force)": "dsh-mneme (erzwungen)",
@@ -12155,6 +12160,7 @@ var ZH = {
   "Enrollment token": "配对令牌",
   "Enrollment token for pairing this worker.": "用来配对这台执行机的令牌。",
   "Memory Backend": "记忆后端",
+  "This node's remote-agent is too old for federated memory.": "该节点的 remote-agent 过旧，不支持联邦记忆。",
   "Memory backend": "记忆后端",
   "Auto Detect": "自动检测",
   "dsh-mneme (Force)": "dsh-mneme（强制）",
@@ -24524,6 +24530,21 @@ function BotSettingsForm({ bot, roster, actions, run: run2 }) {
   const privateHint = t("Other Bots cannot read its folder, memory or chats, and you approve what it shares with them.");
   const privacyHint = bot.private === true ? privateHint : isMainBot ? t("A Main Bot cannot be private.") : inGroup ? t("Leave its group chats before making it private.") : !bot.workDir ? t("Choose a working folder of its own first.") : privateHint;
   const save = (patch) => run2(actions.updateBot(bot.id, patch));
+  const [nodeCaps, setNodeCaps] = (0, import_react27.useState)(null);
+  (0, import_react27.useEffect)(() => {
+    if (!isJoinedRemote(bot) || typeof actions.botCreateTargets !== "function") return void 0;
+    let live = true;
+    actions.botCreateTargets().then((res) => {
+      if (live) setNodeCaps(res?.nodes ?? res ?? []);
+    }).catch(() => {
+    });
+    return () => {
+      live = false;
+    };
+  }, [bot.id]);
+  const nodeId = bot.worker?.nodeId;
+  const nodeEntry = Array.isArray(nodeCaps) ? nodeCaps.find((n) => n.nodeId === nodeId) : void 0;
+  const nodeTooOld = isJoinedRemote(bot) && nodeEntry !== void 0 && nodeEntry.federates !== true;
   const duplicate = () => run2(actions.duplicateBot(bot.id).then((copy2) => actions.openSession(copy2.id)));
   const remove = () => {
     if (confirming) void run2(actions.deleteBot(bot.id));
@@ -24626,6 +24647,7 @@ function BotSettingsForm({ bot, roster, actions, run: run2 }) {
         "div",
         { className: "bt-set-row bt-bs-row" },
         (0, import_react27.createElement)("span", { className: "bt-set-copy" }, (0, import_react27.createElement)("span", { className: "bt-bs-label" }, t("Memory Backend"))),
+        nodeTooOld ? (0, import_react27.createElement)("span", { className: "bt-bs-hint" }, t("This node's remote-agent is too old for federated memory.")) : null,
         (0, import_react27.createElement)(
           "select",
           {

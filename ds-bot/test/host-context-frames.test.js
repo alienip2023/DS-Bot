@@ -42,7 +42,7 @@ describe('N-1 I6: frames carry no environment', () => {
     const registry = {
       send: (nodeId, type, payload) => { frames.push({ nodeId, type, payload }); return true },
       on() {}, off() {},
-      onlineNodes: () => [{ nodeId: 'n1', models: null }],
+      onlineNodes: () => [{ nodeId: 'n1', models: null, caps: ['memory-sync/1'] }],
     }
     const rt = { ctx: { get: name => (name === 'remote-agent:registry' ? registry : undefined) }, botCreateTimeoutMs: 5 }
     await createBotOnNode(rt, { nodeId: 'n1', name: 'Scout', role: 'r', workDir: '/root/work', instructions: 'be brief' })

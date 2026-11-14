@@ -586,6 +586,9 @@ export function install(rt) {
                   appliedRevision: Number.isInteger(sync?.appliedRevision) ? sync.appliedRevision : null,
                   models: Array.isArray(n.models) ? n.models.map(mapNodeModel) : [],
                   defaultModel: mapDefaultModel(n.defaultModel),
+                  // Whether a Bot created here can keep its memory with the hub. An older
+                  // remote-agent drops the field, so the panel must not offer federation.
+                  federates: (Array.isArray(n.hello?.caps) ? n.hello.caps : (Array.isArray(n.caps) ? n.caps : [])).includes('memory-sync/1'),
                 }
               })
             }

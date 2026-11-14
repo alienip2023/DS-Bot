@@ -22,7 +22,7 @@ function fakeRegistry() {
     }
     return true
   }
-  return { sent, on, off, send, onlineNodes: () => [{ nodeId: 'n1', models: null }] }
+  return { sent, on, off, send, onlineNodes: () => [{ nodeId: 'n1', models: null, caps: ['memory-sync/1'] }] }
 }
 
 function runtime({ state = {} } = {}) {

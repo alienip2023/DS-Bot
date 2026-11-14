@@ -102,12 +102,14 @@ export async function createBotOnNode(rt, { nodeId, name, role, modelRef = null,
     }
   }
 
-  // A Bot that lives on a node keeps its memory with the hub: the snapshot, the node's
-  // scope and its own scope all arrive from there, so `federation` is the backend a new
-  // joined Bot starts with. An explicit pick still wins, which is the only way back to
-  // `file`/`none` (an existing Bot row is never rewritten without one).
+  // A Bot that lives on a node keeps its memory with the hub, but only a node that can
+  // take the frames: one without `memory-sync/1` (an ra older than 0.10.1-fork.76) drops
+  // the field, so defaulting to federation there would write a shadow row the node never
+  // matches, and an upgrade would not repair it. An explicit pick still wins.
   const chosen = cleanMemory(memoryConfig)
-  const memory = chosen ?? { backend: 'federation' }
+  const caps = Array.isArray(nodeRec.hello?.caps) ? nodeRec.hello.caps : (Array.isArray(nodeRec.caps) ? nodeRec.caps : [])
+  const nodeFederates = caps.includes('memory-sync/1')
+  const memory = chosen ?? (nodeFederates ? { backend: 'federation' } : undefined)
   const requestId = randomUUID()
   const timeoutMs = rt.botCreateTimeoutMs ?? BOT_CREATE_TIMEOUT_MS
   const wait = listenBotCreateResult(registry, requestId, nid, timeoutMs)
@@ -151,8 +153,9 @@ export async function createBotOnNode(rt, { nodeId, name, role, modelRef = null,
     managedBy: 'hub',
     workDir: workDir ?? null,
     instructions: clampedInstructions,
-    // Older nodes drop fields they do not validate, so sending the default is safe.
-    memoryConfig: memory,
+    // A node that cannot federate gets no field at all: sending the default would only
+    // be dropped, and a node that can takes the explicit pick or the federation default.
+    ...(memory === undefined ? {} : { memoryConfig: memory }),
   })
   if (sent !== true) {
     wait.cancel()

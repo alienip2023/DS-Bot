@@ -92,6 +92,7 @@ const ZH = {
   'Enrollment token': '配对令牌',
   'Enrollment token for pairing this worker.': '用来配对这台执行机的令牌。',
   'Memory Backend': '记忆后端',
+  'This node\'s remote-agent is too old for federated memory.': '该节点的 remote-agent 过旧，不支持联邦记忆。',
   'Memory backend': '记忆后端',
   'Auto Detect': '自动检测',
   'dsh-mneme (Force)': 'dsh-mneme（强制）',
