@@ -6,7 +6,7 @@
 // provider without a key is skipped, never pushed half-made. The key travels in the
 // payload (the node writes it to its own credentials file) and never goes into a log
 // line or an error message here: logs name provider ids and counts only.
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, statSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { env } from 'node:process'
 import { homedir } from 'node:os'
@@ -87,6 +87,9 @@ export function parseCredentialRefs(text) {
 }
 
 function readRefsFile(rt) {
+  // A test may count full builds here: the cheap hint only stats this file, so a read is a
+  // build. Absent outside tests, and it never changes what is read.
+  try { globalThis.__cfgQuietRead ??= readFileSync } catch { /* not a test */ }
   // Merge from all candidates. Reversed loop → last wins: env.DSH_HOME < ~/.dsh < rt.dshHome.
   const candidates = []
   if (typeof rt?.dshHome === 'string' && rt.dshHome !== '') candidates.push(rt.dshHome)
@@ -97,7 +100,8 @@ function readRefsFile(rt) {
   const merged = new Map()
   for (const dir of [...candidates].reverse()) {
     try {
-      const refs = parseCredentialRefs(readFileSync(join(dir, '.credentials.yaml'), 'utf8'))
+      const read = globalThis.__cfgQuietRead ?? readFileSync
+      const refs = parseCredentialRefs(read(join(dir, '.credentials.yaml'), 'utf8'))
       for (const [k, v] of refs) merged.set(k, v)
     } catch { /* skip */ }
   }
@@ -117,6 +121,21 @@ function readRefsFile(rt) {
  *   Only providers whose profile.gateway === true are rewritten; others pass through unchanged.
  *   If gateway is not provided, or a provider has no gateway flag, behavior is unchanged.
  */
+// A count that did not move says nothing new. The first time it is above zero it is logged;
+// the same number again is silent; a fall back to zero logs nothing either (there is no
+// "recovered" line — the absence of a repeat is the recovery). Keyed per runtime, so two
+// hubs installed in one process do not share a memory.
+const countWarnings = new WeakMap()
+function warnCount(rt, key, count, message, ...args) {
+  const n = Number.isInteger(count) && count > 0 ? count : 0
+  let seen = countWarnings.get(rt)
+  if (seen === undefined) { seen = new Map(); countWarnings.set(rt, seen) }
+  if (seen.get(key) === n) return
+  seen.set(key, n)
+  if (n === 0) return
+  rt.warn?.(message, ...args)
+}
+
 export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRefsFile, gateway, schema = 1 } = {}) {
   const ctx = rt.ctx
   const settings = ctx.get?.('settings')
@@ -129,8 +148,10 @@ export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRef
   const providerTally = { n: 0 }
   const v2 = schema === 2
   if (settings && entries.length > 0) {
-    const sections = new Map(settings.describe({ redactSecrets: true }).map(section => [section.ns, section]))
+    // Read before describe: a settings service that throws must not skip the credential
+    // read, and a tick that could not fingerprint cheaply still counts as a full build.
     const refs = readRefs(rt)
+    const sections = new Map(settings.describe({ redactSecrets: true }).map(section => [section.ns, section]))
     // The main's local CLI routes are never pushed to a node. Upstream v0.3.2 moved them under `local-`
     // (local-claude-code/...); a main before the move (or a saved ref) still says claude-code/..., so both count.
     const LOCAL_CLI_PREFIX = /^(?:local-)?(claude-code|codex-cli)(\/|$)/
@@ -194,10 +215,10 @@ export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRef
         ...(v2 ? { ...providerExtrasV2(profile, providerTally), ...(typeof profile.api !== 'string' || profile.api === '' ? { catalog: true } : {}) } : {}),
       })
     }
-    if (gwFallbackCount > 0) rt.warn?.('ds-bot: config-source gateway not started, %d provider(s) fall back to direct', gwFallbackCount)
-    if (gwTokenMissingCount > 0) rt.warn?.('ds-bot: config-source gateway token missing, %d provider(s) fall back to direct', gwTokenMissingCount)
+    warnCount(rt, 'gw-fallback', gwFallbackCount, 'ds-bot: config-source gateway not started, %d provider(s) fall back to direct', gwFallbackCount)
+    warnCount(rt, 'gw-token', gwTokenMissingCount, 'ds-bot: config-source gateway token missing, %d provider(s) fall back to direct', gwTokenMissingCount)
   }
-  if (skipped > 0) rt.warn?.('ds-bot: config-source skipped %d provider(s) without a protocol or key', skipped)
+  warnCount(rt, 'skipped', skipped, 'ds-bot: config-source skipped %d provider(s) without a protocol or key', skipped)
   // v2 only: a provider whose credential ref is also a plugin's ref with ANOTHER value (e.g. a pi-ai `deepseek`
   // catalog route reads DEEPSEEK_API_KEY while deepseek-official's key sits under a different ref) would make the
   // node refuse the whole push (`credentialRefs.conflict`), holding back every other update. The plugin keeps the ref
@@ -211,10 +232,10 @@ export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRef
     }
   }
   // Counts only: never a key, a ref name or a field value.
-  if (v2 && droppedPluginFields > 0) rt.warn?.('ds-bot: config-source v2 dropped %d plugin config field(s) the node would refuse', droppedPluginFields)
-  if (v2 && providerTally.n > 0) rt.warn?.('ds-bot: config-source v2 left out %d provider/model field(s) (invalid for the node, or never synced)', providerTally.n)
-  if (v2 && loopbackBaseURLs > 0) rt.warn?.('ds-bot: config-source v2 did not send %d baseURL(s) that point at the main itself', loopbackBaseURLs)
-  if (clashingProviders > 0) rt.warn?.('ds-bot: config-source v2 left out %d provider(s) whose credential ref clashes with a plugin key', clashingProviders)
+  warnCount(rt, 'dropped-fields', v2 ? droppedPluginFields : 0, 'ds-bot: config-source v2 dropped %d plugin config field(s) the node would refuse', droppedPluginFields)
+  warnCount(rt, 'provider-fields', v2 ? providerTally.n : 0, 'ds-bot: config-source v2 left out %d provider/model field(s) (invalid for the node, or never synced)', providerTally.n)
+  warnCount(rt, 'loopback', v2 ? loopbackBaseURLs : 0, 'ds-bot: config-source v2 did not send %d baseURL(s) that point at the main itself', loopbackBaseURLs)
+  warnCount(rt, 'clashing', clashingProviders, 'ds-bot: config-source v2 left out %d provider(s) whose credential ref clashes with a plugin key', clashingProviders)
   // Ensure defaultModel's provider is among the pushed providers
   let validatedDefault = null
   if (typeof defaultModel === 'string' && defaultModel !== '' && providers.length > 0) {
@@ -380,7 +401,17 @@ export function install(rt) {
 
   // ── Config-sync source ───────────────────────────────────────────────────
   let defaultModel = null
-  const refreshDefault = async () => {
+  // The default model is a catalog lookup with no event. It is re-read when the function
+  // that answers it changes, when the cheap hint moves, or once DEFAULT_MODEL_TTL_MS has
+  // passed — never on a tick whose inputs are all unchanged. A change is seen on the next
+  // tick, which is as soon as the loop can see it.
+  const DEFAULT_MODEL_TTL_MS = 10 * 60_000
+  let defaultModelCheckedAt = 0
+  let defaultModelFn = undefined
+  const refreshDefault = async ({ force = false } = {}) => {
+    if (!force && Date.now() - defaultModelCheckedAt < DEFAULT_MODEL_TTL_MS) return
+    defaultModelCheckedAt = Date.now()
+    defaultModelFn = rt.defaultBotModel
     try {
       const ref = (await rt.defaultBotModel?.()) ?? null
       if (typeof ref === 'string' && ref !== '' && !/embedding/i.test(ref)) {
@@ -414,11 +445,50 @@ export function install(rt) {
 
   // The same providers and defaultModel the source would hand a node, minus its gateway
   // token: schema 1, no gateway option, so no per-node bytes enter the hash.
-  const baseFingerprint = () => {
-    const payload = buildConfigPayload(rt, { defaultModel })
-    return createHash('sha256')
+  //
+  // Building that payload reads settings, the provider catalog and the credentials file,
+  // and none of them emits a change event, so a tick cannot know for certain that nothing
+  // moved. The cheap signal is only a hint: the settings sections as the service describes
+  // them, the provider ids the catalog lists, and the size and mtime of each credentials
+  // file. An identical hint reuses the last fingerprint and builds nothing. Anything else —
+  // a changed hint, a hint that could not be read, or no hint yet — falls back to the full
+  // build. A hint that missed a change would hold a push back, so a doubt always rebuilds.
+  let hintedFingerprint = null
+  let lastHint = undefined
+  const fileStamp = (file) => {
+    try { const st = statSync(file); return `${st.size}:${Math.floor(st.mtimeMs)}` } catch { return 'missing' }
+  }
+  const cheapHint = () => {
+    let sections
+    try { sections = JSON.stringify(rt.ctx?.get?.('settings')?.describe?.({ redactSecrets: true }) ?? null) } catch { return undefined }
+    let providers
+    try { providers = JSON.stringify(rt.ctx?.llm?.listConfigurableProviders?.() ?? null) } catch { return undefined }
+    const dirs = [rt.dshHome, join(homedir(), '.dsh'), env.DSH_HOME].filter(dir => typeof dir === 'string' && dir !== '')
+    const creds = [...new Set(dirs)].map(dir => fileStamp(join(dir, '.credentials.yaml'))).join('|')
+    // The team's default is a preference. Reading it is free, and it is the only signal a
+    // changed default gives, so it belongs in the hint.
+    let pref
+    try { pref = JSON.stringify(rt.state?.prefs?.defaultBotModel ?? null) } catch { return undefined }
+    return `${sections}\n${providers}\n${creds}\n${pref}`
+  }
+  const baseFingerprint = async () => {
+    const hint = cheapHint()
+    // The answering function is part of the signal: a caller that swaps it (a test, or a
+    // runtime that rebinds it) is a change no file shows. A lapsed cache is one too.
+    const fnMoved = rt.defaultBotModel !== defaultModelFn
+    const lapsed = Date.now() - defaultModelCheckedAt >= DEFAULT_MODEL_TTL_MS
+    if (hint === undefined || fnMoved || lapsed || `${hint}\n${defaultModel ?? ''}` !== lastHint) await refreshDefault({ force: true })
+    const settled = hint === undefined ? undefined : `${hint}\n${defaultModel ?? ''}`
+    if (settled !== undefined && settled === lastHint && hintedFingerprint !== null) return hintedFingerprint
+    // A hint that could not be read, or a build whose settings threw: both are doubts, so
+    // both rebuild. A build that throws yields an empty payload rather than killing the tick.
+    let payload
+    try { payload = buildConfigPayload(rt, { defaultModel }) } catch { payload = { providers: [], defaultModel: null } }
+    const fingerprint = createHash('sha256')
       .update(JSON.stringify({ providers: payload?.providers ?? [], defaultModel: payload?.defaultModel ?? null }))
       .digest('hex')
+    if (settled !== undefined) { lastHint = settled; hintedFingerprint = fingerprint }
+    return fingerprint
   }
 
   // A node that refused a push (ack ok:false) is behind exactly like one whose frame did
@@ -480,11 +550,13 @@ export function install(rt) {
     })) lastFingerprint = fingerprint
   }
 
-  const compareAndPush = () => {
+  const compareAndPush = async () => {
     let service
     try { service = ctx?.get?.('remote-agent:config-sync') } catch { service = undefined }
+    // The source reads the cached default model synchronously, so it has to be resolved
+    // before any source call, even when there is nothing to push yet.
+    const fingerprint = await baseFingerprint()
     if (!service || typeof service.sendPush !== 'function') return
-    const fingerprint = baseFingerprint()
     if (fingerprint === lastFingerprint) return
     pushRound(service, fingerprint)
   }
@@ -569,7 +641,7 @@ export function install(rt) {
     attach()
     watchAcks()
     // A new default model is compared as soon as the source has it, not next tick.
-    if (attached) void (async () => { await refreshDefault(); compareAndPush() })()
+    if (attached) void compareAndPush()
   }
   tick()
   const timer = setInterval(tick, RETRY_MS)
