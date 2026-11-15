@@ -279,7 +279,10 @@ export async function handleJoinedTurn(rt, msg = {}) {
   // tick close it as stopped instead of as a bridge that went down.
   if (msg.stopped === true) noteStoppedExchange(xid, nodeId)
   const wait = listenBotTurnResult(registry, xid, nodeId, timeoutMs)
-  const sent = registry.send(nodeId, 'bot/turn', { nodeId, remoteBotId, exchangeId: xid, text: text ?? '' })
+  let sent = false
+  try {
+    sent = registry.send(nodeId, 'bot/turn', { nodeId, remoteBotId, exchangeId: xid, text: text ?? '' })
+  } catch { /* the connection may close between lookup and send */ }
   if (sent !== true) {
     wait.cancel()
     closeMirrorTurn(rt, mirror, to.id, { error: { code: 'bridge-down', message: BRIDGE_DOWN_TEXT } })
