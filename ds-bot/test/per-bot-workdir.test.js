@@ -4,12 +4,38 @@ import { resolve } from 'node:path'
 import { test } from 'node:test'
 import { applyRosterReport } from '../src/host/roster-join.js'
 import { checkWorkDirRoots } from '../src/host/joined-create.js'
-import { install as installWorkerBridge } from '../src/host/worker-bridge.js'
+import { install as installWorkerBridge, perBotWorkDir } from '../src/host/worker-bridge.js'
 import { fakeContext } from './fake-ctx.js'
 
 const drain = async () => {
   for (let i = 0; i < 4; i += 1) await new Promise(resolve => setImmediate(resolve))
 }
+
+test('perBotWorkDir rejects missing, non-string and invalid remote Bot ids', () => {
+  assert.equal(perBotWorkDir(), undefined)
+  assert.equal(perBotWorkDir({ origin: 'local', worker: { remoteBotId: 'session-abc' } }), undefined)
+  assert.equal(perBotWorkDir({ origin: 'joined' }), undefined)
+  for (const remoteBotId of [undefined, null, 123, '', '.', '..', '-bot', '_bot']) {
+    assert.equal(perBotWorkDir({ origin: 'joined', worker: { remoteBotId } }), undefined)
+  }
+})
+
+test('perBotWorkDir sanitizes traversal into one valid per-Bot path segment', () => {
+  const workDir = perBotWorkDir({ origin: 'joined', worker: { remoteBotId: 'a/../../b' } })
+  assert.equal(workDir, 'bots/a-..-..-b')
+  assert.equal(workDir.split('/').includes('..'), false)
+  assert.equal(checkWorkDirRoots({ ctx: { get: () => undefined } }, workDir), null)
+})
+
+test('perBotWorkDir accepts valid ids up to 64 characters', () => {
+  for (const remoteBotId of ['session-abc', 'a'.repeat(64)]) {
+    assert.equal(perBotWorkDir({ origin: 'joined', worker: { remoteBotId } }), `bots/${remoteBotId}`)
+  }
+})
+
+test('perBotWorkDir rejects ids longer than 64 characters', () => {
+  assert.equal(perBotWorkDir({ origin: 'joined', worker: { remoteBotId: 'a'.repeat(65) } }), undefined)
+})
 
 test('roster mirrors leave workDir unset and preserve an existing one', () => {
   const state = {
@@ -35,6 +61,8 @@ test('roster mirrors leave workDir unset and preserve an existing one', () => {
 for (const { name, origin = 'joined', remoteBotId = 'remote-bot', workDir, expected } of [
   { name: 'derives a joined default', expected: 'bots/remote-bot' },
   { name: 'sanitizes a joined remote Bot id', remoteBotId: 'remote/bot:1', expected: 'bots/remote-bot-1' },
+  { name: 'rejects a parent-directory remote Bot id', remoteBotId: '..', expected: undefined },
+  { name: 'rejects an overlong remote Bot id', remoteBotId: 'a'.repeat(65), expected: undefined },
   { name: 'preserves an explicit workDir', workDir: 'bots/configured', expected: 'bots/configured' },
   { name: 'leaves a non-joined default unset', origin: 'local', expected: undefined },
   { name: 'leaves a default unset without a remote Bot id', remoteBotId: '', expected: undefined },

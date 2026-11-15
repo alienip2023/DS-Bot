@@ -8,6 +8,16 @@
 import { randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 
+export function perBotWorkDir(to) {
+  if (to?.origin !== 'joined') return undefined
+  const raw = to.worker?.remoteBotId
+  if (typeof raw !== 'string' || raw === '') return undefined
+  const id = raw.replace(/[^A-Za-z0-9._-]/g, '-')
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(id)) return undefined
+  if (id === '.' || id === '..') return undefined
+  return `bots/${id}`
+}
+
 // How long to wait for a remote task to complete before timing out.
 const REMOTE_TASK_TIMEOUT_MS = 60 * 60 * 1000   // 1 hour (matches AGENT_DEFAULT_TIMEOUT_MS)
 // Fallback polling interval (used when hub doesn't support event emission).
@@ -171,9 +181,7 @@ export function install(rt) {
       const dispatchResult = await tools.dispatch.execute({
         nodeId, taskId, prompt: text,
         mode: 'agent',
-        workDir: to.workDir ?? (to.origin === 'joined' && to.worker?.remoteBotId
-          ? `bots/${String(to.worker.remoteBotId).replace(/[^A-Za-z0-9._-]/g, '-')}`
-          : undefined),
+        workDir: to.workDir ?? perBotWorkDir(to),
       })
       if (dispatchResult?.isError) {
         throw new Error(`dispatch failed: ${dispatchResult.value ?? 'unknown error'}`)
