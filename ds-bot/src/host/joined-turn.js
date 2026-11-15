@@ -6,11 +6,12 @@ import { joinedShadow, shadowId } from './roster-join.js'
 import {
   ensureMirrorSession, hasPromptRequest, mirrorStateOf,
 } from './mirror.js'
-import { beginJoinedMirror, closeJoinedMirror } from './joined-mirror-writer.js'
+import { beginJoinedMirror, closeJoinedMirror, markJoinedMirrorPending } from './joined-mirror-writer.js'
 
 export const BRIDGE_DOWN_TEXT = '副机仍在执行，桥已断'
 // What the sender is told when its exchange was settled by a stop, not by the node going away.
 export const STOPPED_TEXT = '已停止'
+export const PENDING_TURN_TEXT = 'Node is still running; its result will be delivered later.'
 // How long a turn waits for the node's answer. A node Bot that calls tools takes minutes (the
 // first tool call alone can run for over a minute), so the wait covers that; the node's reply
 // that still comes after this is not lost (executor.js startPageTurn writes it as a late reply).
@@ -65,11 +66,13 @@ function trimmed(value) {
   return typeof value === 'string' ? value.trim() : ''
 }
 
-export function listenBotTurnResult(registry, exchangeId, nodeId, timeoutMs, remoteBotId) {
+export function listenBotTurnResult(registry, exchangeId, nodeId, timeoutMs, remoteBotId, { lateWindowMs = 0, onTimeout } = {}) {
   let settled = false
   let received = false   // the node's answer for THIS exchange has arrived (not a cancel/timeout/offline)
   let resolve
   const pending = new Promise((res) => { resolve = res })
+  let resolveCompletion
+  const completion = new Promise((res) => { resolveCompletion = res })
   let inflightByNode = inflightByRegistry.get(registry)
   if (!inflightByNode) { inflightByNode = new Map(); inflightByRegistry.set(registry, inflightByNode) }
   const tracked = inflightByNode.get(nodeId) ?? new Map()
@@ -86,6 +89,7 @@ export function listenBotTurnResult(registry, exchangeId, nodeId, timeoutMs, rem
     // Only the stop receipt may treat a dropped bridge as the stop taking effect.
     if (receipts.get(exchangeId) === nodeId) receipts.delete(exchangeId)
     resolve(value)
+    resolveCompletion(value)
   }
   tracked.set(exchangeId, { finish, remoteBotId })
   const onResult = (payload) => {
@@ -100,11 +104,19 @@ export function listenBotTurnResult(registry, exchangeId, nodeId, timeoutMs, rem
     if (receipts.get(exchangeId) === nodeId) { finish({ ok: false, error: 'stopped', exchangeId }); return }
     finish({ ok: false, error: 'bridge-down', exchangeId })
   }
-  const timer = setTimeout(() => finish(undefined), timeoutMs)
+  // Keep the same listeners across the soft deadline: a result or disconnect in that tick
+  // must not fall into a gap between removing the original waiter and arming a late one.
+  let timer = setTimeout(() => {
+    if (lateWindowMs <= 0) { finish(undefined); return }
+    timer = setTimeout(() => finish(undefined), lateWindowMs)
+    timer.unref?.()
+    resolve(undefined)
+    onTimeout?.()
+  }, timeoutMs)
   timer.unref?.()
   registry.on?.('botTurnResult', onResult)
   registry.on?.('nodeOffline', onOffline)
-  return { pending, cancel: () => finish({ ok: false, error: 'bridge-down', exchangeId }), received: () => received }
+  return { pending, completion, cancel: () => finish({ ok: false, error: 'bridge-down', exchangeId }), received: () => received }
 }
 
 // The explanatory receipt opens after the stop settled the original exchange.
@@ -253,6 +265,8 @@ export async function handleJoinedTurn(rt, msg = {}) {
   const row = rt.state?.bots?.[id]
   if (!row || row.id !== to.id) return { ok: false, error: 'joined shadow not on roster' }
   const xid = trimmed(exchangeId) || randomUUID()
+  const existing = rt.joinedDeliveries?.get(xid)
+  if (existing) return msg.defer === true ? xid : existing.waited
   const opened = await openMirrorTurn(rt, to, text, xid)
   // A retried delivery is already on the page: dispatch again (the node's exchange is keyed by
   // xid), but do not open a second turn there.
@@ -269,7 +283,11 @@ export async function handleJoinedTurn(rt, msg = {}) {
   // it here, before the listener is attached, is what lets a node drop that lands in the same
   // tick close it as stopped instead of as a bridge that went down.
   if (msg.stopped === true) noteStoppedExchange(xid, nodeId, registry)
-  const wait = listenBotTurnResult(registry, xid, nodeId, timeoutMs, remoteBotId)
+  const lateWindowMs = Number.isFinite(rt.joinedLateWindowMs) ? Math.max(1, rt.joinedLateWindowMs) : JOINED_LATE_WINDOW_MS
+  const wait = listenBotTurnResult(registry, xid, nodeId, timeoutMs, remoteBotId, {
+    lateWindowMs,
+    onTimeout: () => markJoinedMirrorPending(rt, mirror, PENDING_TURN_TEXT),
+  })
   let sent = false
   try {
     sent = registry.send(nodeId, 'bot/turn', { nodeId, remoteBotId, exchangeId: xid, text: text ?? '' })
@@ -281,6 +299,8 @@ export async function handleJoinedTurn(rt, msg = {}) {
     return { ok: false, error: 'bridge-down' }
   }
   const settle = async (result) => {
+    // Expiry of the late window is still not evidence that the connection was lost.
+    if (!result) return { ok: false, error: 'bot-turn-pending', exchangeId: xid }
     if (result?.error === 'stopped') {
       // Settled by a stop of this node, not by the node going away: close the mirror as stopped
       // and tell the sender it was stopped. A late result or nodeOffline for this exchange finds
@@ -289,10 +309,10 @@ export async function handleJoinedTurn(rt, msg = {}) {
       await replyToSender(rt, { fromId, toId, exchangeId: xid, work, text: STOPPED_TEXT, answered: false })
       return { ok: false, error: 'stopped' }
     }
-    if (!result || result.error === 'bridge-down') {
-      closeMirrorTurn(rt, mirror, to.id, { error: { code: result?.error ?? 'bot-turn-lost', message: BRIDGE_DOWN_TEXT } })
+    if (result.error === 'bridge-down') {
+      closeMirrorTurn(rt, mirror, to.id, { error: { code: 'bridge-down', message: BRIDGE_DOWN_TEXT } })
       await replyToSender(rt, { fromId, toId, exchangeId: xid, work, text: BRIDGE_DOWN_TEXT, answered: false })
-      return { ok: false, error: result?.error ?? 'bot-turn-lost' }
+      return { ok: false, error: 'bridge-down' }
     }
     if (result.ok === false) {
       const error = result.error ?? 'bot-turn-failed'
@@ -304,16 +324,24 @@ export async function handleJoinedTurn(rt, msg = {}) {
     await replyToSender(rt, { fromId, toId, exchangeId: xid, work, text: result.text ?? '' })
     return xid
   }
+  if (!rt.joinedDeliveries) rt.joinedDeliveries = new Map()
+  const completed = wait.completion.then(settle).finally(() => { rt.joinedDeliveries.delete(xid) })
+  const waited = wait.pending.then(result => result === undefined
+    ? { ok: false, error: 'bot-turn-pending', exchangeId: xid }
+    : completed)
+  rt.joinedDeliveries.set(xid, { waited })
+  completed.catch(error => {
+    rt.warn?.('ds-bot: a joined turn for %s could not be completed: %s', to.id, error?.message ?? error)
+  })
   if (msg.defer === true) {
     // A message from another Bot must not hold its sender's tool call until the node's model
     // turn finishes: the receipt says "delivered, the reply comes later", and the answer
     // reaches the sender as a new message. Send failures above are still reported at once.
-    wait.pending.then(settle).catch(error => {
-      rt.warn?.('ds-bot: a joined turn for %s could not be completed: %s', to.id, error?.message ?? error)
-    })
+    // No caller awaits waited in deferred mode, but it still follows completed on a result.
+    waited.catch(() => {})
     return xid
   }
-  return settle(await wait.pending)
+  return waited
 }
 
 function findLocal(rt, remoteBotId) {

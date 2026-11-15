@@ -4,7 +4,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import EventEmitter from 'node:events'
-import { handleJoinedTurn, settleStoppedTurns, BRIDGE_DOWN_TEXT } from '../src/host/joined-turn.js'
+import { handleJoinedTurn, settleStoppedTurns, BRIDGE_DOWN_TEXT, PENDING_TURN_TEXT } from '../src/host/joined-turn.js'
 import { shadowId } from '../src/host/roster-join.js'
 
 const { Session } = await import('@deepseek-ai/dsh-session')
@@ -84,21 +84,24 @@ test('a Bot-to-Bot message shows on the joined page and the answer lands there',
   assert.equal(w.warnings.length, 0)
 })
 
-test('a timeout writes a visible failure on the page and keeps the exchange honest', async () => {
+test('a timeout leaves the page turn open until the late result arrives', async () => {
   const w = makeWorld({ timeoutMs: 20 })
   const result = await handleJoinedTurn(w.rt, {
     fromId: w.local.id, toId: w.shadow.id, text: 'anyone there', exchangeId: 'ex-2', role: 'request',
   })
   assert.equal(result.ok, false)
-  assert.equal(result.error, 'bot-turn-lost')
+  assert.equal(result.error, 'bot-turn-pending')
   const log = events(w.session)
-  assert.deepEqual(log, ['turn/start', 'step/start', 'user/message', 'assistant/message', 'step/end', 'turn/end'])
+  assert.deepEqual(log, ['turn/start', 'step/start', 'user/message', 'assistant/message'])
   assert.deepEqual(texts(w.session, 'user/message'), ['anyone there'])
-  assert.match(texts(w.session, 'assistant/message')[0], /^⚠ 无法送达节点：/)
-  assert.equal(w.session.log.at(-1).data.reason.kind, 'error')
-  assert.equal(w.rt.state.exchanges.at(-1).text, BRIDGE_DOWN_TEXT)
-  assert.equal(w.replies.at(-1).text, BRIDGE_DOWN_TEXT)
-  assert.equal(w.shadow.worker.lastReply.text, BRIDGE_DOWN_TEXT)
+  assert.deepEqual(texts(w.session, 'assistant/message'), [PENDING_TURN_TEXT])
+  assert.equal(w.rt.state.exchanges.length, 0)
+  assert.equal(w.replies.length, 0)
+  w.answer()
+  await settle()
+  assert.equal(w.session.log.at(-1).data.reason.kind, 'completed')
+  assert.deepEqual(texts(w.session, 'assistant/message'), [PENDING_TURN_TEXT, 'pong'])
+  assert.equal(w.replies.at(-1).text, 'pong')
 })
 
 test('a bridge that cannot send also leaves the request and the failure on the page', async () => {

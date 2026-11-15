@@ -147,20 +147,21 @@ test('mirror bookkeeping starts fresh when the mirror Session is rebuilt', () =>
   assert.equal(stateB.closedTurns.size, 0, 'turn numbers restart at 1 in a new Session, so old closures must not hide them')
 })
 
-test('a timed-out exchange keeps its failure line when the same exchange is delivered again', async () => {
-  // Pinned semantics: the retry is not a second page turn. The failure stays visible and the
-  // late answer is not appended to it (the exchange record still gets the retry's reply).
+test('a timed-out exchange reuses its waiter on retry and writes the late answer once', async () => {
   const w = makeWorld({ timeoutMs: 20 })
   w.rt.state.exchanges = []
   const timedOut = await handleJoinedTurn(w.rt, { fromId: 'local', toId: w.bot.id, text: 'first try', exchangeId: 'ex-3', role: 'request' })
-  assert.deepEqual(timedOut, { ok: false, error: 'bot-turn-lost' })
+  assert.deepEqual(timedOut, { ok: false, error: 'bot-turn-pending', exchangeId: 'ex-3' })
   const session = w.sessionOf('mirror-1')
-  assert.equal(assertStrictTurns(session), 1)
-  assert.deepEqual(texts(session, 'assistant/message').map(text => text.slice(0, 1)), ['⚠'])
+  assert.equal(session.log.filter(event => event.type === 'turn/end').length, 0)
+  assert.doesNotMatch(texts(session, 'assistant/message').join(''), /桥已断/)
 
-  // The retry gets its own exchange record and delivery; only the page turn is not reopened.
   await handleJoinedTurn(w.rt, { fromId: 'local', toId: w.bot.id, text: 'first try', exchangeId: 'ex-3', role: 'request' })
+  assert.equal(w.frames.length, 1, 'an in-flight retry does not send another frame or arm another waiter')
+  w.reply(0, { text: 'late answer' })
+  await drain()
   assert.equal(assertStrictTurns(session), 1, 'the retry must not open a second turn')
   assert.deepEqual(texts(session, 'user/message'), ['first try'])
-  assert.equal(texts(session, 'assistant/message').length, 1, 'the late success does not append an answer to a failed turn')
+  assert.equal(texts(session, 'assistant/message').at(-1), 'late answer')
+  assert.equal(w.rt.state.exchanges.length, 1)
 })

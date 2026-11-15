@@ -147,6 +147,11 @@ function appendAssistant(session, turn, step, text, usage) {
   }, { surfaceOp: 'append' })
 }
 
+/** Record progress without ending the remote turn or consuming its result's idempotency key. */
+export function mirrorTurnPending(session, { turn, step = 1, text } = {}) {
+  appendAssistant(session, turn, step, text)
+}
+
 /**
  * assistant/message, step/end, turn/end completed. A node result already written
  * ((botId,nodeSeq) in seenKeys/closedKeys) still closes the turn — as aborted, without a
