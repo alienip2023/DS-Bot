@@ -63,8 +63,10 @@ function listenBotCreateResult(registry, requestId, nodeId, timeoutMs) {
  */
 export function checkWorkDirRoots(rt, workDir) {
   if (workDir === null || workDir === undefined) return null
-  // The remote agent resolves relative workDirs against its own configured roots.
-  if (typeof workDir === 'string' && !isAbsolute(workDir)) return null
+  // Only per-Bot directories may be resolved relative to the remote node's roots.
+  if (typeof workDir === 'string' && !isAbsolute(workDir)) {
+    return /^bots\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(workDir) ? null : 'bot-create-workdir-denied'
+  }
   let policy
   try { policy = rt.ctx?.get?.('remote-agent:node-policy') } catch { policy = undefined }
   if (!policy) return 'bot-create-workdir-denied'

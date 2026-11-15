@@ -62,7 +62,6 @@ export function applyRosterReport(state, report, now = Date.now()) {
       type: 'remote-worker',
       origin: 'joined',
       createdAt: existing?.createdAt ?? now,
-      workDir: existing?.workDir ?? `bots/${remoteBotId}`,
       capabilities: existing?.capabilities ?? [],
       worker: {
         ...(existing?.worker ?? {}),

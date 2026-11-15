@@ -170,7 +170,10 @@ export function install(rt) {
     try {
       const dispatchResult = await tools.dispatch.execute({
         nodeId, taskId, prompt: text,
-        mode: 'agent', workDir: to.workDir ?? undefined,
+        mode: 'agent',
+        workDir: to.workDir ?? (to.origin === 'joined' && to.worker?.remoteBotId
+          ? `bots/${String(to.worker.remoteBotId).replace(/[^A-Za-z0-9._-]/g, '-')}`
+          : undefined),
       })
       if (dispatchResult?.isError) {
         throw new Error(`dispatch failed: ${dispatchResult.value ?? 'unknown error'}`)
