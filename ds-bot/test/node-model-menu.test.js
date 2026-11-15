@@ -1,13 +1,18 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { dirname } from 'node:path'
+import { EventEmitter } from 'node:events'
+import { install as installModels } from '../src/host/models.js'
+import { install as installRoster } from '../src/host/roster.js'
+import { joinedUpdateBot, createBotUpdateReceiver } from '../src/host/joined-page.js'
+import { buildConfigPayload } from '../src/host/config-source.js'
 import { fileURLToPath } from 'node:url'
 import { runInNewContext } from 'node:vm'
 import { build } from 'esbuild'
 import { installLocale as installLocaleHere } from '../src/client/i18n.js'
 import { realTeamActions, hostRoster, joinedRuntime } from './bot-home-fixtures.js'
 
-// fork.64: the model picker of a remote (joined) Bot lists what its NODE can run. The REAL
+// A remote Bot offers node models and configured main API models for the node to validate. The REAL
 // DetailsDrawer is rendered with a small stateful React stand-in; the REAL BotModelMenu fetches
 // the node's catalog through the real teamActions (botCreateTargets -> call), the REAL ModelMenu
 // is opened (state slot seeded), and its rows are clicked.
@@ -102,7 +107,7 @@ const NODE_MODELS = [
 ]
 
 // A page whose roster comes from a real runtime (joined Bot `bot-j1` on node n1 + a local Bot).
-function page({ nodeModels = NODE_MODELS, targetsFail = false, targets = null, bot: botPatch = {} } = {}) {
+function page({ nodeModels = NODE_MODELS, targetsFail = false, targets = null, update, bot: botPatch = {} } = {}) {
   const rt = joinedRuntime({ mirrorSessionId: 'sess-mirror' })
   Object.assign(rt.state.bots['bot-j1'], botPatch)
   rt.state.bots['bot-local'] = { id: 'bot-local', name: 'Local', type: 'bot', model: 'piion/m1' }
@@ -114,6 +119,11 @@ function page({ nodeModels = NODE_MODELS, targetsFail = false, targets = null, b
       roster: { getSnapshot: () => roster },
       call: async (endpoint, body) => {
         calls.push([endpoint, body])
+        if (endpoint === 'update-bot' && update) {
+          const result = await update(rt, body)
+          if (!result.ok) throw Object.assign(new Error(result.error), { code: 'bot/refused' })
+          return result
+        }
         if (endpoint === 'bot-create-targets') { if (targetsFail) throw new Error('boom'); return targets ?? [{ nodeId: 'n1', hostname: 'node-1', online: true, models: nodeModels, defaultModel: null }] }
         return {}
       },
@@ -157,12 +167,11 @@ async function openDrawerMenu(p, sessionId, { menuEffects = false } = {}) {
   }
 }
 
-test('M5-a: a joined remote Bot drawer lists the node catalog, plus the rest greyed out under "Not synced to the node yet"', async () => {
+test('M5-a: a joined remote Bot can pick configured API models missing from its report; absent CLIs stay disabled', async () => {
   const p = page()
   const m = await openDrawerMenu(p, 'bot-j1')
-  assert.deepEqual(m.pickable.map(n => n.props.title), ['ccmax/claude-sonnet-5-5', 'piion/m1'])
+  assert.deepEqual(m.pickable.map(n => n.props.title), ['ccmax/claude-sonnet-5-5', 'piion/m1', 'xai/grok-4.3'])
   assert.deepEqual(m.off.map(n => textOf(n)), [
-    'Grok 4.3|This model\'s provider setup is not synced to the node yet',
     'Claude Code Sonnet|The node has no matching CLI yet, or its setup is not synced',
   ])
   assert.match(m.text, /Not synced to the node yet/)
@@ -180,7 +189,7 @@ const twoNodes = order => {
 test('M5-R10: with two nodes the drawer lists the catalog of the Bot\'s own node, whichever order the targets come in', async () => {
   for (const order of ['other-first', 'mine-first']) {
     const m = await openDrawerMenu(page({ targets: twoNodes(order) }), 'bot-j1')
-    assert.deepEqual(m.pickable.map(n => n.props.title), ['ccmax/claude-sonnet-5-5', 'piion/m1'], order)
+    assert.deepEqual(m.pickable.map(n => n.props.title), ['ccmax/claude-sonnet-5-5', 'piion/m1', 'xai/grok-4.3'], order)
     assert.equal(m.props.notice, null, order)
   }
 })
@@ -269,7 +278,7 @@ test('M5-a2: picking a node model saves it (updateBot -> update-bot); a greyed-o
   await settle()
   assert.deepEqual(p.calls.filter(c => c[0] === 'update-bot'), [['update-bot', { id: 'bot-j1', model: 'ccmax/claude-sonnet-5-5' }]])
   p.calls.length = 0
-  assert.equal(m.off.length, 2)
+  assert.equal(m.off.length, 1)
   for (const row of m.off) {
     assert.equal(row.props.disabled, true)
     assert.equal(row.props['aria-disabled'], true)
@@ -370,7 +379,6 @@ test('M5-f: in Chinese the group, the reasons, the notice and the refusals read 
     const m = await openDrawerMenu(page(), 'bot-j1')
     assert.match(m.text, /节点尚未同步/)
     assert.deepEqual(m.off.map(n => textOf(n)), [
-      'Grok 4.3|该模型的提供商配置还没同步到节点',
       'Claude Code Sonnet|节点还没装对应 CLI 或配置未同步',
     ])
     const empty = await openDrawerMenu(page({ nodeModels: [] }), 'bot-j1')
@@ -407,4 +415,132 @@ test('s60-C: a node model without levels shows no level bar', async () => {
   const p = page({ bot: { model: 'piion/m1' } })
   const m = await openDrawerMenu(p, 'bot-j1', { menuEffects: true })
   assert.equal(find(m.tree, n => n.type?.name === 'EffortBar').length, 0)
+})
+
+// The reported policy is a snapshot; the live catalog changes after config-sync.
+// Keep the menu, action, bridge, node receiver, roster and model selection real.
+function modelNode() {
+  const policy = { models: NODE_MODELS }
+  const providers = Object.fromEntries(NODE_MODELS.map(m => [m.provider, [{ id: m.id, name: m.name }]]))
+  const selections = []
+  const bot = { id: 'rb1', name: 'Remote', managedBy: 'hub', model: 'piion/m1', appliedModel: 'piion/m1' }
+  const rt = {
+    state: { bots: { rb1: bot }, rooms: {}, threads: {}, prefs: {} }, defaults: {},
+    ctx: {
+      get: name => name === 'remote-agent:node-policy' ? policy : undefined,
+      llm: { listProviders: () => Object.keys(providers).map(id => ({ id })), listModels: async id => providers[id] ?? [] },
+      sessionController: { selectModel: async choice => { selections.push(choice); return { selected: choice } } },
+    },
+    botOf: id => id === bot.id ? bot : undefined,
+    chatOf: () => 'node-session', groupSessionsOf: () => [],
+    checkPrivacyChange: async () => {}, save: async () => {},
+  }
+  installModels(rt)
+  installRoster(rt)
+  return { rt, bot, policy, providers, selections, accept: createBotUpdateReceiver(rt) }
+}
+
+const updateSpec = model => ({ remoteBotId: 'rb1', model, effort: null, instructions: null, workDir: null })
+
+test('a node accepts its live exact model after config-sync while its policy and cached catalog lag', async () => {
+  const node = modelNode()
+  await node.rt.catalog()
+  // Only the transport's application to the fake LLM service is simulated.
+  const payload = buildConfigPayload({ ctx: {
+    get: () => ({ describe: () => [{ ns: 'llm-pi-ai', value: { providers: {
+      xai: { api: 'openai-responses', apiKeyEnv: 'TEST_ONLY', models: [{ id: 'grok-4.3' }] },
+    } } }] }),
+    llm: { listConfigurableProviders: () => [{ provider: 'xai', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'xai'] }] },
+  } }, { readRefs: () => new Map([['TEST_ONLY', 'fixture-only']]) })
+  for (const provider of payload.providers) node.providers[provider.id] = provider.models
+  const result = await node.accept(updateSpec('xai/grok-4.3'))
+  assert.equal(result.ok, true, result.error)
+  assert.equal(node.bot.model, 'xai/grok-4.3')
+  assert.equal(node.bot.appliedModel, 'xai/grok-4.3')
+  assert.deepEqual(node.selections, [{ sessionId: 'node-session', provider: 'xai', model: 'grok-4.3' }])
+})
+
+test('picking a main API model reaches the node session before updating the hub shadow', async () => {
+  const node = modelNode()
+  node.providers.xai = [{ id: 'grok-4.3', name: 'Grok 4.3' }]
+  const registry = new EventEmitter()
+  registry.onlineNodes = () => [{ nodeId: 'n1', models: NODE_MODELS }]
+  registry.send = (nodeId, type, frame) => {
+    assert.equal(nodeId, 'n1')
+    assert.equal(type, 'bot/update')
+    void node.accept(frame).then(result => registry.emit('botUpdateResult', { ...result, nodeId, requestId: frame.requestId }))
+    return true
+  }
+  let pending
+  let shadow
+  const p = page({ bot: { model: 'piion/m1', appliedModel: 'piion/m1' }, update: (rt, body) => {
+    shadow = rt.state.bots[body.id]
+    rt.ctx.get = name => name === 'remote-agent:registry' ? registry : undefined
+    rt.save = async () => {}
+    pending = joinedUpdateBot(rt, body.id, body)
+    assert.equal(shadow.model, 'piion/m1', 'the hub must wait for the node result')
+    return pending
+  } })
+  const menu = await openDrawerMenu(p, 'bot-j1')
+  const row = menu.pickable.find(n => n.props.title === 'xai/grok-4.3')
+  assert.ok(row, 'a main API model must be selectable despite the stale node report')
+  row.props.onClick()
+  const result = await pending
+  assert.equal(result.ok, true, result.error)
+  assert.equal(node.bot.model, 'xai/grok-4.3')
+  assert.equal(node.bot.appliedModel, 'xai/grok-4.3')
+  assert.deepEqual(node.selections, [{ sessionId: 'node-session', provider: 'xai', model: 'grok-4.3' }])
+  assert.equal(shadow.model, node.bot.model)
+  assert.equal(shadow.appliedModel, node.bot.appliedModel)
+  assert.equal(shadow.worker.model, node.bot.model)
+})
+
+test('the live node rejects an absent exact ref even if its policy lists it and another provider has the same model id', async () => {
+  const node = modelNode()
+  node.providers.other = [{ id: 'grok-4.3' }]
+  node.policy.models = [...NODE_MODELS, { ref: 'xai/grok-4.3' }]
+  const result = await node.accept(updateSpec('xai/grok-4.3'))
+  assert.equal(result.ok, false)
+  assert.equal(node.bot.model, 'piion/m1')
+  assert.deepEqual(node.selections, [])
+})
+
+
+test('a configured main API model is not labelled unavailable merely because the node report lags', async () => {
+  const menu = await openDrawerMenu(page({ bot: { model: 'xai/grok-4.3' } }), 'bot-j1')
+  assert.equal(menu.triggerName, 'Grok 4.3')
+  assert.doesNotMatch(menu.triggerProvider, /not available/)
+})
+
+test('a refused node pick leaves both model records and the node session unchanged', async () => {
+  const node = modelNode()
+  const registry = new EventEmitter()
+  registry.onlineNodes = () => [{ nodeId: 'n1', models: NODE_MODELS }]
+  registry.send = (nodeId, type, frame) => {
+    assert.equal(type, 'bot/update')
+    void node.accept(frame).then(result => registry.emit('botUpdateResult', { ...result, nodeId, requestId: frame.requestId }))
+    return true
+  }
+  let pending
+  let shadow
+  const p = page({ bot: { model: 'piion/m1', appliedModel: 'piion/m1' }, update: (rt, body) => {
+    shadow = rt.state.bots[body.id]
+    rt.ctx.get = name => name === 'remote-agent:registry' ? registry : undefined
+    rt.save = async () => {}
+    pending = joinedUpdateBot(rt, body.id, body)
+    return pending
+  } })
+  const menu = await openDrawerMenu(p, 'bot-j1')
+  const row = menu.pickable.find(n => n.props.title === 'xai/grok-4.3')
+  assert.ok(row)
+  row.props.onClick()
+  const result = await pending
+  await settle()
+  assert.equal(result.ok, false)
+  assert.equal(node.bot.model, 'piion/m1')
+  assert.equal(node.bot.appliedModel, 'piion/m1')
+  assert.deepEqual(node.selections, [])
+  assert.equal(shadow.model, 'piion/m1')
+  assert.equal(shadow.appliedModel, 'piion/m1')
+  assert.ok(menu.drawerSets.some(value => typeof value === 'string' && value.length > 0), 'the drawer shows the refusal')
 })

@@ -22558,6 +22558,7 @@ function pickTargets(res) {
 // src/client/node-models.js
 var import_react20 = require("react");
 var CLI_PROVIDER = /^(?:local-)?(claude-code|codex-cli)(\/|$)/;
+var isCli = (ref) => isLocalRoute(ref) || CLI_PROVIDER.test(ref);
 var NODE_REASONS = Object.freeze({
   cli: () => t("The node has no matching CLI yet, or its setup is not synced"),
   provider: () => t("This model's provider setup is not synced to the node yet")
@@ -22568,19 +22569,21 @@ function joinedModelView(bot, roster, nodeModels) {
   if (!isJoinedRemote(bot) || nodeModels === null || nodeModels === void 0) return same;
   if (nodeModels.length === 0) return { ...same, notice: nodeNoticeText() };
   const onNode = new Set(nodeModels.map((model) => model.ref));
-  const unavailable = (roster.models ?? []).filter((model) => !onNode.has(model.ref)).map((model) => ({
+  const missing = (roster.models ?? []).filter((model) => !onNode.has(model.ref));
+  const candidates = missing.filter((model) => !isCli(model.ref) && model.needsKey !== true);
+  const unavailable = missing.filter((model) => isCli(model.ref) || model.needsKey === true).map((model) => ({
     ref: model.ref,
     name: model.name,
     provider: model.provider,
     providerName: model.providerName,
-    reason: CLI_PROVIDER.test(model.ref) ? NODE_REASONS.cli() : NODE_REASONS.provider()
+    reason: isCli(model.ref) ? NODE_REASONS.cli() : NODE_REASONS.provider()
   }));
   const labels = Object.fromEntries(unavailable.map((model) => [model.ref, { name: model.name, providerName: model.providerName }]));
   return {
     // The picker reads a model's thinking levels from `reasoning.efforts` (what the host's own catalog gives it),
     // so a node model's `efforts` is normalized to that same shape here, at the boundary. Only when the node
     // actually reported levels: a model without them keeps asking the host, as before.
-    roster: { ...roster, models: nodeModels.map((model) => ({ ref: model.ref, provider: model.provider, name: model.name, providerName: model.provider, ...Array.isArray(model.efforts) && model.efforts.length > 0 ? { reasoning: { efforts: model.efforts } } : {} })), labels },
+    roster: { ...roster, models: [...nodeModels.map((model) => ({ ref: model.ref, provider: model.provider, name: model.name, providerName: model.provider, ...Array.isArray(model.efforts) && model.efforts.length > 0 ? { reasoning: { efforts: model.efforts } } : {} })), ...candidates], labels },
     unavailable,
     notice: null
   };

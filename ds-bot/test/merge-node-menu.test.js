@@ -37,7 +37,7 @@ const nodeModel = ref => ({ ref, provider: ref.split('/')[0], id: ref.split('/')
 const view = (mainRefs, nodeRefs) => joinedModelView(bot, { models: mainRefs.map(r => model(r)) }, nodeRefs.map(nodeModel))
 
 const ORDINARY = 'openrouter/gpt-x'
-const CLIS = ['claude-code/sonnet', 'codex-cli/gpt-5', 'local-claude-code/sonnet', 'local-codex-cli/gpt-5']
+const CLIS = ['claude-code/sonnet', 'codex-cli/gpt-5', 'local-claude-code/sonnet', 'local-codex-cli/gpt-5', 'local-opencode/default', 'local-acp-custom/default']
 
 for (const ref of CLIS) {
   test(`M-menu-${ref}: a main-only CLI model is greyed out with the CLI reason, not the provider reason`, () => {
@@ -49,14 +49,16 @@ for (const ref of CLIS) {
   })
 }
 
-test('M-menu-ordinary: a main-only ordinary provider model gets the provider reason', () => {
+test('M-menu-ordinary: a main API model remains selectable while the node report lags', () => {
   const out = view([ORDINARY, 'other/m'], [ORDINARY])
-  assert.equal(out.unavailable.find(m => m.ref === 'other/m').reason, NODE_REASONS.provider())
+  assert.deepEqual(Array.from(out.roster.models, m => m.ref), [ORDINARY, 'other/m'])
+  assert.deepEqual(out.unavailable, [])
 })
 
-test('M-menu-lookalike: a provider that only CONTAINS a CLI name (my-claude-code, local-claude-codex) gets the provider reason', () => {
+test('M-menu-lookalike: a provider that only CONTAINS a CLI name (my-claude-code, local-claude-codex) remains an API candidate', () => {
   const out = view([ORDINARY, 'my-claude-code/x', 'local-claude-codex/y'], [ORDINARY])
-  for (const ref of ['my-claude-code/x', 'local-claude-codex/y']) assert.equal(out.unavailable.find(m => m.ref === ref).reason, NODE_REASONS.provider(), ref)
+  assert.deepEqual(Array.from(out.roster.models, m => m.ref), [ORDINARY, 'my-claude-code/x', 'local-claude-codex/y'])
+  assert.deepEqual(out.unavailable, [])
 })
 
 test('M-menu-mixed: a node that reports the OLD name while the main lists the NEW one (and the reverse) — each ref stays on its own side', () => {
@@ -64,7 +66,7 @@ test('M-menu-mixed: a node that reports the OLD name while the main lists the NE
   const a = view([ORDINARY, 'local-claude-code/sonnet'], [ORDINARY, 'claude-code/sonnet'])
   assert.deepEqual(a.unavailable.map(m => m.ref), ['local-claude-code/sonnet'])
   assert.equal(a.unavailable[0].reason, NODE_REASONS.cli())
-  assert.deepEqual(a.roster.models.map(m => m.ref), [ORDINARY, 'claude-code/sonnet'], 'the node list is what the picker offers')
+  assert.deepEqual(Array.from(a.roster.models, m => m.ref), [ORDINARY, 'claude-code/sonnet'], 'the node list is what the picker offers')
   const b = view([ORDINARY, 'claude-code/sonnet'], [ORDINARY, 'local-claude-code/sonnet'])
   assert.deepEqual(b.unavailable.map(m => m.ref), ['claude-code/sonnet'])
   assert.equal(b.unavailable[0].reason, NODE_REASONS.cli())

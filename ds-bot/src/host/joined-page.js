@@ -267,10 +267,15 @@ export function createBotUpdateReceiver(rt) {
       if (wdErr) return { ok: false, error: 'bot-update-workdir-denied' }
     }
 
-    // model validation against node catalog — check the full ref, not just the provider
+    // Config-sync can update the LLM service before the policy snapshot is reported
+    // again. Validate against the live catalog, keeping the exact provider/model ref.
     if (modelRef !== null) {
       const nodePolicy = rt.ctx?.get?.('remote-agent:node-policy')
-      const knownRefs = Array.isArray(nodePolicy?.models) ? new Set(nodePolicy.models.map(m => m.ref ?? `${m.provider ?? ''}/${m.id ?? ''}`)) : null
+      let models = nodePolicy?.models
+      if (typeof rt.catalog === 'function') {
+        try { models = await rt.catalog({ fresh: true }) } catch { return { ok: false, error: 'bot-update-model-unknown' } }
+      }
+      const knownRefs = Array.isArray(models) ? new Set(models.filter(m => m.needsKey !== true).map(m => m.ref ?? `${m.provider ?? ''}/${m.id ?? ''}`)) : null
       if (knownRefs !== null && !knownRefs.has(modelRef)) {
         return { ok: false, error: 'bot-update-model-not-on-node' }
       }

@@ -3,13 +3,14 @@ import { ModelMenu } from './model-menu.js'
 import { isJoinedRemote } from './joined-errors.js'
 import { pickTargets } from './pick-targets.js'
 import { t } from './i18n.js'
+import { isLocalRoute } from './agent-routes.js'
 
-// A remote Bot runs on its node, so its model picker lists what the node can run: the node's
-// reported catalog. Models of the main DSH that the node cannot run yet are not hidden; they are
-// listed apart, greyed out, each with the reason. When the node reports no catalog the picker
-// falls back to the main list, says so, and the node may still refuse a pick.
+// A node's reported catalog can lag config-sync. API models configured on the main
+// remain candidates; the node checks its live catalog before applying a pick.
+// CLIs absent from the node stay disabled: a main's CLI is not a remote runtime.
 // Both spellings: upstream v0.3.2 routes live under `local-`, a node of an older build still reports the bare names.
 const CLI_PROVIDER = /^(?:local-)?(claude-code|codex-cli)(\/|$)/
+const isCli = ref => isLocalRoute(ref) || CLI_PROVIDER.test(ref)
 
 // The reason a model is greyed out, in one place so the wording is easy to change.
 export const NODE_REASONS = Object.freeze({
@@ -26,9 +27,11 @@ export function joinedModelView(bot, roster, nodeModels) {
   if (!isJoinedRemote(bot) || nodeModels === null || nodeModels === undefined) return same
   if (nodeModels.length === 0) return { ...same, notice: nodeNoticeText() }
   const onNode = new Set(nodeModels.map(model => model.ref))
-  const unavailable = (roster.models ?? []).filter(model => !onNode.has(model.ref)).map(model => ({
+  const missing = (roster.models ?? []).filter(model => !onNode.has(model.ref))
+  const candidates = missing.filter(model => !isCli(model.ref) && model.needsKey !== true)
+  const unavailable = missing.filter(model => isCli(model.ref) || model.needsKey === true).map(model => ({
     ref: model.ref, name: model.name, provider: model.provider, providerName: model.providerName,
-    reason: CLI_PROVIDER.test(model.ref) ? NODE_REASONS.cli() : NODE_REASONS.provider(),
+    reason: isCli(model.ref) ? NODE_REASONS.cli() : NODE_REASONS.provider(),
   }))
   // `labels`: how the main names the models the node cannot run. The model picker's trigger reads it for a Bot whose
   // model is one of those, so the trigger and the greyed row call the same model by the same name.
@@ -37,7 +40,7 @@ export function joinedModelView(bot, roster, nodeModels) {
     // The picker reads a model's thinking levels from `reasoning.efforts` (what the host's own catalog gives it),
     // so a node model's `efforts` is normalized to that same shape here, at the boundary. Only when the node
     // actually reported levels: a model without them keeps asking the host, as before.
-    roster: { ...roster, models: nodeModels.map(model => ({ ref: model.ref, provider: model.provider, name: model.name, providerName: model.provider, ...(Array.isArray(model.efforts) && model.efforts.length > 0 ? { reasoning: { efforts: model.efforts } } : {}) })), labels },
+    roster: { ...roster, models: [...nodeModels.map(model => ({ ref: model.ref, provider: model.provider, name: model.name, providerName: model.provider, ...(Array.isArray(model.efforts) && model.efforts.length > 0 ? { reasoning: { efforts: model.efforts } } : {}) })), ...candidates], labels },
     unavailable, notice: null,
   }
 }
