@@ -101,7 +101,7 @@ export function createBotPageReceiver(rt) {
     if (remoteBotId === '') return { ok: false, error: 'bot-history-remoteBotId-missing' }
     if (typeof rt.chatPage !== 'function') return { ok: false, error: 'bot-history-no-chatPage' }
     try {
-      const page = await rt.chatPage(remoteBotId, spec?.cursor ?? undefined)
+      const page = await rt.chatPage(remoteBotId, spec?.cursor ?? undefined, false, true)
       return { ok: true, sessionId: page.sessionId ?? '', items: page.items ?? [], cursor: page.cursor ?? null }
     } catch (err) {
       return { ok: false, error: 'bot-history-failed: ' + (err?.message ?? String(err)) }

@@ -1636,15 +1636,16 @@ export function install(rt) {
     return items
   }
 
-  async function partPage(parts, index, cursor, steps = false) {
+  async function partPage(parts, index, cursor, steps = false, identities = false) {
     const part = parts[index]
     const signal = AbortSignal.timeout(HISTORY_TIMEOUT_MS)
     // An archived earlier part may have no live agent left; its stored events
     // still page fine, so resolve failure only drops the live-session cap.
     const agent = await rt.resolveAgent(part.sessionId).catch(() => undefined)
+    const throughSeq = agent ? Number(agent.session.seq) - 1 : undefined
     const page = await ctx.sessionController.page({
       address: { kind: 'session', sessionId: part.sessionId },
-      ...(agent ? { throughSeq: Number(agent.session.seq) - 1 } : {}),
+      ...(throughSeq !== undefined ? { throughSeq } : {}),
       ...(Number.isInteger(cursor?.beforeSeq) ? { beforeSeq: cursor.beforeSeq } : {}),
       maxMessages: EARLIER_PAGE,
     }, signal)
@@ -1675,6 +1676,14 @@ export function install(rt) {
     // The line above a part's first message marks where it began.
     if (!more && index > 0) items.unshift({ kind: 'divider', time: part.startedAt })
     if (steps === true) await applySteps(items, events, part.sessionId)
+    if (identities) {
+      const closedTurns = new Set([...(agent?.session?.log ?? []), ...events]
+        .filter(event => event.type === 'turn/end' && (throughSeq === undefined || event.seq <= throughSeq)).map(event => event.data?.turn))
+      for (const item of items) {
+        item.partId = part.sessionId
+        item.turnComplete = closedTurns.has(item.turn)
+      }
+    }
     return { items, cursor: more ? { part: index, beforeSeq: events[0].seq } : index > 0 ? { part: index - 1 } : null }
   }
 
@@ -1798,12 +1807,12 @@ export function install(rt) {
     } catch { /* a tail miss must never take out the other listeners */ }
   })
 
-  async function chatPage(botId, cursor, steps = false) {
+  async function chatPage(botId, cursor, steps = false, identities = false) {
     const parts = partsOf(botId)
     if (parts.length === 0) throw Object.assign(new Error('Unknown Bot'), { code: 'bot/not-found' })
     const index = Number.isInteger(cursor?.part) ? cursor.part : parts.length - 1
     if (index < 0 || index >= parts.length) return { sessionId: parts.at(-1).sessionId, items: [], cursor: null }
-    return { sessionId: parts.at(-1).sessionId, ...(await partPage(parts, index, cursor, steps)) }
+    return { sessionId: parts.at(-1).sessionId, ...(await partPage(parts, index, cursor, steps, identities)) }
   }
 
   // "New session" in a Bot's chat: a manual move to a fresh part with the

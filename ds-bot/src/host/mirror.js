@@ -297,7 +297,7 @@ export async function importHistory(session, items, opts = {}) {
   let skipped = 0
 
   for (const item of items) {
-    const { userText, botText, turn, step = 1, seq } = item
+    const { userText, botText, turn, step = 1, seq, partId } = item
 
     // watermark check: seq <= watermark → silent skip
     if (typeof seq === 'number' && seq <= watermark) {
@@ -321,11 +321,11 @@ export async function importHistory(session, items, opts = {}) {
 
     // dedup check via seenKeys (seq-based) or seenSteps (turn:step-based)
     const nodeKey = (botId != null && typeof seq === 'number' && seenKeys instanceof Set)
-      ? String(botId) + ':' + String(seq) : null
+      ? (partId ? JSON.stringify([botId, partId, seq]) : String(botId) + ':' + String(seq)) : null
     if (nodeKey !== null && seenKeys.has(nodeKey)) { skipped++; continue }
     if (nodeKey !== null && closedKeys instanceof Set && closedKeys.has(nodeKey)) { skipped++; continue }
 
-    const stepKey = String(turn) + ':' + String(step)
+    const stepKey = partId ? JSON.stringify([partId, turn, step]) : String(turn) + ':' + String(step)
     if (seenSteps instanceof Set && seenSteps.has(stepKey)) { skipped++; continue }
 
     // Allocate turn from session.log — never use items.turn directly in turn/start
@@ -355,7 +355,10 @@ export async function importHistory(session, items, opts = {}) {
 
       session.append('step/end', { turn: turnInt, step })
       stepEnded = true
-      session.append('turn/end', { turn: turnInt, reason: turnEnd.completed() })
+      session.append('turn/end', {
+        turn: turnInt, reason: turnEnd.completed(),
+        ...(partId ? { mirrorHistory: { botId, partId, turn, seq } } : {}),
+      })
 
       if (nodeKey !== null) seenKeys.add(nodeKey)
       if (nodeKey !== null && closedKeys instanceof Set) closedKeys.add(nodeKey)
@@ -365,7 +368,10 @@ export async function importHistory(session, items, opts = {}) {
     } catch (err) {
       // Single-item failure: close any open turn, record warning, continue
       try { if (!stepEnded) session.append('step/end', { turn: turnInt, step }) } catch {}
-      try { session.append('turn/end', { turn: turnInt, reason: turnEnd.error(err?.message ?? err, 'E_MIRROR_WRITE') }) } catch {}
+      try { session.append('turn/end', {
+        turn: turnInt, reason: turnEnd.error(err?.message ?? err, 'E_MIRROR_WRITE'),
+        ...(partId ? { mirrorHistory: { botId, partId, turn, seq } } : {}),
+      }) } catch {}
       warnings.push(`item turn=${turn} seq=${seq ?? '?'} failed: ${err?.message ?? err}`)
     }
   }

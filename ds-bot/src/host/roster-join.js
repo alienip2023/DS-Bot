@@ -2,6 +2,7 @@
 // No turn is started here, and no local session is created.
 import { ensureMainThread } from './bot-store.js'
 import { mirrorTurnOpen } from './joined-mirror-writer.js'
+import { hasHistoryIdentity, syncJoinedHistory } from './joined-history.js'
 
 export function joinedShadow(bot) {
   return Boolean(bot && bot.origin === 'joined' && bot.worker && bot.worker.home === 'remote')
@@ -104,16 +105,22 @@ export function markNodeOffline(state, nodeId, now = Date.now()) {
 }
 
 /**
- * Migrate legacy joined Bots: rebuild mirror sessions from node history.
- * For each joined Bot:
- *   - Fetch all history via joinedChatPage (paginating to cursor=null)
- *   - Group items by turn into {userText, botText, turn, seq} pairs
- *   - If bot.mirrorWatermark >= maxSeq → skip (already up-to-date)
- *   - Else rebuild: create new session, importHistory, update watermark
- * opts.dryRun: return wouldRebuild list, zero writes
- * Returns {migrated, skipped, failed, errors}
+ * Restore joined history. Identified node parts append to the existing mirror;
+ * durable Session markers, rather than the legacy scalar watermark, deduplicate.
+ * Automatic calls defer ambiguous legacy/live mirrors. Explicit legacy calls keep
+ * the old rebuild path for callers that deliberately request that migration.
+ * dryRun reports planned writes; botIds limits the pass to scheduled Bots.
  */
-export async function migrateLegacyJoined(rt, opts = {}) {
+const migrations = new WeakMap()
+
+export function migrateLegacyJoined(rt, opts = {}) {
+  const previous = migrations.get(rt) ?? Promise.resolve()
+  const pending = previous.catch(() => {}).then(() => migrateJoined(rt, opts))
+  migrations.set(rt, pending)
+  return pending.finally(() => { if (migrations.get(rt) === pending) migrations.delete(rt) })
+}
+
+async function migrateJoined(rt, opts) {
   const { dryRun = false } = opts
   const { importHistory } = await import('./mirror.js')
   // Use rt.joinedChatPage if available (testability), else import from module
@@ -125,15 +132,16 @@ export async function migrateLegacyJoined(rt, opts = {}) {
   const { join } = await import('node:path')
   const { homedir } = await import('node:os')
 
-  const bots = Object.values(rt?.state?.bots ?? {}).filter(b => b?.origin === 'joined')
+  const bots = Object.values(rt?.state?.bots ?? {}).filter(b => b?.origin === 'joined' && (!opts.botIds || opts.botIds.includes(b.id)))
   const migrated = []
   const skipped = []
   const failed = []
   const errors = []
   const wouldRebuild = []
+  const deferred = []
 
   // Snapshot state before any writes
-  if (!dryRun && bots.length > 0) {
+  if (!dryRun && !opts.automatic && bots.length > 0) {
     const dshHome = rt.dshHome ?? join(homedir(), '.dsh')
     const backupData = JSON.stringify(rt.state?.bots, null, 2)
     let backupPath = join(dshHome, 'bot-home-s2-backup.json')
@@ -166,10 +174,15 @@ export async function migrateLegacyJoined(rt, opts = {}) {
       const pages = []
       let cursor = undefined
       let offlineDetected = false
+      const cursors = new Set()
+      let sourceSessionId
 
       do {
         const page = await joinedChatPage(bot.id, cursor)
-        const items = page?.items ?? []
+        if (!page || !Array.isArray(page.items)) throw new Error('invalid history page')
+        if (sourceSessionId && page.sessionId && sourceSessionId !== page.sessionId) throw new Error('node current part changed during history pagination')
+        sourceSessionId ??= page.sessionId
+        const items = page.items
         // Detect offline/error items (only 1 item with kind:'bot' and no seq)
         if (items.length === 1 && items[0].kind === 'bot' && typeof items[0].seq !== 'number') {
           offlineDetected = true
@@ -178,7 +191,12 @@ export async function migrateLegacyJoined(rt, opts = {}) {
         allItems.push(...items)
         pages.push(items)
         // ?? null ensures undefined cursor stops the loop (undefined != null is true without this)
-        cursor = page?.cursor ?? null
+        cursor = page.cursor ?? null
+        if (cursor !== null) {
+          const key = JSON.stringify(cursor)
+          if (cursors.has(key)) throw new Error('repeated history cursor')
+          cursors.add(key)
+        }
       } while (cursor != null)
 
       if (!unchanged()) { skipped.push(bot.id); continue }
@@ -194,6 +212,20 @@ export async function migrateLegacyJoined(rt, opts = {}) {
       // Group items by turn into {userText, botText, turn, seq} pairs
       // Pages arrive newest first, but each page's text blocks are chronological.
       const orderedItems = pages.reverse().flat()
+      if (hasHistoryIdentity(orderedItems)) {
+        const result = await syncJoinedHistory(rt, bot, orderedItems, originalSession, unchanged, opts)
+        if (result.deferred) deferred.push({ botId: bot.id, reason: result.deferred })
+        else if (result.migrated) migrated.push(result.migrated)
+        else if (result.wouldRebuild) wouldRebuild.push(result.wouldRebuild)
+        else skipped.push(bot.id)
+        continue
+      }
+      // Old peers have no durable part identity. Their existing mirrors must never
+      // be replaced by a delayed automatic rebuild.
+      if (opts.automatic && (initialSessionId || orderedItems.length > 0)) {
+        deferred.push({ botId: bot.id, reason: 'legacy mirror requires remote part identity' })
+        continue
+      }
       const byTurn = new Map()
       let maxSeq = 0
       for (const item of orderedItems) {
@@ -279,6 +311,9 @@ export async function migrateLegacyJoined(rt, opts = {}) {
         continue
       }
 
+      if (importResult.imported + importResult.skipped !== groups.length) throw new Error('history import incomplete: ' + importResult.warnings.join('; '))
+      await rt.ctx?.sessions?.flush?.(session)
+
       // Creation and import also await: a live page or a roster report may have
       // moved on meanwhile. Never replace that conversation with this snapshot.
       if (!unchanged()) { skipped.push(bot.id); continue }
@@ -314,26 +349,49 @@ export async function migrateLegacyJoined(rt, opts = {}) {
     }
   }
 
-  if (dryRun) return { wouldRebuild, skipped, failed, errors }
-  return { migrated, skipped, failed, errors }
+  if (dryRun) return { wouldRebuild, skipped, failed, errors, deferred }
+  return { migrated, skipped, failed, errors, deferred }
 }
 
 export function install(rt) {
   const ctx = rt.ctx
-  let _migrated = false
   let stopped = false
   let attached
   let migrateTimer
+  let migrating = false
+  const pending = new Set()
+  const settled = new Set()
+  const schedule = (delay = 0) => {
+    if (stopped || migrating || migrateTimer !== undefined || pending.size === 0) return
+    migrateTimer = setTimeout(() => {
+      migrateTimer = undefined
+      if (stopped) return
+      const botIds = [...pending]
+      pending.clear()
+      migrating = true
+      void migrateLegacyJoined(rt, { botIds, automatic: true, isActive: () => !stopped }).then(result => {
+        for (const id of botIds) settled.add(id)
+        for (const id of result.failed) pending.add(id)
+        for (const item of result.deferred) {
+          rt.warn?.('ds-bot: history migration deferred for %s: %s', item.botId, item.reason)
+          if (item.reason === 'node history contains incomplete or unclosed turns') pending.add(item.botId)
+        }
+        for (const id of result.skipped) if (!rt.botOf?.(id)?.sessionId) pending.add(id)
+      }).catch(error => {
+        for (const id of botIds) pending.add(id)
+        rt.warn?.('ds-bot: auto-migrate failed: %s', error?.message ?? error)
+      }).finally(() => { migrating = false; schedule(5_000) })
+    }, delay)
+    migrateTimer.unref?.()
+  }
   const onRoster = (report) => {
     if (stopped) return
     applyRosterReport(rt.state, report)
     void rt.save?.()
-    if (!_migrated) {
-      _migrated = true
-      migrateTimer = setTimeout(() => {
-        if (!stopped) void migrateLegacyJoined(rt, { isActive: () => !stopped }).catch(err => rt.warn?.('ds-bot: auto-migrate failed: %s', err?.message ?? err))
-      }, 0)
+    for (const bot of Object.values(rt.state.bots ?? {})) {
+      if (bot?.origin === 'joined' && (!settled.has(bot.id) || bot.mirrorHistory)) pending.add(bot.id)
     }
+    schedule()
   }
   const onOffline = ({ nodeId } = {}) => {
     if (typeof nodeId !== 'string' || nodeId === '') return
