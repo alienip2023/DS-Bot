@@ -6,6 +6,7 @@
 //   - Event-driven task wait: listens to hub registry emit('taskEnd') instead of tight polling.
 //   - Token minting: mintEnrollToken() calls /api/relay/token for new node enrollment.
 import { randomUUID } from 'node:crypto'
+import { setTimeout as delay } from 'node:timers/promises'
 
 // How long to wait for a remote task to complete before timing out.
 const REMOTE_TASK_TIMEOUT_MS = 60 * 60 * 1000   // 1 hour (matches AGENT_DEFAULT_TIMEOUT_MS)
@@ -17,6 +18,8 @@ export const WORKER_GROUP_NAME = '执行机'
 
 export function install(rt) {
   const { ctx } = rt
+  const tasks = new Set()
+  ctx.effect?.(() => () => { for (const controller of tasks) controller.abort(); tasks.clear() }, 'ds-bot: remote worker waits')
 
   // ── Hub tool accessor ─────────────────────────────────────────────────────
   function hubTools() {
@@ -60,32 +63,40 @@ export function install(rt) {
   // Waits for the remote task to reach a terminal status. If the hub registry
   // exposes an event emitter (emit 'taskEnd'), we subscribe to it for zero-
   // latency notification; otherwise fall back to polling every POLL_INTERVAL_MS.
-  async function waitForTask(tools, nodeId, taskId) {
+  async function waitForTask(tools, nodeId, taskId, signal) {
     const deadline = Date.now() + REMOTE_TASK_TIMEOUT_MS
 
     // Try event-driven path first: hub registry emits 'taskEnd' (Phase 4 remote-agent).
     const registry = ctx.get?.('remote-agent:registry')
     if (registry && typeof registry.on === 'function') {
       return new Promise((resolve) => {
-        const timer = setTimeout(() => {
-          registry.off?.('taskEnd', onEnd)
-          resolve(undefined)
-        }, REMOTE_TASK_TIMEOUT_MS)
-
-        function onEnd({ taskId: tid, status }) {
-          if (tid !== taskId) return
+        const finish = (result) => {
           clearTimeout(timer)
           registry.off?.('taskEnd', onEnd)
-          resolve({ status })
+          signal.removeEventListener('abort', onAbort)
+          resolve(result)
+        }
+        const onAbort = () => finish(undefined)
+        const timer = setTimeout(() => finish(undefined), REMOTE_TASK_TIMEOUT_MS)
+        timer.unref?.()
+
+        function onEnd({ taskId: tid, status, nodeId: origin, summary }) {
+          if (tid !== taskId) return
+          if (origin && origin !== nodeId) return
+          finish({ status, summary })
         }
 
         registry.on('taskEnd', onEnd)
+        signal.addEventListener('abort', onAbort, { once: true })
       })
     }
 
     // Fallback: poll remote_status every POLL_INTERVAL_MS.
-    while (Date.now() < deadline) {
-      await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS))
+    while (!signal.aborted && Date.now() < deadline) {
+      try { await delay(POLL_INTERVAL_MS, undefined, { signal, ref: false }) } catch (error) {
+        if (signal.aborted) return undefined
+        throw error
+      }
       const statusResult = await tools.status.execute({ nodeId, taskId })
       if (statusResult?.isError) continue
       const s = statusResult?.value
@@ -141,6 +152,20 @@ export function install(rt) {
 
     const taskId = randomUUID()
     const nodeId = node.nodeId
+    const controller = new AbortController()
+    tasks.add(controller)
+    const reportError = (error) => {
+      rt.warn('ds-bot: worker-bridge: task failed for %s: %s', to.name, error)
+      void rt.deliver?.({
+        fromId: toId, toId: fromId ?? toId,
+        text: `[Worker Bot ${to.name} error: ${error?.message ?? String(error)}]`,
+        role: 'reply', replyTo: exchangeId, ...(work ? { work } : {}),
+      }).catch(() => {})
+    }
+
+    // A fast task can finish before dispatch.execute resolves. Arm its listener first.
+    const pending = waitForTask(tools, nodeId, taskId, controller.signal)
+    pending.catch(() => {})
 
     try {
       const dispatchResult = await tools.dispatch.execute({
@@ -151,7 +176,18 @@ export function install(rt) {
         throw new Error(`dispatch failed: ${dispatchResult.value ?? 'unknown error'}`)
       }
 
-      const result = await waitForTask(tools, nodeId, taskId)
+      void complete().catch(reportError).finally(() => { tasks.delete(controller) })
+    } catch (error) {
+      controller.abort()
+      tasks.delete(controller)
+      reportError(error)
+    }
+
+    return exchangeId
+
+    async function complete() {
+      const result = await pending
+      if (controller.signal.aborted) return
 
       let replyText
       if (result !== undefined) {
@@ -180,16 +216,7 @@ export function install(rt) {
         text: replyText, role: 'reply', replyTo: exchangeId,
         ...(work ? { work } : {}),
       }).catch(err => rt.warn('ds-bot: worker-bridge: reply delivery failed: %s', err))
-    } catch (error) {
-      rt.warn('ds-bot: worker-bridge: task dispatch failed for %s: %s', to.name, error)
-      void rt.deliver?.({
-        fromId: toId, toId: fromId ?? toId,
-        text: `[Worker Bot ${to.name} error: ${error?.message ?? String(error)}]`,
-        role: 'reply', replyTo: exchangeId, ...(work ? { work } : {}),
-      }).catch(() => {})
     }
-
-    return exchangeId
   }
 
   Object.assign(rt, { handleRemoteTurn, mintEnrollToken, pickWorkerNode: pickNode })

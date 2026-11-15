@@ -134,12 +134,17 @@ test('nodeOffline after a deferred timeout reports a real bridge loss', async t 
   assert.deepEqual(w.replies.map(msg => msg.text), [BRIDGE_DOWN_TEXT])
 })
 
-test('worker returns on dispatch acceptance and delivers exactly one taskEnd reply', async t => {
+for (const duringDispatch of [false, true]) {
+test(`worker returns on acceptance and delivers once (taskEnd during dispatch: ${duringDispatch})`, async t => {
   const registry = new EventEmitter()
   const replies = []
   let dispatched
   const tools = new Map([
-    ['remote_task', { execute: async args => { dispatched = args; return { value: { accepted: true } } } }],
+    ['remote_task', { execute: async args => {
+      dispatched = args
+      if (duringDispatch) registry.emit('taskEnd', { taskId: args.taskId, status: 'COMPLETED' })
+      return { value: { accepted: true } }
+    } }],
     ['remote_status', { execute: async () => { throw new Error('event-driven task should not poll') } }],
     ['remote_handoff', { execute: async () => ({ value: { text: 'worker answer' } }) }],
   ])
@@ -152,10 +157,11 @@ test('worker returns on dispatch acceptance and delivers exactly one taskEnd rep
   t.after(() => { if (dispatched) registry.emit('taskEnd', { ...dispatched, status: 'COMPLETED' }) })
   const result = await within(rt.handleRemoteTurn({ fromId: 'sender', toId: 'worker', text: 'work', exchangeId: 'worker-ex', work: 'root' }), 100)
   assert.equal(result, 'worker-ex')
-  assert.equal(replies.length, 0)
+  if (!duringDispatch) assert.equal(replies.length, 0)
   registry.emit('taskEnd', { taskId: dispatched.taskId, status: 'COMPLETED' })
   registry.emit('taskEnd', { taskId: dispatched.taskId, status: 'COMPLETED' })
   await drain()
   assert.deepEqual(replies, [{ fromId: 'worker', toId: 'sender', text: 'worker answer', role: 'reply', replyTo: 'worker-ex', work: 'root' }])
   assert.equal(registry.listenerCount('taskEnd'), 0)
 })
+}
