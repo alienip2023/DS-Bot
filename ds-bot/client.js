@@ -26585,28 +26585,27 @@ function Bubbles({ texts: texts2, roster, selfId, actions, streaming, sessionId,
     botRowClick(mentionedBot?.origin === "joined" && mentionedBot?.worker?.home === "remote", target, actions);
   };
   const reactions = useUi ? useUi((state) => msgKey ? state.reactions?.[msgKey] ?? null : null) : null;
+  const shown = texts2.flatMap((text2, index) => index > 0 && text2 === texts2[index - 1] ? [] : [{ text: text2, index }]);
+  const last = shown.length - 1;
   return (0, import_react33.createElement)(
     "div",
     { className: "bt-astack", "data-lead": lead ? "" : void 0, onClickCapture: onClick },
-    texts2.map((text2, index) => {
-      const last = index === texts2.length - 1;
-      return (0, import_react33.createElement)(Bubble, {
-        key: index,
-        text: text2,
-        index,
-        roster,
-        selfId,
-        actions,
-        sessionId,
-        msgKey,
-        mentions,
-        fold,
-        picked: msgKey ? reactions?.[index] ?? [] : [],
-        live: streaming && last,
-        lead: lead && last ? lead : null,
-        whole: last ? whole : void 0
-      });
-    }),
+    shown.map(({ text: text2, index }, position) => (0, import_react33.createElement)(Bubble, {
+      key: index,
+      text: text2,
+      index,
+      roster,
+      selfId,
+      actions,
+      sessionId,
+      msgKey,
+      mentions,
+      fold,
+      picked: msgKey ? reactions?.[index] ?? [] : [],
+      live: streaming && position === last,
+      lead: lead && position === last ? lead : null,
+      whole: position === last ? whole : void 0
+    })),
     Number.isFinite(time) ? (0, import_react33.createElement)("div", { className: "bt-utime", title: clockLabel(time) }, messageClock(time)) : null
   );
 }
