@@ -66,12 +66,18 @@ export async function joinedChatPage(rt, botId, cursor) {
   const requestId = randomUUID()
   const timeoutMs = rt.joinedHistoryTimeoutMs ?? JOINED_HISTORY_TIMEOUT_MS
   const wait = listenBotHistoryResult(registry, requestId, nid, timeoutMs)
-  const sent = registry.send(nid, 'bot/history', {
-    nodeId: nid,
-    requestId,
-    remoteBotId,
-    cursor: cursor ?? null,
-  })
+  let sent
+  try {
+    sent = registry.send(nid, 'bot/history', {
+      nodeId: nid,
+      requestId,
+      remoteBotId,
+      cursor: cursor ?? null,
+    })
+  } catch {
+    wait.cancel()
+    return offlinePage('副机桥已断，暂时看不到对话。')
+  }
   if (sent !== true) {
     wait.cancel()
     return offlinePage('副机桥已断，暂时看不到对话。')
@@ -122,21 +128,30 @@ export function install(rt) {
 const BOT_UPDATE_TIMEOUT_MS = 30000
 
 function listenBotUpdateResult(registry, requestId, nodeId, timeoutMs) {
-  let finish
-  const pending = new Promise((resolve, reject) => { finish = { resolve, reject } })
+  let settled = false
+  let resolve
+  const pending = new Promise(res => { resolve = res })
+  const finish = value => {
+    if (settled) return
+    settled = true
+    clearTimeout(timer)
+    registry.off?.('botUpdateResult', onResult)
+    registry.off?.('nodeOffline', onOffline)
+    resolve(value)
+  }
   const onResult = (r) => {
     if (r?.requestId !== requestId) return
-    registry.off?.('botUpdateResult', onResult)
-    clearTimeout(timer)
-    finish.resolve(r)
+    finish(r)
   }
+  const onOffline = payload => {
+    if (payload?.nodeId && payload.nodeId !== nodeId) return
+    finish({ requestId, ok: false, error: 'bridge-down' })
+  }
+  const timer = setTimeout(() => finish({ requestId, ok: false, error: 'bot-update-timeout' }), timeoutMs)
+  timer.unref?.()
   registry.on?.('botUpdateResult', onResult)
-  const timer = setTimeout(() => {
-    registry.off?.('botUpdateResult', onResult)
-    finish.resolve({ requestId, ok: false, error: 'bot-update-timeout' })
-  }, timeoutMs)
-  if (timer.unref) timer.unref()
-  return { pending, cancel: () => { clearTimeout(timer); registry.off?.('botUpdateResult', onResult); finish.resolve({ requestId, ok: false, error: 'bridge-down' }) } }
+  registry.on?.('nodeOffline', onOffline)
+  return { pending, cancel: () => finish({ requestId, ok: false, error: 'bridge-down' }) }
 }
 
 /**
@@ -187,7 +202,13 @@ export async function joinedUpdateBot(rt, botId, patch) {
     workDir: patch.workDir ?? null,
   }
   if (sentMemory) frame.memoryConfig = requestedMemory
-  const sent = registry.send(nodeId, 'bot/update', frame)
+  let sent
+  try {
+    sent = registry.send(nodeId, 'bot/update', frame)
+  } catch {
+    waiter.cancel()
+    return { ok: false, error: 'bridge-down' }
+  }
   if (sent !== true) {
     waiter.cancel()
     return { ok: false, error: 'bridge-down' }
@@ -296,22 +317,31 @@ export function exposeBotUpdateReceiver(ctx, accept) {
 // ── bot/delete hub side ───────────────────────────────────────────────────────
 const BOT_DELETE_TIMEOUT_MS = 30000
 
-function listenBotDeleteResult(registry, requestId, timeoutMs) {
-  let finish
-  const pending = new Promise((resolve) => { finish = { resolve } })
+function listenBotDeleteResult(registry, requestId, nodeId, timeoutMs) {
+  let settled = false
+  let resolve
+  const pending = new Promise(res => { resolve = res })
+  const finish = value => {
+    if (settled) return
+    settled = true
+    clearTimeout(timer)
+    registry.off?.('botDeleteResult', onResult)
+    registry.off?.('nodeOffline', onOffline)
+    resolve(value)
+  }
   const onResult = (r) => {
     if (r?.requestId !== requestId) return
-    registry.off?.('botDeleteResult', onResult)
-    clearTimeout(timer)
-    finish.resolve(r)
+    finish(r)
   }
+  const onOffline = payload => {
+    if (payload?.nodeId && payload.nodeId !== nodeId) return
+    finish({ requestId, ok: false, error: 'bridge-down' })
+  }
+  const timer = setTimeout(() => finish({ requestId, ok: false, error: 'bot-delete-timeout' }), timeoutMs)
+  timer.unref?.()
   registry.on?.('botDeleteResult', onResult)
-  const timer = setTimeout(() => {
-    registry.off?.('botDeleteResult', onResult)
-    finish.resolve({ requestId, ok: false, error: 'bot-delete-timeout' })
-  }, timeoutMs)
-  if (timer.unref) timer.unref()
-  return { pending, cancel: () => { clearTimeout(timer); registry.off?.('botDeleteResult', onResult); finish.resolve({ requestId, ok: false, error: 'bridge-down' }) } }
+  registry.on?.('nodeOffline', onOffline)
+  return { pending, cancel: () => finish({ requestId, ok: false, error: 'bridge-down' }) }
 }
 
 /**
@@ -338,9 +368,15 @@ export async function joinedDeleteBot(rt, botIdOrBot) {
 
   const requestId = crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)
   const timeoutMs = rt.botDeleteTimeoutMs ?? BOT_DELETE_TIMEOUT_MS
-  const waiter = listenBotDeleteResult(registry, requestId, timeoutMs)
+  const waiter = listenBotDeleteResult(registry, requestId, nodeId, timeoutMs)
 
-  const sent = registry.send(nodeId, 'bot/delete', { nodeId, requestId, remoteBotId })
+  let sent
+  try {
+    sent = registry.send(nodeId, 'bot/delete', { nodeId, requestId, remoteBotId })
+  } catch {
+    waiter.cancel()
+    return { ok: false, error: 'bridge-down' }
+  }
   if (sent !== true) {
     waiter.cancel()
     return { ok: false, error: 'bridge-down' }

@@ -112,7 +112,6 @@ export async function createBotOnNode(rt, { nodeId, name, role, modelRef = null,
   const memory = chosen ?? (nodeFederates ? { backend: 'federation' } : undefined)
   const requestId = randomUUID()
   const timeoutMs = rt.botCreateTimeoutMs ?? BOT_CREATE_TIMEOUT_MS
-  const wait = listenBotCreateResult(registry, requestId, nid, timeoutMs)
 
   // A ref the node's catalog already names exactly is the node's model, not the hub's:
   // resolving it against the hub catalog rejects a model only the node serves, and the
@@ -145,7 +144,7 @@ export async function createBotOnNode(rt, { nodeId, name, role, modelRef = null,
     }
   }
 
-  const sent = registry.send(nid, 'bot/create', {
+  const frame = {
     nodeId: nid,
     name: trimmed(name).slice(0, 40),
     role: typeof role === 'string' ? trimmed(role).slice(0, 24) : '',
@@ -162,7 +161,15 @@ export async function createBotOnNode(rt, { nodeId, name, role, modelRef = null,
     // A node that cannot federate gets no field at all: sending the default would only
     // be dropped, and a node that can takes the explicit pick or the federation default.
     ...(memory === undefined ? {} : { memoryConfig: memory }),
-  })
+  }
+  const wait = listenBotCreateResult(registry, requestId, nid, timeoutMs)
+  let sent
+  try {
+    sent = registry.send(nid, 'bot/create', frame)
+  } catch {
+    wait.cancel()
+    return { ok: false, error: 'bridge-down' }
+  }
   if (sent !== true) {
     wait.cancel()
     return { ok: false, error: 'bridge-down' }
