@@ -181,6 +181,43 @@ test('a Host that cannot answer leaves the remembered page alone', async () => {
   assert.deepEqual(forgotten, [])
 })
 
+test('a delayed restore answer cannot reopen a Thread after the user navigated away', async () => {
+  let answer
+  let current = true
+  const actions = []
+  const pending = restoreThreadPage({
+    page: PAGE,
+    ownerOf: () => new Promise(resolve => { answer = resolve }),
+    isCurrent: () => current,
+    open: id => actions.push(['open', id]),
+    forget: () => actions.push(['forget']),
+    home: () => actions.push(['home']),
+  })
+  current = false
+  answer({ botId: PAGE.botId, threadId: PAGE.threadId })
+  await pending
+  assert.deepEqual(actions, [])
+})
+
+test('a delayed missing-Thread answer cannot dismiss the newer page or its saved restore', async () => {
+  let answer
+  let current = true
+  const actions = []
+  const pending = restoreThreadPage({
+    page: PAGE,
+    ownerOf: () => new Promise(resolve => { answer = resolve }),
+    isCurrent: () => current,
+    open: id => actions.push(['open', id]),
+    forget: () => actions.push(['forget']),
+    home: () => actions.push(['home']),
+    alreadyOpen: true,
+  })
+  current = false
+  answer(null)
+  await pending
+  assert.deepEqual(actions, [])
+})
+
 async function sidebarFixture() {
   const { outputFiles } = await build({
     stdin: {

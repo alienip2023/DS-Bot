@@ -42745,9 +42745,10 @@ function admitThreadPage(sessions, storage = globalThis.localStorage) {
   add.call(sessions, { agentAvailable: true, sessionId: page.sessionId, updatedAt: Date.now(), running: false, blank: true });
   return page;
 }
-async function restoreThreadPage({ page, open, ownerOf, forget, home, alreadyOpen = false }) {
+async function restoreThreadPage({ page, open, ownerOf, forget, home, alreadyOpen = false, isCurrent = () => true }) {
   if (page === void 0) return "none";
   const owner = await Promise.resolve(ownerOf(page.sessionId)).catch(() => void 0);
+  if (!isCurrent()) return "changed";
   if (owner === null) {
     forget?.();
     home?.();
@@ -43242,13 +43243,15 @@ function apply(ctx) {
       const list = ctx.sessions.list.getSnapshot();
       const main = mainView();
       const snapshot = roster.getSnapshot();
+      const isCurrent = () => mainView() === main && readThreadPage()?.sessionId === page.sessionId;
       if (main === page.sessionId) {
         await restoreThreadPage({
           page,
           ownerOf: (sessionId) => threadOwnerOf(sessionId),
           forget: forgetThreadPage,
           home: () => actions.openSession(snapshot.mainBotId),
-          alreadyOpen: true
+          alreadyOpen: true,
+          isCurrent
         });
         return;
       }
@@ -43263,7 +43266,8 @@ function apply(ctx) {
         open: (sessionId) => openThreadSession(sessionId),
         ownerOf: (sessionId) => threadOwnerOf(sessionId),
         forget: forgetThreadPage,
-        home: () => actions.openSession(snapshot.mainBotId)
+        home: () => actions.openSession(snapshot.mainBotId),
+        isCurrent
       });
     };
     const tick = () => {

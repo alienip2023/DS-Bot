@@ -58,9 +58,10 @@ export function admitThreadPage(sessions, storage = globalThis.localStorage) {
 // deleted Thread must not leave a phantom blank page), an answer with a Bot means
 // the saved page is still the user's page, and no answer at all is not a reason
 // to move a view the user may be reading.
-export async function restoreThreadPage({ page, open, ownerOf, forget, home, alreadyOpen = false }) {
+export async function restoreThreadPage({ page, open, ownerOf, forget, home, alreadyOpen = false, isCurrent = () => true }) {
   if (page === undefined) return 'none'
   const owner = await Promise.resolve(ownerOf(page.sessionId)).catch(() => undefined)
+  if (!isCurrent()) return 'changed'
   if (owner === null) {
     forget?.()
     home?.()

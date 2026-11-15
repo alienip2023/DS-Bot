@@ -528,6 +528,9 @@ export function apply(ctx) {
       const list = ctx.sessions.list.getSnapshot()
       const main = mainView()
       const snapshot = roster.getSnapshot()
+      // A Host lookup can finish after another navigation. Its answer still fills
+      // the owner cache, but must not replace that page or erase its saved restore.
+      const isCurrent = () => mainView() === main && readThreadPage()?.sessionId === page.sessionId
       // The restore kept the Thread page. Still ask the Host once: the answer
       // teaches the Thread cache its owner (so `plain` follows the page without
       // waiting for the next list change), and a Thread the Host no longer knows
@@ -539,6 +542,7 @@ export function apply(ctx) {
           forget: forgetThreadPage,
           home: () => actions.openSession(snapshot.mainBotId),
           alreadyOpen: true,
+          isCurrent,
         })
         return
       }
@@ -561,6 +565,7 @@ export function apply(ctx) {
         ownerOf: (sessionId) => threadOwnerOf(sessionId),
         forget: forgetThreadPage,
         home: () => actions.openSession(snapshot.mainBotId),
+        isCurrent,
       })
     }
     const tick = () => {
