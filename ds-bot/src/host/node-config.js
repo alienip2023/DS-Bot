@@ -85,7 +85,8 @@ export async function nodeConcurrencyView(rt) {
 
 /** Wait for the receipt of one request; undefined on timeout. */
 function waitForReceipt(registry, { requestId, timeoutMs }) {
-  return new Promise((resolve) => {
+  let cancel
+  const pending = new Promise((resolve) => {
     let done = false
     const finish = (value) => {
       if (done) return
@@ -100,7 +101,9 @@ function waitForReceipt(registry, { requestId, timeoutMs }) {
     const timer = setTimeout(() => finish(undefined), timeoutMs)
     timer.unref?.()
     registry.on('nodeConfigResult', onResult)
+    cancel = () => finish(undefined)
   })
+  return { pending, cancel }
 }
 
 /**
@@ -124,17 +127,23 @@ async function pushLimit(rt, nodeId, attempt = 0) {
   entry.attempt = attempt
   entry.at = Date.now()
   await rt.save?.()
+  if (entry.requestId !== requestId) return viewOf(entry)
+  const waiter = waitForReceipt(registry, { requestId, timeoutMs: NODE_CONCURRENCY_ACK_MS })
   let sent = false
   try {
     sent = registry.send(nodeId, 'node/config', { nodeId, requestId, maxConcurrent: wanted }) === true
   } catch { sent = false }
   if (!sent) {
+    waiter.cancel()
     entry.status = 'error'
     entry.lastError = 'node-config-not-delivered'
     await rt.save?.()
     return viewOf(entry)
   }
-  const receipt = await waitForReceipt(registry, { requestId, timeoutMs: NODE_CONCURRENCY_ACK_MS })
+  const receipt = await waiter.pending
+  // A new save or reconnect owns this entry now. A stale receipt, timeout or
+  // scheduled retry cannot replace what that request already applied.
+  if (entry.requestId !== requestId) return viewOf(entry)
   if (receipt === undefined) {
     // No frame came back. A node that does not know node/config will never answer:
     // say so once instead of retrying for minutes, and report its old default.
@@ -158,7 +167,9 @@ async function pushLimit(rt, nodeId, attempt = 0) {
   const nextAttempt = attempt + 1
   const delay = NODE_CONCURRENCY_RETRY_MS[Math.min(nextAttempt - 1, NODE_CONCURRENCY_RETRY_MS.length - 1)]
   if (nextAttempt < 3) {
-    const timer = setTimeout(() => { void pushLimit(rt, nodeId, nextAttempt) }, delay)
+    const timer = setTimeout(() => {
+      if (entry.requestId === requestId) void pushLimit(rt, nodeId, nextAttempt)
+    }, delay)
     timer.unref?.()
   } else {
     entry.status = 'error'

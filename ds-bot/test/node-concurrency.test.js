@@ -172,3 +172,50 @@ test('a saved limit is pushed again when the node comes back', async () => {
   await flush()
   assert.equal(registry.sent.length, 1)
 })
+
+test('a node/config receipt delivered during send is not lost', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const { rt, registry } = makeRt()
+  registry.send = (_nodeId, _type, data) => {
+    registry.emit('nodeConfigResult', { requestId: data.requestId, ok: true, maxConcurrent: data.maxConcurrent })
+    return true
+  }
+  const pending = setNodeConcurrency(rt, 'n1', 12)
+  await flush()
+  t.mock.timers.tick(5000)
+  const view = await pending
+  assert.equal(view.status, 'applied')
+  assert.equal(view.appliedMaxConcurrent, 12)
+})
+
+test('an older node/config receipt cannot overwrite a newer applied limit', async () => {
+  const { rt, registry } = makeRt()
+  const first = setNodeConcurrency(rt, 'n1', 12)
+  await flush()
+  const second = setNodeConcurrency(rt, 'n1', 24)
+  await flush()
+  registry.emit('nodeConfigResult', { requestId: registry.sent[1].data.requestId, ok: true, maxConcurrent: 24 })
+  await second
+  registry.emit('nodeConfigResult', { requestId: registry.sent[0].data.requestId, ok: true, maxConcurrent: 12 })
+  await first
+  assert.equal(rt.state.nodeLimits.n1.maxConcurrent, 24)
+  assert.equal(rt.state.nodeLimits.n1.appliedMaxConcurrent, 24)
+  assert.equal(rt.state.nodeLimits.n1.status, 'applied')
+})
+
+test('a refusal retry is cancelled when a newer limit is applied', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const { rt, registry } = makeRt()
+  const first = setNodeConcurrency(rt, 'n1', 12)
+  await flush()
+  registry.emit('nodeConfigResult', { requestId: registry.sent[0].data.requestId, ok: false, error: 'busy' })
+  await first
+  const second = setNodeConcurrency(rt, 'n1', 24)
+  await flush()
+  registry.emit('nodeConfigResult', { requestId: registry.sent[1].data.requestId, ok: true, maxConcurrent: 24 })
+  await second
+  t.mock.timers.tick(5000)
+  await flush()
+  assert.equal(registry.sent.length, 2)
+  assert.equal(rt.state.nodeLimits.n1.status, 'applied')
+})
