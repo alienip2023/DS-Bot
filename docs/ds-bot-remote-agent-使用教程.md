@@ -6,36 +6,42 @@
 
 最后核验日期：2026-11-15。本教程按当时在跑的版本写：ds-bot `0.3.6-fork.39`、dsh-remote-agent `0.10.1-fork.83`。版本会继续涨，命令里凡是出现版本号的地方，都换成你手头实际拿到的包。
 
+一台节点同一时间只走下面三套方案里的一套。换方案只改地址和传输方式，节点的 `roots` 不用动。
+
 ---
 
-## 0. 先搞清楚三样东西
+## 0. 先选方案
 
-这套系统由三个角色组成。一台机器可以只当其中一个。
+三套方案用的是同一份软件。差别只在「节点怎么找到主控」。
 
-| 角色 | 跑在哪 | 干什么 | 必须有公网 IP |
+| | 方案一：局域网 | 方案二：国内 VPS | 方案三：香港 VPS |
 | --- | --- | --- | --- |
-| 主控 | 你自己用的那台电脑（桌面版） | 你在这里看所有 Bot、分配任务、看结果 | 不需要 |
-| 中继 | 一台有公网 IP 的 Linux 服务器 | 只负责转发。主控和节点都主动连它，所以两边都可以藏在路由器后面 | 需要 |
-| 节点 | 任何一台能上网的电脑 | 跑 Bot、执行任务、把结果交回主控 | 不需要 |
+| 适合 | 主控和节点在同一个局域网 | 节点在别的网络，中继放在大陆 | 节点在别的网络，而且要线路加密 |
+| 要不要公网机器 | 不要 | 要一台大陆 VPS | 要一台香港 VPS |
+| 谁开端口 | 只给主控开入站 `19387` | 只给 VPS 开入站 `8890` | 只给 VPS 开入站 `80` 和 `443` |
+| 地址长什么样 | `ws://<主控局域网 IP>:19387/api/remote-agent/node` | `ws://<大陆公网 IP>:8890/relay` | `wss://<域名>/relay` |
+| 要不要域名 | 不要 | 不要 | 要。香港不用备案 |
+| 线路加密 | 不需要。流量不出局域网 | 明文。域名指到大陆要备案，所以现在不上证书 | 有。Caddy 自动签证书 |
+| 现在的状态 | 主控本机就能当，不用另买机器 | **当前在用**。广州 `114.132.236.98:8890` | 步骤写在第 4 章。新买的香港机器还没接进来 |
 
 数据怎么走：
 
 ```
-你的主控  ──主动连出──▶  中继（公网 IP，8890 端口）  ◀──主动连出──  节点 1
-                                                    ◀──主动连出──  节点 2
+方案一  节点 ──直接拨──▶ 主控:19387
+
+方案二  主控 ──主动连出──▶ 国内 VPS:8890 ◀──主动连出── 节点
+方案三  主控 ──主动连出──▶ 香港 VPS:443  ◀──主动连出── 节点
 ```
 
-三个要点：
+方案二和方案三里，主控和节点都是主动向外连，家里的路由器不用开端口。方案一没有中继，节点要能直接访问主控的局域网地址。
 
-1. 主控和节点都是**主动向外连**，不需要在你家里的路由器上开端口，也不需要 Tailscale、Headscale 这类打洞工具。
-2. 中继不执行任务，也不保存你的文件。它只认一个地址：`ws://<中继 IP>:8890/relay`。
-3. 现在用的是明文 WebSocket。认证靠帧里的 token，不靠证书。**不需要域名，也不需要 TLS 证书。** 域名和证书是可选项，见第 9 章。
+三套不要同时当「当前入口」。一台节点配一个地址。要从国内中继换到香港中继，两边的地址一起换，token 可以不动。
 
 你需要准备：
 
-- 一台自己用的电脑，装好 [DeepSeek Harness 桌面版](https://github.com/deepseek-ai/deepseek-harness/releases)（Windows / Ubuntu / macOS 都行）。这是主控。
-- 一台有公网 IP 的 Linux 服务器，能从外网访问它的 8890 端口。这是中继。腾讯云、阿里云、搬瓦工都可以，系统用 Ubuntu。
-- 若干台要跑 Bot 的电脑。可以是云服务器，也可以是家里的机器，系统不限。
+- 一台自己用的电脑，装好 [DeepSeek Harness 桌面版](https://github.com/deepseek-ai/deepseek-harness/releases)。这是主控。Windows、Ubuntu、macOS 都行。
+- 方案二或方案三还要一台 Linux VPS。系统用 Ubuntu。
+- 若干台要跑 Bot 的电脑。系统不限。
 
 ---
 
@@ -52,9 +58,17 @@
 
 命令行版（`dsh` 直接跑，没有图形界面）只有 DSH 主目录，没有 harness 目录。桌面版两个都有。
 
+配置不在 `plugins/dsh-remote-agent/config.json`。桌面版写在：
+
+`<harness 目录>/profiles/web/cordis.patch.yml`
+
+里面有一段被标记成 `managed by dsh-remote-setup` 的块。面板保存时会重写这一段。能用面板就用面板；手改只改下面各方案列出的那几个键，改完要防面板下一次保存把它盖掉。
+
+命令行版的同一份文件在 `<DSH 主目录>/profiles/web/cordis.patch.yml`。
+
 ### 1.2 探测命令
 
-DSH 主目录默认是 `~/.dsh`，三个系统都一样。如果你设过 `DSH_HOME` 环境变量，以它为准：
+DSH 主目录默认是 `~/.dsh`，三个系统都一样。设过 `DSH_HOME` 就以它为准：
 
 ```bash
 # macOS / Ubuntu
@@ -64,89 +78,163 @@ echo "${DSH_HOME:-$HOME/.dsh}"
 if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE ".dsh" }
 ```
 
-harness 目录不能猜。桌面版把它放在 Electron 的 userData 下面，而 userData 的名字取决于你装的是哪个发行包。同一个软件在三台机器上可能分别是 `dsh-desktop` 和 `@deepseek-ai/dsh-desktop`。所以用这条命令问程序自己：
+harness 目录不能猜。桌面版把它放在 Electron 的 userData 下面，目录名取决于你装的是哪个发行包，可能是 `dsh-desktop`，也可能是 `@deepseek-ai/dsh-desktop`。用程序自己的命令：
 
 ```bash
-# macOS / Ubuntu（桌面版装好 dsh 命令之后）
-dsh desktop user-data-dir
-
-# Windows PowerShell
 dsh desktop user-data-dir
 ```
 
-它打印出来的那个目录，加上 `harness`，就是 harness 目录。例如打印 `/Users/me/Library/Application Support/dsh-desktop`，则 harness 目录是 `/Users/me/Library/Application Support/dsh-desktop/harness`。
+打印出来的目录加上 `harness`，就是 harness 目录。Windows 上是 `\harness`。
 
-如果 `dsh` 命令还不存在，先在桌面版菜单里点 **Manage dsh Command… → Install**，装完**新开一个终端**再跑。
+`dsh` 命令还不存在的话，先在桌面版菜单里点 **Manage dsh Command… → Install**，装完**新开一个终端**再跑。
 
 下面的教程里：
 
 - `<DSH 主目录>` 指上面第一条命令的输出。
-- `<harness 目录>` 指 `dsh desktop user-data-dir` 的输出再加上 `/harness`（Windows 上是 `\harness`）。
+- `<harness 目录>` 指 `dsh desktop user-data-dir` 的输出再加上 `harness`。
 
 ### 1.3 一份对照（仅供核对，以探测结果为准）
 
 | 系统 | DSH 主目录默认值 | harness 目录常见位置 |
 | --- | --- | --- |
-| macOS 桌面版 | `~/.dsh` | `~/Library/Application Support/dsh-desktop/harness` 或 `~/Library/Application Support/@deepseek-ai/dsh-desktop/harness` |
-| Windows 桌面版 | `%USERPROFILE%\.dsh` | `%APPDATA%\dsh-desktop\harness` 或 `%APPDATA%\@deepseek-ai\dsh-desktop\harness` |
-| Ubuntu 桌面版 | `~/.dsh` | `~/.config/dsh-desktop/harness` 或 `~/.config/@deepseek-ai/dsh-desktop/harness` |
+| macOS 桌面版 | `~/.dsh` | `~/Library/Application Support/dsh-desktop/harness` 或同级的 `@deepseek-ai/dsh-desktop` |
+| Windows 桌面版 | `%USERPROFILE%\.dsh` | `%APPDATA%\dsh-desktop\harness` 或同级的 `@deepseek-ai\dsh-desktop` |
+| Ubuntu 桌面版 | `~/.dsh` | `~/.config/dsh-desktop/harness` 或同级的 `@deepseek-ai/dsh-desktop` |
 | 命令行版（三个系统） | `~/.dsh` | 没有。插件直接装在 `<DSH 主目录>/profiles/web` |
 
 Windows 桌面版和 Ubuntu 桌面版这两行是按 Electron 的规则推出来的，没有在真机上逐项核过。**一律以 `dsh desktop user-data-dir` 的输出为准。**
 
 ---
 
-## 2. 部署中继
+## 2. 方案一：局域网
 
-中继是唯一需要公网 IP 的机器。下面以 Ubuntu 为例。
+主控和节点在同一个局域网时用这套。不用买 VPS，不用域名，不用证书。
 
-### 2.1 装运行环境
+节点必须能访问主控的局域网 IP。节点在另一边 NAT 后面、访问不到这个 IP 时，这套不通，改走方案二或方案三。
+
+### 2.1 主控先有口令
+
+没有入网口令时，插件只绑 `127.0.0.1`，别的机器拨不进来。在主控面板 **远程同事 → 副机接入** 里生成口令。生成后完全退出再打开（退出方式见第 5.4 节）。
+
+口令写在 `cordis.patch.yml` 的 `nodeToken`。不要发到聊天里，不要提交到 git。
+
+### 2.2 主控监听局域网地址
+
+插件自己听 `19387`，不是桌面版的网页端口。
+
+`listenHost` **不能写 `0.0.0.0`**。写成通配地址会被拒绝，然后退回自动选择。自动选择的顺序是：你填的地址 → Tailscale 的 `100.x` → 局域网私网 IP → 本机。机器上装了 Tailscale 时，自动选择会优先拿 `100.x`，纯局域网就会拨错地址。
+
+所以局域网方案把 `listenHost` 写成这块网卡的具体 IP，例如 `192.168.1.20`。三个系统查这个 IP：
 
 ```bash
-# Node.js 22
+# macOS
+ipconfig getifaddr en0
+
+# Ubuntu
+ip -4 addr show scope global
+
+# Windows PowerShell
+Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.PrefixOrigin -ne "WellKnown" }
+```
+
+主控这一侧的关键字段：
+
+```yaml
+role: hub
+listenHost: 192.168.1.20          # 换成上面查到的地址
+listenPort: 19387
+nodeToken: <面板生成的口令>
+```
+
+走这套时不要再填 `relay` / `relayUrl`。留着的话，节点有可能连去中继而不是连你。
+
+主控自己的防火墙要放行入站 TCP `19387`，来源限在局域网。节点不用开端口。
+
+### 2.3 节点拨主控
+
+面板上把主控生成的配对码 `dshra1://…` 整行贴进节点的「配对码」框，点写入，重启。这是最不容易抄错的办法。
+
+手写的话，节点字段是：
+
+```yaml
+role: worker
+nodeId: <这台机器的名字，所有节点里唯一>
+transportMode: direct
+hubUrl: ws://192.168.1.20:19387/api/remote-agent/node
+token: <与主控 nodeToken 相同的那一串>
+roots:
+  - <这台机器上允许任务读写的目录>
+agentMode: true
+```
+
+`hubUrl` 的路径是 `/api/remote-agent/node`，端口是 `19387`。写成 `/relay` 或写成 `8890` 都拨不进去。
+
+手写 YAML 时，节点那段的 `inject` 必须是空列表。不清空的话，节点会一直停在等待，而且不报错。面板生成的配置已经清过。
+
+### 2.4 验证
+
+在节点上测主控的端口（把 IP 换成你的）：
+
+```bash
+# macOS / Ubuntu
+nc -vz 192.168.1.20 19387
+
+# Windows PowerShell
+Test-NetConnection 192.168.1.20 -Port 19387
+```
+
+端口通、节点重启后，主控侧边栏里出现这台节点的 Bot，这套就好了。没有中继，所以没有 `healthz` 可看。
+
+---
+
+## 3. 方案二：国内 VPS
+
+节点和主控不在一个网络时用这套。一台有公网 IP 的大陆 Linux 服务器只做转发，不跑任务，也不存文件。
+
+当前在用的就是这套：广州 `114.132.236.98`，端口 `8890`，地址 `ws://114.132.236.98:8890/relay`。
+
+这是明文 WebSocket。谁能抓到你和这台 VPS 之间的流量，就能看到帧里的 token。上游的安全说明要求公网中继放在 TLS 后面。大陆机器要走正常证书，域名就得备案。没备案之前，这套用 IP + 明文，这是取舍，不是推荐。要线路加密又不要备案，用方案三。
+
+下面以 Ubuntu 为例。IP 换成你自己的 VPS。
+
+### 3.1 装运行环境
+
+```bash
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt-get install -y nodejs
-
 node --version   # 应显示 v22.x
 ```
 
-### 2.2 放上 dsh-remote-agent 包
+### 3.2 放上 dsh-remote-agent 包
 
-把 `dsh-remote-agent-<版本>.tgz` 传到这台机器，比如放到 `/root/`。解压并装依赖：
+把 `dsh-remote-agent-<版本>.tgz` 传到这台机器，比如 `/root/`：
 
 ```bash
 mkdir -p /opt/dsh-remote-agent
 tar -xzf /root/dsh-remote-agent-*.tgz -C /opt/dsh-remote-agent --strip-components=1
 cd /opt/dsh-remote-agent
 npm install --omit=dev
-```
-
-确认入口在：
-
-```bash
 ls bin/dsh-remote-relay.js
 ```
 
-### 2.3 写一个 token
+### 3.3 写 token
 
-中继靠 token 识别谁能连上来。主控和每个节点各用一个，互不相同。
+中继靠 token 识别谁能连。主控用 `rt_` 开头的那一串，每个节点用 `en_` 开头的那一串，互不相同。
 
 ```bash
 sudo mkdir -p /root/.dsh-remote-agent-relay
 sudo tee /root/.dsh-remote-agent-relay/tokens.json >/dev/null <<'EOF'
 {
-  "hub-1": "换成一串随机字符",
-  "node-1": "换成另一串随机字符"
+  "hub-1": "换成 openssl rand -hex 24 生成的一串",
+  "node-1": "换成另一串"
 }
 EOF
 sudo chmod 600 /root/.dsh-remote-agent-relay/tokens.json
 ```
 
-随机字符可以用 `openssl rand -hex 24` 生成。每增加一个节点，就在这个文件里加一行，然后重启中继（见 2.6）。
+每增加一个节点就加一行，然后重启中继（见 3.6）。**这个文件是登录凭证。不要发到聊天里，不要提交到 git。**
 
-**这个文件里的字符串就是登录凭证。不要发到聊天里，不要提交到 git。**
-
-### 2.4 做成开机自启的服务
+### 3.4 做成开机自启
 
 ```bash
 sudo tee /etc/systemd/system/dsh-relay.service >/dev/null <<'EOF'
@@ -168,59 +256,144 @@ sudo systemctl enable --now dsh-relay.service
 sudo systemctl status dsh-relay.service --no-pager
 ```
 
-`status` 里看到 `active (running)` 就对了。
+`active (running)` 就对了。
 
-### 2.5 放行端口
+### 3.5 放行端口
 
-云服务器有两层防火墙，两层都要放行 TCP 8890：
+云服务器有两层防火墙，两层都要放行 TCP `8890`：
 
-1. 云厂商控制台的安全组，添加入站规则：TCP 8890，来源 `0.0.0.0/0`。
-2. 机器自己的防火墙：
+1. 云厂商安全组，入站 TCP `8890`。只给你自己的机器用时，来源填主控和节点的出口 IP，不要对 `0.0.0.0/0` 开。
+2. 机器自己的防火墙：`sudo ufw allow 8890/tcp`。
 
-```bash
-sudo ufw allow 8890/tcp
-```
+主控和节点不用开入站端口。它们只是连出去。
 
-### 2.6 验证
+### 3.6 验证，再填两端
 
-在**另一台机器**上测（在中继自己上面测没有意义，测不到安全组）：
+在**另一台机器**上测。在 VPS 自己上面测，测不到安全组：
 
 ```bash
-curl -s http://<中继公网 IP>:8890/healthz
+curl -s http://<大陆公网 IP>:8890/healthz
 ```
 
-返回里有 `ok` 就通了。此刻还没有主控和节点连上来，所以 hub 和 node 的数量是 0，这是正常的。
+返回里有 `ok` 就通了。还没人连上来时，hub 和 node 的数量是 0，这是正常的。
 
-以后改了 `tokens.json`，执行：
+主控的托管块：
+
+```yaml
+role: hub
+relayUrl: ws://<大陆公网 IP>:8890/relay
+relay:
+  url: ws://<大陆公网 IP>:8890/relay
+  token: <tokens.json 里 hub-1 那一串>
+```
+
+`relayUrl` 和 `relay.url` 两个都写，写同一个地址。漏一个，界面和后台会各认各的。token 填在面板里，不要写进 git 仓库。
+
+节点：
+
+```yaml
+role: worker
+nodeId: <这台机器的名字，所有节点里唯一>
+transportMode: relay
+relayUrl: ws://<大陆公网 IP>:8890/relay
+token: <tokens.json 里这台节点对应的那一串>
+roots:
+  - <这台机器上允许任务读写的目录>
+agentMode: true
+```
+
+改了 `tokens.json` 之后：
 
 ```bash
 sudo systemctl restart dsh-relay.service
 ```
 
+两端都重启后，再跑一次 `healthz`。hub 数量应是 1，每连上一台节点，node 数量加 1。
+
 ---
 
-## 3. 部署主控
+## 4. 方案三：香港 VPS
 
-主控就是你每天用的那台桌面版。Windows、Ubuntu、macOS 步骤相同，差别只在第 1 章探出来的路径。
+和第 3 章是同一份中继程序。差别只有两处：机器在香港，前面加 TLS。香港不用备案，Let's Encrypt 可以直接签，所以这套走 `wss://`。
 
-### 3.1 确认桌面版在跑
+这套目前没有接进现网。现网仍是第 3 章那台广州机器。新买的香港服务器按下面做；做完之前不要改主控和节点的地址。
 
-打开 DeepSeek Harness，能看到 Bot 侧边栏即可。记下它的版本号（菜单 **About DeepSeek Harness**）。
+有一台旧的香港 VPS（`47.243.110.115`）不能直接拿来当这套的证书入口：它的 80 和 443 已经被 nps 占着，Caddy 签不了证书。要用那台，先挪走 nps，或者换一台 80/443 空着的机器。
 
-### 3.2 安装 ds-bot 和 dsh-remote-agent
+### 4.1 中继只听本机
 
-桌面版的插件装在 `<harness 目录>` 下，不在 `<DSH 主目录>` 下。这两个位置不要搞混——装错地方，重启后界面上看不到任何变化。
-
-先拿到两个包：`ds-bot-<版本>.tgz` 和 `dsh-remote-agent-<版本>.tgz`。然后：
+安装步骤与第 3.1 到 3.3 节相同。服务这一行改成只听回环，公网不再看到 `8890`：
 
 ```bash
-# 下面以 bash 为例。先确认目录真的存在
+ExecStart=/usr/bin/node /opt/dsh-remote-agent/bin/dsh-remote-relay.js --port 8890 --host 127.0.0.1
+```
+
+安全组放行 TCP `80` 和 `443`，**不要**对公网放行 `8890`。
+
+### 4.2 域名和证书
+
+把一个域名解析到这台香港机器的公网 IP。等解析生效再装 Caddy，否则签证书会失败。
+
+```bash
+sudo apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+sudo apt-get update
+sudo apt-get install -y caddy
+```
+
+`/etc/caddy/Caddyfile` 写成：
+
+```
+relay.example.com {
+	reverse_proxy 127.0.0.1:8890
+}
+```
+
+`relay.example.com` 换成你的域名。然后：
+
+```bash
+sudo systemctl reload caddy
+curl -s https://<你的域名>/healthz
+```
+
+返回里有 `ok` 就说明证书和反代都通了。Caddy 会自动续期，不用手签。
+
+### 4.3 两端改地址
+
+token 不动，只换地址。主控的 `relayUrl` 和 `relay.url`，以及节点的 `relayUrl`，都写成：
+
+```
+wss://<你的域名>/relay
+```
+
+端口 `443` 不用写。写成 `ws://` 或带上 `:8890` 都是错的：公网已经没有 `8890`，明文也进不了这条 TLS。
+
+两端完全退出再打开。`healthz` 里 hub 为 1、node 数量等于已连上的节点，再停掉国内那台中继。两台同时开着、两端地址却各写各的，节点会连到你没在看的那一台。
+
+---
+
+## 5. 部署主控
+
+主控就是你每天用的那台桌面版。Windows、Ubuntu、macOS 步骤相同，差别只在第 1 章探出来的路径。三套方案的主控字段不同，回到你选的那一章抄，不要三套叠在一起。
+
+### 5.1 确认桌面版在跑
+
+打开 DeepSeek Harness，能看到 Bot 侧边栏即可。版本号在菜单 **About DeepSeek Harness**。
+
+### 5.2 安装两个插件
+
+插件装在 `<harness 目录>/profiles/web`，不在 `<DSH 主目录>`。装错地方，重启后界面上看不到变化。
+
+先确认目录在：
+
+```bash
 ls "<harness 目录>/profiles/web/package.json"
 ```
 
-Windows 上用 PowerShell，把下面的路径写法换成反斜杠。
+Windows PowerShell 把路径换成反斜杠。
 
-**这一步会改掉你正在用的插件，装之前先做回滚副本：**
+**装之前先做回滚副本：**
 
 ```bash
 STAMP=$(date +%Y%m%d-%H%M)
@@ -230,7 +403,7 @@ cp "<harness 目录>/profiles/web/package.json" "/tmp/rollback-package-json-$STA
 cp "<harness 目录>/profiles/web/pnpm-lock.yaml" "/tmp/rollback-lock-$STAMP"
 ```
 
-然后安装。ds-bot 在桌面版里是一个 `link:` 目录，直接覆盖内容、不要改 `package.json` 里的版本号：
+ds-bot 在桌面版里是一个 `link:` 目录。覆盖内容，不要改 `package.json` 里它的版本号：
 
 ```bash
 rm -rf "<harness 目录>/profiles/web/node_modules/ds-bot"
@@ -238,91 +411,66 @@ mkdir -p "<harness 目录>/profiles/web/node_modules/ds-bot"
 tar -xzf ds-bot-*.tgz -C "<harness 目录>/profiles/web/node_modules/ds-bot" --strip-components=1
 ```
 
-dsh-remote-agent 走包管理器。改 `package.json` 里的版本号，再装：
+dsh-remote-agent 走包管理器。把 `package.json` 里的版本改成你拿到的版本，再装：
 
 ```bash
 cd "<harness 目录>/profiles/web"
-# 把 dsh-remote-agent 的版本改成你拿到的版本，然后
 pnpm install
 ```
 
-装完核验：
+装完核验，两个版本都要和包一致：
 
 ```bash
 node -p "require('<harness 目录>/profiles/web/node_modules/ds-bot/package.json').version"
 node -p "require('<harness 目录>/profiles/web/node_modules/dsh-remote-agent/package.json').version"
 ```
 
-两个版本号都要和你拿到的包一致。
+### 5.3 填方案字段
 
-### 3.3 配置主控
+优先用面板 **远程同事**。面板写入的就是 `cordis.patch.yml` 里那段托管块。
 
-配置文件在 `<harness 目录>/plugins/dsh-remote-agent/config.json`。没有这个文件就新建。内容：
+手改时只动这些键：
 
-```json
-{
-  "role": "hub",
-  "transportMode": "direct",
-  "listenPort": 19387,
-  "roots": ["<你允许节点读写的目录>"],
-  "relayUrl": "ws://<中继公网 IP>:8890/relay",
-  "relay": { "url": "ws://<中继公网 IP>:8890/relay" }
-}
-```
+- 方案一：`listenHost`、`listenPort`、`nodeToken`。不要留 `relay`。
+- 方案二、方案三：`relayUrl`、`relay.url`、`relay.token`。两个 URL 必须相同。
 
-- `role` 必须是 `hub`。写成 `worker` 这台机器就变成节点了。
-- `relayUrl` 和 `relay.url` 两个都写，写同一个地址。漏一个，界面和后台会各认各的。
-- `roots` 是你允许远程任务碰的目录。主控自己不跑任务，但派出去的任务要声明工作区，这里填你的项目目录。
+`roots` 填你允许远程任务声明的目录。主控自己不跑任务，但派出去的任务要落在节点的 `roots` 里。
 
-token 不写在这个文件里。主控用的 token 是第 2.3 步 `tokens.json` 里 `hub-1` 那一串，填到桌面版的插件设置界面里（**设置 → 远程节点**），不要写进 git 仓库。
+### 5.4 完全退出再打开
 
-### 3.4 重启并验证
+关窗口不等于退出，进程还在，新配置不会加载。
 
-**完全退出**桌面版再打开。注意：
+- macOS：关闭按钮只是隐藏。用 **⌘Q**，或菜单里的 Quit。
+- Windows：× 只是收进托盘。右键托盘图标选 **Quit**。
+- Ubuntu：关闭窗口通常就是退出，以进程是否还在为准。
 
-- macOS 上点关闭按钮只是隐藏窗口，进程还在。要用 **⌘Q**，或者菜单里的 Quit。
-- Windows 上点 × 只是隐藏到托盘，进程还在。要右键托盘图标选 **Quit**。
-- Ubuntu 上关闭窗口通常就是退出，但以进程是否还在为准。
-
-验证：
-
-```bash
-curl -s http://<中继公网 IP>:8890/healthz
-```
-
-现在返回里的 hub 数量应该是 1。主控侧边栏里能看到自己的 Bot，说明主控这一侧好了。
+方案二、方案三退出重开后，再跑一次对应的 `healthz`。hub 数量应是 1。方案一没有 `healthz`，看第 2.4 节的端口测试。
 
 ---
 
-## 4. 部署节点
+## 6. 部署节点
 
-节点是跑 Bot 的机器。一台中继可以挂任意多个节点，每个节点重复这一章。
+一台中继（或一台局域网主控）可以挂任意多个节点。每个节点重复这一章，`nodeId` 不能重复。
 
-### 4.1 选运行方式
+### 6.1 选运行方式
 
-| 方式 | 适合 | 怎么跑 |
+| 方式 | 适合 | 插件装在哪 |
 | --- | --- | --- |
-| 命令行版 + systemd | Ubuntu 服务器，没有显示器 | 本章 4.2 往下 |
-| 桌面版 | Windows / Ubuntu / macOS 的日常电脑 | 和第 3 章一样装插件，配置改成节点（见 4.5） |
+| 命令行版 + systemd | Ubuntu 服务器，没有显示器 | `<DSH 主目录>/profiles/web` |
+| 桌面版 | Windows / Ubuntu / macOS 的日常电脑 | `<harness 目录>/profiles/web` |
 
-两种方式的配置字段完全一样，差别只在插件装在哪：命令行版装在 `<DSH 主目录>/profiles/web`，桌面版装在 `<harness 目录>/profiles/web`。
+两种方式的字段完全一样。桌面版的安装步骤与第 5.2 节相同。
 
-### 4.2 命令行版：装 dsh
+### 6.2 命令行版：装 dsh 和两个插件
 
 ```bash
-# Ubuntu
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt-get install -y nodejs
-
-# 安装 dsh（按 DeepSeek Harness 的发行说明）
 npm install -g @deepseek-ai/dsh
-
 dsh --version
 ```
 
-Windows 上从发行页下载安装包，装完在 PowerShell 里跑 `dsh --version`。macOS 同理。
-
-### 4.3 装两个插件
+Windows 从发行页下载安装包，装完在 PowerShell 里跑 `dsh --version`。macOS 同理。
 
 ```bash
 mkdir -p ~/.dsh/profiles/web
@@ -330,9 +478,9 @@ cd ~/.dsh/profiles/web
 npm install /root/ds-bot-*.tgz /root/dsh-remote-agent-*.tgz
 ```
 
-路径按你实际把包放的位置改。装完同样用 `node -p "require(...).version"` 核两个版本号。
+包的路径按你实际放置的位置改。装完用 `node -p "require(...).version"` 核两个版本号。
 
-### 4.4 做成开机自启（Ubuntu 服务器）
+### 6.3 做成开机自启（Ubuntu 服务器）
 
 ```bash
 sudo tee /etc/systemd/system/dsh-worker.service >/dev/null <<'EOF'
@@ -356,82 +504,56 @@ sudo systemctl enable --now dsh-worker.service
 
 三个参数不要改：
 
-- `--host 127.0.0.1`：只监听本机。节点不需要对外开端口。
-- `--port 3080`：本机端口，和中继的 8890 无关。
-- `--no-open`：服务器上没有浏览器，不要尝试打开。
+- `--host 127.0.0.1`：节点不对公网开端口。
+- `--port 3080`：本机网页端口，和 `19387`、`8890`、`443` 都不是一回事。
+- `--no-open`：服务器上没有浏览器。
 
 `DSH_HOME` 按这台机器的实际主目录改。用 root 跑就写 `/root/.dsh`，用普通用户跑就写那个用户的主目录。
 
-### 4.5 配置节点
+### 6.4 填方案字段
 
-配置文件位置：
+配置文件就是第 1 章说的 `cordis.patch.yml`。字段按你选的方案抄第 2.3、3.6 或 4.3 节，不要混用。
 
-- 命令行版：`<DSH 主目录>/plugins/dsh-remote-agent/config.json`
-- 桌面版：`<harness 目录>/plugins/dsh-remote-agent/config.json`
+- `nodeId` 在所有节点里唯一。起个能看懂的，比如 `office-pc`、`gpu-box-1`。
+- `roots` 是这台机器上任务能碰的目录。声明的工作区必须落在这里面，否则会被拒绝。
+- `agentMode: true` 节点才会自己跑 Bot。`false` 就只会执行单条命令。
+- 每台节点的 token 不同。方案一用主控的 `nodeToken`；方案二、方案三用中继 `tokens.json` 里这台节点自己的那一串。
 
-内容：
+### 6.5 验证
 
-```json
-{
-  "role": "worker",
-  "transportMode": "relay",
-  "nodeId": "给这台机器起的名字",
-  "roots": ["/这台机器上允许任务读写的目录"],
-  "agentMode": true,
-  "relayUrl": "ws://<中继公网 IP>:8890/relay"
-}
-```
-
-- `nodeId` 在所有节点里必须唯一。主控靠它区分机器。起个能看懂的，比如 `office-pc`、`gpu-box-1`。
-- `roots` 是这台机器上任务能碰的目录。任务声明的工作区必须落在这里面，否则会被拒绝。
-- `agentMode` 设 `true`，节点才能自己跑 Bot。设 `false` 就只会执行单条命令。
-- token 用第 2.3 步里这台节点对应的那一串（`node-1`），填在插件设置里。每台节点的 token 不同。
-
-### 4.6 验证节点连上了
-
-重启节点进程后，在任意一台机器上：
+方案二、方案三：
 
 ```bash
-curl -s http://<中继公网 IP>:8890/healthz
+curl -s http://<中继地址>/healthz
 ```
 
-node 数量应该增加 1。
+方案三把 `http://<IP>:8890` 换成 `https://<域名>`。node 数量应增加 1。
 
-再看节点自己的日志：
+节点自己的日志：
 
 ```bash
 # Ubuntu 命令行版
 journalctl -u dsh-worker.service --no-pager -n 50
-
-# 桌面版（三个系统，日志目录在 userData 旁边）
-# macOS: ~/Library/Logs/DSH Desktop/harness.log
-# 其他系统以 dsh desktop user-data-dir 的输出为准，日志通常在它的上一级 Logs 目录
 ```
 
-日志里能看到连上 `8890` 的记录，并且没有反复重连，就通了。
+桌面版的日志不写死路径。macOS 常见位置是 `~/Library/Logs/DSH Desktop/harness.log`。Windows 和 Ubuntu 以 `dsh desktop user-data-dir` 的输出为准，日志通常在它旁边的 Logs 目录。日志里能看到连上中继或主控，并且没有反复重连，就通了。
 
 ---
 
-## 5. 在主控上看到节点的 Bot
+## 7. 在主控上看到节点的 Bot
 
-节点连上之后，节点上的 Bot 会自动出现在主控的侧边栏里。这不需要在主控上逐个添加。
+节点连上之后，节点上的 Bot 会自动出现在主控侧边栏里，不用在主控上逐个添加。
 
 前提是两边的版本都够新：
 
 - dsh-remote-agent `0.10.1-fork.33` 及以上才会上报 Bot 名单。
 - 要在主控上看到节点 Bot 用的模型，两边都要到 ds-bot `0.3.6-fork.39`、dsh-remote-agent `0.10.1-fork.83`。**只升主控不够**，模型是节点侧生成的。
 
-等一两分钟后，主控侧边栏里应该出现节点的 Bot，名字前面带节点标识。
-
-### 看不到时，按这个顺序查
-
-在**节点那台机器**上：
+等一两分钟。看不到时，在**节点那台机器**上查：
 
 ```bash
-# 1. 版本够不够
 node -p "require('<插件目录>/node_modules/dsh-remote-agent/package.json').version"
 
-# 2. 有没有在发上报
 # 桌面版
 grep -c "roster/report" "<日志文件>"
 # 命令行版
@@ -439,79 +561,44 @@ journalctl -u dsh-worker.service --no-pager | grep -c "roster/report"
 ```
 
 - 版本低于 `0.10.1-fork.33`：这台机器没有上报功能。升到和主控相同的版本，两边一起升。
-- 版本够、计数是 0：节点没在发。查 `config.json` 的 `role` 是不是 `worker`、`relayUrl` 对不对、token 对不对。
+- 版本够、计数是 0：节点没在发。查 `role` 是不是 `worker`，地址是不是你选的那一套，token 是不是同一套。
 - 版本够、计数大于 0：节点在发，是中继没转到主控，或者主控把这台节点屏蔽了。把那段日志发出来查。
 
 ---
 
-## 6. 模型配置
+## 8. 模型、任务、升级
 
-主控上配好的模型，节点的 Bot 可以直接用，密钥留在主控，不会发到节点。
+主控上配好的模型，节点的 Bot 可以直接用，密钥留在主控，不会发到节点。在主控 **设置 → 模型** 里配 provider 和 key。
 
-在主控的 **设置 → 模型** 里配好 provider 和 key。节点侧边栏里点开一个 Bot，模型栏显示的就是节点上报上来的模型。
+一个已知的小问题：节点用的模型主控这边没有时，聊天页会提示「模型不可用，换一个」。这不影响任务执行。
 
-一个已知的小问题：如果节点用的模型主控这边没有，聊天页会提示「模型不可用，换一个」。这不影响任务执行，只是主控的模型选择器不认识它。
+在主控侧边栏里点节点的 Bot，直接发消息，它就在节点那台机器上执行。任务能碰的目录受节点 `roots` 限制。读 `roots` 之外的路径会被拒绝，这是预期行为。
 
----
+升级时记住三条：
 
-## 7. 分配任务
-
-在主控的侧边栏里点节点的 Bot，直接给它发消息，它就在节点那台机器上执行。
-
-任务能碰的目录受节点 `roots` 限制。让它读 `roots` 之外的路径会被拒绝，这是预期行为，不是故障。
+1. **主控和所有节点升到同一个版本。** ds-bot 和 dsh-remote-agent 要成对升。只升一边，轻则模型栏是空的，重则上报被丢掉。
+2. **中继可以落后。** 它只转发帧，不解析内容。方案二、方案三的中继版本低于主控和节点是正常的。方案一没有中继。
+3. **升级前做回滚副本**，照第 5.2 节的 `cp -a` 做。出问题把副本拷回去，完全退出再打开。
 
 ---
 
-## 8. 升级
+## 9. 出问题时先分方案
 
-版本号在涨。升级时记住三条：
+不要凭感觉猜。
 
-1. **主控和所有节点升到同一个版本。** 尤其是 ds-bot 和 dsh-remote-agent 要成对升。只升一边，轻则功能缺失（比如模型栏是空的），重则上报被丢掉。
-2. **中继可以落后。** 中继只转发帧，不解析内容。它的版本低于主控和节点是正常的，不必每次跟着升。
-3. **升级前做回滚副本**，照第 3.2 步的 `cp -a` 做。出问题把副本拷回去，重启即可。
+方案一，在节点上做第 2.4 节的端口测试。不通：主控没退出重开、`listenHost` 不是这块网卡的 IP、防火墙没放行 `19387`，或者没生成 `nodeToken` 导致只绑了本机。通了但侧边栏没有 Bot：看第 7 章的版本和 `roster/report` 计数。
 
-升级后必须**完全退出**再打开，第 3.4 步的退出方式三个系统各不相同，不要只关窗口。
-
----
-
-## 9. 可选项（现在不用做）
-
-下面三件事都能做，但当前这套不依赖它们。没做不影响接入、派任务、模型同步。
-
-### 9.1 TLS 证书
-
-现在是明文 `ws://`。谁能抓到你和中继之间的流量，就能看到帧的内容。token 在帧里，所以抓包等于拿到凭证。
-
-换成 `wss://` 线路上就是加密的。代价：
-
-- 域名指向大陆服务器要备案。
-- 不备案就得用 IP 证书，或者把中继放到境外。
-
-只有你自己的主控和节点在连时，明文够用。要给别人开入口，或者这台中继要换 IP，再加。
-
-### 9.2 域名
-
-中继认的是 `ws://<IP>:8890/relay`。IP 不变就不需要域名。只有打算加证书，或者 IP 会变、不想每台机器都改配置时，才需要。
-
-### 9.3 Tailscale / Headscale
-
-这是打洞工具，用来让没有公网 IP 的机器互相直连。现在主控和节点都主动连中继，不需要打洞。已经装了可以留着当备用，没装不用装。
-
----
-
-## 10. 出问题时先收集这四样
-
-不要凭感觉猜。把下面四样发出来：
+方案二、方案三，把下面四样发出来：
 
 ```bash
-# 1. 中继是否通，在任意一台机器上跑
-curl -s http://<中继公网 IP>:8890/healthz
+# 1. 中继是否通。方案二用 http://<IP>:8890，方案三用 https://<域名>
+curl -s http://<中继地址>/healthz
 
 # 2. 主控版本
 node -p "require('<harness 目录>/profiles/web/node_modules/ds-bot/package.json').version"
 node -p "require('<harness 目录>/profiles/web/node_modules/dsh-remote-agent/package.json').version"
 
-# 3. 节点版本（在节点上跑，插件目录按它的运行方式选）
+# 3. 节点版本
 node -p "require('<插件目录>/node_modules/dsh-remote-agent/package.json').version"
 
 # 4. 节点有没有在上报
@@ -519,3 +606,5 @@ grep -c "roster/report" "<日志文件>"
 ```
 
 `healthz` 里 hub 是 0，问题在主控到中继这一段。hub 是 1 但 node 是 0，问题在节点到中继这一段。两边都是 1 但主控看不到 Bot，问题在上报，看第 4 条的计数。
+
+Tailscale、Headscale 不是这三套的组成部分。主控和节点要么同网直连，要么主动连 VPS。已经装了可以留着，没装不用装。
