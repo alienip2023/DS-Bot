@@ -39,6 +39,7 @@ function listenBotCreateResult(registry, requestId, nodeId, timeoutMs) {
   }
   const onResult = (payload) => {
     if (payload?.requestId !== requestId) return
+    if (payload.nodeId && payload.nodeId !== nodeId) return
     finish(payload)
   }
   const onOffline = (payload) => {

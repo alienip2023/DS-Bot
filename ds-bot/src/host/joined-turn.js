@@ -90,6 +90,7 @@ export function listenBotTurnResult(registry, exchangeId, nodeId, timeoutMs, rem
   tracked.set(exchangeId, { finish, remoteBotId })
   const onResult = (payload) => {
     if (payload?.exchangeId !== exchangeId) return
+    if (payload.nodeId && payload.nodeId !== nodeId) return
     if (!settled) received = true
     finish(payload)
   }
@@ -147,6 +148,7 @@ export function listenBotStopResult(registry, requestId, nodeId, timeoutMs) {
   }
   const onResult = (payload) => {
     if (payload?.requestId !== requestId) return
+    if (payload.nodeId && payload.nodeId !== nodeId) return
     finish(payload)
   }
   const onOffline = (payload) => {

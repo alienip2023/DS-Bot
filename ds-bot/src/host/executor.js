@@ -181,6 +181,7 @@ function prepareRemote({ bot, text, rt, tracker, timeoutOverride }) {
     }
     const onEvent = (payload) => {
       if (payload?.exchangeId !== turnId) return
+      if (payload.nodeId && payload.nodeId !== nodeId) return
       if (onResult(payload) === false) return   // not usable — keep listening
       end()
     }

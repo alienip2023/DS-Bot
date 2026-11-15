@@ -32,6 +32,7 @@ function listenBotHistoryResult(registry, requestId, nodeId, timeoutMs) {
   }
   const onResult = (payload) => {
     if (payload?.requestId !== requestId) return
+    if (payload.nodeId && payload.nodeId !== nodeId) return
     finish(payload)
   }
   const onOffline = (payload) => {
@@ -141,6 +142,7 @@ function listenBotUpdateResult(registry, requestId, nodeId, timeoutMs) {
   }
   const onResult = (r) => {
     if (r?.requestId !== requestId) return
+    if (r.nodeId && r.nodeId !== nodeId) return
     finish(r)
   }
   const onOffline = payload => {
@@ -336,6 +338,7 @@ function listenBotDeleteResult(registry, requestId, nodeId, timeoutMs) {
   }
   const onResult = (r) => {
     if (r?.requestId !== requestId) return
+    if (r.nodeId && r.nodeId !== nodeId) return
     finish(r)
   }
   const onOffline = payload => {
