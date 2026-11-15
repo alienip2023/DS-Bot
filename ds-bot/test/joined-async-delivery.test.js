@@ -134,6 +134,23 @@ test('nodeOffline after a deferred timeout reports a real bridge loss', async t 
   assert.deepEqual(w.replies.map(msg => msg.text), [BRIDGE_DOWN_TEXT])
 })
 
+test('expiry of the late window still leaves real disconnects observable', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const w = joinedWorld(t)
+  w.rt.joinedTurnTimeoutMs = 10
+  w.rt.joinedLateWindowMs = 100
+  await w.send({ joinedAsync: true })
+  t.mock.timers.tick(10)
+  t.mock.timers.tick(100)
+  await drain()
+  assert.equal(w.replies.length, 0)
+  assert.equal(w.registry.listenerCount('botTurnResult'), 0, 'the late result window is bounded')
+  w.registry.emit('nodeOffline', { nodeId: 'n1' })
+  await drain()
+  assert.deepEqual(w.replies.map(msg => msg.text), [BRIDGE_DOWN_TEXT])
+  assert.equal(w.session.log.filter(e => e.type === 'turn/end').length, 1)
+})
+
 for (const duringDispatch of [false, true]) {
   test(`worker returns on acceptance and delivers once (taskEnd during dispatch: ${duringDispatch})`, async t => {
     const registry = new EventEmitter()

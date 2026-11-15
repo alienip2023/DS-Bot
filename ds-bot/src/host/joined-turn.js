@@ -12,9 +12,8 @@ export const BRIDGE_DOWN_TEXT = '副机仍在执行，桥已断'
 // What the sender is told when its exchange was settled by a stop, not by the node going away.
 export const STOPPED_TEXT = '已停止'
 export const PENDING_TURN_TEXT = 'Node is still running; its result will be delivered later.'
-// How long a turn waits for the node's answer. A node Bot that calls tools takes minutes (the
-// first tool call alone can run for over a minute), so the wait covers that; the node's reply
-// that still comes after this is not lost (executor.js startPageTurn writes it as a late reply).
+// The foreground result deadline. Bot-to-Bot deliveries keep the mirror turn open after it;
+// page turns use executor.js's separate late-reply writer.
 export const JOINED_TURN_TIMEOUT_MS = 600_000
 // How long after a timeout a late bot/turn-result is still written into the mirror Session.
 export const JOINED_LATE_WINDOW_MS = 3_600_000
@@ -108,7 +107,9 @@ export function listenBotTurnResult(registry, exchangeId, nodeId, timeoutMs, rem
   // must not fall into a gap between removing the original waiter and arming a late one.
   let timer = setTimeout(() => {
     if (lateWindowMs <= 0) { finish(undefined); return }
-    timer = setTimeout(() => finish(undefined), lateWindowMs)
+    // The answer window is bounded, but a still-open turn must remain stoppable and must
+    // report a real bridge loss even after that window expires.
+    timer = setTimeout(() => registry.off?.('botTurnResult', onResult), lateWindowMs)
     timer.unref?.()
     resolve(undefined)
     onTimeout?.()
@@ -299,8 +300,6 @@ export async function handleJoinedTurn(rt, msg = {}) {
     return { ok: false, error: 'bridge-down' }
   }
   const settle = async (result) => {
-    // Expiry of the late window is still not evidence that the connection was lost.
-    if (!result) return { ok: false, error: 'bot-turn-pending', exchangeId: xid }
     if (result?.error === 'stopped') {
       // Settled by a stop of this node, not by the node going away: close the mirror as stopped
       // and tell the sender it was stopped. A late result or nodeOffline for this exchange finds
