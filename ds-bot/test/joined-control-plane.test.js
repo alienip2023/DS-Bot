@@ -116,6 +116,40 @@ test('stop_bot on a joined Bot sends bot/stop and reports the node\'s answer', a
   assert.equal(told.payload.text, 'stop now')
 })
 
+test('stop_bot leaves a sibling Bot on the same node running until its own reply', async t => {
+  const seed = team()
+  const otherId = 'joined:n1:rb2'
+  seed.bots[otherId] = {
+    ...seed.bots[REMOTE], id: otherId, name: 'Sibling', sessionId: 'mirror-sibling',
+    worker: { ...seed.bots[REMOTE].worker, remoteBotId: 'rb2' },
+  }
+  const w = await start(seed)
+  t.after(w.stop)
+  const sibling = new Session('mirror-sibling')
+  w.sessions.set('mirror-sibling', sibling)
+  try {
+    await w.tool('message_bot', { to: 'Remote', message: 'first job' }, 'a')
+    await w.tool('message_bot', { to: 'Sibling', message: 'second job' }, 'a')
+    const job = w.frames.find(f => f.type === 'bot/turn' && f.payload.remoteBotId === 'rb2')
+    assert.ok(job)
+    const pending = w.tool('stop_bot', { bot: 'Remote', reason: 'stop first only' }, 'a')
+    await settle()
+    const stop = w.frames.find(f => f.type === 'bot/stop')
+    w.registry.emit('botStopResult', { requestId: stop.payload.requestId, ok: true, stopped: true })
+    await pending
+    await settle()
+    assert.equal(sibling.log.filter(e => e.type === 'turn/end').length, 0)
+    assert.ok(w.rt.state.works[job.payload.exchangeId], 'Sibling still owes its real answer')
+    w.registry.emit('botTurnResult', { exchangeId: job.payload.exchangeId, ok: true, text: 'second job completed', seq: 2 })
+    await settle()
+    assert.equal(sibling.log.find(e => e.type === 'assistant/message').data.message.content[0].text, 'second job completed')
+    assert.equal(w.rt.state.works[job.payload.exchangeId], undefined)
+  } finally {
+    w.registry.emit('nodeOffline', { nodeId: 'n1' })
+    await settle()
+  }
+})
+
 test('stop_bot on a joined Bot that is not running refuses with the node\'s answer', async (t) => {
   const w = await start(team())
   t.after(w.stop)

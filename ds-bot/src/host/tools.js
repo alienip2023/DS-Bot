@@ -368,12 +368,12 @@ export function install(rt) {
         if (answer === undefined) refuse(`${target.name} did not answer the stop request within 15s; its turn may still be running on ${where}.`)
         if (answer.ok !== true) refuse(`${target.name} could not be stopped on ${where}: ${answer.error ?? 'the node refused the request'}.`)
         if (answer.stopped !== true) refuse(`${target.name} is not running right now on ${where}, so there is nothing to stop.`)
-        // The page turn, if one was waiting, ends here. Every Bot-to-Bot exchange still waiting on
-        // this node is settled as stopped by its own exchange, so a nodeOffline or a result that
+        // The page turn, if one was waiting, ends here. Every exchange still waiting on
+        // this Bot is settled as stopped by its own exchange, so a nodeOffline or a result that
         // arrives afterwards is dropped instead of being reported as a bridge that went down.
         // The deliver below opens a new exchange and is not one of those.
         rt.stopJoinedTurn?.(target.id)
-        settleStoppedTurns(registry, nodeId)
+        settleStoppedTurns(registry, nodeId, remoteBotId)
         // The receipt below opens a new exchange after the settle. A node drop before the node
         // answers it is the stop taking effect, so that one exchange closes as stopped. Nothing
         // else on this node is: a later turn that really loses the bridge is still a bridge-down.

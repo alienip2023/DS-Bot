@@ -18,11 +18,11 @@ export const JOINED_TURN_TIMEOUT_MS = 600_000
 // How long after a timeout a late bot/turn-result is still written into the mirror Session.
 export const JOINED_LATE_WINDOW_MS = 3_600_000
 const MAX_TIMER_MS = 2_147_483_647
-// Exchanges still waiting on a node, keyed by nodeId. A stop settles these by the exchange
+// Exchanges still waiting on a node, scoped to their registry and remote Bot. A stop settles these by the exchange
 // itself; the bot/stop-result frame carries no exchangeId, so the association cannot be guessed
 // from the requestId. An exchange leaves the moment it settles, so a result or a nodeOffline
 // that arrives afterwards finds nothing to deliver to.
-const inflightByNode = new Map()
+const inflightByRegistry = new WeakMap()
 
 /** `config.joinedTurnTimeoutMs`: whole milliseconds between 1s and the timer limit, else the default. */
 export function joinedTimeoutFrom(value) {
@@ -65,31 +65,29 @@ function trimmed(value) {
   return typeof value === 'string' ? value.trim() : ''
 }
 
-export function listenBotTurnResult(registry, exchangeId, nodeId, timeoutMs) {
+export function listenBotTurnResult(registry, exchangeId, nodeId, timeoutMs, remoteBotId) {
   let settled = false
   let received = false   // the node's answer for THIS exchange has arrived (not a cancel/timeout/offline)
   let resolve
   const pending = new Promise((res) => { resolve = res })
+  let inflightByNode = inflightByRegistry.get(registry)
+  if (!inflightByNode) { inflightByNode = new Map(); inflightByRegistry.set(registry, inflightByNode) }
   const tracked = inflightByNode.get(nodeId) ?? new Map()
   inflightByNode.set(nodeId, tracked)
+  const receipts = receiptsOf(registry)
   const finish = (value) => {
     if (settled) return
     settled = true
     clearTimeout(timer)
     registry.off?.('botTurnResult', onResult)
     registry.off?.('nodeOffline', onOffline)
-    if (tracked.get(exchangeId) === finish) tracked.delete(exchangeId)
+    if (tracked.get(exchangeId)?.finish === finish) tracked.delete(exchangeId)
     if (tracked.size === 0) inflightByNode.delete(nodeId)
-    // The receipt that tells the Bot why it was stopped is the whole of the stop window. Once it
-    // settles, the node is no longer stopped on purpose: a later turn that loses the bridge is a
-    // real bridge-down. Forgetting the node here is what keeps that later turn honest.
-    if (stoppedReceipts.get(exchangeId) === nodeId) {
-      stoppedReceipts.delete(exchangeId)
-      stoppedNodes.delete(nodeId)
-    }
+    // Only the stop receipt may treat a dropped bridge as the stop taking effect.
+    if (receipts.get(exchangeId) === nodeId) receipts.delete(exchangeId)
     resolve(value)
   }
-  tracked.set(exchangeId, finish)
+  tracked.set(exchangeId, { finish, remoteBotId })
   const onResult = (payload) => {
     if (payload?.exchangeId !== exchangeId) return
     if (!settled) received = true
@@ -97,11 +95,8 @@ export function listenBotTurnResult(registry, exchangeId, nodeId, timeoutMs) {
   }
   const onOffline = (payload) => {
     if (payload?.nodeId && payload.nodeId !== nodeId) return
-    // The node was stopped on purpose and its receipt has not been answered yet. A drop inside
-    // that window is the stop taking effect, not a bridge that went down. Once the receipt
-    // settles the node is forgotten, so a turn opened afterwards that really loses the bridge is
-    // a bridge-down again.
-    if (stoppedNodes.has(nodeId)) { finish({ ok: false, error: 'stopped', exchangeId }); return }
+    // Other Bots on this node still report a real bridge loss during the stop window.
+    if (receipts.get(exchangeId) === nodeId) { finish({ ok: false, error: 'stopped', exchangeId }); return }
     finish({ ok: false, error: 'bridge-down', exchangeId })
   }
   const timer = setTimeout(() => finish(undefined), timeoutMs)
@@ -111,33 +106,27 @@ export function listenBotTurnResult(registry, exchangeId, nodeId, timeoutMs) {
   return { pending, cancel: () => finish({ ok: false, error: 'bridge-down', exchangeId }), received: () => received }
 }
 
-/**
- * A stop succeeded for this node. Settle every exchange still waiting on it as stopped, by the
- * exchange itself — the stop frame carries no exchangeId, so nothing here is matched by
- * requestId. A result or a nodeOffline for one of these exchanges that arrives afterwards finds
- * the waiter already gone and is dropped. Stopping again, or stopping a node with nothing in
- * flight, settles nothing. Returns how many exchanges were settled.
- */
-// A stop settles the exchanges in flight at that moment, but the receipt that tells the Bot why
-// is delivered afterwards and opens a new exchange on the same node. A nodeOffline that arrives
-// before that receipt is answered is not a bridge that went down: the node was stopped on
-// purpose. The node is remembered only until that receipt settles, so a turn opened afterwards
-// that really loses the bridge is still a bridge-down.
-const stoppedNodes = new Set()
-const stoppedReceipts = new Map()
+// The explanatory receipt opens after the stop settled the original exchange.
+const stoppedReceipts = new WeakMap()
 
-export function noteStoppedExchange(exchangeId, nodeId) {
-  if (typeof exchangeId !== 'string' || exchangeId === '') return
-  if (typeof nodeId !== 'string' || nodeId === '') return
-  stoppedReceipts.set(exchangeId, nodeId)
-  stoppedNodes.add(nodeId)
+function receiptsOf(registry) {
+  let receipts = stoppedReceipts.get(registry)
+  if (!receipts) { receipts = new Map(); stoppedReceipts.set(registry, receipts) }
+  return receipts
 }
 
-export function settleStoppedTurns(registry, nodeId) {
-  const tracked = inflightByNode.get(nodeId)
+export function noteStoppedExchange(exchangeId, nodeId, registry) {
+  if (typeof exchangeId !== 'string' || exchangeId === '') return
+  if (typeof nodeId !== 'string' || nodeId === '') return
+  receiptsOf(registry).set(exchangeId, nodeId)
+}
+
+// Without a Bot id the legacy caller explicitly stops the whole node's exchanges.
+export function settleStoppedTurns(registry, nodeId, remoteBotId) {
+  const tracked = inflightByRegistry.get(registry)?.get(nodeId)
   if (!tracked || tracked.size === 0) return 0
-  const waiting = [...tracked.values()]
-  for (const finish of waiting) finish({ ok: false, error: 'stopped', exchangeId: undefined })
+  const waiting = [...tracked.values()].filter(entry => remoteBotId === undefined || entry.remoteBotId === remoteBotId)
+  for (const { finish } of waiting) finish({ ok: false, error: 'stopped', exchangeId: undefined })
   return waiting.length
 }
 
@@ -277,8 +266,8 @@ export async function handleJoinedTurn(rt, msg = {}) {
   // The caller names this exchange before the frame goes out (the stop receipt does). Remembering
   // it here, before the listener is attached, is what lets a node drop that lands in the same
   // tick close it as stopped instead of as a bridge that went down.
-  if (msg.stopped === true) noteStoppedExchange(xid, nodeId)
-  const wait = listenBotTurnResult(registry, xid, nodeId, timeoutMs)
+  if (msg.stopped === true) noteStoppedExchange(xid, nodeId, registry)
+  const wait = listenBotTurnResult(registry, xid, nodeId, timeoutMs, remoteBotId)
   let sent = false
   try {
     sent = registry.send(nodeId, 'bot/turn', { nodeId, remoteBotId, exchangeId: xid, text: text ?? '' })

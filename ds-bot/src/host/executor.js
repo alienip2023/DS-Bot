@@ -93,7 +93,7 @@ function prepareRemote({ bot, text, rt, tracker, timeoutOverride }) {
 
   const turnId = randomUUID()
   const timeoutMs = Number.isFinite(timeoutOverride) ? timeoutOverride : (rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS)
-  const { pending, cancel, received } = listenBotTurnResult(registry, turnId, nodeId, timeoutMs)
+  const { pending, cancel, received } = listenBotTurnResult(registry, turnId, nodeId, timeoutMs, remoteBotId)
 
   tracker?.start(turnId, bot.id)
 
