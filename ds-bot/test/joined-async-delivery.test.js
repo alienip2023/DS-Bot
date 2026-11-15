@@ -77,6 +77,24 @@ test('three joined sends release the thread queue before any remote result', asy
   assert.equal(w.session.log.filter(e => e.type === 'turn/end').length, 3)
 })
 
+test('duplicate deferred deliveries for the same exchangeId dispatch and reply only once', async t => {
+  const w = joinedWorld(t)
+  const msg = { fromId: 'sender', toId: w.bot.id, text: 'work', exchangeId: 'duplicate', defer: true }
+  assert.equal(await handleJoinedTurn(w.rt, msg), 'duplicate')
+  assert.equal(await handleJoinedTurn(w.rt, msg), 'duplicate')
+  assert.deepEqual(w.frames.map(frame => frame.type), ['bot/turn'])
+  assert.equal(w.session.log.filter(e => e.type === 'turn/start').length, 1)
+  assert.equal(w.replies.length, 0)
+
+  w.reply(0, 'one answer')
+  await drain()
+  assert.deepEqual(w.replies, [{
+    fromId: w.bot.id, toId: 'sender', text: 'one answer', role: 'reply', replyTo: 'duplicate',
+  }])
+  assert.equal(w.session.log.filter(e => e.type === 'turn/start').length, 1)
+  assert.equal(w.session.log.filter(e => e.type === 'turn/end').length, 1)
+})
+
 test('wait:true overrides joinedAsync and waits for the node result', async t => {
   const w = joinedWorld(t)
   let finished = false
