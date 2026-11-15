@@ -5,6 +5,18 @@ import { Context } from '@deepseek-ai/cordis'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { mirrorTurn } from '../src/host/mirror.js'
+import { Session } from '@deepseek-ai/dsh-session'
+
+test('a failed assistant write closes its open step before closing the mirror turn', async () => {
+  const session = new Session('mirror-failed-step')
+  const append = session.append.bind(session)
+  session.append = (type, ...args) => {
+    if (type === 'assistant/message') throw new Error('assistant write failed')
+    return append(type, ...args)
+  }
+  await assert.rejects(mirrorTurn(session, { userText: 'work', botText: 'result' }), /assistant write failed/)
+  assert.deepEqual(session.log.map(e => e.type), ['turn/start', 'step/start', 'user/message', 'step/end', 'turn/end'])
+})
 
 async function makeStoreSession(ctx, id) {
   const session = ctx.sessions.create(SessionId(id), { meta: { title: id } })

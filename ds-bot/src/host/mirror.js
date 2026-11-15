@@ -61,9 +61,9 @@ export async function mirrorTurn(session, opts = {}) {
 
   session.append('turn/start', { turn: turnInt })
 
+  let stepEnded = false
   try {
     session.append('step/start', { turn: turnInt, step })
-    let stepEnded = false
 
     const userMsg = createUserMessage({
       content: [{ type: 'text', text: String(userText ?? '') }],
@@ -374,7 +374,23 @@ export async function importHistory(session, items, opts = {}) {
 }
 
 
+const mirrorSessions = new WeakMap()
+
 export async function ensureMirrorSession(rt, bot) {
+  let pending = mirrorSessions.get(rt)
+  if (!pending) { pending = new Map(); mirrorSessions.set(rt, pending) }
+  if (pending.has(bot.id)) return pending.get(bot.id)
+  const job = createMirrorSession(rt, bot)
+  pending.set(bot.id, job)
+  try {
+    return await job
+  } finally {
+    if (pending.get(bot.id) === job) pending.delete(bot.id)
+  }
+}
+
+async function createMirrorSession(rt, bot) {
+  bot = rt.botOf?.(bot.id) ?? bot
   if (typeof bot?.sessionId === 'string' && bot.sessionId !== '') {
     try {
       const agent = await rt.resolveAgent(bot.sessionId)
@@ -395,17 +411,35 @@ export async function ensureMirrorSession(rt, bot) {
     throw Object.assign(new Error('mirror session creation returned no id'), { code: 'no-session' })
   }
 
-  const oldSessionId = typeof bot.sessionId === 'string' ? bot.sessionId : null
-  bot.sessionId = sessionId
-  rt.updateBySessionId?.(bot.id, oldSessionId, sessionId)
-  await rt.save?.()
-
-  // S2-3 will implement importHistory(session, items, opts) to pull node history.
-
+  let session
   try {
     const agent = await rt.resolveAgent(sessionId)
-    return agent.session
+    session = agent.session
+    if (!session) throw new Error('session unavailable')
   } catch (err) {
     throw Object.assign(new Error('mirror session resolve failed: ' + (err?.message ?? err)), { code: 'no-session' })
   }
+
+  // A roster report can replace the row while create/resolve is awaited. Publish to
+  // the current row, and never bring back a Bot deleted while its page was opening.
+  const current = typeof rt.botOf === 'function' ? rt.botOf(bot.id) : bot
+  if (!current) throw Object.assign(new Error('mirror Bot was removed'), { code: 'no-session' })
+  if (typeof current.sessionId === 'string' && current.sessionId !== '') {
+    return (await rt.resolveAgent(current.sessionId)).session
+  }
+  const oldSessionId = current.sessionId
+  current.sessionId = sessionId
+  rt.updateBySessionId?.(current.id, oldSessionId, sessionId)
+  try {
+    await rt.save?.()
+  } catch (err) {
+    const latest = rt.botOf?.(current.id) ?? current
+    if (latest.sessionId === sessionId) {
+      if (oldSessionId === undefined) delete latest.sessionId
+      else latest.sessionId = oldSessionId
+      rt.updateBySessionId?.(latest.id, sessionId, oldSessionId)
+    }
+    throw err
+  }
+  return session
 }
