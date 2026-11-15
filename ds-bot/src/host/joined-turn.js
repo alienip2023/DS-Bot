@@ -351,7 +351,9 @@ function findLocal(rt, remoteBotId) {
   return Object.values(bots).find((bot) => bot && bot.id === remoteBotId)
 }
 
-export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS } = {}) {
+// The hub's first deadline only marks progress. Keep the node's result slot alive through
+// its late window as well, otherwise the node itself would discard the eventual answer.
+export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS + JOINED_LATE_WINDOW_MS } = {}) {
   const pending = new Map()
   rt.settleJoinedTurn = (exchangeId, text, error) => {
     const waiter = pending.get(exchangeId)

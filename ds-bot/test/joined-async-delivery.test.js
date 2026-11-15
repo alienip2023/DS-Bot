@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import { Session } from '@deepseek-ai/dsh-session'
 import { install as installDelivery } from '../src/host/delivery.js'
 import { install as installQueue } from '../src/host/thread-queue.js'
-import { handleJoinedTurn, BRIDGE_DOWN_TEXT } from '../src/host/joined-turn.js'
+import { handleJoinedTurn, createBotTurnReceiver, BRIDGE_DOWN_TEXT, JOINED_TURN_TIMEOUT_MS } from '../src/host/joined-turn.js'
 import { install as installWorkerBridge } from '../src/host/worker-bridge.js'
 import { fakeContext } from './fake-ctx.js'
 
@@ -135,33 +135,49 @@ test('nodeOffline after a deferred timeout reports a real bridge loss', async t 
 })
 
 for (const duringDispatch of [false, true]) {
-test(`worker returns on acceptance and delivers once (taskEnd during dispatch: ${duringDispatch})`, async t => {
-  const registry = new EventEmitter()
-  const replies = []
-  let dispatched
-  const tools = new Map([
-    ['remote_task', { execute: async args => {
-      dispatched = args
-      if (duringDispatch) registry.emit('taskEnd', { taskId: args.taskId, status: 'COMPLETED' })
-      return { value: { accepted: true } }
-    } }],
-    ['remote_status', { execute: async () => { throw new Error('event-driven task should not poll') } }],
-    ['remote_handoff', { execute: async () => ({ value: { text: 'worker answer' } }) }],
-  ])
-  const bot = { id: 'worker', name: 'Worker', type: 'remote-worker', worker: { nodeId: 'n1' } }
-  const rt = {
-    ctx: fakeContext({ services: { tools, 'remote-agent:registry': registry } }),
-    botOf: () => bot, deliver: async msg => replies.push(msg), warn() {},
-  }
-  installWorkerBridge(rt)
-  t.after(() => { if (dispatched) registry.emit('taskEnd', { ...dispatched, status: 'COMPLETED' }) })
-  const result = await within(rt.handleRemoteTurn({ fromId: 'sender', toId: 'worker', text: 'work', exchangeId: 'worker-ex', work: 'root' }), 100)
-  assert.equal(result, 'worker-ex')
-  if (!duringDispatch) assert.equal(replies.length, 0)
-  registry.emit('taskEnd', { taskId: dispatched.taskId, status: 'COMPLETED' })
-  registry.emit('taskEnd', { taskId: dispatched.taskId, status: 'COMPLETED' })
-  await drain()
-  assert.deepEqual(replies, [{ fromId: 'worker', toId: 'sender', text: 'worker answer', role: 'reply', replyTo: 'worker-ex', work: 'root' }])
-  assert.equal(registry.listenerCount('taskEnd'), 0)
-})
+  test(`worker returns on acceptance and delivers once (taskEnd during dispatch: ${duringDispatch})`, async t => {
+    const registry = new EventEmitter()
+    const replies = []
+    let dispatched
+    const tools = new Map([
+      ['remote_task', { execute: async args => {
+        dispatched = args
+        if (duringDispatch) registry.emit('taskEnd', { taskId: args.taskId, status: 'COMPLETED' })
+        return { value: { accepted: true } }
+      } }],
+      ['remote_status', { execute: async () => { throw new Error('event-driven task should not poll') } }],
+      ['remote_handoff', { execute: async () => ({ value: { text: 'worker answer' } }) }],
+    ])
+    const bot = { id: 'worker', name: 'Worker', type: 'remote-worker', worker: { nodeId: 'n1' } }
+    const rt = {
+      ctx: fakeContext({ services: { tools, 'remote-agent:registry': registry } }),
+      botOf: () => bot, deliver: async msg => replies.push(msg), warn() {},
+    }
+    installWorkerBridge(rt)
+    t.after(() => { if (dispatched) registry.emit('taskEnd', { ...dispatched, status: 'COMPLETED' }) })
+    const result = await within(rt.handleRemoteTurn({ fromId: 'sender', toId: 'worker', text: 'work', exchangeId: 'worker-ex', work: 'root' }), 100)
+    assert.equal(result, 'worker-ex')
+    if (!duringDispatch) assert.equal(replies.length, 0)
+    registry.emit('taskEnd', { taskId: dispatched.taskId, status: 'COMPLETED' })
+    registry.emit('taskEnd', { taskId: dispatched.taskId, status: 'COMPLETED' })
+    await drain()
+    assert.deepEqual(replies, [{ fromId: 'worker', toId: 'sender', text: 'worker answer', role: 'reply', replyTo: 'worker-ex', work: 'root' }])
+    assert.equal(registry.listenerCount('taskEnd'), 0)
+  })
 }
+
+test('the node receiver can return a real result after the hub soft timeout', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const bot = { id: 'local', sessionId: 'node-session' }
+  const rt = {
+    state: { bots: { local: bot } },
+    chatOf: () => bot.sessionId, sendUser: async () => {},
+  }
+  const accept = createBotTurnReceiver(rt)
+  const pending = accept({ remoteBotId: 'local', exchangeId: 'long-turn', text: 'long work' })
+  await drain()
+  t.mock.timers.tick(JOINED_TURN_TIMEOUT_MS + 1)
+  await drain()
+  assert.equal(rt.settleJoinedTurn('long-turn', 'long work finished'), true)
+  assert.deepEqual(await pending, { ok: true, exchangeId: 'long-turn', text: 'long work finished' })
+})
