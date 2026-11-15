@@ -152,7 +152,7 @@ nodeToken: <面板生成的口令>
 
 ### 2.3 节点拨主控
 
-面板上把主控生成的配对码 `dshra1://…` 整行贴进节点的「配对码」框，点写入，重启。这是最不容易抄错的办法。
+面板上把主控生成的配对码 `dshra1://…` 整行贴进节点的「配对码」框，点写入，重启。这是最不容易抄错的办法。配对码里带了主控当前的身份指纹。主控后来换过身份，旧码不能再用，要重新生成。
 
 手写的话，节点字段是：
 
@@ -538,6 +538,26 @@ journalctl -u dsh-worker.service --no-pager -n 50
 
 桌面版的日志不写死路径。macOS 常见位置是 `~/Library/Logs/DSH Desktop/harness.log`。Windows 和 Ubuntu 以 `dsh desktop user-data-dir` 的输出为准，日志通常在它旁边的 Logs 目录。日志里能看到连上中继或主控，并且没有反复重连，就通了。
 
+### 6.6 主机身份（三套方案都有）
+
+主控第一次启动会在自己的状态目录生成一把身份，文件名是 `hub-identity.json`。默认目录是用户主目录下的 `.dsh-remote-agent`。Windows 就是 `%USERPROFILE%\.dsh-remote-agent\hub-identity.json`。配了 `stateDir` 就以配置为准，以日志里的 `file` 为准，不要猜。
+
+节点第一次连上后，把这把身份的指纹钉在自己的 `~/.dsh-remote-agent/hub-pin.json`。之后主控必须用同一把身份证明自己。方案二、方案三还多一步：节点上线后 15 秒内要收到主控追发的身份帧。对不上，或者钉住了但帧没来，节点会停止重连，不会一直重试。
+
+主控日志里看这一行：
+
+```text
+hub identity ready
+```
+
+`created: false` 才是沿用原来那把。`created: true` 表示这次新生成的。文件坏了、丢了、写不进去，都会新生成。新生成之后，已经钉住旧指纹的节点会全部停掉。
+
+处理时只动节点，不要动主控那把身份：
+
+- 确认还是同一台主控：在每台节点删掉 `hub-pin.json`，重启节点。它会重新钉住现在这把。
+- 不要删主控的 `hub-identity.json`。删了会再换一把，所有节点又对不上。
+- 如果主控每次启动都是 `created: true`，文件没落住。先让这个文件能留下来，再去重钉节点。不然删 pin 只能撑到主控下一次重启。
+
 ---
 
 ## 7. 在主控上看到节点的 Bot
@@ -605,6 +625,6 @@ node -p "require('<插件目录>/node_modules/dsh-remote-agent/package.json').ve
 grep -c "roster/report" "<日志文件>"
 ```
 
-`healthz` 里 hub 是 0，问题在主控到中继这一段。hub 是 1 但 node 是 0，问题在节点到中继这一段。两边都是 1 但主控看不到 Bot，问题在上报，看第 4 条的计数。
+`healthz` 里 hub 是 0，问题在主控到中继这一段。hub 是 1 但 node 是 0，先看节点日志里有没有「hub 身份验证失败，已停止重连」。有，就是第 6.6 节，不是端口没开。没有这句，才是节点到中继这一段没通。两边都是 1 但主控看不到 Bot，问题在上报，看第 4 条的计数。
 
 Tailscale、Headscale 不是这三套的组成部分。主控和节点要么同网直连，要么主动连 VPS。已经装了可以留着，没装不用装。
