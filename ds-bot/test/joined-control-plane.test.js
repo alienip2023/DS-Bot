@@ -188,7 +188,7 @@ test('stop_bot settles the exchange still in flight, and a late nodeOffline writ
   // The shadow has no mirror session yet, and this fixture's createSession only resolves
   // once something asks for it. Without that, the dispatch waits forever before the frame.
   const mirrorReady = w.rt.createSession(REMOTE + ' (mirror)')
-  const inflight = w.rt.deliver({ fromId: 'a', toId: REMOTE, text: 'keep going', role: 'request' })
+  const inflight = w.rt.deliver({ fromId: 'a', toId: REMOTE, text: 'keep going', role: 'request', wait: true })
   await mirrorReady
   await settle(40)
   const turn = w.frames.find(f => f.type === 'bot/turn')
@@ -236,7 +236,7 @@ test('a turn opened after the stop still reports a real bridge-down', async (t) 
   const w = await start(team())
   t.after(w.stop)
   const mirrorReady = w.rt.createSession(REMOTE + ' (mirror)')
-  const first = w.rt.deliver({ fromId: 'a', toId: REMOTE, text: 'keep going', role: 'request' })
+  const first = w.rt.deliver({ fromId: 'a', toId: REMOTE, text: 'keep going', role: 'request', wait: true })
   await mirrorReady
   await settle(40)
 
@@ -250,7 +250,7 @@ test('a turn opened after the stop still reports a real bridge-down', async (t) 
   await first
 
   // The node is back and a new turn is in flight. Its drop is a real bridge-down, not the stop.
-  const again = w.rt.deliver({ fromId: 'a', toId: REMOTE, text: 'go again', role: 'request' })
+  const again = w.rt.deliver({ fromId: 'a', toId: REMOTE, text: 'go again', role: 'request', wait: true })
   await settle(40)
   const later = w.frames.filter(f => f.type === 'bot/turn').at(-1)
   assert.ok(later, 'the later turn reached the node')
