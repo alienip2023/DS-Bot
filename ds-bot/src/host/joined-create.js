@@ -1,7 +1,7 @@
 // Step 3: create a Bot on a remote node from the main controller.
 // No local session is created. No handleRemoteTurn, no mode:'agent', no task/start.
 import { randomUUID } from 'node:crypto'
-import { resolve as pathResolve, sep as pathSep } from 'node:path'
+import { isAbsolute, resolve as pathResolve, sep as pathSep } from 'node:path'
 import { ensureMainThread } from './bot-store.js'
 import { shadowId } from './roster-join.js'
 import { isInsideRoot } from './path-guard.js'
@@ -63,6 +63,8 @@ function listenBotCreateResult(registry, requestId, nodeId, timeoutMs) {
  */
 export function checkWorkDirRoots(rt, workDir) {
   if (workDir === null || workDir === undefined) return null
+  // The remote agent resolves relative workDirs against its own configured roots.
+  if (typeof workDir === 'string' && !isAbsolute(workDir)) return null
   let policy
   try { policy = rt.ctx?.get?.('remote-agent:node-policy') } catch { policy = undefined }
   if (!policy) return 'bot-create-workdir-denied'
