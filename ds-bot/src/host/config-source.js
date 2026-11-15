@@ -395,7 +395,7 @@ export function install(rt) {
     })().catch(err => rt.warn?.('ds-bot: model gateway start failed: %s', err?.message ?? err))
     return () => {
       const s = gwServer; gwServer = null
-      void s?.stop?.()
+      return s?.stop?.()
     }
   }, 'ds-bot: model gateway')
 

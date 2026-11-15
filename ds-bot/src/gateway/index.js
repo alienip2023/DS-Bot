@@ -17,13 +17,22 @@ export function createGatewayServer({ gatewayHost, gatewayPort, secrets, store, 
   const host = gatewayHost ?? DEFAULT_HOST
   const port = gatewayPort ?? DEFAULT_PORT
   let server = null
+  let starting = null
+  let generation = 0
+
+  const close = async s => {
+    s.closeAllConnections?.()
+    await new Promise(resolve => s.close(resolve))
+  }
 
   const auth = authMiddleware(secrets, store)
   const route = createRouter({ auth, providers, timeoutMs, bodyLimit })
 
   return {
     async start() {
+      if (starting !== null) return starting
       if (server !== null) return server.address()?.port ?? null
+      const startedAt = generation
       const s = createServer((req, res) => {
         req.on('error', () => res.destroy())
         res.on('error', () => req.destroy())
@@ -33,30 +42,38 @@ export function createGatewayServer({ gatewayHost, gatewayPort, secrets, store, 
           rt?.warn?.('ds-bot: gateway route error: %s', err?.message ?? err)
         })
       })
-      try {
-        await new Promise((resolve, reject) => {
-          s.once('error', reject)
-          s.listen(port, host, resolve)
-        })
-      } catch (err) {
-        if (err.code === 'EADDRINUSE') {
-          rt?.warn?.('ds-bot: gateway port %s:%s in use (EADDRINUSE) — gateway disabled', host, port)
+      starting = (async () => {
+        try {
+          await new Promise((resolve, reject) => {
+            s.once('error', reject)
+            s.listen(port, host, resolve)
+          })
+        } catch (err) {
+          if (err.code === 'EADDRINUSE') {
+            rt?.warn?.('ds-bot: gateway port %s:%s in use (EADDRINUSE) — gateway disabled', host, port)
+            return null
+          }
+          throw err
+        }
+        // A disposed runtime must never publish or leave behind a late listener.
+        if (startedAt !== generation) {
+          await close(s)
           return null
         }
-        throw err
-      }
-      server = s
-      const actualPort = s.address().port
-      try { rt?.ctx?.provide?.('ds-bot:gateway-port', actualPort) } catch {}
-      return actualPort
+        server = s
+        const actualPort = s.address().port
+        try { rt?.ctx?.provide?.('ds-bot:gateway-port', actualPort) } catch {}
+        return actualPort
+      })().finally(() => { starting = null })
+      return starting
     },
     async stop() {
+      generation++
+      const pending = starting
       const s = server
       server = null
-      if (s) {
-        s.closeAllConnections?.()
-        await new Promise(resolve => s.close(resolve))
-      }
+      if (s) await close(s)
+      if (pending) await pending.catch(() => {})
     },
   }
 }
