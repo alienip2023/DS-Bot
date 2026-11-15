@@ -12,7 +12,6 @@
  */
 import { randomUUID } from 'node:crypto'
 import { checkWorkDirRoots, cleanMemory } from './joined-create.js'
-import { joinedShadow } from './roster-join.js'
 
 const JOINED_HISTORY_TIMEOUT_MS = 15_000
 
@@ -127,6 +126,7 @@ export function install(rt) {
 }
 // ── bot/update hub side ───────────────────────────────────────────────────────
 const BOT_UPDATE_TIMEOUT_MS = 30000
+const PROFILE_FIELDS = ['name', 'role', 'color', 'avatar']
 
 function listenBotUpdateResult(registry, requestId, nodeId, timeoutMs) {
   let settled = false
@@ -185,12 +185,19 @@ export async function joinedUpdateBot(rt, botId, patch) {
   }
   const caps = Array.isArray(node.hello?.caps) ? node.hello.caps : (Array.isArray(node.caps) ? node.caps : [])
   const nodeTakesMemory = caps.includes('bot-memory-update/1')
+  const nodeTakesProfile = caps.includes('bot-profile-update/1')
+  const requestedProfile = PROFILE_FIELDS.some(key => patch[key] !== undefined
+    && (patch[key] !== null || key === 'color' || key === 'avatar'))
+  const sentProfile = requestedProfile && nodeTakesProfile
+  const sentMemory = requestedMemory !== null && nodeTakesMemory
   const otherPatch = ['model', 'effort', 'instructions', 'workDir']
     .some(key => patch[key] !== undefined && patch[key] !== null)
-  if (requestedMemory !== null && !nodeTakesMemory && !otherPatch) {
+  if (requestedProfile && !nodeTakesProfile && !otherPatch && !sentMemory) {
+    return { ok: false, error: 'bot-update-profile-unsupported' }
+  }
+  if (requestedMemory !== null && !nodeTakesMemory && !otherPatch && !sentProfile) {
     return { ok: false, error: 'bot-update-memory-unsupported' }
   }
-  const sentMemory = requestedMemory !== null && nodeTakesMemory
 
   const requestId = crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)
   const timeoutMs = rt.botUpdateTimeoutMs ?? BOT_UPDATE_TIMEOUT_MS
@@ -204,6 +211,14 @@ export async function joinedUpdateBot(rt, botId, patch) {
     workDir: patch.workDir ?? null,
   }
   if (sentMemory) frame.memoryConfig = requestedMemory
+  if (sentProfile) {
+    for (const key of PROFILE_FIELDS) {
+      if (patch[key] !== undefined && patch[key] !== null) frame[key] = patch[key]
+    }
+    // null is a no-op in bot/update. These values carry the UI's explicit Reset.
+    if (patch.color === null) frame.color = ''
+    if (patch.avatar === null) frame.avatar = {}
+  }
   let sent
   try {
     sent = registry.send(nodeId, 'bot/update', frame)
@@ -227,6 +242,17 @@ export async function joinedUpdateBot(rt, botId, patch) {
     bot.appliedModel = result.model
   }
   if (result.effort !== undefined) bot.effort = result.effort
+  const appliedProfile = {}
+  if (sentProfile) {
+    for (const key of PROFILE_FIELDS) {
+      if (result[key] === undefined) continue
+      if (result[key] === null) {
+        if (key !== 'color' && key !== 'avatar') continue
+        delete bot[key]
+      } else bot[key] = result[key]
+      appliedProfile[key] = result[key]
+    }
+  }
   // Only trust the backend the node applied: it validates the enum on its own side, so
   // the shadow row must show what the Bot row there now says, not what we asked for.
   if (sentMemory) {
@@ -240,6 +266,7 @@ export async function joinedUpdateBot(rt, botId, patch) {
   return {
     ok: true, model: result.model, effort: result.effort,
     instructions: result.instructions, workDir: result.workDir,
+    ...appliedProfile,
     ...(sentMemory ? { memoryConfig: bot.memoryConfig ?? null } : {}),
   }
 }
@@ -300,6 +327,10 @@ export function createBotUpdateReceiver(rt) {
       if (spec.instructions !== null) patch.instructions = spec.instructions
       if (spec.workDir !== null) patch.workDir = spec.workDir
       if (memoryConfig !== null) patch.memoryConfig = { backend: memoryConfig.backend.trim() }
+      for (const key of PROFILE_FIELDS) {
+        if (spec[key] !== undefined && spec[key] !== null) patch[key] = spec[key]
+      }
+      if (spec.color === '') patch.color = null
       // The hub is the one writer allowed to change a managed Bot's model and level.
       const bot = await rt.updateBot(remoteBotId, patch, undefined, undefined, { allowManagedModel: true })
       if (!bot) return { ok: false, error: 'bot-update-not-found' }
@@ -310,6 +341,10 @@ export function createBotUpdateReceiver(rt) {
         instructions: bot.instructions ?? null,
         workDir: bot.workDir ?? null,
         memoryConfig: bot.memoryConfig?.backend ? { backend: bot.memoryConfig.backend } : null,
+        name: bot.name ?? null,
+        role: bot.role ?? '',
+        color: bot.color ?? null,
+        avatar: bot.avatar ?? null,
       }
     } catch (err) {
       return { ok: false, error: 'bot-update-failed: ' + (err?.message ?? String(err)) }
