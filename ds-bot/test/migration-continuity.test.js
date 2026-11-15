@@ -319,3 +319,19 @@ test('history is flushed before publishing its mirror Session and checkpoint', a
   assert.equal(w.bot.sessionId, null)
   assert.equal(w.bot.mirrorHistory, undefined)
 })
+
+test('an incremental flush finishing after a Session switch never restores the old page', async t => {
+  const w = world(t)
+  await migrateLegacyJoined(w.rt)
+  const originalId = w.bot.sessionId
+  w.rt.joinedChatPage = async () => ({ items: [...pair('part-a'), ...pair('part-b')], cursor: null })
+  w.rt.ctx.sessions = { flush: async () => {
+    w.rt.botOf(w.bot.id).sessionId = 'new-page-during-flush'
+    w.sessions.set('new-page-during-flush', new Session('new-page-during-flush'))
+  } }
+  const result = await migrateLegacyJoined(w.rt)
+  assert.equal(w.bot.sessionId, 'new-page-during-flush')
+  assert.deepEqual(result.skipped, [w.bot.id])
+  assert.equal(w.created.length, 1)
+  assert.equal(w.sessions.get(originalId).log.filter(event => event.type === 'assistant/message').length, 2)
+})

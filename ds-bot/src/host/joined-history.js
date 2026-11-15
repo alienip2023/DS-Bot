@@ -68,7 +68,7 @@ export async function syncJoinedHistory(rt, bot, items, originalSession, unchang
   await rt.ctx?.sessions?.flush?.(session)
   if (!oldSessionId && !unchanged()) return { skipped: true }
   bot = rt.botOf?.(bot.id) ?? rt.state.bots[bot.id]
-  if (!bot || opts.isActive?.() === false) return { skipped: true }
+  if (!bot || bot.sessionId !== oldSessionId || opts.isActive?.() === false) return { skipped: true }
   const previous = bot.mirrorHistory
   const parts = new Map()
   for (const event of session.log) {
