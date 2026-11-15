@@ -80,6 +80,62 @@ function makeRt(bots, { chatPageFn = null, chatPageItems = null, chatPageOffline
 }
 
 describe('migrateLegacyJoined', () => {
+  it('keeps text blocks in order across newest-page-first history pagination', async () => {
+    const bot = makeJoinedBot()
+    const { rt, sessions } = makeRt([bot], { chatPageFn: async (_id, cursor) => cursor ? {
+      items: [
+        { kind: 'user', text: 'question', turn: 1, seq: 1 },
+        { kind: 'bot', text: 'first block', turn: 1, seq: 2 },
+        { kind: 'bot', text: 'second block', turn: 1, seq: 2 },
+      ], cursor: null,
+    } : {
+      items: [{ kind: 'bot', text: 'third block', turn: 1, seq: 3 }], cursor: { part: 0, beforeSeq: 3 },
+    } })
+    const result = await migrateLegacyJoined(rt)
+    assert.equal(result.failed.length, 0)
+    const replies = sessions.get(bot.sessionId).session.log.filter(e => e.type === 'assistant/message')
+    assert.equal(replies[0].data.message.content[0].text, 'first block\nsecond block\nthird block')
+  })
+
+  it('does not replace a mirror opened while node history was loading', async () => {
+    const bot = makeJoinedBot()
+    const { rt, created } = makeRt([bot], { chatPageFn: async () => {
+      bot.sessionId = 'page-opened-during-fetch'
+      return { items: DEFAULT_ITEMS, cursor: null }
+    } })
+    const result = await migrateLegacyJoined(rt)
+    assert.equal(bot.sessionId, 'page-opened-during-fetch')
+    assert.equal(created.length, 0)
+    assert.deepEqual(result.skipped, [bot.id])
+  })
+
+  it('does not publish a migration into a row replaced by a roster refresh', async () => {
+    const bot = makeJoinedBot()
+    const { rt, sessions } = makeRt([bot], { chatPageFn: async () => {
+      rt.state.bots[bot.id] = { ...bot, worker: { ...bot.worker } }
+      return { items: DEFAULT_ITEMS, cursor: null }
+    } })
+    const result = await migrateLegacyJoined(rt)
+    assert.equal(result.migrated.length, 1)
+    const current = rt.botOf(bot.id)
+    assert.ok(sessions.has(current.sessionId))
+    assert.equal(current.mirrorWatermark, 4)
+  })
+
+  it('keeps a mirror that received new events while node history was loading', async () => {
+    const bot = makeJoinedBot({ sessionId: 'live-mirror' })
+    const live = new Session('live-mirror')
+    const { rt, sessions, created } = makeRt([bot], { chatPageFn: async () => {
+      live.append('turn/start', { turn: 1 })
+      return { items: DEFAULT_ITEMS, cursor: null }
+    } })
+    sessions.set('live-mirror', { session: live })
+    const result = await migrateLegacyJoined(rt)
+    assert.equal(bot.sessionId, 'live-mirror')
+    assert.equal(created.length, 0)
+    assert.deepEqual(result.skipped, [bot.id])
+  })
+
   it('S23-migrate-basic: rebuilds session from node history, old id in legacyMirrorSessionId', async () => {
     const bot = makeJoinedBot({ sessionId: 'old-sid-xyz', mirrorWatermark: 0 })
     const { rt, created, sessions } = makeRt([bot])

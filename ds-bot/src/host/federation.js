@@ -24,7 +24,8 @@ const PEER_CAP = 'peer/v1'
 const DEBOUNCE_MS = 1000
 
 const timers = new WeakMap()
-const subscribed = new WeakSet()
+const subscriptions = new WeakMap()
+const closed = new WeakSet()
 
 export function emptyFederation() {
   return {
@@ -218,13 +219,19 @@ function onlinePeerNodes(rt) {
 
 export function ensureRegistrySubscription(rt) {
   const registry = registryOf(rt)
-  if (!registry || typeof registry.on !== 'function' || subscribed.has(registry)) return registry
-  subscribed.add(registry)
+  if (closed.has(rt)) return registry
+  const previous = subscriptions.get(rt)
+  if (previous?.registry === registry) return registry
+  previous?.registry.off?.('roster', previous.onRoster)
+  subscriptions.delete(rt)
+  if (!registry || typeof registry.on !== 'function') return registry
   try {
-    registry.on('roster', (info) => {
+    const onRoster = (info) => {
       // The node has new local Bots: answer with ours, once, after the burst settles.
       if (peerLevelOf(rt.state) !== 'off') markPeerRosterDirty(rt, info?.nodeId)
-    })
+    }
+    registry.on('roster', onRoster)
+    subscriptions.set(rt, { registry, onRoster })
   } catch {
     /* a registry without events can still be pushed to directly */
   }
@@ -240,6 +247,7 @@ function ensureHubId(rt) {
 }
 
 export async function pushPeerRoster(rt, nodeId) {
+  if (closed.has(rt)) return false
   if (typeof nodeId !== 'string' || nodeId === '') return false
   const state = rt.state
   const fed = state.federation ?? (state.federation = emptyFederation())
@@ -276,6 +284,7 @@ export async function pushPeerRoster(rt, nodeId) {
 // Local Bots changed: push once after the burst, to the node that reported, or to every
 // node that announced peer/v1 when the change is local.
 export function markPeerRosterDirty(rt, nodeId) {
+  if (closed.has(rt)) return
   if (peerLevelOf(rt.state) === 'off') return
   let map = timers.get(rt)
   if (map === undefined) {
@@ -447,6 +456,14 @@ export function federationView(rt) {
 
 export function install(rt) {
   ensureRegistrySubscription(rt)
+  rt.ctx?.effect?.(() => () => {
+    closed.add(rt)
+    const subscription = subscriptions.get(rt)
+    subscription?.registry.off?.('roster', subscription.onRoster)
+    subscriptions.delete(rt)
+    for (const timer of timers.get(rt)?.values() ?? []) clearTimeout(timer)
+    timers.delete(rt)
+  }, 'ds-bot: peer roster')
   try {
     rt.ctx?.provide?.('remote-agent:peer-roster', {
       onRoster: (data) => {

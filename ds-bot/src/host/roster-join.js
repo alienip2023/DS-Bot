@@ -1,6 +1,7 @@
 // Step 1: a remote DS-Bot roster becomes shadow rows in the controller sidebar.
 // No turn is started here, and no local session is created.
 import { ensureMainThread } from './bot-store.js'
+import { mirrorTurnOpen } from './joined-mirror-writer.js'
 
 export function joinedShadow(bot) {
   return Boolean(bot && bot.origin === 'joined' && bot.worker && bot.worker.home === 'remote')
@@ -147,10 +148,22 @@ export async function migrateLegacyJoined(rt, opts = {}) {
     }
   }
 
-  for (const bot of bots) {
+  for (let bot of bots) {
     try {
+      const initialSessionId = bot.sessionId
+      const originalSession = initialSessionId ? (await rt.resolveAgent(initialSessionId).catch(() => undefined))?.session : undefined
+      const initialSeq = originalSession?.seq
+      const initialLength = originalSession?.log?.length
+      const unchanged = () => {
+        const current = rt.botOf?.(bot.id) ?? rt.state.bots[bot.id]
+        return current && current.sessionId === initialSessionId
+          && originalSession?.seq === initialSeq && originalSession?.log?.length === initialLength
+          && !rt.joinedInFlight?.has(bot.id) && !mirrorTurnOpen(rt, bot.id)
+          && opts.isActive?.() !== false
+      }
       // Fetch all history from node, paginating to cursor=null
       const allItems = []
+      const pages = []
       let cursor = undefined
       let offlineDetected = false
 
@@ -163,9 +176,12 @@ export async function migrateLegacyJoined(rt, opts = {}) {
           break
         }
         allItems.push(...items)
+        pages.push(items)
         // ?? null ensures undefined cursor stops the loop (undefined != null is true without this)
         cursor = page?.cursor ?? null
       } while (cursor != null)
+
+      if (!unchanged()) { skipped.push(bot.id); continue }
 
       if (offlineDetected) {
         const msg = 'node offline or history unavailable'
@@ -176,8 +192,8 @@ export async function migrateLegacyJoined(rt, opts = {}) {
       }
 
       // Group items by turn into {userText, botText, turn, seq} pairs
-      // allItems is newest-first (pagination order) — reverse to get time-ascending order
-      const orderedItems = [...allItems].reverse()
+      // Pages arrive newest first, but each page's text blocks are chronological.
+      const orderedItems = pages.reverse().flat()
       const byTurn = new Map()
       let maxSeq = 0
       for (const item of orderedItems) {
@@ -263,6 +279,10 @@ export async function migrateLegacyJoined(rt, opts = {}) {
         continue
       }
 
+      // Creation and import also await: a live page or a roster report may have
+      // moved on meanwhile. Never replace that conversation with this snapshot.
+      if (!unchanged()) { skipped.push(bot.id); continue }
+      bot = rt.botOf?.(bot.id) ?? rt.state.bots[bot.id]
       // Update bot state, then save — rollback all fields if save fails
       const prevSessionId = bot.sessionId
       const prevLegacyMirrorSessionId = bot.legacyMirrorSessionId
@@ -301,12 +321,18 @@ export async function migrateLegacyJoined(rt, opts = {}) {
 export function install(rt) {
   const ctx = rt.ctx
   let _migrated = false
+  let stopped = false
+  let attached
+  let migrateTimer
   const onRoster = (report) => {
+    if (stopped) return
     applyRosterReport(rt.state, report)
     void rt.save?.()
     if (!_migrated) {
       _migrated = true
-      setTimeout(() => void migrateLegacyJoined(rt).catch(err => rt.warn?.('ds-bot: auto-migrate failed: %s', err?.message ?? err)), 0)
+      migrateTimer = setTimeout(() => {
+        if (!stopped) void migrateLegacyJoined(rt, { isActive: () => !stopped }).catch(err => rt.warn?.('ds-bot: auto-migrate failed: %s', err?.message ?? err))
+      }, 0)
     }
   }
   const onOffline = ({ nodeId } = {}) => {
@@ -317,8 +343,12 @@ export function install(rt) {
   const attach = () => {
     let registry
     try { registry = ctx?.get?.('remote-agent:registry') } catch { registry = undefined }
-    if (!registry || typeof registry.on !== 'function' || registry.__rosterJoin === true) return
-    registry.__rosterJoin = true
+    if (registry === attached) return
+    attached?.off?.('roster', onRoster)
+    attached?.off?.('nodeOffline', onOffline)
+    attached = undefined
+    if (!registry || typeof registry.on !== 'function') return
+    attached = registry
     registry.on('roster', onRoster)
     registry.on('nodeOffline', onOffline)
   }
@@ -332,4 +362,12 @@ export function install(rt) {
   publish()
   const timer = setInterval(() => { attach(); publish() }, 5_000)
   timer.unref?.()
+  ctx?.effect?.(() => () => {
+    stopped = true
+    clearInterval(timer)
+    clearTimeout(migrateTimer)
+    attached?.off?.('roster', onRoster)
+    attached?.off?.('nodeOffline', onOffline)
+    attached = undefined
+  }, 'ds-bot: joined roster')
 }
