@@ -28,6 +28,13 @@ export function indexRoster(value) {
   for (const bot of value.bots) {
     for (const id of [...(bot.parts ?? []), bot.sessionId ?? bot.id, bot.id]) byId[id] = bot
   }
+  // A background mirror rebuild leaves the old page open until the sidebar follows
+  // the Bot's new Session. It must remain a Bot page during that roster update.
+  for (const bot of value.bots) {
+    const legacy = bot.legacyMirrorSessionId
+    if (bot.origin === 'joined' && bot.worker?.home === 'remote'
+      && typeof legacy === 'string' && legacy !== '' && byId[legacy] === undefined) byId[legacy] = bot
+  }
   const roomsById = {}
   // A group's own Session is a chain of parts like a Bot's chat: `room.id` is its
   // first part's id and `sessionId` its current one; every part id finds the room.

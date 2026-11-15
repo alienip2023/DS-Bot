@@ -44,26 +44,29 @@ export function joinedModelView(bot, roster, nodeModels) {
 
 // The node's model list for a joined remote Bot: null until the host answers.
 export function useNodeModels(bot, actions) {
-  const [nodeModels, setNodeModels] = useState(null)
+  const [catalog, setCatalog] = useState(null)
   const nodeId = bot.worker?.nodeId
   const remote = isJoinedRemote(bot) && Boolean(nodeId)
+  const model = bot.model ?? bot.appliedModel
   useEffect(() => {
     if (!remote) return undefined
     let cancelled = false
     actions.botCreateTargets?.().then(res => {
       if (cancelled) return
       const node = pickTargets(res).find(target => target.nodeId === nodeId)
-      setNodeModels(Array.isArray(node?.models) ? node.models : [])
-    }).catch(() => { if (!cancelled) setNodeModels([]) })
+      setCatalog({ botId: bot.id, nodeId, model, models: Array.isArray(node?.models) ? node.models : [] })
+    }).catch(() => { if (!cancelled) setCatalog({ botId: bot.id, nodeId, model, models: [] }) })
     return () => { cancelled = true }
-  }, [bot.id, remote, nodeId])
-  return remote ? nodeModels : null
+  }, [bot.id, remote, nodeId, model])
+  // React keeps hook state when a drawer switches Bots. A previous node's list
+  // cannot establish availability for this Bot, or for a newly selected model.
+  return remote && catalog?.botId === bot.id && catalog.nodeId === nodeId && catalog.model === model ? catalog.models : null
 }
 
 // ModelMenu with the node's list. The hook-free half is separate so a test can hand it a list.
 export function NodeModelMenu({ bot, roster, actions, run, wide, nodeModels }) {
   const view = joinedModelView(bot, roster, nodeModels)
-  return h(ModelMenu, { bot, roster: view.roster, actions, run, wide, unavailable: view.unavailable, notice: view.notice })
+  return h(ModelMenu, { bot, roster: view.roster, actions, run, wide, unavailable: view.unavailable, notice: view.notice, availabilityKnown: !isJoinedRemote(bot) || (nodeModels?.length ?? 0) > 0 })
 }
 
 export function BotModelMenu({ bot, roster, actions, run, wide }) {

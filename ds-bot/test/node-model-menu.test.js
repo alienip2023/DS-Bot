@@ -18,6 +18,7 @@ const { outputFiles } = await build({
       "export { DetailsDrawer } from './src/client/details-drawer.js'",
       "export { BotSettingsForm } from './src/client/bot-settings.js'",
       "export { ModelMenu } from './src/client/model-menu.js'",
+      "export { ModelChoiceDock } from './src/client/model-menu.js'",
       "export { installLocale } from './src/client/i18n.js'",
     ].join('\n'),
     resolveDir: PLUGIN,
@@ -53,7 +54,7 @@ runInNewContext(outputFiles[0].text, {
   navigator: {},
   Element: class {},
 })
-const { DetailsDrawer, BotSettingsForm, ModelMenu, installLocale } = module.exports
+const { DetailsDrawer, BotSettingsForm, ModelMenu, ModelChoiceDock, installLocale } = module.exports
 
 const settle = () => new Promise(resolve => setTimeout(resolve, 5))
 // Render a component as a function; run its effects once, let the promises settle, render again.
@@ -205,6 +206,59 @@ test('M5-names: a Bot on a model the node has not synced shows it in the trigger
 test('M5-names-served: a model the node does serve keeps its node name in the trigger', async () => {
   const m = await openDrawerMenu(page({ bot: { model: 'ccmax/claude-sonnet-5-5' } }), 'bot-j1')
   assert.equal(m.triggerName, 'Claude Sonnet 5.5')
+})
+
+test('a remote model is not marked unavailable while its node catalog is loading or unknown', async () => {
+  const p = page({ bot: { model: 'node/only' } })
+  const { tree } = await render(DetailsDrawer, drawerProps(p, 'bot-j1'), { effects: false })
+  const [bm] = find(tree, n => n.type?.name === 'BotModelMenu')
+  const { tree: bmOut } = await render(bm.type, bm.props, { effects: false })
+  const [nm] = find(bmOut, n => n.type?.name === 'NodeModelMenu')
+  for (const nodeModels of [null, []]) {
+    const { tree: menu } = await render(nm.type, { ...nm.props, nodeModels }, { effects: false })
+    const { tree: trigger } = await render(menu.type, menu.props, { effects: false })
+    assert.doesNotMatch(textOf(trigger), /not available/)
+    assert.equal(find(trigger, n => n.props?.className === 'bt-model-trigger')[0].props['data-missing'], undefined)
+  }
+})
+
+test('a node-only model has no unavailable hint in Bot settings', async () => {
+  const p = page({ nodeModels: [{ ref: 'node/only', provider: 'node', id: 'only', name: 'Only' }], bot: { model: 'node/only' } })
+  const { tree } = await render(BotSettingsForm, { bot: p.bot('bot-j1'), roster: p.roster, actions: p.actions, run: x => x }, { effects: false })
+  assert.doesNotMatch(textOf(tree), /This model is not available now/)
+  const menu = await openDrawerMenu(p, 'bot-j1')
+  assert.equal(menu.triggerName, 'Only')
+  assert.doesNotMatch(menu.triggerProvider, /not available/)
+})
+
+test('the local model repair dock does not offer hub models for a working node-only model', async () => {
+  const p = page({ bot: { model: 'node/only', appliedModel: 'node/only' } })
+  const { tree } = await render(ModelChoiceDock, { sessionId: 'sess-mirror', useRoster: pick => pick(p.roster), actions: p.actions }, { effects: false })
+  assert.equal(tree, null)
+})
+
+test('switching node Bots does not render the previous node catalog while the next lookup is pending', async () => {
+  const p = page({ bot: { model: 'piion/m1' } })
+  const { tree } = await render(DetailsDrawer, drawerProps(p, 'bot-j1'), { effects: false })
+  const [bm] = find(tree, n => n.type?.name === 'BotModelMenu')
+  await render(bm.type, bm.props)
+  hooks.i = 0
+  hooks.effects = []
+  const next = bm.type({ ...bm.props, bot: { ...bm.props.bot, id: 'joined:n2:other', model: 'other/only', worker: { ...bm.props.bot.worker, nodeId: 'n2' } } })
+  const [menu] = find(next, n => n.type?.name === 'NodeModelMenu')
+  assert.equal(menu.props.nodeModels, null)
+})
+
+test('a changed model on the same node Bot rechecks its catalog instead of keeping the earlier model list', async () => {
+  const p = page({ bot: { model: 'piion/m1' } })
+  const { tree } = await render(DetailsDrawer, drawerProps(p, 'bot-j1'), { effects: false })
+  const [bm] = find(tree, n => n.type?.name === 'BotModelMenu')
+  await render(bm.type, bm.props)
+  hooks.i = 0
+  hooks.effects = []
+  const next = bm.type({ ...bm.props, bot: { ...bm.props.bot, model: 'node/new' } })
+  const [menu] = find(next, n => n.type?.name === 'NodeModelMenu')
+  assert.equal(menu.props.nodeModels, null)
 })
 
 test('M5-a2: picking a node model saves it (updateBot -> update-bot); a greyed-out row is disabled and saves nothing', async () => {

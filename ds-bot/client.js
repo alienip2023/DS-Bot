@@ -14350,6 +14350,10 @@ function indexRoster(value) {
   for (const bot of value.bots) {
     for (const id of [...bot.parts ?? [], bot.sessionId ?? bot.id, bot.id]) byId[id] = bot;
   }
+  for (const bot of value.bots) {
+    const legacy = bot.legacyMirrorSessionId;
+    if (bot.origin === "joined" && bot.worker?.home === "remote" && typeof legacy === "string" && legacy !== "" && byId[legacy] === void 0) byId[legacy] = bot;
+  }
   const roomsById = {};
   for (const room2 of value.rooms) {
     for (const id of [room2.id, room2.sessionId, ...room2.ownParts ?? []]) roomsById[id] = room2;
@@ -22248,7 +22252,7 @@ function useAgentModels(actions) {
   };
   return [reading, read];
 }
-function ModelMenu({ bot, roster, actions, run: run2, wide = false, onPick, onPickEffort, withEfforts = true, unavailable, notice }) {
+function ModelMenu({ bot, roster, actions, run: run2, wide = false, onPick, onPickEffort, withEfforts = true, unavailable, notice, availabilityKnown = true }) {
   const { isOpen, shownPlace, leaving, button, menu, open, close } = useAnchoredMenu();
   const [reading, readModels] = useAgentModels(actions);
   const shown = modelOf(bot, roster);
@@ -22279,6 +22283,7 @@ function ModelMenu({ bot, roster, actions, run: run2, wide = false, onPick, onPi
   const models = remote ? roster.models ?? [] : modelsFor(roster.models, current);
   const manage = local ? void 0 : manageModels(actions);
   const hasEfforts = withEfforts && effortStops(reasoning).length > 0;
+  const missing = availabilityKnown && shown !== void 0 && !shown.served && models.length > 0;
   return (0, import_react19.createElement)(
     import_react19.Fragment,
     null,
@@ -22292,14 +22297,14 @@ function ModelMenu({ bot, roster, actions, run: run2, wide = false, onPick, onPi
         "aria-haspopup": "menu",
         "aria-expanded": isOpen,
         "aria-label": t("Model: {model}", { model: shown?.name ?? t("none") }),
-        "data-missing": shown !== void 0 && !shown.served && models.length > 0 ? "" : void 0,
+        "data-missing": missing ? "" : void 0,
         onClick: toggle
       },
       (0, import_react19.createElement)(
         "span",
         { className: "bt-model-copy" },
         (0, import_react19.createElement)("span", { className: "bt-model-name" }, shown?.name ?? t("Choose a model")),
-        shown ? (0, import_react19.createElement)("span", { className: "bt-model-provider" }, shown.served || models.length === 0 ? !withEfforts || effortLabel === void 0 ? shown.provider : `${shown.provider} · ${effortLabel}` : t("{provider} · not available", { provider: shown.provider })) : null
+        shown ? (0, import_react19.createElement)("span", { className: "bt-model-provider" }, !missing ? !withEfforts || effortLabel === void 0 ? shown.provider : `${shown.provider} · ${effortLabel}` : t("{provider} · not available", { provider: shown.provider })) : null
       ),
       (0, import_react19.createElement)(Caret)
     ),
@@ -22334,7 +22339,7 @@ function ModelChoiceDock({ sessionId, useRoster, actions }) {
   (0, import_react19.useEffect)(() => {
     if (shown) void actions.refreshModels?.();
   }, [shown, sessionId]);
-  if (!bot || currentPart(bot) !== sessionId || !roster.ready) return null;
+  if (!bot || currentPart(bot) !== sessionId || !roster.ready || isJoinedRemote(bot)) return null;
   if (isLocalRoute(bot.model)) return null;
   const models = modelsFor(roster.models);
   const usable = models.filter((model) => !model.needsKey);
@@ -22581,28 +22586,29 @@ function joinedModelView(bot, roster, nodeModels) {
   };
 }
 function useNodeModels(bot, actions) {
-  const [nodeModels, setNodeModels] = (0, import_react20.useState)(null);
+  const [catalog, setCatalog] = (0, import_react20.useState)(null);
   const nodeId = bot.worker?.nodeId;
   const remote = isJoinedRemote(bot) && Boolean(nodeId);
+  const model = bot.model ?? bot.appliedModel;
   (0, import_react20.useEffect)(() => {
     if (!remote) return void 0;
     let cancelled = false;
     actions.botCreateTargets?.().then((res) => {
       if (cancelled) return;
       const node = pickTargets(res).find((target) => target.nodeId === nodeId);
-      setNodeModels(Array.isArray(node?.models) ? node.models : []);
+      setCatalog({ botId: bot.id, nodeId, model, models: Array.isArray(node?.models) ? node.models : [] });
     }).catch(() => {
-      if (!cancelled) setNodeModels([]);
+      if (!cancelled) setCatalog({ botId: bot.id, nodeId, model, models: [] });
     });
     return () => {
       cancelled = true;
     };
-  }, [bot.id, remote, nodeId]);
-  return remote ? nodeModels : null;
+  }, [bot.id, remote, nodeId, model]);
+  return remote && catalog?.botId === bot.id && catalog.nodeId === nodeId && catalog.model === model ? catalog.models : null;
 }
 function NodeModelMenu({ bot, roster, actions, run: run2, wide, nodeModels }) {
   const view = joinedModelView(bot, roster, nodeModels);
-  return (0, import_react20.createElement)(ModelMenu, { bot, roster: view.roster, actions, run: run2, wide, unavailable: view.unavailable, notice: view.notice });
+  return (0, import_react20.createElement)(ModelMenu, { bot, roster: view.roster, actions, run: run2, wide, unavailable: view.unavailable, notice: view.notice, availabilityKnown: !isJoinedRemote(bot) || (nodeModels?.length ?? 0) > 0 });
 }
 function BotModelMenu({ bot, roster, actions, run: run2, wide }) {
   return (0, import_react20.createElement)(NodeModelMenu, { bot, roster, actions, run: run2, wide, nodeModels: useNodeModels(bot, actions) });
@@ -24409,7 +24415,7 @@ function SwitchRow({ label, hint, on, disabled, onChange }) {
 function modelHint(bot, roster) {
   const shown = modelOf(bot, roster);
   if (shown === void 0) return t("Pick the model this Bot runs on.");
-  if (!shown.served && (roster.models ?? []).length > 0) return t("This model is not available now. Pick another one.");
+  if (!isJoinedRemote(bot) && !shown.served && (roster.models ?? []).length > 0) return t("This model is not available now. Pick another one.");
   if (bot.appliedModel && bot.appliedModel === bot.model) return t("Every message of this Bot runs on it.");
   return t("Applies from the next message.");
 }

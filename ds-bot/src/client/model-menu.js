@@ -356,7 +356,7 @@ export function useAgentModels(actions) {
 // levels of the shown model when it has them.
 // `onPick`/`onPickEffort` replace saving to the Bot, for a Bot that does not exist yet.
 // `withEfforts: false` keeps the Thinking section out, for a pick that has no level of its own.
-export function ModelMenu({ bot, roster, actions, run, wide = false, onPick, onPickEffort, withEfforts = true, unavailable, notice }) {
+export function ModelMenu({ bot, roster, actions, run, wide = false, onPick, onPickEffort, withEfforts = true, unavailable, notice, availabilityKnown = true }) {
   const { isOpen, shownPlace, leaving, button, menu, open, close } = useAnchoredMenu()
   const [reading, readModels] = useAgentModels(actions)
   const shown = modelOf(bot, roster)
@@ -392,15 +392,16 @@ export function ModelMenu({ bot, roster, actions, run, wide = false, onPick, onP
   const models = remote ? (roster.models ?? []) : modelsFor(roster.models, current)
   const manage = local ? undefined : manageModels(actions)
   const hasEfforts = withEfforts && effortStops(reasoning).length > 0
+  const missing = availabilityKnown && shown !== undefined && !shown.served && models.length > 0
   return h(Fragment, null,
     h('button', {
       ref: button, type: 'button', className: 'bt-model-trigger', 'data-wide': wide || undefined,
       'aria-haspopup': 'menu', 'aria-expanded': isOpen, 'aria-label': t('Model: {model}', { model: shown?.name ?? t('none') }),
-      'data-missing': shown !== undefined && !shown.served && models.length > 0 ? '' : undefined, onClick: toggle,
+      'data-missing': missing ? '' : undefined, onClick: toggle,
     },
     h('span', { className: 'bt-model-copy' },
       h('span', { className: 'bt-model-name' }, shown?.name ?? t('Choose a model')),
-      shown ? h('span', { className: 'bt-model-provider' }, shown.served || models.length === 0
+      shown ? h('span', { className: 'bt-model-provider' }, !missing
         ? (!withEfforts || effortLabel === undefined ? shown.provider : `${shown.provider} · ${effortLabel}`)
         : t('{provider} · not available', { provider: shown.provider })) : null),
     h(Caret)),
@@ -423,7 +424,7 @@ export function ModelChoiceDock({ sessionId, useRoster, actions }) {
   const [error, setError] = useState('')
   const shown = Boolean(bot) && currentPart(bot) === sessionId && roster.ready
   useEffect(() => { if (shown) void actions.refreshModels?.() }, [shown, sessionId])
-  if (!bot || currentPart(bot) !== sessionId || !roster.ready) return null
+  if (!bot || currentPart(bot) !== sessionId || !roster.ready || isJoinedRemote(bot)) return null
   // A local agent that is gone gets the repair card; picking a model here would change what it runs on.
   if (isLocalRoute(bot.model)) return null
   const models = modelsFor(roster.models)

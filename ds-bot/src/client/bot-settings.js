@@ -69,7 +69,7 @@ export function SwitchRow({ label, hint, on, disabled, onChange }) {
 function modelHint(bot, roster) {
   const shown = modelOf(bot, roster)
   if (shown === undefined) return t('Pick the model this Bot runs on.')
-  if (!shown.served && (roster.models ?? []).length > 0) return t('This model is not available now. Pick another one.')
+  if (!isJoinedRemote(bot) && !shown.served && (roster.models ?? []).length > 0) return t('This model is not available now. Pick another one.')
   if (bot.appliedModel && bot.appliedModel === bot.model) return t('Every message of this Bot runs on it.')
   return t('Applies from the next message.')
 }
