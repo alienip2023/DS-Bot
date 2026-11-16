@@ -7,6 +7,7 @@
 //   - Token minting: mintEnrollToken() calls /api/relay/token for new node enrollment.
 import { randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
+import { recordRemoteTask, settleRemoteTask } from './remote-tasks.js'
 
 export function perBotWorkDir(to) {
   if (to?.origin !== 'joined') return undefined
@@ -113,7 +114,7 @@ export function install(rt) {
       const status = s?.status
       if (status === 'COMPLETED' || status === 'FAILED' || status === 'ABORTED' ||
           status === 'INTERRUPTED' || status === 'REJECTED') {
-        return { status }
+        return { status, summary: s?.summary ?? s?.summaryText }
       }
     }
     return undefined  // timed out
@@ -162,9 +163,11 @@ export function install(rt) {
 
     const taskId = randomUUID()
     const nodeId = node.nodeId
+    recordRemoteTask(rt, { taskId, exchangeId, nodeId, fromId, toId, prompt: text })
     const controller = new AbortController()
     tasks.add(controller)
     const reportError = (error) => {
+      settleRemoteTask(rt, taskId, { status: 'failed', summary: error?.message ?? String(error) })
       rt.warn('ds-bot: worker-bridge: task failed for %s: %s', to.name, error)
       void rt.deliver?.({
         fromId: toId, toId: fromId ?? toId,
@@ -198,17 +201,23 @@ export function install(rt) {
 
     async function complete() {
       const result = await pending
-      if (controller.signal.aborted) return
+      if (controller.signal.aborted) {
+        settleRemoteTask(rt, taskId, { status: 'failed', summary: 'Task wait aborted' })
+        return
+      }
 
       let replyText
+      let summary = result?.summary
       if (result !== undefined) {
         const handoffResult = await tools.handoff.execute({ nodeId, taskId })
+        if (!handoffResult?.isError) summary ??= handoffResult?.value?.handoff?.summary ?? handoffResult?.value?.text
         replyText = handoffResult?.isError
           ? `[Task ${result.status.toLowerCase()}: ${result.summary ?? 'no summary'}]`
           : (handoffResult?.value?.text ?? `[Task ${result.status.toLowerCase()}]`)
       } else {
         replyText = `[Worker Bot ${to.name}: task timed out after ${Math.round(REMOTE_TASK_TIMEOUT_MS / 60000)} minutes]`
       }
+      settleRemoteTask(rt, taskId, { status: result?.status, summary: summary ?? replyText })
 
       // Update runtime state.
       if (to.worker) {

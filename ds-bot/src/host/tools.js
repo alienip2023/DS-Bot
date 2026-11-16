@@ -9,6 +9,7 @@ import { within } from './folders.js'
 import { absoluteLinks } from './links.js'
 import { NAME_MAX } from './requests.js'
 import { unquote } from './text.js'
+import { formatRemoteTask } from './remote-tasks.js'
 import { mentionSpans } from '../shared/mentions.js'
 import { checkShownView, showViewDescription, showViewParameters } from 'deep-view/core'
 
@@ -132,6 +133,19 @@ export function install(rt) {
         rooms.length === 0 ? 'Group chats: none you can see.' : 'Group chats:',
         ...rooms.map(room => roomLine(room, self)),
       ].join('\n')
+    },
+  }))
+
+  rt.teamTools.push(defineTool({
+    name: 'list_remote_tasks',
+    description: 'List remote tasks with their node, goal, elapsed time, status and result line count.',
+    parameters: {
+      limit: { type: 'integer', description: 'Maximum number of tasks to list (default 20)' },
+    },
+    output,
+    async execute({ limit = 20 }) {
+      const tasks = await rt.listRemoteTasks()
+      return tasks.slice(0, Math.max(1, limit)).map(task => formatRemoteTask(task)).join('\n') || 'No remote tasks.'
     },
   }))
 
