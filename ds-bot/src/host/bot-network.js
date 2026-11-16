@@ -100,7 +100,8 @@ export function install(rt) {
   else if (typeof ctx?.set === 'function') ctx.set('remote-agent:bot-message', receive)
 
   rt.botNetwork = serviceOf(rt, 'remote-agent:bot-network')
-  const offMessage = rt.botNetwork?.onMessage(async payload => {
+  const offMessage = typeof rt.botNetwork?.onMessage === 'function'
+    ? rt.botNetwork.onMessage(async payload => {
     if (stopped || payload.kind !== 'ask') return null
     await rt.load?.()
     const bot = Object.hasOwn(rt.state.bots, payload.to?.id) ? rt.state.bots[payload.to.id] : undefined
@@ -115,6 +116,7 @@ export function install(rt) {
     })
     return null
   })
+    : undefined
   attach()
   publish()
   const timer = setInterval(() => { attach(); pruneAsks(rt); publish() }, REFRESH_MS)

@@ -240,6 +240,21 @@ function nodeWorld(t, { sendResult = true } = {}) {
   return { ...w, network, sent, handlers, target, tool, exec }
 }
 
+test('install tolerates a network service without onMessage', t => {
+  const network = { nodeId: 'n1', directory: () => [], send: () => true }
+  const w = world(t, { network })
+  assert.doesNotThrow(() => install(w.rt))
+  assert.equal(w.rt.botNetwork, network)
+})
+
+test('install subscribes to onMessage once and unsubscribes on cleanup', async t => {
+  const w = nodeWorld(t)
+  assert.equal(w.handlers.size, 1)
+  const cleanup = await w.ctx.dispose()
+  assert.ok(cleanup.every(result => result.status === 'fulfilled'))
+  assert.equal(w.handlers.size, 0)
+})
+
 test('message_bot uses the live remote directory when the local lookup misses', async t => {
   const w = nodeWorld(t)
   assert.equal(w.rt.botNetwork, w.network)
