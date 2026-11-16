@@ -110,7 +110,7 @@ export async function mirrorTurn(session, opts = {}) {
 // ── Page-origin turn: the user's message lands first, the node's answer later ──
 //
 // mirrorTurn above writes a whole exchange after the node answered. A message typed on a
-// joined Bot's page must show at once and must end visibly when the node never answers, so
+// joined Bot's page must show at once and stay pending until a result, disconnect or Stop, so
 // the same events are written through three entry points (S2-4 contract). These and
 // mirrorTurn are the only writers; the caller allocates `turn` with allocateTurn() and
 // calls mirrorTurnStart with NO await in between (Session.append is synchronous, so two

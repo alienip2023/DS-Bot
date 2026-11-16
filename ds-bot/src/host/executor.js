@@ -12,8 +12,8 @@
 
 import { randomUUID } from 'node:crypto'
 import { joinedShadow } from './roster-join.js'
-import { listenBotTurnResult, JOINED_TURN_TIMEOUT_MS, JOINED_LATE_WINDOW_MS } from './joined-turn.js'
-import { mirrorTurn, allocateTurn, mirrorTurnStart, mirrorTurnFinish, mirrorTurnFail, mirrorTurnAbort, mirrorLateReply } from './mirror.js'
+import { listenBotTurnResult, JOINED_TURN_TIMEOUT_MS, JOINED_LATE_WINDOW_MS, PENDING_TURN_TEXT } from './joined-turn.js'
+import { mirrorTurn, allocateTurn, mirrorTurnStart, mirrorTurnFinish, mirrorTurnFail, mirrorTurnAbort, mirrorTurnPending, mirrorLateReply } from './mirror.js'
 import { drainJoinedMirror, mirrorTurnOpen } from './joined-mirror-writer.js'
 
 /**
@@ -75,7 +75,7 @@ function dispatchRemote(args) {
 // register the result listener. Its refusals throw before anything is sent; `send()` is the
 // one irreversible step (it throws E_OFFLINE when the node does not take the frame), and
 // `cancel()` drops the listener of a prepared turn that is never sent.
-function prepareRemote({ bot, text, rt, tracker, timeoutOverride }) {
+function prepareRemote({ bot, text, rt, tracker, timeoutOverride, lateWindowMs = 0, onTimeout }) {
   if (!bot.worker) {
     throw new ExecutorError('E_NOT_FOUND', 'joined shadow missing worker config')
   }
@@ -93,9 +93,10 @@ function prepareRemote({ bot, text, rt, tracker, timeoutOverride }) {
 
   const turnId = randomUUID()
   const timeoutMs = Number.isFinite(timeoutOverride) ? timeoutOverride : (rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS)
-  const { pending, cancel, received } = listenBotTurnResult(registry, turnId, nodeId, timeoutMs, remoteBotId)
+  const { pending, completion, cancel, received } = listenBotTurnResult(registry, turnId, nodeId, timeoutMs, remoteBotId, { lateWindowMs, onTimeout })
 
-  tracker?.start(turnId, bot.id)
+  // A page's deadline is progress only; the generic sweep must not invent a failure later.
+  tracker?.start(turnId, bot.id, lateWindowMs > 0 ? { timeoutMs: Infinity } : undefined)
 
   let sendCalled = false
   // The page's Stop: the wait ends without the failure bookkeeping a cancel() would do.
@@ -127,12 +128,15 @@ function prepareRemote({ bot, text, rt, tracker, timeoutOverride }) {
   const settle = async () => {
     let result
     try {
-      result = await pending
+      result = await (lateWindowMs > 0 ? completion : pending)
     } catch {
       tracker?.finish(turnId, { status: 'failed', error: 'E_OFFLINE' })
       throw new ExecutorError('E_OFFLINE', 'listener error')
     }
-    if (stopped) throw new ExecutorError('E_ABORTED', 'stopped waiting for the node')
+    if (stopped || (lateWindowMs > 0 && result?.error === 'stopped')) {
+      tracker?.finish(turnId, { status: 'failed', error: 'E_ABORTED' })
+      throw new ExecutorError('E_ABORTED', 'stopped waiting for the node')
+    }
 
     if (result === undefined) {
       tracker?.finish(turnId, { status: 'timeout', error: 'E_TIMEOUT' })
@@ -282,9 +286,9 @@ export function failureText(err) {
   return detail !== '' && detail !== code ? `${word}（${code}: ${detail}）` : `${word}（${code}）`
 }
 
-// ── A node answer that comes after the page turn already ended with E_TIMEOUT ──
+// ── A node answer that comes after the user stopped waiting on the page ──
 //
-// The turn was closed with "⚠ …E_TIMEOUT" and the in-flight claim released, but the node is
+// The turn was closed as aborted and the in-flight claim released, but the node is
 // still working and its bot/turn-result arrives later. It is written as a new turn
 // (mirrorLateReply). While another page turn of the same Bot is open the write waits: the new
 // turn's number comes from allocateTurn, which would close that open turn as aborted.
@@ -340,8 +344,9 @@ export function flushLateReplies(rt, botId) {
  *            node got is always a message the page shows (E_MIRROR_WRITE).
  *   Phase C  the frame goes to the node. A node that does not take it (offline) fails the
  *            turn on the page — "⚠ 无法送达节点：…" and a turn/end carrying the code — and
- *            `done` rejects. Otherwise `done` waits for the node, then writes Finish — or
- *            Fail on timeout / rejection.
+ *            `done` rejects. Otherwise a delivery receipt is written immediately, and `done`
+ *            waits in the background for Finish / rejection / disconnect / Stop. The soft
+ *            deadline only appends progress; it never closes the turn as failed.
  *
  * Returns { turn, turnId, done }. `done` resolves { ok, turnId, mirrorResult } and rejects
  * (the same ExecutorError) after a Fail was written; the in-flight claim is released when it
@@ -373,7 +378,11 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
 
   let prepared
   try {
-    prepared = prepareRemote({ bot, text, rt, tracker, timeoutOverride: timeoutMs })
+    const lateWindowMs = Number.isFinite(rt.joinedLateWindowMs) ? Math.max(1, rt.joinedLateWindowMs) : JOINED_LATE_WINDOW_MS
+    prepared = prepareRemote({
+      bot, text, rt, tracker, timeoutOverride: timeoutMs, lateWindowMs,
+      onTimeout: () => markPending(PENDING_TURN_TEXT),
+    })
   } catch (err) {
     release()
     throw err
@@ -393,6 +402,11 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
   rt.joinedRunning?.(bot, true)
 
   const fail = (err) => mirrorTurnFail(session, { turn, step, code: err?.code, message: failureText(err), closedTurns })
+  const markPending = text => {
+    try { mirrorTurnPending(session, { turn, step, text }) } catch (error) {
+      rt.warn?.('ds-bot: a pending page turn for %s was not marked: %s', bot.id, error?.message ?? error)
+    }
+  }
 
   // The page's Stop (stopPageTurn): the turn ends as aborted with a line saying so, the
   // in-flight claim is released so the next message can go out at once, and the node's answer
@@ -410,6 +424,9 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
     return true
   }
   claim.abort = abort
+  if (!rt.joinedLate) rt.joinedLate = new Set()
+  const dispose = () => abort()
+  rt.joinedLate.add(dispose)
 
   const done = (async () => {
     try {
@@ -420,23 +437,34 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
         fail(err)
         throw err
       }
+      markPending(`Delivered to ${bot.name ?? bot.id}; running…`)
       let result
       try {
         result = await prepared.settle()
       } catch (err) {
-        if (err?.code === 'E_ABORTED') return { ok: false, aborted: true, turnId: prepared.turnId }
+        if (err?.code === 'E_ABORTED') {
+          if (!over) { over = true; mirrorTurnAbort(session, { turn, step, closedTurns }) }
+          return { ok: false, aborted: true, turnId: prepared.turnId }
+        }
         over = true
         fail(err)
-        if (err?.code === 'E_TIMEOUT') armLateReply({ rt, bot, session, state, prepared })
         throw err
       }
       over = true
       const mirrorResult = mirrorTurnFinish(session, { turn, step, botText: result.text, botId: bot.id, nodeSeq: result.seq, seenKeys, closedKeys, seenSteps, closedTurns })
       return { ok: true, turnId: prepared.turnId, mirrorResult }
     } finally {
+      rt.joinedLate.delete(dispose)
       release()
     }
   })()
+  // Both sendUser and the desktop prompt acknowledge dispatch before a result arrives.
+  // Keep completion observed even when their callers no longer await it.
+  if (!rt.joinedPromptTasks) rt.joinedPromptTasks = new Set()
+  const task = done
+    .catch(error => { rt.warn?.('ds-bot: joined Bot %s turn failed: %s', bot.id, error?.message ?? error) })
+    .finally(() => { rt.joinedPromptTasks.delete(task) })
+  rt.joinedPromptTasks.add(task)
   return { turn, turnId: prepared.turnId, done }
 }
 

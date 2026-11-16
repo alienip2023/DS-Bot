@@ -8,6 +8,7 @@
  *   status: 'pending' | 'done' | 'failed' | 'timeout',
  *   error?: string,
  *   startedAt: number,
+ *   timeoutMs?: number,
  *   finishedAt?: number,
  * }} TurnEntry
  */
@@ -16,12 +17,13 @@ export function createTurnTracker() {
   /** @type {Map<string, TurnEntry>} */
   const turns = new Map()
 
-  function start(turnId, botId) {
+  function start(turnId, botId, { timeoutMs } = {}) {
     turns.set(turnId, {
       turnId,
       botId,
       status: 'pending',
       startedAt: Date.now(),
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
     })
   }
 
@@ -46,7 +48,7 @@ export function createTurnTracker() {
   function sweep(now = Date.now(), timeoutMs = 120_000) {
     const timedOut = []
     for (const [turnId, entry] of turns) {
-      if (entry.status === 'pending' && (now - entry.startedAt) >= timeoutMs) {
+      if (entry.status === 'pending' && (now - entry.startedAt) >= (entry.timeoutMs ?? timeoutMs)) {
         entry.status = 'timeout'
         entry.error = 'E_TIMEOUT'
         entry.finishedAt = now

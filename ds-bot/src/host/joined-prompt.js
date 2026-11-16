@@ -85,11 +85,11 @@ export function install(rt) {
   // new is armed afterwards: a page turn that ends later writes no late reply.
   ctx?.effect?.(() => () => {
     rt.joinedLateClosed = true
+    rt.joinedLateQueue?.clear()
+    // Stop active page waits only after deferred writes have been dropped.
+    dropJoinedMirrorQueues(rt)
     for (const dispose of rt.joinedLate ?? []) dispose()
     rt.joinedLate?.clear()
-    rt.joinedLateQueue?.clear()
-    // Buffered Bot-to-Bot page writes cannot be written after unload; warn and drop, never a half turn.
-    dropJoinedMirrorQueues(rt)
     delete rt.flushLateReplies
   }, 'ds-bot: joined late reply listeners')
   const controller = ctx?.sessionController
@@ -110,12 +110,11 @@ export function install(rt) {
     // with the same acknowledgement and never sent to the node twice.
     if (hasPromptRequest(session, request.requestId)) return { accepted: true }
 
-    let turn
     try {
       // A Bot-to-Bot exchange may be writing this Session right now; it finishes first, so the
       // page turn never takes a turn someone else has open.
       await waitForJoinedMirror(rt, bot.id, rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS)
-      turn = startPageTurn({
+      startPageTurn({
         rt, bot, text, requestId: request.requestId, session, state: mirrorStateOf(rt, bot.id, session),
         tracker: rt.turnTracker,
         timeoutMs: rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS,
@@ -125,10 +124,6 @@ export function install(rt) {
       throw await remoteError('session/agent-unavailable', `无法送达节点：${failureText(error)}`, { reason: `JOINED_NODE_${error?.code ?? 'ERROR'}` })
     }
     // The user's message is on the page; the node's answer (or the failure) follows there.
-    const task = turn.done
-      .catch((error) => { rt.warn?.('ds-bot: joined Bot %s turn failed: %s', bot.id, error?.message ?? error) })
-      .finally(() => { rt.joinedPromptTasks.delete(task) })
-    rt.joinedPromptTasks.add(task)
     return { accepted: true }
   }, 'ds-bot: joined Bot prompt takeover')
 }

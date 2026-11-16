@@ -19,7 +19,7 @@ import { validateViewAnswer } from 'deep-view/core'
 import { COLORS, EXTRA_COLORS, HISTORY_TIMEOUT_MS, ROUTE, THREAD_TITLE_MAX } from './constants.js'
 import { mainThreadId, ownerOfSession, threadOf, threadsOfBot } from './bot-store.js'
 import { joinedShadow } from './roster-join.js'
-import { ensureMirrorSession, mirrorStateOf } from './mirror.js'
+import { ensureMirrorSession, mirrorStateOf, hasPromptRequest } from './mirror.js'
 import { startPageTurn } from './executor.js'
 import { JOINED_TURN_TIMEOUT_MS } from './joined-turn.js'
 import { createTurnTracker } from './turn-tracker.js'
@@ -66,10 +66,8 @@ export function errorCode(error) {
 }
 
 /**
- * How old a still-pending turn must be before the tracker sweep calls it timed out: the page
- * turn's own wait (rt.joinedTurnTimeoutMs, default JOINED_TURN_TIMEOUT_MS) plus a minute. The
- * turn finishes itself at its timeout; the sweep is only the backstop, so it must not fire first
- * (a 120s sweep marked every long node turn "timeout" while it was still being waited for).
+ * The generic tracker backstop follows the joined foreground deadline plus a minute.
+ * Async page turns opt out through their own tracker timeout: a silent node is still running.
  */
 export function trackerSweepMs(rt) {
   return (rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS) + 60_000
@@ -93,15 +91,16 @@ export function createSendUser(rt, { textOfContent, getMirrorState, ctx } = {}) 
     if (joinedBot) {
       const text = _textOfContent(content)
       const session = await ensureMirrorSession(rt, joinedBot)
-      const ms = _getMirrorState(rt, joinedBot.id)
+      if (hasPromptRequest(session, requestId)) return { accepted: true }
+      const ms = _getMirrorState(rt, joinedBot.id, session)
       // One in-flight turn per Bot (the same table the page's prompt takeover uses); the
       // user's message is on the page before the node answers.
-      const { done } = startPageTurn({
+      startPageTurn({
         rt, bot: joinedBot, text, requestId, session, state: ms,
         tracker: rt.turnTracker,
         timeoutMs: rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS,
       })
-      return await done
+      return { accepted: true }
     }
     // Original path for non-joined
     const _ctx = ctx ?? rt.ctx

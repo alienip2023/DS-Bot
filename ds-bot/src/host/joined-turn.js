@@ -12,8 +12,8 @@ export const BRIDGE_DOWN_TEXT = '副机仍在执行，桥已断'
 // What the sender is told when its exchange was settled by a stop, not by the node going away.
 export const STOPPED_TEXT = '已停止'
 export const PENDING_TURN_TEXT = 'Node is still running; its result will be delivered later.'
-// The foreground result deadline. Bot-to-Bot deliveries keep the mirror turn open after it;
-// page turns use executor.js's separate late-reply writer.
+// The foreground result deadline. Both page and Bot-to-Bot turns stay open after it;
+// executor.js's separate late-reply writer handles results after the user presses Stop.
 export const JOINED_TURN_TIMEOUT_MS = 600_000
 // How long after a timeout a late bot/turn-result is still written into the mirror Session.
 export const JOINED_LATE_WINDOW_MS = 3_600_000
