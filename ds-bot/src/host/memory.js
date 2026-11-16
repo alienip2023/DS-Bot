@@ -32,6 +32,7 @@ import { basename, dirname, join } from 'node:path'
 import { HarnessError, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { MEMORY_BACKENDS } from './constants.js'
+import { openSessions } from './threads.js'
 import { replaceFile } from './files.js'
 import { assembleLlmStream } from './models.js'
 import { inside, pendingPath, read as readPending, record as pendingRecord, relativePath, serialize as serializePending } from './memory-pending.js'
@@ -745,7 +746,7 @@ export function install(rt) {
   // A deleted Bot's memory moves to the archive, whole.
   function archiveBotMemory(botId) {
     const bot = rt.botOf(botId)
-    for (const sessionId of [botId, rt.chatOf(botId), ...(bot?.segments ?? []).map(segment => segment.sessionId), ...rt.groupSessionsOf(botId)]) renewMemory(sessionId)
+    for (const sessionId of [botId, rt.chatOf(botId), ...(bot?.segments ?? []).map(segment => segment.sessionId), ...openSessions(bot), ...rt.groupSessionsOf(botId)]) renewMemory(sessionId)
     summaries.delete(botId)
     news.delete(botId)
     return queued(async () => {
@@ -1215,7 +1216,7 @@ export function install(rt) {
       const room = rt.roomOf(owner.roomId)
       return room === undefined ? 'group ?' : `group "${room.name}" #${room.seq}`
     }
-    const parts = rt.partsOf(rt.selfOf(sessionId))
+    const parts = rt.partsOfThread(rt.selfOf(sessionId), sessionId)
     const at = parts.findIndex(part => part.sessionId === sessionId)
     const number = at === -1 ? Math.max(parts.length, 1) : at + 1
     let seq
@@ -1611,7 +1612,8 @@ export function install(rt) {
   async function modelFor(bot) {
     const desired = await rt.desiredModel(bot)
     // A local agent CLI answers through its own subscription, not a model API:
-    // its memory reads the team's default model when one is set.
+    // its memory reads the team's default model when one is set, and the profile
+    // default when it is not, like any other Bot with no model of its own.
     const team = rt.isLocalAgentRef?.(state.prefs.defaultBotModel) === true ? undefined : state.prefs.defaultBotModel
     // A joined shadow keeps the node's model. The panel's summary runs on this machine,
     // which does not serve that ref, so it uses the team's default instead of failing
@@ -1620,7 +1622,7 @@ export function install(rt) {
     if (bot.origin === 'joined' && desired !== undefined) {
       try { served = (await rt.catalog?.())?.some(entry => entry.ref === desired) === true } catch { served = false }
     }
-    const ref = bot.origin === 'joined' && !served ? (team ?? await rt.defaultModel()) : rt.isLocalAgentRef?.(desired) === true ? (team ?? null) : desired ?? await rt.defaultModel()
+    const ref = bot.origin === 'joined' && !served ? (team ?? await rt.defaultModel()) : rt.isLocalAgentRef?.(desired) === true ? (team ?? await rt.defaultModel()) : desired ?? await rt.defaultModel()
     const route = ref === null ? undefined : splitRef(ref)
     if (route === undefined) throw new Error('No model is available. Add one in Settings > Models.')
     return route

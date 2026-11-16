@@ -4,6 +4,8 @@
 import { BlockAssembler, resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
 import { threadsOfBot } from './bot-store.js'
 import { normalize, splitRef } from './text.js'
+import { serviceOf } from './services.js'
+import { ownChatSessions } from './threads.js'
 
 // A failure the turn turns into a repair card keeps its code on the Error.
 // A code this module raises for a Bot the main created. It blocks the Bot, so the repair
@@ -24,7 +26,7 @@ const TRANSIENT_LLM_CODES = new Set(['TRANSPORT', 'TIMEOUT'])
 
 function retryPolicyOf(ctx, provider) {
   try {
-    const resolved = ctx.llm?.providerRetryPolicy?.(provider)
+    const resolved = serviceOf(ctx, 'llm')?.providerRetryPolicy?.(provider)
     if (resolved !== undefined) return resolved
   } catch {}
   return resolveRetryPolicy(undefined, 'ds-bot')
@@ -76,13 +78,15 @@ function canRetryPolicy(policy, code, retry) {
 // their transport or stream-idle failures. Retry those transient codes on the same
 // route with the provider's own retry policy, discarding partial chunks from failed attempts.
 export async function assembleLlmStream(ctx, options, { signal, backoff, random = Math.random } = {}) {
+  const service = serviceOf(ctx, 'llm')
+  if (service === undefined) throw Object.assign(new Error('DS Bot is shutting down'), { code: 'ABORTED', failure: { code: 'ABORTED', message: 'DS Bot is shutting down' } })
   const fused = options.signal && signal ? AbortSignal.any([options.signal, signal]) : (options.signal ?? signal)
   const request = fused === options.signal ? options : { ...options, signal: fused }
   for (let retry = 1; ; retry += 1) {
     const assembler = new BlockAssembler()
     let thrown
     try {
-      for await (const chunk of ctx.llm.stream(request)) assembler.push(chunk)
+      for await (const chunk of service.stream(request)) assembler.push(chunk)
     } catch (error) {
       thrown = error
     }
@@ -113,7 +117,10 @@ export async function assembleLlmStream(ctx, options, { signal, backoff, random 
 export function install(rt) {
   const { ctx, state } = rt
 
+  let closing = false
   let modelsSynced = null
+  // A model service that cannot be read means the host is going away.
+  const llm = () => closing ? undefined : serviceOf(ctx, 'llm')
   let catalogCache = { at: 0, value: [] }
   // Routes DSH serves that cannot answer a request at all — a hosted loop engine
   // publishes one so its Sessions can be prompted. Once one refuses with
@@ -124,7 +131,9 @@ export function install(rt) {
   // The models a ref's provider serves, as a string to compare; undefined when it
   // cannot be listed, e.g. the provider is not registered.
   async function servedModels(ref) {
-    try { return JSON.stringify(await ctx.llm.listModels(splitRef(ref).provider)) } catch { return undefined }
+    const service = llm()
+    if (service === undefined) return undefined
+    try { return JSON.stringify(await service.listModels(splitRef(ref).provider)) } catch { return undefined }
   }
   // An adapter update may have replaced a refused placeholder with a real route, which
   // serves other models; the same models again are the same route, still refused.
@@ -170,7 +179,9 @@ export function install(rt) {
     const cached = reasoningCache.get(ref)
     if (cached !== undefined && Date.now() - cached.at < CATALOG_TTL_MS) return cached.value
     const route = splitRef(ref)
-    const info = route === undefined ? undefined : await ctx.llm.resolveModelInfo?.(route.provider, route.model).catch(() => undefined)
+    const service = llm()
+    if (service === undefined) return undefined
+    const info = route === undefined ? undefined : await service.resolveModelInfo?.(route.provider, route.model).catch(() => undefined)
     const value = info?.reasoning === undefined ? undefined : {
       efforts: (info.reasoning.efforts ?? []).map(effort => ({ id: effort.id, name: effort.name ?? effort.id, ...(effort.description ? { description: effort.description } : {}) })),
       ...(info.reasoning.defaultEffort === undefined ? {} : { defaultEffort: info.reasoning.defaultEffort }),
@@ -184,10 +195,13 @@ export function install(rt) {
   // also carry their `reasoning`, so the picker can offer thinking levels.
   async function catalog({ fresh = false } = {}) {
     if (!fresh && Date.now() - catalogCache.at < CATALOG_TTL_MS && catalogCache.value.length > 0) return answerable(catalogCache.value)
+    // The host is gone: the last answer stands, and no service is read again.
+    const service = llm()
+    if (service === undefined) return answerable(catalogCache.value)
     const entries = []
-    for (const provider of ctx.llm.listProviders()) {
+    for (const provider of service.listProviders()) {
       let models = []
-      try { models = await ctx.llm.listModels(provider.id) } catch { continue }
+      try { models = await service.listModels(provider.id) } catch { continue }
       for (const model of models) {
         entries.push({
           ref: `${provider.id}/${model.id}`,
@@ -199,6 +213,9 @@ export function install(rt) {
         })
       }
     }
+    // The host was disposed while the models were listed: keep the answer, skip the
+    // work that would read other services.
+    if (llm() === undefined) return answerable(entries)
     // DSH serves a provider's models whether or not its key is set; without one, every
     // turn on them fails.
     const missing = await rt.missingKeys?.([...new Set(entries.map(entry => entry.provider))]) ?? new Set()
@@ -253,7 +270,9 @@ export function install(rt) {
   // a CLI. Its CLI is asked only when DS Bot does not know the model yet.
   async function resolveLocalModel(ref) {
     const { provider, model } = splitRef(ref)
-    const known = await ctx.llm.listModels(provider).catch(() => [])
+    const service = llm()
+    if (service === undefined) throw new Error('DS Bot is shutting down')
+    const known = await service.listModels(provider).catch(() => [])
     const served = known.some(entry => entry.id === model) ? known : await rt.localAgentModels(provider)
     if (served.some(entry => entry.id === model)) return ref
     throw new Error(`Model ${ref} is not available. Available models: ${served.map(entry => `${provider}/${entry.id}`).join(', ') || 'none'}`)
@@ -353,6 +372,7 @@ export function install(rt) {
   const sessionSelections = new Map()
   function selectSessionModel(sessionId, { provider, model, reasoningEffort }) {
     const run = selecting.then(async () => {
+      if (llm() === undefined) return
       const defaults = ctx.get?.('agentDefaultModel')
       const before = defaults?.currentSelection?.()
       const result = await ctx.sessionController.selectModel({
@@ -360,6 +380,7 @@ export function install(rt) {
         ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
       })
       const saved = result?.selected ?? { provider, model, ...(reasoningEffort === undefined ? {} : { reasoningEffort }) }
+      if (llm() === undefined) return result
       if (before?.provider && before?.model && !sameSelection(before, saved)) {
         await defaults.saveSelection(before).catch(error => rt.warn('ds-bot: the default model was not restored: %s', error))
       }
@@ -391,7 +412,7 @@ export function install(rt) {
   // `force` re-selects even when the record says it is applied: the composer's own
   // model picker can move the Session without telling this plugin.
   async function applyModel(bot, { force = false } = {}) {
-    if (isShadow(bot)) return undefined
+    if (llm() === undefined || isShadow(bot)) return undefined
     let ref
     let effort
     try {
@@ -409,9 +430,13 @@ export function install(rt) {
       delete bot.blocked
       await rt.save()
     }
+    if (llm() === undefined) return
     const ownChanged = force || bot.appliedModel !== ref || (bot.appliedEffort ?? undefined) !== effort
     const route = { ...splitRef(ref), ...(effort === undefined ? {} : { reasoningEffort: effort }) }
-    if (ownChanged) await selectSessionModel(rt.chatOf(bot.id), route)
+    // A Bot's model is the model of every part of its own chat, the background ones
+    // included: a part left on the old route would keep answering with the old model
+    // while the settings show the new one. A part that cannot take it fails the change.
+    if (ownChanged) for (const sessionId of ownChatSessions({ ...bot, sessionId: rt.chatOf(bot.id) })) await selectSessionModel(sessionId, route)
     for (const sessionId of rt.groupSessionsOf(bot.id)) {
       const applied = sessionSelections.get(sessionId)
       if (!force && applied !== undefined && sameSelection(applied, route)) continue
@@ -428,12 +453,41 @@ export function install(rt) {
       await selectSessionModel(thread.sessionId, route)
         .catch(error => rt.warn('ds-bot: model for %s in a Thread not applied: %s', bot.name, error))
     }
-    if (!ownChanged) return ref
+    if (llm() === undefined || !ownChanged) return ref
     bot.appliedModel = ref
     if (effort === undefined) delete bot.appliedEffort
     else bot.appliedEffort = effort
     await rt.save()
     return ref
+  }
+
+  // A group's own Session never asks the model (groups.js synthesizes its relay step),
+  // but DSH resolves the Session's selection before every step. One left on a model the
+  // provider no longer serves fails with UNKNOWN_MODEL whatever its members run on, so
+  // it is kept on the model new Bots start on. The record is by Session, so a part moved
+  // on to a fresh Session is selected again.
+  // The Sessions whose selection failed. The models may not change again, so the next
+  // sync tries them once more instead of waiting for a change that never comes.
+  const roomRetry = new Set()
+  async function selectRoomSession(sessionId) {
+    const ref = await defaultBotModel()
+    if (ref === undefined) return
+    const route = splitRef(ref)
+    const applied = sessionSelections.get(sessionId)
+    if (applied !== undefined && sameSelection(applied, route)) return
+    await selectSessionModel(sessionId, route).then(
+      () => { roomRetry.delete(sessionId) },
+      (error) => {
+        roomRetry.add(sessionId)
+        rt.warn('ds-bot: model for the group Session %s not applied: %s', sessionId, error)
+      },
+    )
+  }
+  async function syncRoomSessions() {
+    const current = new Set(Object.values(state.rooms ?? {}).map(room => rt.sessionOfRoom(room)))
+    // A deleted group, or one moved on to a fresh part, no longer needs its old Session.
+    for (const sessionId of roomRetry) if (!current.has(sessionId)) roomRetry.delete(sessionId)
+    for (const sessionId of current) await selectRoomSession(sessionId)
   }
 
   // A provider may register after the plugin starts; a greeting waits for its Bot's
@@ -444,6 +498,7 @@ export function install(rt) {
       if (!bot.model) return undefined
       catalogCache = { at: 0, value: [] }
       const served = new Set((await catalog()).map(entry => entry.ref))
+      if (llm() === undefined) return undefined
       if (served.has(bot.model) || Date.now() >= deadline) return desiredModel(bot)
       await new Promise((resolve) => {
         const timer = setTimeout(done, Math.min(2000, deadline - Date.now()))
@@ -459,14 +514,19 @@ export function install(rt) {
   const syncModels = () => {
     const key = answerable(catalogCache.value).map(entry => entry.ref).join(',')
     if (key !== syncedKey) { syncedKey = key; modelsSynced = modelsSynced?.then(syncAll, syncAll) ?? syncAll() }
+    else if (roomRetry.size > 0) modelsSynced = modelsSynced?.then(syncRooms, syncRooms) ?? syncRooms()
     return modelsSynced
   }
+  // Nothing awaits a sync (bootstrap starts one and drops the promise), so a failure
+  // here, such as a catalog that cannot be read, is logged; the retry record stays.
+  const syncRooms = () => syncRoomSessions().catch(error => rt.warn('ds-bot: models of the groups not applied: %s', error))
   async function syncAll() {
     for (const bot of Object.values(state.bots)) {
       // A peer or node row is a shadow of another machine's Bot: it has no Session here.
       if (isShadow(bot)) continue
       await applyModel(bot).catch(error => rt.warn('ds-bot: model for %s not applied: %s', bot.name, error))
     }
+    await syncRooms()
   }
 
   // A route that refused a request for not being a model endpoint: it stays out of
@@ -502,12 +562,14 @@ export function install(rt) {
   }
 
   const lifetime = new AbortController()
-  ctx.effect?.(() => () => { lifetime.abort() }, 'ds-bot: auxiliary llm retry')
+  ctx.effect?.(() => () => { closing = true; lifetime.abort() }, 'ds-bot: auxiliary llm retry')
   const assembleLlm = options => assembleLlmStream(ctx, options, { signal: lifetime.signal, backoff: rt.config?.llmRetryBackoff })
 
   Object.assign(rt, {
+    // Work that starts while the host runs can ask whether the host is still there.
+    hostClosing: () => llm() === undefined,
     catalog, cachedCatalog: () => answerable(catalogCache.value), cachedDefault: () => pickDefault(catalogCache.value),
     defaultRef, defaultModel, defaultBotModel, defaultEffort, isUsable, resolveModel, desiredModel, reasoningOf, resolveEffort, desiredEffort,
-    selectSessionModel, applyModel, applyThreadModel, waitForModel, syncModels, routeRefused, dropCatalog, assembleLlm,
+    selectSessionModel, applyModel, applyThreadModel, selectRoomSession, syncRoomSessions, waitForModel, syncModels, routeRefused, dropCatalog, assembleLlm,
   })
 }

@@ -9,7 +9,7 @@ import { build } from 'esbuild'
 // fork.64: the model picker of a remote (joined) Bot lists what its NODE can run. The REAL
 // DetailsDrawer is rendered with a small stateful React stand-in; the REAL BotModelMenu fetches
 // the node's catalog through the real teamActions (botCreateTargets -> call), the REAL ModelMenu
-// is opened (state slot seeded), and its rows are clicked.
+// opens through its trigger, and its rows are clicked.
 const PLUGIN = dirname(dirname(fileURLToPath(import.meta.url)))
 const { outputFiles } = await build({
   stdin: {
@@ -30,7 +30,7 @@ const react = {
   useCallback: fn => fn,
   useSyncExternalStore: (subscribe, getSnapshot) => getSnapshot(),
   createElement: (type, props, ...children) => ({ type, props: { ...props, children } }), Fragment: Symbol('Fragment'),
-  useEffect(fn) { hooks.effects.push(fn) }, useLayoutEffect() {},
+  useEffect(fn) { hooks.effects.push(fn) }, useLayoutEffect(fn) { (hooks.layouts ??= []).push(fn) },
   useState(initial) {
     const own = hooks // setters keep writing to the render they came from
     const i = own.i++
@@ -45,7 +45,7 @@ const module = { exports: {} }
 runInNewContext(outputFiles[0].text, {
   module, exports: module.exports,
   require: name => (name === 'react' ? react : name === 'react-dom' ? { createPortal: node => node } : {}),
-  window: { innerWidth: 1280, addEventListener() {}, removeEventListener() {} },
+  window: { innerWidth: 1280, innerHeight: 800, addEventListener() {}, removeEventListener() {} },
   document: { body: {} },
   navigator: {},
   Element: class {},
@@ -55,16 +55,21 @@ const { ModelMenu } = module.exports
 const settle = () => new Promise(resolve => setTimeout(resolve, 5))
 // Render a component as a function; run its effects once, let the promises settle, render again.
 async function render(Component, props, { seed = {}, effects = true } = {}) {
-  hooks = { i: 0, slots: {}, effects: [], seed, sets: [] }
-  Component(props)
+  const own = { i: 0, slots: {}, effects: [], layouts: [], seed, sets: [] }
+  const draw = () => {
+    hooks = own
+    hooks.i = 0
+    hooks.effects = []
+    hooks.layouts = []
+    const tree = Component(props)
+    return Component === ModelMenu && typeof tree?.type === 'function' ? tree.type(tree.props) : tree
+  }
+  draw()
   if (effects) {
     for (const effect of hooks.effects) effect()
     await settle()
   }
-  hooks.i = 0
-  hooks.effects = []
-  const tree = Component(props)
-  return { tree, sets: hooks.sets }
+  return { tree: draw(), sets: own.sets, rerender: draw }
 }
 const walk = (node, visit) => {
   if (Array.isArray(node)) { node.forEach(child => walk(child, visit)); return }
@@ -86,7 +91,6 @@ const expand = (node) => {
 const find = (tree, match) => { const hits = []; walk(tree, node => { if (match(node)) hits.push(node) }); return hits }
 
 
-const OPEN = { 1: { left: 0, width: 240, top: 0, maxHeight: 400 } }
 const NODE = [
   { ref: 'ccmax/claude-sonnet-5-5', provider: 'ccmax', name: 'Claude Sonnet 5.5' },
   { ref: 'claude-code/opus', provider: 'claude-code', name: 'Opus (old node name)' },
@@ -103,7 +107,16 @@ async function menuOf(bot, models, { open = true } = {}) {
   const calls = []
   const actions = { agentModels: async route => { calls.push(['agentModels', route]) }, refreshModels: async () => { calls.push(['refreshModels']) }, efforts: async () => ({}), updateBot: async () => ({}) }
   const roster = { models, ready: true, byId: {} }
-  const { tree } = await render(ModelMenu, { bot, roster, actions, run: fn => fn, unavailable: [], notice: null }, { effects: false, seed: open ? OPEN : {} })
+  const menu = await render(ModelMenu, { bot, roster, actions, run: fn => fn, unavailable: [], notice: null }, { effects: false })
+  let tree = menu.tree
+  if (open) {
+    const [trigger] = find(tree, n => n.props?.className === 'bt-model-trigger')
+    trigger.props.ref.current = { focus() {}, getBoundingClientRect: () => ({ top: 20, bottom: 40, right: 300, width: 240 }) }
+    trigger.props.onClick()
+    menu.rerender()
+    for (const layout of hooks.layouts) layout()
+    tree = menu.rerender()
+  }
   const items = find(expand(tree), n => n.type === 'button' && n.props.role === 'menuitemradio')
   return { picks: items.map(n => n.props.title), calls, tree }
 }

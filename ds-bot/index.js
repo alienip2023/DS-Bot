@@ -24,11 +24,14 @@ import * as chatIndex from './src/host/chat-index.js'
 import * as groups from './src/host/groups.js'
 import * as ledger from './src/host/ledger.js'
 import * as goals from './src/host/goals.js'
+import * as agentCommands from './src/host/agent-commands.js'
+import * as tasks from './src/host/tasks.js'
 import * as approvals from './src/host/approvals.js'
 import * as resume from './src/host/resume.js'
 import * as memory from './src/host/memory.js'
 import * as memoryFederation from './src/host/memory-federation.js'
 import * as parts from './src/host/parts.js'
+import * as changes from './src/host/changes.js'
 import * as images from './src/host/images.js'
 import * as avatarLibrary from './src/host/avatar-library.js'
 import * as browser from './src/host/browser.js'
@@ -55,6 +58,7 @@ import * as configSource from './src/host/config-source.js'
 import * as nodeConfig from './src/host/node-config.js'
 import * as joinedPage from './src/host/joined-page.js'
 import * as phone from './src/host/phone.js'
+import * as remote from './src/host/remote.js'
 import * as mobile from './src/host/mobile.js'
 import * as federation from './src/host/federation.js'
 import * as feed from './src/host/feed.js'
@@ -69,15 +73,14 @@ import * as botNetwork from './src/host/bot-network.js'
 
 export { COLORS } from './src/host/constants.js'
 
-export const name = 'ds-bot'
-export const inject = ['llm', 'tools', 'systemPrompt', 'sessionController', 'sessions', 'sessionTitle', 'workspaceRegistry', 'connection']
+export { name, inject } from './src/host/entry.js'
 
 // Each module's install(rt) registers its listeners, tools, and effects, and puts on `rt`
 // the functions other modules call; they call them through `rt` at run time, never during
 // install. Listeners run and tools are listed in registration order, so this order holds:
 // usage meters model requests after every listener that rewrites them. privacy checks a
 // call before the hooks of tools do, so a closed call never reaches a card they show.
-export const MODULES = [diagnostics, store, ledger, models, providers, permissions, turns, steer, handoffs, requests, delivery, remoteTasks, workerBridge, rosterJoin, roster, federation, folders, privacy, agents, prompt, timeContext, hostContext, tools, chatIndex, groups, goals, approvals, resume, memory, memoryFederation, parts, images, avatarLibrary, secrets, connectors, capabilities, learning, schedules, browser, browserPlugins, computer, usage, update, dshUpdate, thinking, threadQueue, mobile, feed, phone, im, channel, joinedTurn, joinedPrompt, threadPrompt, mirrorGuard, joinedCreate, configSource, nodeConfig, joinedPage, officeSkills, goalSkills, localAgents, botNetwork]
+export const MODULES = [diagnostics, store, ledger, models, providers, permissions, turns, steer, handoffs, requests, delivery, remoteTasks, workerBridge, rosterJoin, roster, federation, folders, privacy, agents, prompt, timeContext, hostContext, tools, chatIndex, groups, goals, agentCommands, tasks, approvals, resume, memory, memoryFederation, parts, changes, images, avatarLibrary, secrets, connectors, capabilities, learning, schedules, browser, browserPlugins, computer, usage, update, dshUpdate, thinking, threadQueue, mobile, feed, phone, im, channel, remote, joinedTurn, joinedPrompt, threadPrompt, mirrorGuard, joinedCreate, configSource, nodeConfig, joinedPage, officeSkills, goalSkills, localAgents, botNetwork]
 
 export function apply(ctx, config = {}) {
   createRuntime(ctx, config)

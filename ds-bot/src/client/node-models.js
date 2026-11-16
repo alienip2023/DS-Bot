@@ -67,11 +67,11 @@ export function useNodeModels(bot, actions) {
 }
 
 // ModelMenu with the node's list. The hook-free half is separate so a test can hand it a list.
-export function NodeModelMenu({ bot, roster, actions, run, wide, nodeModels }) {
+export function NodeModelMenu({ bot, roster, actions, run, wide, inline, nodeModels }) {
   const view = joinedModelView(bot, roster, nodeModels)
-  return h(ModelMenu, { bot, roster: view.roster, actions, run, wide, unavailable: view.unavailable, notice: view.notice, availabilityKnown: !isJoinedRemote(bot) || (nodeModels?.length ?? 0) > 0 })
+  return h(ModelMenu, { bot, roster: view.roster, actions, run, wide, inline, unavailable: view.unavailable, notice: view.notice, availabilityKnown: !isJoinedRemote(bot) || (nodeModels?.length ?? 0) > 0 })
 }
 
-export function BotModelMenu({ bot, roster, actions, run, wide }) {
-  return h(NodeModelMenu, { bot, roster, actions, run, wide, nodeModels: useNodeModels(bot, actions) })
+export function BotModelMenu({ bot, roster, actions, run, wide, inline }) {
+  return h(NodeModelMenu, { bot, roster, actions, run, wide, inline, nodeModels: useNodeModels(bot, actions) })
 }
