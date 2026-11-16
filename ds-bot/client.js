@@ -2529,6 +2529,7 @@ var KO = {
   "Beta": "베타",
   // Shared
   "Main Bot": "메인 Bot",
+  "Running on {host}": "{host}에서 실행 중",
   Working: "작업 중",
   "Waiting for your answer": "답변 대기 중",
   "Waiting for {names}": "{names} 응답 대기 중",
@@ -4953,6 +4954,7 @@ var ES = {
   "Beta": "Beta",
   // Shared
   "Main Bot": "Bot principal",
+  "Running on {host}": "Se ejecuta en {host}",
   Working: "En curso",
   "Waiting for your answer": "Esperando tu respuesta",
   "Waiting for {names}": "Esperando a {names}",
@@ -9756,6 +9758,7 @@ var DE = {
   "Beta": "Beta",
   // Shared
   "Main Bot": "Haupt-Bot",
+  "Running on {host}": "Läuft auf {host}",
   Working: "Arbeitet",
   "Waiting for your answer": "Wartet auf deine Antwort",
   "Waiting for {names}": "Wartet auf {names}",
@@ -12158,6 +12161,7 @@ var ZH = {
   "Managed on its source host": "由来源主机管理",
   // Shared
   "Main Bot": "主 Bot",
+  "Running on {host}": "运行于 {host}",
   Working: "进行中",
   "Waiting for your answer": "等你回答",
   "Waiting for {names}": "等 {names} 交回",
@@ -18894,7 +18898,7 @@ var COMPUTER_CSS = `
 .bt-cstep-shot-open img{max-height:280px;max-width:480px}
 `;
 
-// ../../../../Users/kjclaw/dsh-dev/ds-bot-merge/ds-bot/node_modules/deep-view/src/react/ui.js
+// ../../ds-model-wt/ds-bot/node_modules/deep-view/src/react/ui.js
 var import_react12 = require("react");
 var FallbackMarkdown = ({ text: text2 }) => (0, import_react12.createElement)("span", null, String(text2 ?? ""));
 var ViewUi = (0, import_react12.createContext)({ t: (key) => key, Markdown: FallbackMarkdown });
@@ -18961,7 +18965,7 @@ function useOptionKeys2(count, onPick, ownRef) {
   return count > 0 && listening <= 1;
 }
 
-// ../../../../Users/kjclaw/dsh-dev/ds-bot-merge/ds-bot/node_modules/deep-view/src/core/formula.js
+// ../../ds-model-wt/ds-bot/node_modules/deep-view/src/core/formula.js
 var FUNCTIONS = {
   min: { args: [1, Infinity], run: (...values) => Math.min(...values.map(num)) },
   max: { args: [1, Infinity], run: (...values) => Math.max(...values.map(num)) },
@@ -19242,7 +19246,7 @@ function evaluate(tree, lookup) {
   }
 }
 
-// ../../../../Users/kjclaw/dsh-dev/ds-bot-merge/ds-bot/node_modules/deep-view/src/core/views.js
+// ../../ds-model-wt/ds-bot/node_modules/deep-view/src/core/views.js
 var LAYOUT = ["stack", "row"];
 var DISPLAY = ["text", "metric", "table", "chart", "progress", "callout", "sources", "html"];
 var INPUT_TYPES = ["slider", "choice", "toggle", "number"];
@@ -19874,7 +19878,7 @@ function validateForm(node, values) {
   return { fields };
 }
 
-// ../../../../Users/kjclaw/dsh-dev/ds-bot-merge/ds-bot/node_modules/deep-view/src/react/chart.js
+// ../../ds-model-wt/ds-bot/node_modules/deep-view/src/react/chart.js
 var import_react13 = require("react");
 var PALETTE = ["var(--dv-accent)", "var(--dv-ink-tangerine)", "var(--dv-ink-green)", "var(--dv-ink-violet)", "var(--dv-ink-sky)", "var(--dv-ink-rose)", "var(--dv-ink-yellow)", "var(--dv-ink-cyan)", "var(--dv-ink-magenta)"];
 var colorAt = (index) => PALETTE[index % PALETTE.length];
@@ -20313,7 +20317,7 @@ var CHART_CSS = `
 @media (prefers-reduced-motion:reduce){.dv-chart-mark,.dv-chart-dot{transition:none}.dv-chart-tip{animation:none}}
 `;
 
-// ../../../../Users/kjclaw/dsh-dev/ds-bot-merge/ds-bot/node_modules/deep-view/src/react/frame.js
+// ../../ds-model-wt/ds-bot/node_modules/deep-view/src/react/frame.js
 var import_react14 = require("react");
 var THEME_VARS = [
   ["--view-ink", "--bt-ink", "--dv-ink"],
@@ -20395,7 +20399,7 @@ var HTML_CSS = `
 .dv-view-frame-stopped{margin:0;font-size:13px;line-height:18px;color:var(--dv-ink-2)}
 `;
 
-// ../../../../Users/kjclaw/dsh-dev/ds-bot-merge/ds-bot/node_modules/deep-view/src/react/card.js
+// ../../ds-model-wt/ds-bot/node_modules/deep-view/src/react/card.js
 var import_react15 = require("react");
 var mdLabels = (ui2) => ({ code: { copyLabel: ui2.t("Copy"), copiedLabel: ui2.t("Copied") }, footnotes: ui2.t("Footnotes") });
 var TONES2 = ["good", "warn", "bad"];
@@ -21137,7 +21141,7 @@ ${CHART_CSS}
 ${HTML_CSS}
 `;
 
-// ../../../../Users/kjclaw/dsh-dev/ds-bot-merge/ds-bot/node_modules/deep-view/src/react/styles.js
+// ../../ds-model-wt/ds-bot/node_modules/deep-view/src/react/styles.js
 var THEME_CSS = `
 body{
 --dv-ink:var(--dsw-alias-label-primary);
@@ -21235,10 +21239,10 @@ button.dv-q-opt:active{background:var(--dv-active)}
 @media (prefers-reduced-motion:reduce){.dv-q,.dv-view-bare,.dv-q-submit,.dv-menu,.dv-q-check{animation:none}}
 `;
 
-// ../../../../Users/kjclaw/dsh-dev/ds-bot-merge/ds-bot/node_modules/deep-view/src/react/index.js
+// ../../ds-model-wt/ds-bot/node_modules/deep-view/src/react/index.js
 var DEEP_VIEW_CSS = THEME_CSS + QUESTION_CSS + WIDGET_CSS;
 
-// ../../../../Users/kjclaw/dsh-dev/ds-bot-merge/ds-bot/node_modules/deep-view/src/core/reply.js
+// ../../ds-model-wt/ds-bot/node_modules/deep-view/src/core/reply.js
 var REPLY_KIND = "user-question-reply";
 var REPLY_SOURCE_KIND = "deep-view-reply";
 function viewCardText(args) {
@@ -28431,7 +28435,7 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
   const joined = bot.origin === "joined" && bot.worker?.home === "remote";
   const remoteHome = remoteHomeOf(bot);
   const peer = bot.origin === "peer" && bot.worker?.home === "hub";
-  const machine = joined ? [bot.worker.hostname || bot.worker.nodeId, bot.worker.online === false ? "离线" : ""].filter(Boolean).join(" · ") : peer ? [bot.worker?.hostname || bot.worker?.nodeId || "", bot.worker?.online === false ? "离线" : "在线"].filter(Boolean).join(" · ") : "";
+  const machine = joined ? [t("Running on {host}", { host: bot.worker.hostname || bot.worker.nodeId }), bot.worker.online === false ? "离线" : ""].filter(Boolean).join(" · ") : peer ? [bot.worker?.hostname || bot.worker?.nodeId || "", bot.worker?.online === false ? "离线" : "在线"].filter(Boolean).join(" · ") : "";
   const label = [bot.name, machine, main ? t("Main Bot") : "", pinned ? t("Pinned") : "", running || away ? t("Working") : "", waitsFor, approval ? t("Waiting for your approval") : alert ? t("Waiting for your answer") : "", unread ? t("Unread activity") : ""].filter(Boolean).join(", ");
   if (tile && wide) {
     return (0, import_react35.createElement)("div", { className: "bt-tile-wrap", ref: bindPointerMenu(actions.openMenu, () => ({ kind: "bot", id })) }, (0, import_react35.createElement)(
@@ -31939,7 +31943,7 @@ var CONNECTORS_PAGE_CSS = `
 @media (prefers-reduced-motion:reduce){.bt-app[data-fresh]::after,.bt-app[data-fresh] .bt-app-icon,.bt-app[data-fresh] .bt-app-btn-done{animation:none}}
 `;
 
-// ../../../../Users/kjclaw/dsh-dev/ds-bot-merge/ds-bot/node_modules/qrcode-generator/dist/qrcode.mjs
+// ../../ds-model-wt/ds-bot/node_modules/qrcode-generator/dist/qrcode.mjs
 var qrcode = function(typeNumber, errorCorrectionLevel) {
   const PAD0 = 236;
   const PAD1 = 17;

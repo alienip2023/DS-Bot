@@ -15,6 +15,7 @@ const ZH = {
   'Managed on its source host': '由来源主机管理',
   // Shared
   'Main Bot': '主 Bot',
+  'Running on {host}': '运行于 {host}',
   Working: '进行中',
   'Waiting for your answer': '等你回答',
   'Waiting for {names}': '等 {names} 交回',

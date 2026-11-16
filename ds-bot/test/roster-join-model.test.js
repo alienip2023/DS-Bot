@@ -79,3 +79,92 @@ describe('joined roster model and missing-flag heal', () => {
     assert.equal(state.bots[id].worker.missingFromReport, false)
   })
 })
+
+  it('applyRosterReport sets homeNodeId at the row top level, outside worker', () => {
+    // Knife: remove `homeNodeId: nodeId` from row construction → this test fails.
+    const state = { bots: {} }
+    applyRosterReport(state, {
+      nodeId: 'n1',
+      hostname: 'host1',
+      bots: [{ id: 'b1', name: 'Bot', role: 'r' }],
+    })
+    const bot = state.bots['joined:n1:b1']
+    assert.equal(bot.homeNodeId, 'n1')
+    assert.equal(bot.worker.nodeId, 'n1')
+    // homeNodeId must be a sibling of worker, not nested inside it
+    assert.equal(Object.hasOwn(bot.worker, 'homeNodeId'), false)
+  })
+
+  it('install() backfills homeNodeId for existing joined bots missing it and saves exactly once', async () => {
+    // Knife: remove the backfill loop from install() → this test fails.
+    const rt = {
+      ctx: { get: () => undefined, effect: () => {} },
+      state: {
+        bots: {
+          'joined:n2:b1': { id: 'joined:n2:b1', origin: 'joined', worker: { nodeId: 'n2', home: 'remote' } },
+          'joined:n2:b2': { id: 'joined:n2:b2', origin: 'joined', worker: { nodeId: 'n2', home: 'remote' } },
+          'local:b3': { id: 'local:b3', origin: 'local', worker: undefined },
+          // already has homeNodeId — must not be touched
+          'joined:n2:b4': { id: 'joined:n2:b4', origin: 'joined', homeNodeId: 'n2', worker: { nodeId: 'n2', home: 'remote' } },
+        },
+      },
+      saveCount: 0,
+    }
+    rt.save = () => { rt.saveCount++ }
+    const { install } = await import('../src/host/roster-join.js')
+    install(rt)
+    assert.equal(rt.state.bots['joined:n2:b1'].homeNodeId, 'n2')
+    assert.equal(rt.state.bots['joined:n2:b2'].homeNodeId, 'n2')
+    assert.equal(rt.state.bots['local:b3'].homeNodeId, undefined)
+    assert.equal(rt.state.bots['joined:n2:b4'].homeNodeId, 'n2') // unchanged
+    assert.equal(rt.saveCount, 1)
+  })
+
+  it('install() backfill saves nothing when no bots need backfilling', async () => {
+    // Knife: if the guard `homeNodeId === undefined` is removed the bot would be re-written and
+    // an extra save() fired — this test would then fail because saveCount would be > 0.
+    const rt = {
+      ctx: { get: () => undefined, effect: () => {} },
+      state: {
+        bots: {
+          'joined:n3:b1': { id: 'joined:n3:b1', origin: 'joined', homeNodeId: 'n3', worker: { nodeId: 'n3', home: 'remote' } },
+          'local:b2': { id: 'local:b2', origin: 'local', worker: undefined },
+        },
+      },
+      saveCount: 0,
+    }
+    rt.save = () => { rt.saveCount++ }
+    const { install } = await import('../src/host/roster-join.js')
+    install(rt)
+    assert.equal(rt.saveCount, 0)
+  })
+
+  it('local and Worker-type bots are unaffected by applyRosterReport homeNodeId logic', () => {
+    // Knife: if homeNodeId were written unconditionally to all bots, local bots would acquire it.
+    const state = {
+      bots: {
+        'local:lb': { id: 'local:lb', origin: 'local', name: 'L', role: 'r' },
+      },
+    }
+    applyRosterReport(state, {
+      nodeId: 'n4',
+      hostname: 'host4',
+      bots: [{ id: 'rb', name: 'Remote', role: 'r' }],
+    })
+    assert.equal(state.bots['local:lb'].homeNodeId, undefined)
+    assert.equal(state.bots['joined:n4:rb'].homeNodeId, 'n4')
+  })
+
+  it('joinedMachineLabel renders "Running on {host}" with hostname and falls back to nodeId', async () => {
+    // Knife: change joinedMachineLabel to not call tFn → this test fails.
+    const { joinedMachineLabel } = await import('../src/client/joined-machine-label.js')
+    const calls = []
+    const tFn = (key, params) => { calls.push({ key, params }); return `${key}=${JSON.stringify(params)}` }
+    const withHostname = joinedMachineLabel({ hostname: 'mac-mini', nodeId: 'n5' }, tFn)
+    assert.equal(calls[0]?.key, 'Running on {host}')
+    assert.equal(calls[0]?.params?.host, 'mac-mini')
+    calls.length = 0
+    const withoutHostname = joinedMachineLabel({ hostname: '', nodeId: 'n5' }, tFn)
+    assert.equal(calls[0]?.key, 'Running on {host}')
+    assert.equal(calls[0]?.params?.host, 'n5')
+  })

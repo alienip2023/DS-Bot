@@ -28,6 +28,7 @@ export const ES = {
   "Beta": "Beta",
   // Shared
   'Main Bot': 'Bot principal',
+  'Running on {host}': 'Se ejecuta en {host}',
   Working: 'En curso',
   'Waiting for your answer': 'Esperando tu respuesta',
   'Waiting for {names}': 'Esperando a {names}',

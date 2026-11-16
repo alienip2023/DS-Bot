@@ -62,6 +62,7 @@ export function applyRosterReport(state, report, now = Date.now()) {
       role: String(bot.role ?? existing?.role ?? '').slice(0, 24),
       type: 'remote-worker',
       origin: 'joined',
+      homeNodeId: nodeId,
       createdAt: existing?.createdAt ?? now,
       capabilities: existing?.capabilities ?? [],
       worker: {
@@ -425,6 +426,15 @@ export function install(rt) {
     report({ bots: reportableBots(rt.state?.bots), skills: sharedSkillSnapshot(rt) })
   }
   rt.publishSkillRoster = publish
+  // Backfill homeNodeId for joined bots written before this field was introduced.
+  let backfilled = 0
+  for (const bot of Object.values(rt.state?.bots ?? {})) {
+    if (bot?.origin === 'joined' && bot?.worker?.nodeId && bot.homeNodeId === undefined) {
+      bot.homeNodeId = bot.worker.nodeId
+      backfilled++
+    }
+  }
+  if (backfilled > 0) void rt.save?.()
   attach()
   const publishSafe = () => { void Promise.resolve().then(publish).catch(error => rt.warn?.('ds-bot: skill roster publish failed: %s', error?.message)) }
   publishSafe()

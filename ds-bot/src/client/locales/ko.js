@@ -28,6 +28,7 @@ export const KO = {
   "Beta": "베타",
   // Shared
   'Main Bot': '메인 Bot',
+  'Running on {host}': '{host}에서 실행 중',
   Working: '작업 중',
   'Waiting for your answer': '답변 대기 중',
   'Waiting for {names}': '{names} 응답 대기 중',
