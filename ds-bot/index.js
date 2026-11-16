@@ -64,6 +64,7 @@ import * as workerBridge from './src/host/worker-bridge.js'
 import * as rosterJoin from './src/host/roster-join.js'
 import * as goalSkills from './src/host/goal-skills.js'
 import * as localAgents from './src/host/local-agents/index.js'
+import * as botNetwork from './src/host/bot-network.js'
 
 export { COLORS } from './src/host/constants.js'
 
@@ -75,7 +76,7 @@ export const inject = ['llm', 'tools', 'systemPrompt', 'sessionController', 'ses
 // install. Listeners run and tools are listed in registration order, so this order holds:
 // usage meters model requests after every listener that rewrites them. privacy checks a
 // call before the hooks of tools do, so a closed call never reaches a card they show.
-export const MODULES = [diagnostics, store, ledger, models, providers, permissions, turns, steer, handoffs, requests, delivery, workerBridge, rosterJoin, roster, federation, folders, privacy, agents, prompt, timeContext, hostContext, tools, chatIndex, groups, goals, approvals, resume, memory, memoryFederation, parts, images, avatarLibrary, secrets, connectors, capabilities, learning, schedules, browser, browserPlugins, computer, usage, update, dshUpdate, thinking, threadQueue, mobile, feed, phone, im, channel, joinedTurn, joinedPrompt, threadPrompt, mirrorGuard, joinedCreate, configSource, nodeConfig, joinedPage, officeSkills, goalSkills, localAgents]
+export const MODULES = [diagnostics, store, ledger, models, providers, permissions, turns, steer, handoffs, requests, delivery, workerBridge, rosterJoin, roster, federation, folders, privacy, agents, prompt, timeContext, hostContext, tools, chatIndex, groups, goals, approvals, resume, memory, memoryFederation, parts, images, avatarLibrary, secrets, connectors, capabilities, learning, schedules, browser, browserPlugins, computer, usage, update, dshUpdate, thinking, threadQueue, mobile, feed, phone, im, channel, joinedTurn, joinedPrompt, threadPrompt, mirrorGuard, joinedCreate, configSource, nodeConfig, joinedPage, officeSkills, goalSkills, localAgents, botNetwork]
 
 export function apply(ctx, config = {}) {
   createRuntime(ctx, config)

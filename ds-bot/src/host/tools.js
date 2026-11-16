@@ -98,6 +98,10 @@ export function install(rt) {
         const now = bot.id === self || shadow ? '' : `\n  now: ${rt.statusOf(bot.id)}`
         return `- ${bot.name}${tags ? ` (${tags})` : ''}${job}${now}`
       })
+      for (const bot of rt.botNetwork?.directory() ?? []) {
+        if (rt.findBot(bot.name) !== undefined) continue
+        lines.push(`- ${bot.name} (${[bot.role, `on ${bot.nodeId ?? 'hub'}`].filter(Boolean).join(', ')})`)
+      }
       if (lines.length === 0) return 'No Bots yet.'
       const rooms = visibleRooms(self)
       return [
@@ -194,6 +198,18 @@ export function install(rt) {
       const sender = callerBot(exec)
       if (sender === undefined) return 'Only Bots on the team can use message_bot.'
       const target = rt.findBot(args.to)
+      if (target === undefined && rt.botNetwork) {
+        const remote = rt.botNetwork.directory().find(bot => bot.name === args.to)
+        if (remote) {
+          if (String(args.message ?? '').trim() === '') return 'Write a message to send.'
+          const room = rt.roomOf(rt.groupOwners.get(exec.agent?.id)?.roomId)
+          if (room !== undefined) refuse(`Not sent: ${remote.name} is on another node, and work for this group stays in it.`)
+          const to = { id: remote.id, name: remote.name, nodeId: remote.nodeId }
+          const text = absoluteLinks(String(args.message), rt.sessionFolder?.(exec.agent?.session ?? exec.agent))
+          if (!rt.botNetwork.send({ to, exchangeId: randomUUID(), kind: 'ask', text, depth: 0 })) refuse(`Message to ${remote.name} could not be sent; the Bot network is unavailable.`)
+          return `Sent to ${remote.name} on ${remote.nodeId}; its reply will arrive later as a new message.`
+        }
+      }
       if (target === undefined) return `No Bot named ${args.to}. Team: ${Object.values(state.bots).map(bot => bot.name).join(', ')}`
       if (target.id === sender.id) return 'You cannot message yourself.'
       // A peer shadow is listed for the team to see, not to send to: this release has no
