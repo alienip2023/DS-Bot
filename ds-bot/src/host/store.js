@@ -541,6 +541,8 @@ export function install(rt) {
   const chatOwners = new Map()
   /** @type {Map<string, {botId:string, roomId:string}>} */
   const groupOwners = new Map()
+  // Remote group Sessions keep the local Bot's identity without a local group roster.
+  const remoteGroupOwners = new Map()
   /** @type {Map<string, string>} */
   const roomOwners = new Map()
   /** @type {Map<string, {botId?:string, roomId?:string}>} */
@@ -565,7 +567,7 @@ export function install(rt) {
     } catch {
       return
     }
-    const held = [...chatOwners.keys(), ...groupOwners.keys(), ...roomOwners.keys()].filter(id => archived.has(id))
+    const held = [...chatOwners.keys(), ...groupOwners.keys(), ...remoteGroupOwners.keys(), ...roomOwners.keys()].filter(id => archived.has(id))
     if (held.length === 0) return
     restoring = (async () => {
       for (const sessionId of held) {
@@ -578,6 +580,7 @@ export function install(rt) {
   const indexSessions = () => {
     chatOwners.clear()
     groupOwners.clear()
+    remoteGroupOwners.clear()
     roomOwners.clear()
     pastOwners.clear()
     bySessionIdMap.clear()
@@ -587,6 +590,10 @@ export function install(rt) {
       if (bot.origin === 'peer') continue
       for (const segment of bot.segments ?? []) pastOwners.set(segment.sessionId, { botId: bot.id })
       chatOwners.set(chatOf(bot.id), bot.id)
+      for (const sessionId of bot.remoteGroupSessions ?? []) {
+        remoteGroupOwners.set(sessionId, bot.id)
+        bySessionIdMap.set(sessionId, bot)
+      }
       // Maintain bySessionId reverse index for mirror session lookup
       if (typeof bot.sessionId === 'string' && bot.sessionId !== '') {
         bySessionIdMap.set(bot.sessionId, bot)
@@ -627,10 +634,10 @@ export function install(rt) {
   }
   // The Bot a Session speaks for: its own chat, one of its group Sessions, or an
   // earlier segment of either.
-  const selfOf = id => chatOwners.get(id) ?? groupOwners.get(id)?.botId ?? pastOwners.get(id)?.botId
+  const selfOf = id => chatOwners.get(id) ?? groupOwners.get(id)?.botId ?? remoteGroupOwners.get(id) ?? pastOwners.get(id)?.botId
   // A Session where the Bot speaks now, as opposed to an archived segment.
-  const isBotSession = id => chatOwners.has(id) || groupOwners.has(id)
-  const groupSessionsOf = botId => Object.values(state.rooms).map(room => room.sessions?.[botId]).filter(Boolean)
+  const isBotSession = id => chatOwners.has(id) || groupOwners.has(id) || remoteGroupOwners.has(id)
+  const groupSessionsOf = botId => [...Object.values(state.rooms).map(room => room.sessions?.[botId]).filter(Boolean), ...(botOf(botId)?.remoteGroupSessions ?? [])]
   const dropGroupSession = (room, botId) => {
     if (room.memberDirs !== undefined) delete room.memberDirs[botId]
     const sessionId = room.sessions?.[botId]

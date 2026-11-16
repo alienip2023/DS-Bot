@@ -1,7 +1,7 @@
 // Step 2: a sidebar or bot-to-bot message to a joined shadow runs in that
 // remote Bot's existing session. It does not pick a node, does not start an
 // agent task, and does not run a model on this Mac.
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { joinedShadow, shadowId } from './roster-join.js'
 import {
   ensureMirrorSession, hasPromptRequest, mirrorStateOf,
@@ -36,15 +36,17 @@ const MIRROR_RPC_PREFIX = 'joined:'
 // or with the visible failure line. `duplicate` means this exchange is already on the page
 // (a retried delivery): the turn is not opened again. Any mirror failure is a warning only —
 // it must never block the dispatch itself.
-async function openMirrorTurn(rt, bot, text, xid, senderName) {
+async function openMirrorTurn(rt, bot, text, xid, senderName, roomId) {
   try {
-    const session = await ensureMirrorSession(rt, bot)
+    const room = roomId ? rt.roomOf?.(roomId) : undefined
+    const session = room ? (await rt.resolveAgent(rt.sessionOfRoom(room))).session : await ensureMirrorSession(rt, bot)
     const rpcId = MIRROR_RPC_PREFIX + xid
     if (hasPromptRequest(session, rpcId)) return { duplicate: true }
-    const state = mirrorStateOf(rt, bot.id, session)
+    const state = mirrorStateOf(rt, room ? session.id : bot.id, session)
     // A page turn may hold this Session: beginJoinedMirror then buffers the exchange until the
     // page turn ends, so the two writers never take turns on the same log (joined-mirror-writer.js).
-    return beginJoinedMirror(rt, bot, session, { text: textWithSender(text, senderName), rpcId, state })
+    // All joined members in a room share its log, so they share its writer gate too.
+    return beginJoinedMirror(rt, bot, session, { text: textWithSender(text, senderName), rpcId, state, ...(room ? { writerId: session.id } : {}) })
   } catch (error) {
     rt.warn?.('ds-bot: a Bot-to-Bot message for %s was not mirrored: %s', bot.id, error?.message ?? error)
     return undefined
@@ -232,7 +234,7 @@ function recordReply(rt, { exchangeId, fromId, toId, text, answered }) {
   else if (answered) rows[earlier] = entry
 }
 
-export async function replyToSender(rt, { fromId, toId, exchangeId, work, text, answered = true }) {
+export async function replyToSender(rt, { fromId, toId, exchangeId, work, text, roomId, answered = true }) {
   const shadow = rt.botOf?.(toId)
   const earlier = recordedReply(rt, exchangeId)
   // This module now has an outcome for the work, so close it the way the local reply path does.
@@ -247,6 +249,14 @@ export async function replyToSender(rt, { fromId, toId, exchangeId, work, text, 
   }
   if (shadow?.worker) shadow.worker.lastReply = { exchangeId, text, at: Date.now() }
   recordReply(rt, { exchangeId, fromId, toId, text, answered })
+  if (roomId) {
+    const room = rt.roomOf?.(roomId)
+    if (room) {
+      await rt.deliver?.({ fromId: toId, toId: fromId ?? toId, text, role: 'reply', replyTo: exchangeId, roomId, ...(work ? { work } : {}) })
+      return
+    }
+    rt.warn?.('ds-bot: room %s for joined reply %s was not found; falling back to private chat', roomId, exchangeId)
+  }
   const sender = fromId ? rt.botOf?.(fromId) : undefined
   if (!sender || sender.id === toId) return
   await rt.deliver?.({
@@ -261,6 +271,9 @@ export async function replyToSender(rt, { fromId, toId, exchangeId, work, text, 
 
 export async function handleJoinedTurn(rt, msg = {}) {
   const { fromId, toId, text, exchangeId, work } = msg
+  const roomId = trimmed(msg.roomId)
+  const roomName = trimmed(msg.roomName)
+  const roomFields = { ...(roomId ? { roomId } : {}), ...(roomName ? { roomName } : {}) }
   const to = rt.botOf?.(toId)
   if (!joinedShadow(to)) return { ok: false, error: 'joined shadow cannot dispatch' }
   const nodeId = trimmed(to.worker?.nodeId)
@@ -274,7 +287,7 @@ export async function handleJoinedTurn(rt, msg = {}) {
   if (existing) return msg.defer === true ? xid : existing.waited
   const sender = rt.botOf?.(fromId)
   const senderName = trimmed(sender?.name) === '' ? fromId : sender.name
-  const opened = await openMirrorTurn(rt, to, text, xid, senderName)
+  const opened = await openMirrorTurn(rt, to, text, xid, senderName, roomId)
   // A retried delivery is already on the page: dispatch again (the node's exchange is keyed by
   // xid), but do not open a second turn there.
   const mirror = opened?.duplicate === true ? undefined : opened
@@ -282,7 +295,7 @@ export async function handleJoinedTurn(rt, msg = {}) {
   try { registry = rt.ctx?.get?.('remote-agent:registry') } catch { registry = undefined }
   if (!registry || typeof registry.send !== 'function') {
     closeMirrorTurn(rt, mirror, to.id, { error: { code: 'bridge-down', message: BRIDGE_DOWN_TEXT } })
-    await replyToSender(rt, { fromId, toId, exchangeId: xid, work, text: BRIDGE_DOWN_TEXT, answered: false })
+    await replyToSender(rt, { fromId, toId, exchangeId: xid, work, roomId, text: BRIDGE_DOWN_TEXT, answered: false })
     return { ok: false, error: 'bridge-down' }
   }
   const timeoutMs = Number.isFinite(msg.timeoutMs) ? msg.timeoutMs : (rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS)
@@ -298,13 +311,13 @@ export async function handleJoinedTurn(rt, msg = {}) {
   let sent = false
   try {
     sent = registry.send(nodeId, 'bot/turn', {
-      nodeId, remoteBotId, exchangeId: xid, text: text ?? '', senderBotId: fromId, senderName,
+      nodeId, remoteBotId, exchangeId: xid, text: text ?? '', senderBotId: fromId, senderName, ...roomFields,
     })
   } catch { /* the connection may close between lookup and send */ }
   if (sent !== true) {
     wait.cancel()
     closeMirrorTurn(rt, mirror, to.id, { error: { code: 'bridge-down', message: BRIDGE_DOWN_TEXT } })
-    await replyToSender(rt, { fromId, toId, exchangeId: xid, work, text: BRIDGE_DOWN_TEXT, answered: false })
+    await replyToSender(rt, { fromId, toId, exchangeId: xid, work, roomId, text: BRIDGE_DOWN_TEXT, answered: false })
     return { ok: false, error: 'bridge-down' }
   }
   const settle = async (result) => {
@@ -313,22 +326,22 @@ export async function handleJoinedTurn(rt, msg = {}) {
       // and tell the sender it was stopped. A late result or nodeOffline for this exchange finds
       // the waiter already gone, so neither is written here.
       closeMirrorTurn(rt, mirror, to.id, { stopped: true })
-      await replyToSender(rt, { fromId, toId, exchangeId: xid, work, text: STOPPED_TEXT, answered: false })
+      await replyToSender(rt, { fromId, toId, exchangeId: xid, work, roomId, text: STOPPED_TEXT, answered: false })
       return { ok: false, error: 'stopped' }
     }
     if (result.error === 'bridge-down') {
       closeMirrorTurn(rt, mirror, to.id, { error: { code: 'bridge-down', message: BRIDGE_DOWN_TEXT } })
-      await replyToSender(rt, { fromId, toId, exchangeId: xid, work, text: BRIDGE_DOWN_TEXT, answered: false })
+      await replyToSender(rt, { fromId, toId, exchangeId: xid, work, roomId, text: BRIDGE_DOWN_TEXT, answered: false })
       return { ok: false, error: 'bridge-down' }
     }
     if (result.ok === false) {
       const error = result.error ?? 'bot-turn-failed'
       closeMirrorTurn(rt, mirror, to.id, { error: { code: error, message: `副机没有接上：${error}` } })
-      await replyToSender(rt, { fromId, toId, exchangeId: xid, work, text: `副机没有接上：${error}`, answered: false })
+      await replyToSender(rt, { fromId, toId, exchangeId: xid, work, roomId, text: `副机没有接上：${error}`, answered: false })
       return { ok: false, error }
     }
     closeMirrorTurn(rt, mirror, to.id, { text: result.text, seq: result.seq })
-    await replyToSender(rt, { fromId, toId, exchangeId: xid, work, text: result.text ?? '' })
+    await replyToSender(rt, { fromId, toId, exchangeId: xid, work, roomId, text: result.text ?? '' })
     return xid
   }
   if (!rt.joinedDeliveries) rt.joinedDeliveries = new Map()
@@ -358,10 +371,40 @@ function findLocal(rt, remoteBotId) {
   return Object.values(bots).find((bot) => bot && bot.id === remoteBotId)
 }
 
+export function remoteGroupSession(roomId, botId) {
+  const hash = createHash('sha1').update(roomId + ':' + botId).digest('hex').slice(0, 32)
+  return `session-${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20)}`
+}
+
 // The hub's first deadline only marks progress. Keep the node's result slot alive through
 // its late window as well, otherwise the node itself would discard the eventual answer.
 export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS + JOINED_LATE_WINDOW_MS } = {}) {
   const pending = new Map()
+  const creating = new Map()
+  async function groupSessionFor(bot, roomId, roomName) {
+    const sessionId = remoteGroupSession(roomId, bot.id)
+    const existing = creating.get(sessionId)
+    if (existing) { await existing; return sessionId }
+    if (bot.remoteGroupSessions?.includes(sessionId)) return sessionId
+    const job = (async () => {
+      bot.remoteGroupSessions ??= []
+      bot.remoteGroupSessions.push(sessionId)
+      try {
+        await rt.save?.()
+        if (typeof rt.createSession === 'function') {
+          const created = await rt.createSession(`${bot.name} · ${roomName || roomId}`, { sessionId })
+          if (created !== sessionId) throw new Error('remote group session identity changed')
+        }
+      } catch (error) {
+        bot.remoteGroupSessions = bot.remoteGroupSessions.filter(id => id !== sessionId)
+        await rt.save?.()
+        throw error
+      }
+    })()
+    creating.set(sessionId, job)
+    try { await job } finally { creating.delete(sessionId) }
+    return sessionId
+  }
   rt.settleJoinedTurn = (exchangeId, text, error) => {
     const waiter = pending.get(exchangeId)
     if (!waiter) return false
@@ -374,9 +417,11 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
   return async function acceptJoinedTurn(turn) {
     const remoteBotId = trimmed(turn?.remoteBotId)
     const exchangeId = trimmed(turn?.exchangeId)
-    if (remoteBotId === '' || exchangeId === '') return { ok: false, error: 'bot-turn-missing' }
+    const roomId = trimmed(turn?.roomId)
+    const roomFields = roomId ? { roomId } : {}
+    if (remoteBotId === '' || exchangeId === '') return { ok: false, error: 'bot-turn-missing', ...roomFields }
     const bot = findLocal(rt, remoteBotId)
-    if (!bot || bot.type === 'remote-worker' || bot.origin === 'joined') return { ok: false, error: 'bot-not-on-roster' }
+    if (!bot || bot.type === 'remote-worker' || bot.origin === 'joined') return { ok: false, error: 'bot-not-on-roster', ...roomFields }
     const done = new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(exchangeId)
@@ -390,9 +435,10 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
       // The bot's reply lands as a bot bubble. turns.js calls settleJoinedTurn
       // when the turn finishes, resolving `done`.
       if (typeof rt.sendUser !== 'function') throw new Error('sendUser unavailable')
+      const sessionId = roomId ? await groupSessionFor(bot, roomId, trimmed(turn.roomName)) : rt.chatOf?.(bot.id)
       await rt.sendUser({
-        sessionId: rt.chatOf?.(bot.id),
-        content: [{ type: 'text', text: textWithSender(turn.text, turn.senderName) }],
+        sessionId,
+        content: [{ type: 'text', text: roomId ? `[群 ${trimmed(turn.roomName) || roomId}] ${textWithSender(turn.text, turn.senderName)}` : textWithSender(turn.text, turn.senderName) }],
         requestId: exchangeId,
       })
     } catch {
@@ -401,13 +447,13 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
         pending.delete(exchangeId)
         clearTimeout(waiter.timer)
       }
-      return { ok: false, error: 'bot-turn-deliver-failed' }
+      return { ok: false, error: 'bot-turn-deliver-failed', ...roomFields }
     }
     try {
       const text = await done
-      return { ok: true, exchangeId, text }
+      return { ok: true, exchangeId, text, ...roomFields }
     } catch (err) {
-      return { ok: false, exchangeId, error: err?.code ?? 'bot-turn-failed', text: '' }
+      return { ok: false, exchangeId, error: err?.code ?? 'bot-turn-failed', text: '', ...roomFields }
     }
   }
 }

@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { HISTORY_TIMEOUT_MS, LONG_HEAD, MESSAGE_INLINE_MAX, READ_LINE_MAX, SOURCE_KIND, TEXT_KEPT, TEXT_SHOW_MAX } from './constants.js'
-import { refuseJoinedDispatch } from './roster-join.js'
+import { joinedShadow, refuseJoinedDispatch } from './roster-join.js'
 import { headOf, textOf } from './text.js'
 
 export function install(rt) {
@@ -85,6 +85,14 @@ export function install(rt) {
     const from = rt.botOf(fromId)
     const to = rt.botOf(toId)
     if (to === undefined) throw new Error(`Unknown Bot ${toId}`)
+    // Joined members have no local model turn to settle the group's waiter.
+    // Route their result through the same collection/late-reply path as local members.
+    if (role === 'reply' && roomId && joinedShadow(from) && rt.roomOf?.(roomId)) {
+      const waiter = rt.roomWaiters?.get(replyTo)
+      if (waiter) waiter.resolve(text)
+      else await rt.lateRoomReply?.(rt.roomOf(roomId).sessions?.[fromId], { role: 'room', roomId, exchangeId: replyTo }, text)
+      return exchangeId
+    }
     // On disk before it goes out: a message the book could not keep is not sent, so none is
     // delivered with no record of it. A resend keeps the record it has; only a merged request
     // replaces it with its added text. A joined turn leaves this machine before it reaches a
@@ -105,7 +113,7 @@ export function install(rt) {
       if (!skip && typeof rt.handleJoinedTurn === 'function') {
         await writeBook()
         // joinedAsync remains accepted for older callers; only wait:true opts out of deferral.
-        return rt.handleJoinedTurn({ fromId, toId, text, role, exchangeId, replyTo, work, defer: wait !== true, ...(joinedAsync ? { joinedAsync: true } : {}), ...(stopped === true ? { stopped: true } : {}) })
+        return rt.handleJoinedTurn({ fromId, toId, text, role, exchangeId, replyTo, work, ...(roomId ? { roomId, roomName: rt.roomOf?.(roomId)?.name } : {}), defer: wait !== true, ...(joinedAsync ? { joinedAsync: true } : {}), ...(stopped === true ? { stopped: true } : {}) })
       }
       return refused
     }

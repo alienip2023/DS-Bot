@@ -67,18 +67,18 @@ function wakeOne(writer) {
  * Session); the caller records the outcome on `item` through closeJoinedMirror.
  * Returns {turn, session, state, botId} when the turn is open now.
  */
-export function beginJoinedMirror(rt, bot, session, { text, rpcId, state }) {
-  const writer = writerOf(rt, bot.id)
-  const queued = pageBusy(rt, bot.id) || writer.open !== null
+export function beginJoinedMirror(rt, bot, session, { text, rpcId, state, writerId = bot.id }) {
+  const writer = writerOf(rt, writerId)
+  const queued = pageBusy(rt, writerId) || writer.open !== null
   if (queued) {
-    const item = { botId: bot.id, session, text, rpcId, state, outcome: null }
+    const item = { botId: bot.id, writerId, session, text, rpcId, state, outcome: null }
     writer.queue.push(item)
     return { queued: true, item }
   }
   const turn = allocateTurn(session)
   mirrorTurnStart(session, { turn, step: 1, userText: text ?? '', rpcId })
   writer.open = turn
-  return { botId: bot.id, turn, session, state }
+  return { botId: bot.id, writerId, turn, session, state }
 }
 
 export function markJoinedMirrorPending(rt, mirror, text) {
@@ -102,10 +102,11 @@ export function closeJoinedMirror(rt, mirror, { text, seq, error, stopped } = {}
   if (!mirror) return
   if (mirror.queued) {
     mirror.item.outcome = { text, seq, error: error ?? null, stopped: stopped === true }
-    drainJoinedMirror(rt, mirror.item.botId)
+    drainJoinedMirror(rt, mirror.item.writerId)
     return
   }
-  const writer = writerOf(rt, mirror.botId)
+  const writerId = mirror.writerId ?? mirror.botId
+  const writer = writerOf(rt, writerId)
   try {
     if (stopped === true) {
       mirrorTurnAbort(mirror.session, { turn: mirror.turn, step: 1, closedTurns: mirror.state?.closedTurns })
@@ -131,7 +132,7 @@ export function closeJoinedMirror(rt, mirror, { text, seq, error, stopped } = {}
     rt.warn?.('ds-bot: a Bot-to-Bot mirror turn for %s could not be closed: %s', mirror.botId, err?.message ?? err)
   }
   writer.open = null
-  drainJoinedMirror(rt, mirror.botId)
+  drainJoinedMirror(rt, writerId)
   wakeOne(writer)
   // A late node answer queued behind this turn may write now. The hook is installed by
   // joined-prompt.js (flushLateReplies in executor.js); the writer never imports the executor.
