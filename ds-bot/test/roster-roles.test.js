@@ -40,7 +40,7 @@ function rosterWorld(t, role, options) {
 function toolsWorld(t, role, options) {
   const caller = { id: 'caller', name: 'Caller' }
   const other = { id: 'other', name: 'Other' }
-  const state = { bots: { caller, other }, rooms: {}, prefs: {} }
+  const state = { bots: { caller, other }, mainBotIds: role === 'worker' ? [] : [caller.id], rooms: {}, prefs: {} }
   const rt = {
     ctx: roleContext(t, role, options), state,
     teamTools: [],
@@ -48,7 +48,7 @@ function toolsWorld(t, role, options) {
     selfOf: id => id,
     botOf: id => state.bots[id],
     findBot: name => Object.values(state.bots).find(bot => bot.name === name),
-    isMain: () => true,
+    isMain: id => state.mainBotIds.includes(id),
     approveFolder: async () => {},
     catalog: async () => [],
     createBot: t.mock.fn(async bot => ({ id: 'new-bot', ...bot })),
@@ -132,9 +132,17 @@ describe('L2 worker role permissions', () => {
 
   it('create_bot on worker does not return E_WORKER_READONLY for local bot', async t => {
     const { rt, execute } = toolsWorld(t, 'worker')
+    const result = await execute('create_bot', { name: 'New Bot', role: 'Writer', instructions: 'Write reports.' })
+    assert.match(result, /^Created /)
+    assert.equal(rt.createBot.mock.callCount(), 1)
+  })
+
+  it('create_bot on hub returns isMain error when caller is not main', async t => {
+    const { rt, execute } = toolsWorld(t, 'hub')
     t.mock.method(rt, 'isMain', () => false)
     const result = await execute('create_bot', { name: 'New Bot', role: 'Writer', instructions: 'Write reports.' })
-    assert.notEqual(result, 'E_WORKER_READONLY')
+    assert.match(result, /Only the Main Bot/)
+    assert.equal(rt.createBot.mock.callCount(), 0)
   })
 
   it('create_bot succeeds when role is undefined (fail-open)', async t => {
@@ -159,9 +167,9 @@ describe('L2 worker role permissions', () => {
 
   it('update_bot on worker does not return E_WORKER_READONLY for local bot', async t => {
     const { rt, execute } = toolsWorld(t, 'worker')
-    t.mock.method(rt, 'isMain', () => false)
     const result = await execute('update_bot', { bot: 'Other', name: 'Changed' })
-    assert.notEqual(result, 'E_WORKER_READONLY')
+    assert.match(result, /^Updated /)
+    assert.equal(rt.updateBot.mock.callCount(), 1)
   })
 
   it('update_bot allows self-update on worker', async t => {

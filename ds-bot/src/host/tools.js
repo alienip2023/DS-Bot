@@ -457,7 +457,7 @@ export function install(rt) {
       await rt.load()
       const workerErr = workerCreateBotCheck(args)
       if (workerErr) return workerErr
-      if (!rt.isMain(rt.selfOf(exec.agent?.id))) return 'Only the Main Bot can create Bots. Ask the Main Bot instead.'
+      if (workerRole() !== 'worker' && !rt.isMain(rt.selfOf(exec.agent?.id))) return 'Only the Main Bot can create Bots. Ask the Main Bot instead.'
       try {
         const avatar = args.avatar ? await readAvatar(String(args.avatar), { baseDir: rt.sessionFolder?.(exec.agent?.session ?? exec.agent), isData: rt.inData }) : undefined
         const workDir = args.work_dir ? await rt.cleanWorkDir(args.work_dir) : undefined
@@ -509,7 +509,7 @@ export function install(rt) {
       if (bot === undefined) return `No Bot named ${args.bot}.`
       const workerErrU = workerUpdateBotCheck(bot)
       if (workerErrU) return workerErrU
-      if (bot.id !== caller.id && !rt.isMain(self)) return 'Only a Main Bot can change another Bot. Leave out bot to change yourself, or ask a Main Bot with message_bot.'
+      if (workerRole() !== 'worker' && bot.id !== caller.id && !rt.isMain(self)) return 'Only a Main Bot can change another Bot. Leave out bot to change yourself, or ask a Main Bot with message_bot.'
       try {
         const { name: newName, role, instructions, color, model, effort, section, type, worker } = args
         let image
