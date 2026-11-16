@@ -1125,6 +1125,16 @@ export function install(rt) {
   async function bootstrap() {
     await rt.load()
     void rt.syncModels()
+    let workerRole
+    try { workerRole = ctx.get('remote-agent:role') } catch { workerRole = undefined }
+    if (workerRole === 'worker') {
+      if (state.mainBotIds.length > 0) {
+        rt.warn?.('ds-bot: worker node — clearing mainBotIds (Bots and sessions preserved)')
+        state.mainBotIds = []
+        void rt.save?.()
+      }
+      return
+    }
     if (state.mainBotIds.some(id => rt.botOf(id))) return
     // Only the team's first Main Bot is stored as the DeepSeek whale; other Bots get a
     // look from their id, and a Bot made Main Bot later keeps its own.

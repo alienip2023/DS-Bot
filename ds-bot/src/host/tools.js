@@ -51,6 +51,13 @@ const WORKING_DIRECTORY_TOOL = 'working_directory'
 export function install(rt) {
   const { ctx, state } = rt
 
+  function workerReadOnlyCheck() {
+    let role
+    try { role = ctx.get('remote-agent:role') } catch { role = undefined }
+    if (role !== 'worker') return undefined
+    return 'E_WORKER_READONLY'
+  }
+
   const callerBot = (exec) => rt.botOf(rt.selfOf(exec.agent?.id))
   const callerRoom = (exec) => {
     const roomId = rt.groupOwners.get(exec.agent?.id)?.roomId
@@ -434,6 +441,8 @@ export function install(rt) {
     output,
     async execute(args, exec) {
       await rt.load()
+      const workerErr = workerReadOnlyCheck()
+      if (workerErr) return workerErr
       if (!rt.isMain(rt.selfOf(exec.agent?.id))) return 'Only the Main Bot can create Bots. Ask the Main Bot instead.'
       try {
         const avatar = args.avatar ? await readAvatar(String(args.avatar), { baseDir: rt.sessionFolder?.(exec.agent?.session ?? exec.agent), isData: rt.inData }) : undefined
@@ -484,6 +493,8 @@ export function install(rt) {
       if (caller === undefined) return 'Only Bots on the team can use update_bot.'
       const bot = args.bot ? rt.findBot(args.bot) : caller
       if (bot === undefined) return `No Bot named ${args.bot}.`
+      const workerErrU = workerReadOnlyCheck()
+      if (workerErrU && bot.id !== caller.id) return workerErrU
       if (bot.id !== caller.id && !rt.isMain(self)) return 'Only a Main Bot can change another Bot. Leave out bot to change yourself, or ask a Main Bot with message_bot.'
       try {
         const { name: newName, role, instructions, color, model, effort, section, type, worker } = args
@@ -609,6 +620,8 @@ export function install(rt) {
     async execute(args, exec) {
       await rt.load()
       const self = rt.selfOf(exec.agent?.id)
+      const workerErrG = workerReadOnlyCheck()
+      if (workerErrG) return workerErrG
       if (!rt.isMain(self)) return 'Only a Main Bot can create group chats. Ask a Main Bot instead.'
       const { bots, unknown } = resolveBots(args.members)
       if (unknown.length > 0) return `No Bot named ${unknown.join(', ')}. Team: ${teamNames()}`
