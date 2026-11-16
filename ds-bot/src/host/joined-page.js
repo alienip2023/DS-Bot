@@ -242,6 +242,8 @@ export async function joinedUpdateBot(rt, botId, patch) {
     bot.appliedModel = result.model
   }
   if (result.effort !== undefined) bot.effort = result.effort
+  if (typeof result.instructions === 'string') bot.instructions = result.instructions
+  if (typeof result.workDir === 'string') bot.workDir = result.workDir
   const appliedProfile = {}
   if (sentProfile) {
     for (const key of PROFILE_FIELDS) {
