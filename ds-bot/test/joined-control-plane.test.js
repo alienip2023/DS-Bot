@@ -190,7 +190,10 @@ test('stop_bot settles the exchange still in flight, and a late nodeOffline writ
   const mirrorReady = w.rt.createSession(REMOTE + ' (mirror)')
   const inflight = w.rt.deliver({ fromId: 'a', toId: REMOTE, text: 'keep going', role: 'request', wait: true })
   await mirrorReady
-  await settle(40)
+  const deadline = Date.now() + 2000
+  while (!w.frames.some(f => f.type === 'bot/turn') && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
   const turn = w.frames.find(f => f.type === 'bot/turn')
   assert.ok(turn, 'the exchange reached the node before it was stopped')
 
