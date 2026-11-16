@@ -71,7 +71,7 @@ test('a Bot-to-Bot message shows on the joined page and the answer lands there',
 
   const log = events(w.session)
   assert.deepEqual(log, ['turn/start', 'step/start', 'user/message', 'assistant/message', 'step/end', 'turn/end'])
-  assert.deepEqual(texts(w.session, 'user/message'), ['hello from the team'])
+  assert.deepEqual(texts(w.session, 'user/message'), ['[来自 Local] hello from the team'])
   assert.deepEqual(texts(w.session, 'assistant/message'), ['pong'])
   const prompt = w.session.log.find(event => event.type === 'user/message')
   assert.equal(prompt.data.source.rpcId, 'joined:ex-1', 'the retry key is the exchange id')
@@ -93,7 +93,7 @@ test('a timeout leaves the page turn open until the late result arrives', async 
   assert.equal(result.error, 'bot-turn-pending')
   const log = events(w.session)
   assert.deepEqual(log, ['turn/start', 'step/start', 'user/message', 'assistant/message'])
-  assert.deepEqual(texts(w.session, 'user/message'), ['anyone there'])
+  assert.deepEqual(texts(w.session, 'user/message'), ['[来自 Local] anyone there'])
   assert.deepEqual(texts(w.session, 'assistant/message'), [PENDING_TURN_TEXT])
   assert.equal(w.rt.state.exchanges.length, 0)
   assert.equal(w.replies.length, 0)
@@ -112,7 +112,7 @@ test('a bridge that cannot send also leaves the request and the failure on the p
     fromId: w.local.id, toId: w.shadow.id, text: 'go', exchangeId: 'ex-3', role: 'request',
   })
   assert.equal(result.error, 'bridge-down')
-  assert.deepEqual(texts(w.session, 'user/message'), ['go'])
+  assert.deepEqual(texts(w.session, 'user/message'), ['[来自 Local] go'])
   assert.match(texts(w.session, 'assistant/message')[0], /^⚠ 无法送达节点：/)
   assert.equal(w.session.log.at(-1).data.reason.kind, 'error')
 })

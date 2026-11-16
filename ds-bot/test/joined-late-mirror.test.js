@@ -75,7 +75,7 @@ test('a late answer after E_TIMEOUT waits for the open Bot-to-Bot turn, then res
 
   strictRestore(session)   // throws SessionFormatError on the old behaviour
   assert.equal(endKinds(session).length, 3)
-  assert.deepEqual(texts(session, 'user/message'), ['from the page', 'from the team'])
+  assert.deepEqual(texts(session, 'user/message'), ['from the page', '[来自 local] from the team'])
   const answers = texts(session, 'assistant/message')
   assert.equal(answers.length, 3)
   assert.match(answers[0], /^⚠/)
@@ -112,7 +112,7 @@ test('a late answer after Stop also waits for the open Bot-to-Bot turn, then res
 
   strictRestore(session)
   assert.equal(endKinds(session).length, 3)
-  assert.deepEqual(texts(session, 'user/message'), ['from the page', 'from the team'])
+  assert.deepEqual(texts(session, 'user/message'), ['from the page', '[来自 local] from the team'])
   const answers = texts(session, 'assistant/message')
   assert.equal(answers.length, 3)
   assert.match(answers[0], /^⏹/)
@@ -147,7 +147,7 @@ test('a late answer that arrives while an exchange is still queued restores stri
 
   strictRestore(session)
   assert.equal(endKinds(session).length, 3, 'the queued exchange writes one closed turn')
-  assert.deepEqual(texts(session, 'user/message'), ['from the page', 'from the team'])
+  assert.deepEqual(texts(session, 'user/message'), ['from the page', '[来自 local] from the team'])
   const answers = texts(session, 'assistant/message')
   assert.equal(answers.length, 3)
   assert.match(answers[0], /^⚠/)

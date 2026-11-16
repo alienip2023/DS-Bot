@@ -95,6 +95,8 @@ test('a joined shadow sends bot/turn and does not start an agent task', async ()
     remoteBotId: 'alpha',
     exchangeId: 'ex-1',
     text: 'go',
+    senderBotId: 'local',
+    senderName: 'Local',
   })
   assert.equal(reg.sent[0].data.mode, undefined)
   assert.deepEqual(dispatched, [])

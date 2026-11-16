@@ -1,5 +1,5 @@
-// N-1 I6 (contract §N.4): the frames to a node carry no environment. `bot/turn` has exactly the four
-// keys {nodeId, remoteBotId, exchangeId, text}; `bot/create` has no os/host/env/platform key. Both
+// N-1 I6 (contract §N.4): the frames to a node carry no environment. Bot-to-Bot turns add
+// senderBotId/senderName to the four page-turn keys; `bot/create` has no os/host/env/platform key. Both
 // turn-sending code paths and the create path are driven for real with a registry that records frames.
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
@@ -20,12 +20,17 @@ describe('N-1 I6: frames carry no environment', () => {
     assert.equal(turns[0].payload.text, 'hello node')
   })
 
-  it('I6-turn-relay: a relayed turn (handleJoinedTurn) has exactly the same four keys', async () => {
+  it('I6-turn-relay: a relayed turn adds only senderBotId and senderName', async () => {
     const w = makeWorld()
     await handleJoinedTurn(w.rt, { fromId: 'chief', toId: w.bot.id, text: 'from a teammate', exchangeId: 'x-1', timeoutMs: 5 })
     const turns = w.frames.filter(frame => frame.type === 'bot/turn')
     assert.equal(turns.length, 1)
-    assert.deepEqual(Object.keys(turns[0].payload).sort(), TURN_KEYS)
+    assert.deepEqual(Object.keys(turns[0].payload).sort(), [...TURN_KEYS, 'senderBotId', 'senderName'].sort())
+    assert.equal(turns[0].payload.senderBotId, 'chief')
+    assert.equal(turns[0].payload.senderName, 'chief')
+    assert.equal(turns[0].payload.exchangeId, 'x-1')
+    assert.equal(turns[0].payload.text, 'from a teammate')
+    assert.deepEqual(Object.keys(turns[0].payload).filter(key => ENV_KEY.test(key)), [])
   })
 
   it('I6-turn-hub-env-not-in-text: whatever the hub knows about itself, the text sent is the user\'s text', async () => {

@@ -122,7 +122,7 @@ test('message_bot to a joined Bot on another machine sends bot/turn without a lo
   assert.equal(w.frames[0].payload.text, 'please run one turn')
   assert.ok(!w.resolved.includes('joined:n1:rb1'), 'the shadow id was never resolved as a local Session')
   const session = w.sessions.get('mirror-j')
-  assert.deepEqual(session.log.filter(event => event.type === 'user/message').map(event => event.data.content.map(part => part.text).join('')), ['please run one turn'])
+  assert.deepEqual(session.log.filter(event => event.type === 'user/message').map(event => event.data.content.map(part => part.text).join('')), ['[来自 Chief] please run one turn'])
 
   w.registry.emit('botTurnResult', { exchangeId: w.frames[0].payload.exchangeId, ok: true, text: 'one turn done', seq: 1 })
   await settle()
