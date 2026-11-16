@@ -4,7 +4,7 @@ import { looksSecret } from './memory-entries.js'
 const NAME = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
 const ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/
 const MAX_ITEMS = 64
-const MAX_BYTES = 256 * 1024
+const MAX_BYTES = 64 * 1024
 const absolutePath = /(?:^|[\s"'`(=])(?:\/\S|[a-z]:[\\/]|\\\\|~[\\/])/i
 const conversation = /(?:^|\n)\s*(?:User|Assistant|System|用户|助手)\s*[:：]|<\/?(?:work|conversation|message|skill)\b/i
 const writers = new WeakMap()
@@ -28,7 +28,7 @@ export function sharedSkillSnapshot(rt, { forward = false } = {}) {
     if (item.createdBy && rt.isPrivate?.(item.createdBy)) continue
     const entry = { id: item.sharedId, name: item.sharedName ?? item.name, description: item.description, content: item.content }
     if (!ID.test(entry.id ?? '') || sharedSkillProblem(entry, rt)) continue
-    if (items.length >= MAX_ITEMS || Buffer.byteLength(JSON.stringify([...items, entry])) > MAX_BYTES) break
+    if (items.length >= MAX_ITEMS || Buffer.byteLength(JSON.stringify({ version: 1, items: [...items, entry] }), 'utf8') > MAX_BYTES) break
     items.push(entry)
   }
   return { version: 1, items }
@@ -44,7 +44,7 @@ export function applySharedSkills(rt, source, snapshot, { isActive = () => true 
 async function applySnapshot(rt, source, snapshot, isActive) {
   if (!isActive()) return false
   if (snapshot?.version !== 1 || !Array.isArray(snapshot.items) || snapshot.items.length > MAX_ITEMS) return false
-  if (Buffer.byteLength(JSON.stringify(snapshot.items)) > MAX_BYTES) return false
+  if (Buffer.byteLength(JSON.stringify({ version: 1, items: snapshot.items }), 'utf8') > MAX_BYTES) return false
   await rt.load?.()
   if (rt.readOnly?.() !== undefined) return false
   await rt.loadSecrets?.()
