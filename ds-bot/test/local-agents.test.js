@@ -75,6 +75,20 @@ async function collect(stream) {
 
 const options = (sessionId, messages, extra = {}) => ({ provider: 'local-acp-fake', model: 'default', sessionId, messages, tools: [{ name: 'message_bot' }], signal: AbortSignal.timeout(60_000), ...extra })
 
+test('local agents register a saved route while the entry is active', async (t) => {
+  await refreshSearchDirs()
+  const ctx = fakeContext()
+  ctx.fiber = { state: 2 }
+  const register = t.mock.method(ctx.llm, 'registerAdapter')
+  t.after(() => ctx.dispose())
+  const state = { bots: { b1: { model: 'local-acp-fake/default' } } }
+  localAgentsInstall({ ctx, state })
+  assert.equal(register.mock.callCount(), 1)
+  assert.ok(register.mock.calls[0].arguments[0].includes('local-acp-fake'))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(register.mock.callCount(), 1)
+})
+
 test('local agents ignore an in-flight scan after the entry is disposed', async (t) => {
   // Cache discovery so the startup scan pauses at its await without waiting on a CLI.
   await refreshSearchDirs()
@@ -82,7 +96,7 @@ test('local agents ignore an in-flight scan after the entry is disposed', async 
   ctx.fiber = { state: 0 }
   ctx.warn = t.mock.fn()
   const register = t.mock.method(ctx.llm, 'registerAdapter', () => {
-    assert.notEqual(ctx.fiber.state, 2, 'cannot register on an inactive context')
+    assert.notEqual(ctx.fiber.state, 5, 'cannot register on a disposed context')
     const dispose = () => {}
     dispose.replace = () => {}
     return dispose
@@ -97,7 +111,7 @@ test('local agents ignore an in-flight scan after the entry is disposed', async 
   assert.equal(register.mock.callCount(), 0)
   // A saved route makes registration necessary even when no CLI is installed.
   state.bots.b1 = { model: 'local-acp-fake/default' }
-  ctx.fiber.state = 2
+  ctx.fiber.state = 5
   await ctx.dispose()
   // The cached scan resumes in a microtask; the next turn also observes any rejection.
   await new Promise(resolve => setImmediate(resolve))

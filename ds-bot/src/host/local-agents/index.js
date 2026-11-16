@@ -120,7 +120,7 @@ export function install(rt) {
   // with the repair card, and nothing moves the Bot to another run mode by itself.
   const servedRoutes = () => [...new Set([...found.keys(), ...customRouteId(), ...usedRefs().map(ref => splitRef(ref)?.provider).filter(isLocalAgentRoute)])]
   function applyRoutes() {
-    if (ctx.fiber?.state === 2) return
+    if (ctx.fiber?.state === 5) return  // 5 = disposed; 2 = active (cordis /tmp/win-cordis.js:400,466)
     if (!supported()) return
     const routes = servedRoutes()
     // The initial registration needs at least one provider; an empty replace
