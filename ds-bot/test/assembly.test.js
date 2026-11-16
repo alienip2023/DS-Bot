@@ -198,7 +198,7 @@ describe('S27-asm-timeout: config.joinedTurnTimeoutMs reaches the running page t
     assert.equal(world().rt.joinedTurnTimeoutMs, JOINED_TURN_TIMEOUT_MS)
   })
 
-  it('S27-asm-timeout-effect: with the configured value a silent node ends the page turn with E_TIMEOUT after that long, not before', async () => {
+  it('S27-asm-timeout-effect: the configured deadline only appends progress; the result closes the original turn', async () => {
     const w = world({ config: { joinedTurnTimeoutMs: 1000 } })
     await w.mirror()
     const started = Date.now()
@@ -207,9 +207,16 @@ describe('S27-asm-timeout: config.joinedTurnTimeoutMs reaches the running page t
     const ended = () => session.log.some(event => event.type === 'turn/end')
     await new Promise(resolve => setTimeout(resolve, 600))
     assert.equal(ended(), false, 'not at 600ms')
-    while (!ended() && Date.now() - started < 3000) await new Promise(resolve => setTimeout(resolve, 50))
-    assert.equal(session.log.at(-1).data.reason.error.code, 'E_TIMEOUT')
+    const texts = () => session.log.filter(event => event.type === 'assistant/message').map(event => event.data.message.content[0].text)
+    while (texts().length < 2 && Date.now() - started < 3000) await new Promise(resolve => setTimeout(resolve, 50))
+    assert.equal(ended(), false)
+    assert.match(texts().at(-1), /Node is still running/)
     assert.ok(Date.now() - started >= 950, 'and not earlier than the configured second')
+    w.emitter.emit('botTurnResult', { exchangeId: w.frames[0].payload.exchangeId, ok: true, text: 'done', seq: 1 })
+    await Promise.all(w.rt.joinedPromptTasks)
+    assert.equal(session.log.at(-1).data.reason.kind, 'completed')
+    assert.equal(session.log.filter(event => event.type === 'turn/start').length, 1)
+    await w.ctx.dispose()
   })
 })
 

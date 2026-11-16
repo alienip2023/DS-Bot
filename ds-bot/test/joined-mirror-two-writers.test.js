@@ -74,7 +74,7 @@ test('a page turn and a Bot-to-Bot exchange, page first: both answers, strict lo
   const w = makeWorld()
   w.rt.state.exchanges = []
   await w.prompt(textRequest('from the page'))
-  assert.deepEqual(types(w.sessionOf('mirror-1')), ['turn/start', 'step/start', 'user/message'])
+  assert.deepEqual(types(w.sessionOf('mirror-1')), ['turn/start', 'step/start', 'user/message', 'assistant/message'])
 
   const pending = handleJoinedTurn(w.rt, {
     fromId: 'local', toId: w.bot.id, text: 'from the team', exchangeId: 'ex-1', role: 'request',
@@ -87,14 +87,14 @@ test('a page turn and a Bot-to-Bot exchange, page first: both answers, strict lo
   await w.idle()
   const session = w.sessionOf('mirror-1')
   assert.deepEqual(types(session), [
-    'turn/start', 'step/start', 'user/message', 'assistant/message', 'step/end', 'turn/end',
+    'turn/start', 'step/start', 'user/message', 'assistant/message', 'assistant/message', 'step/end', 'turn/end',
   ], 'the page turn closes before the buffered exchange writes anything')
 
   w.reply(1, { text: 'team answer' })
   assert.equal(await pending, 'ex-1')
   assert.equal(assertStrictTurns(session), 2)
   assert.deepEqual(texts(session, 'user/message'), ['from the page', '[来自 local] from the team'])
-  assert.deepEqual(texts(session, 'assistant/message'), ['page answer', 'team answer'])
+  assert.deepEqual(texts(session, 'assistant/message'), ['Delivered to Joined; running…', 'page answer', 'team answer'])
   assert.deepEqual(session.log.filter(event => event.type === 'turn/end').map(event => event.data.reason.kind), ['completed', 'completed'])
 })
 
@@ -128,7 +128,7 @@ test('a page turn and a Bot-to-Bot exchange, exchange first: the page waits, str
   const session = w.sessionOf('mirror-1')
   assert.equal(assertStrictTurns(session), 2)
   assert.deepEqual(texts(session, 'user/message'), ['[来自 local] from the team', 'from the page'])
-  assert.deepEqual(texts(session, 'assistant/message'), ['team answer', 'page answer'])
+  assert.deepEqual(texts(session, 'assistant/message'), ['team answer', 'Delivered to Joined; running…', 'page answer'])
 })
 
 test('mirror bookkeeping starts fresh when the mirror Session is rebuilt', () => {
@@ -161,7 +161,7 @@ test('a timed-out exchange reuses its waiter on retry and writes the late answer
   w.reply(0, { text: 'late answer' })
   await drain()
   assert.equal(assertStrictTurns(session), 1, 'the retry must not open a second turn')
-  assert.deepEqual(texts(session, 'user/message'), ['[来自 local] first try'])
+  assert.deepEqual(texts(session, 'user/message'), ['first try'])
   assert.equal(texts(session, 'assistant/message').at(-1), 'late answer')
   assert.equal(w.rt.state.exchanges.length, 1)
 })

@@ -94,14 +94,16 @@ test('a late result from another node cannot consume the real late reply or writ
   let frame
   w.registry.send = (_nodeId, _type, payload) => { frame = payload; return true }
   const page = startPageTurn({ rt: w.rt, bot: w.bot, session: w.session, text: 'question', requestId: 'page-a', timeoutMs: 5, state: mirrorStateOf(w.rt, w.bot.id, w.session) })
-  const rejected = assert.rejects(page.done, { code: 'E_TIMEOUT' })
   t.mock.timers.tick(5)
-  await rejected
+  assert.equal(w.session.log.some(event => event.type === 'turn/end'), false)
   w.registry.emit('botTurnResult', { exchangeId: frame.exchangeId, nodeId: 'n2', ok: true, text: 'wrong late answer', seq: 7 })
-  assert.equal(w.session.log.filter(event => event.type === 'assistant/message').length, 1)
+  assert.equal(w.session.log.filter(event => event.type === 'assistant/message').length, 2)
   w.registry.emit('botTurnResult', { exchangeId: frame.exchangeId, nodeId: 'n1', ok: true, text: 'right late answer', seq: 7 })
+  assert.equal((await page.done).ok, true)
   const answers = w.session.log.filter(event => event.type === 'assistant/message').map(event => event.data.message.content[0].text)
-  assert.equal(answers.length, 2)
-  assert.match(answers[1], /right late answer/)
+  assert.equal(answers.length, 3)
+  assert.match(answers[2], /right late answer/)
+  assert.doesNotMatch(answers.join('\n'), /wrong late answer/)
+  assert.equal(w.session.log.filter(event => event.type === 'turn/start').length, 1)
   assert.equal(w.registry.listenerCount('botTurnResult'), 0)
 })

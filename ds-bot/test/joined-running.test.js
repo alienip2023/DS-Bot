@@ -23,9 +23,8 @@ describe('S33-run: the mirror Session reports running while its page turn is in 
     assert.deepEqual(w.statuses(), [[MIRROR, true], [MIRROR, false]])
   })
 
-  it('S33-run-b: every way the turn ends brings running back to false — timeout, rejection, node offline, Stop — exactly once', async () => {
+  it('S33-run-b: every way the turn ends brings running back to false — rejection, node offline, Stop — exactly once', async () => {
     for (const [name, setup, trigger] of [
-      ['timeout', () => makeWorld({ timeoutMs: 20 }), async () => {}],
       ['rejection', () => makeWorld(), async w => { w.reply(0, { ok: false, text: undefined, error: 'busy' }) }],
       ['offline', () => makeWorld(), async w => { w.emitter.emit('nodeOffline', { nodeId: 'n1' }) }],
       ['stop', () => makeWorld(), async w => { await w.cancel() }],
@@ -134,7 +133,7 @@ describe('S33-stop-received: Stop does not throw away an answer that has already
     assert.deepEqual(ack, { accepted: true })
     await w.idle()
     const session = w.sessionOf(MIRROR)
-    assert.deepEqual(assistantTexts(session), ['the real answer'])
+    assert.deepEqual(assistantTexts(session), ['Delivered to Joined; running…', 'the real answer'])
     assert.equal(session.log.at(-1).data.reason.kind, 'completed')
     assert.equal(types(session).filter(type => type === 'turn/end').length, 1)
     assert.equal(assistantTexts(session).some(text => text.includes(STOPPED_TEXT)), false)
@@ -261,7 +260,7 @@ describe('S36-e4: another exchange\'s result is not "my answer has arrived"', ()
     await w.cancel(first.sessionId)
     await w.idle()
     assert.equal(w.sessionOf(first.sessionId).log.at(-1).data.reason.kind, 'aborted', 'Bot 1 stopped')
-    assert.deepEqual(assistantTexts(w.sessionOf(second.sessionId)), ['answer two'], 'Bot 2 got its own answer')
+    assert.deepEqual(assistantTexts(w.sessionOf(second.sessionId)), ['Delivered to Joined 2; running…', 'answer two'], 'Bot 2 got its own answer')
     assert.equal(w.rt.joinedInFlight.size, 0)
   })
 
@@ -272,7 +271,7 @@ describe('S36-e4: another exchange\'s result is not "my answer has arrived"', ()
     w.emitter.emit('botTurnResult', { exchangeId: OTHER, ok: true, text: 'other', seq: 4 })
     await w.cancel()
     await w.idle()
-    assert.deepEqual(assistantTexts(w.sessionOf(MIRROR)), ['mine'])
+    assert.deepEqual(assistantTexts(w.sessionOf(MIRROR)), ['Delivered to Joined; running…', 'mine'])
   })
 })
 
@@ -309,11 +308,12 @@ describe('S36-j4: two joined Bots, one in flight and one idle', () => {
 })
 
 describe('S36-e9: what happens at the moment the slot is released', () => {
-  // a first turn times out (its late reply is armed), a second turn is in flight, the late reply
+  // a first turn is stopped (its late reply is armed), a second turn is in flight, the late reply
   // arrives and waits, then the second turn ends: running goes false, THEN the late reply is written
   async function lateWorld() {
     const w = makeWorld({ timeoutMs: 20 })
     await w.prompt(textRequest('first (slow)', 'req-1'))
+    await w.cancel()
     await w.idle()
     w.rt.joinedTurnTimeoutMs = 5000
     await w.prompt(textRequest('second', 'req-2'))
