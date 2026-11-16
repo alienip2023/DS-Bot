@@ -11,8 +11,9 @@ import { CodexEngine } from '../src/host/local-agents/codex.js'
 import { JsonRpcPeer, wireProcess } from '../src/host/local-agents/jsonrpc.js'
 import { ClaudeEngine } from '../src/host/local-agents/claude.js'
 import { LoopbackMcp, flattenSchema } from '../src/host/local-agents/mcp.js'
-import { cleanEnv } from '../src/host/local-agents/discover.js'
+import { cleanEnv, refreshSearchDirs } from '../src/host/local-agents/discover.js'
 import { validateCustom, isLocalAgentRoute, cliMode, acpMode } from '../src/host/local-agents/engines.js'
+import { install as localAgentsInstall } from '../src/host/local-agents/index.js'
 import { install as partsInstall } from '../src/host/parts.js'
 import { install as modelsInstall } from '../src/host/models.js'
 import { fakeContext } from './fake-ctx.js'
@@ -73,6 +74,37 @@ async function collect(stream) {
 }
 
 const options = (sessionId, messages, extra = {}) => ({ provider: 'local-acp-fake', model: 'default', sessionId, messages, tools: [{ name: 'message_bot' }], signal: AbortSignal.timeout(60_000), ...extra })
+
+test('local agents ignore an in-flight scan after the entry is disposed', async (t) => {
+  // Cache discovery so the startup scan pauses at its await without waiting on a CLI.
+  await refreshSearchDirs()
+  const ctx = fakeContext()
+  ctx.fiber = { state: 0 }
+  ctx.warn = t.mock.fn()
+  const register = t.mock.method(ctx.llm, 'registerAdapter', () => {
+    assert.notEqual(ctx.fiber.state, 2, 'cannot register on an inactive context')
+    const dispose = () => {}
+    dispose.replace = () => {}
+    return dispose
+  })
+  const unhandled = []
+  const onUnhandled = error => unhandled.push(error)
+  process.on('unhandledRejection', onUnhandled)
+  t.after(() => process.off('unhandledRejection', onUnhandled))
+  t.after(() => ctx.dispose())
+  const state = { bots: {} }
+  localAgentsInstall({ ctx, state })
+  assert.equal(register.mock.callCount(), 0)
+  // A saved route makes registration necessary even when no CLI is installed.
+  state.bots.b1 = { model: 'local-acp-fake/default' }
+  ctx.fiber.state = 2
+  await ctx.dispose()
+  // The cached scan resumes in a microtask; the next turn also observes any rejection.
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(unhandled, [])
+  assert.equal(register.mock.callCount(), 0)
+  assert.equal(ctx.warn.mock.callCount(), 0)
+})
 
 test('session-title and compaction stay deterministic, no CLI is started', async () => {
   const adapter = makeAdapter()

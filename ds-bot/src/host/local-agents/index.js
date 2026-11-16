@@ -90,7 +90,7 @@ export function install(rt) {
     record: sessionId => store().sessions[sessionId],
     saveRecord: (sessionId, record) => {
       store().sessions[sessionId] = record
-      void rt.save().catch(() => {})
+      void rt.save().catch(err => ctx.warn?.('ds-bot: local-agents scan failed: %s', err))
     },
     presetFor: (sessionId) => {
       const bot = rt.botOf(rt.selfOf(sessionId))
@@ -120,6 +120,7 @@ export function install(rt) {
   // with the repair card, and nothing moves the Bot to another run mode by itself.
   const servedRoutes = () => [...new Set([...found.keys(), ...customRouteId(), ...usedRefs().map(ref => splitRef(ref)?.provider).filter(isLocalAgentRoute)])]
   function applyRoutes() {
+    if (ctx.fiber?.state === 2) return
     if (!supported()) return
     const routes = servedRoutes()
     // The initial registration needs at least one provider; an empty replace
@@ -132,13 +133,13 @@ export function install(rt) {
   // Custom agents hold a route whether or not their command resolves yet; a
   // missing one fails at prompt time with a typed error.
   applyRoutes()
-  void scan()
+  void scan().catch(err => ctx.warn?.('ds-bot: local-agents scan failed: %s', err))
   // Custom agents arrive with the state load; their routes register then too.
   void rt.load?.().then(() => applyRoutes()).catch(() => {})
   // The callback returns the disposer: running adapter.dispose() inside the
   // setup would leave the adapter disposed from the moment it installs.
   ctx.effect(() => () => {
-    void adapter.dispose()
+    void adapter.dispose().catch(err => ctx.warn?.('ds-bot: local-agents scan failed: %s', err))
     registration?.()
   }, 'ds-bot: local agents')
 
