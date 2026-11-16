@@ -62,6 +62,69 @@ async function publish(w) {
   return w.reports.at(-1)
 }
 
+function boundarySnapshot() {
+  const items = ['a', 'b', 'c'].map((suffix, i) => ({
+    id: `00000000-0000-4000-8000-${String(i + 1).padStart(12, '0')}`,
+    name: `boundary-${suffix}`, description: '用于验证中文技能的字节上限。', content: '技'.repeat(7200),
+  }))
+  const snapshot = { version: 1, items }
+  const padding = 65536 - Buffer.byteLength(JSON.stringify(snapshot), 'utf8')
+  assert.ok(padding >= 0 && items[2].content.length + padding <= 8000)
+  items[2].content += 'x'.repeat(padding)
+  assert.equal(Buffer.byteLength(JSON.stringify(snapshot), 'utf8'), 65536)
+  return snapshot
+}
+
+test('snapshot keeps exactly 64 KiB of UTF-8 text and truncates at the last fitting skill', async t => {
+  const w = await world(t)
+  const snapshot = boundarySnapshot()
+  const library = w.rt.state.capabilities.items
+  for (const entry of snapshot.items) {
+    library[entry.name] = { ...entry, kind: 'skill', teamReusable: true, sharedId: entry.id }
+  }
+  const full = sharedSkillSnapshot(w.rt)
+  assert.deepEqual(full, snapshot)
+  assert.equal(Buffer.byteLength(JSON.stringify(full), 'utf8'), 65536)
+  assert.ok(JSON.stringify(full).length < 65536, 'Chinese text must be measured in UTF-8 bytes')
+
+  const extra = { ...snapshot.items[0], id: '00000000-0000-4000-8000-000000000004', name: 'boundary-d' }
+  assert.ok(Buffer.byteLength(JSON.stringify({ version: 1, items: [...snapshot.items, extra] }), 'utf8') > 65536)
+  library[extra.name] = { ...extra, kind: 'skill', teamReusable: true, sharedId: extra.id }
+  const truncated = sharedSkillSnapshot(w.rt)
+  assert.deepEqual(truncated, full, 'adding an oversized tail must preserve the fitting prefix')
+  assert.ok(truncated.items.length > 0 && truncated.items.length < Object.keys(library).length)
+  assert.ok(Buffer.byteLength(JSON.stringify(truncated), 'utf8') <= 65536)
+
+  delete library[extra.name]
+  library[snapshot.items[2].name].content += 'x'
+  const oversized = { version: 1, items: snapshot.items.map(entry => ({ ...entry, content: library[entry.name].content })) }
+  assert.equal(Buffer.byteLength(JSON.stringify(oversized), 'utf8'), 65537)
+  assert.ok(Buffer.byteLength(JSON.stringify(oversized.items), 'utf8') <= 65536)
+  const wrapped = sharedSkillSnapshot(w.rt)
+  assert.deepEqual(wrapped.items, full.items.slice(0, 2))
+  assert.ok(wrapped.items.length > 0 && wrapped.items.length < full.items.length)
+  assert.ok(Buffer.byteLength(JSON.stringify(wrapped), 'utf8') <= 65536)
+})
+
+test('receiver accepts 64 KiB including the wrapper and rejects one extra byte without mutation', async t => {
+  const w = await world(t)
+  const snapshot = boundarySnapshot()
+  assert.equal(await applySharedSkills(w.rt, 'node:boundary', snapshot), true)
+  assert.equal(Object.keys(w.rt.state.capabilities.items).length, snapshot.items.length)
+  for (const entry of snapshot.items) {
+    assert.equal(Object.values(w.rt.state.capabilities.items).find(item => item.sharedId === entry.id)?.content, entry.content)
+  }
+  const before = structuredClone(w.rt.state)
+  const saved = readFileSync(join(w.home, 'state.json'), 'utf8')
+  const oversized = structuredClone(snapshot)
+  oversized.items[2].content += 'x'
+  assert.equal(Buffer.byteLength(JSON.stringify(oversized), 'utf8'), 65537)
+  assert.ok(Buffer.byteLength(JSON.stringify(oversized.items), 'utf8') <= 65536)
+  assert.equal(await applySharedSkills(w.rt, 'node:boundary', oversized), false)
+  assert.deepEqual(w.rt.state, before)
+  assert.equal(readFileSync(join(w.home, 'state.json'), 'utf8'), saved)
+})
+
 test('approved reusable learning is saved locally and another Bot loads the exact skill', async t => {
   const w = await world(t)
   await approve(w.rt)
