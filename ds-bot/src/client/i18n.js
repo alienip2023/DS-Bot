@@ -1595,6 +1595,10 @@ const ZH = {
   'Attachments: {names}': '附件：{names}',
   'Sent': '已发送',
   'Failed': '失败',
+  'Queued': '排队中',
+  'Running': '运行中',
+  'Succeeded': '成功',
+  'Last run: {status}': '上次运行：{status}',
 
 }
 

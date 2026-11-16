@@ -101,8 +101,7 @@ export function createSendUser(rt, { textOfContent, getMirrorState, ctx } = {}) 
         tracker: rt.turnTracker,
         timeoutMs: rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS,
       })
-      await done
-      return
+      return await done
     }
     // Original path for non-joined
     const _ctx = ctx ?? rt.ctx

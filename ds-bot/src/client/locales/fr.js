@@ -1,6 +1,10 @@
 // French (fr) localization for DS Bot client and DSH settings namespaces.
 
 export const FR = {
+  'Queued': 'En attente',
+  'Running': 'En cours',
+  'Succeeded': 'Réussie',
+  'Last run: {status}': 'Dernière exécution : {status}',
   "Android beta": "Android bêta",
   "Cannot reach the Server. Trying again…": "Impossible de joindre le serveur. Nouvel essai…",
   "No phones yet": "Aucun téléphone pour l’instant",

@@ -123,6 +123,10 @@ function convertHostErrors(pairs) {
 
 // src/client/locales/ja.js
 var JA = {
+  "Queued": "待機中",
+  "Running": "実行中",
+  "Succeeded": "成功",
+  "Last run: {status}": "前回の実行：{status}",
   "Android beta": "Android ベータ版",
   "Cannot reach the Server. Trying again…": "サーバーに接続できません。再試行しています…",
   "No phones yet": "スマートフォンはまだありません",
@@ -2496,6 +2500,10 @@ Object.assign(JA, {
 
 // src/client/locales/ko.js
 var KO = {
+  "Queued": "대기 중",
+  "Running": "실행 중",
+  "Succeeded": "성공",
+  "Last run: {status}": "최근 실행: {status}",
   "Android beta": "Android 베타",
   "Cannot reach the Server. Trying again…": "서버에 연결할 수 없습니다. 다시 시도하는 중…",
   "No phones yet": "아직 휴대폰이 없습니다",
@@ -4914,6 +4922,10 @@ Object.assign(KO, {
 
 // src/client/locales/es.js
 var ES = {
+  "Queued": "En cola",
+  "Running": "En ejecución",
+  "Succeeded": "Completado",
+  "Last run: {status}": "Última ejecución: {status}",
   "Android beta": "Android beta",
   "Cannot reach the Server. Trying again…": "No se puede conectar con el servidor. Reintentando…",
   "No phones yet": "Aún no hay teléfonos",
@@ -7332,6 +7344,10 @@ Object.assign(ES, {
 
 // src/client/locales/fr.js
 var FR = {
+  "Queued": "En attente",
+  "Running": "En cours",
+  "Succeeded": "Réussie",
+  "Last run: {status}": "Dernière exécution : {status}",
   "Android beta": "Android bêta",
   "Cannot reach the Server. Trying again…": "Impossible de joindre le serveur. Nouvel essai…",
   "No phones yet": "Aucun téléphone pour l’instant",
@@ -9705,6 +9721,10 @@ Object.assign(FR, {
 
 // src/client/locales/de.js
 var DE = {
+  "Queued": "In Warteschlange",
+  "Running": "Wird ausgeführt",
+  "Succeeded": "Erfolgreich",
+  "Last run: {status}": "Letzte Ausführung: {status}",
   "Android beta": "Android-Beta",
   "Cannot reach the Server. Trying again…": "Server nicht erreichbar. Neuer Versuch…",
   "No phones yet": "Noch keine Telefone",
@@ -13715,7 +13735,11 @@ var ZH = {
   "Bcc": "密送",
   "Attachments: {names}": "附件：{names}",
   "Sent": "已发送",
-  "Failed": "失败"
+  "Failed": "失败",
+  "Queued": "排队中",
+  "Running": "运行中",
+  "Succeeded": "成功",
+  "Last run: {status}": "上次运行：{status}"
 };
 var HOST_ERRORS = [
   [/^Could not reach the mail server at (.+)\. Check the server address\.$/, "连不上邮件服务器 $1，请检查服务器地址。"],
@@ -14721,7 +14745,7 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
     setBotCapability: (botId, name, attached) => after(call2("bot-capability", { botId, name, attached })),
     schedules: () => call2("schedules"),
     scheduleCreate: (task) => call2("schedule-create", task),
-    scheduleDelete: (sessionId, id) => call2("schedule-delete", { sessionId, id }),
+    scheduleDelete: (sessionId, id, target) => call2("schedule-delete", { sessionId, id, ...target?.kind === "bot" ? { target } : {} }),
     exchange: (a, b) => call2("exchange", { a, b }).catch(() => []),
     exchangeText: (id, a, b) => call2("exchange-text", { id, ...a !== void 0 && b !== void 0 ? { a, b } : {} }).catch(() => void 0),
     fileText: (file) => call2("file-text", { file }).catch(() => void 0),
@@ -23067,6 +23091,7 @@ var nextText = (task) => {
   if (task.status === "paused") return t("Paused");
   return task.status === "active" ? t("Next: {time}", { time: dayAndTime(Date.parse(task.scheduledAt)) }) : t("Finished");
 };
+var runText = (run2) => ({ queued: t("Queued"), running: t("Running"), succeeded: t("Succeeded"), failed: t("Failed") })[run2.status] ?? run2.status;
 function TaskRow2({ task, actions, onView, showBot, roster }) {
   const [confirming, setConfirming] = (0, import_react23.useState)(false);
   const [expanded, setExpanded] = (0, import_react23.useState)(false);
@@ -23082,7 +23107,7 @@ function TaskRow2({ task, actions, onView, showBot, roster }) {
       return;
     }
     setBusy(true);
-    void actions.scheduleDelete(task.sessionId, task.id).then(onView, () => setBusy(false));
+    void actions.scheduleDelete(task.sessionId, task.id, task.target).then(onView, () => setBusy(false));
   };
   const room2 = task.roomId ? roster.roomsById[task.roomId] : void 0;
   return (0, import_react23.createElement)(
@@ -23093,8 +23118,19 @@ function TaskRow2({ task, actions, onView, showBot, roster }) {
       "button",
       { type: "button", className: "bt-set-copy bt-task-copy", "aria-expanded": expanded || void 0, onClick: () => setExpanded((open) => !open) },
       (0, import_react23.createElement)("span", { className: "bt-task-title" }, task.title),
-      (0, import_react23.createElement)("span", { className: "bt-set-hint" }, [timingText(task), room2 ? t("in {name}", { name: room2.name }) : ""].filter(Boolean).join(" · ")),
-      task.prompt && task.prompt !== task.title ? (0, import_react23.createElement)("span", { className: "bt-task-prompt", "data-open": expanded || void 0 }, task.prompt) : null
+      (0, import_react23.createElement)("span", { className: "bt-set-hint" }, [showBot ? roster.byId[task.botId]?.name ?? task.botId : "", timingText(task), room2 ? t("in {name}", { name: room2.name }) : ""].filter(Boolean).join(" · ")),
+      task.prompt && task.prompt !== task.title ? (0, import_react23.createElement)("span", { className: "bt-task-prompt", "data-open": expanded || void 0 }, task.prompt) : null,
+      task.lastRun ? (0, import_react23.createElement)(
+        "span",
+        { className: "bt-set-hint", role: task.lastRun.status === "failed" ? "alert" : void 0 },
+        t("Last run: {status}", { status: runText(task.lastRun) }),
+        task.lastRun.error ? ` · ${task.lastRun.error}` : ""
+      ) : null,
+      expanded ? [...task.runs ?? []].reverse().slice(0, 5).map((run2) => (0, import_react23.createElement)(
+        "span",
+        { key: run2.id, className: "bt-set-hint" },
+        `${dayAndTime(run2.queuedAt)} · ${runText(run2)}${run2.error ? ` · ${run2.error}` : ""}`
+      )) : null
     ),
     (0, import_react23.createElement)("span", { className: "bt-task-next", "data-state": task.state === "overdue" ? "overdue" : void 0 }, nextText(task)),
     (0, import_react23.createElement)("button", {
@@ -23146,7 +23182,7 @@ function TaskForm({ roster, actions, start, onDone, onCancel }) {
       setBusy(false);
       return;
     }
-    void actions.scheduleCreate({ target, title, prompt, when: when3 }).then(onDone, (failure) => {
+    void actions.scheduleCreate({ target: roster.byId[target] ? { kind: "bot", botId: target } : target, title, prompt, when: when3 }).then(onDone, (failure) => {
       setError(hostText(failure?.message ?? String(failure)));
       setBusy(false);
     });

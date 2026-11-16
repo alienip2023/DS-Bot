@@ -436,12 +436,18 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
       // The bot's reply lands as a bot bubble. turns.js calls settleJoinedTurn
       // when the turn finishes, resolving `done`.
       if (typeof rt.sendUser !== 'function') throw new Error('sendUser unavailable')
-      const sessionId = roomId ? await groupSessionFor(bot, roomId, trimmed(turn.roomName)) : rt.chatOf?.(bot.id)
-      await rt.sendUser({
-        sessionId,
+      const sessionIdForTurn = roomId ? await groupSessionFor(bot, roomId, trimmed(turn.roomName)) : rt.chatOf?.(bot.id)
+      const send = () => rt.sendUser({
+        sessionId: sessionIdForTurn,
         content: [{ type: 'text', text: roomId ? `[群 ${trimmed(turn.roomName) || roomId}] ${textWithSender(turn.text, turn.senderName)}` : textWithSender(turn.text, turn.senderName) }],
         requestId: exchangeId,
       })
+      if (typeof rt.sendThreadTurn === 'function') {
+        await rt.sendThreadTurn({
+          botId: bot.id, kind: 'send', preview: turn.text, releaseOn: 'turn-end', run: send,
+          onCancel: () => rt.settleJoinedTurn(exchangeId, '', Object.assign(new Error('bot-turn-cancelled'), { code: 'bot-turn-cancelled' })),
+        })
+      } else await send()
     } catch {
       const waiter = pending.get(exchangeId)
       if (waiter) {

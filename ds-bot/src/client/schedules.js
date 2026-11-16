@@ -1,6 +1,6 @@
 // Scheduled tasks: Settings → Scheduled tasks, a Bot's card in its settings, and the
-// line in its details panel. DSH runs the tasks (see src/host/schedules.js); a task
-// sends its prompt to the Bot's chat when it is due.
+// line in its details panel. Bot routines follow the Bot identity; DSH continues
+// to run Session tasks (see src/host/schedules.js).
 import { createElement as h, Fragment, useEffect, useState } from 'react'
 import { BotAvatar, RoomAvatar } from './mark.js'
 import { ClockIcon, PlusIcon, TrashIcon } from './icons.js'
@@ -76,6 +76,8 @@ const nextText = (task) => {
   return task.status === 'active' ? t('Next: {time}', { time: dayAndTime(Date.parse(task.scheduledAt)) }) : t('Finished')
 }
 
+const runText = run => ({ queued: t('Queued'), running: t('Running'), succeeded: t('Succeeded'), failed: t('Failed') })[run.status] ?? run.status
+
 function TaskRow({ task, actions, onView, showBot, roster }) {
   const [confirming, setConfirming] = useState(false)
   const [expanded, setExpanded] = useState(false)
@@ -88,15 +90,19 @@ function TaskRow({ task, actions, onView, showBot, roster }) {
   const remove = () => {
     if (!confirming) { setConfirming(true); return }
     setBusy(true)
-    void actions.scheduleDelete(task.sessionId, task.id).then(onView, () => setBusy(false))
+    void actions.scheduleDelete(task.sessionId, task.id, task.target).then(onView, () => setBusy(false))
   }
   const room = task.roomId ? roster.roomsById[task.roomId] : undefined
   return h('div', { className: 'bt-set-row bt-task', 'data-done': task.status === 'active' ? undefined : '', 'data-busy': busy || undefined },
     showBot ? h(BotAvatar, { bot: roster.byId[task.botId], size: 28, badge: false, live: false }) : null,
     h('button', { type: 'button', className: 'bt-set-copy bt-task-copy', 'aria-expanded': expanded || undefined, onClick: () => setExpanded(open => !open) },
       h('span', { className: 'bt-task-title' }, task.title),
-      h('span', { className: 'bt-set-hint' }, [timingText(task), room ? t('in {name}', { name: room.name }) : ''].filter(Boolean).join(' · ')),
-      task.prompt && task.prompt !== task.title ? h('span', { className: 'bt-task-prompt', 'data-open': expanded || undefined }, task.prompt) : null),
+      h('span', { className: 'bt-set-hint' }, [showBot ? roster.byId[task.botId]?.name ?? task.botId : '', timingText(task), room ? t('in {name}', { name: room.name }) : ''].filter(Boolean).join(' · ')),
+      task.prompt && task.prompt !== task.title ? h('span', { className: 'bt-task-prompt', 'data-open': expanded || undefined }, task.prompt) : null,
+      task.lastRun ? h('span', { className: 'bt-set-hint', role: task.lastRun.status === 'failed' ? 'alert' : undefined },
+        t('Last run: {status}', { status: runText(task.lastRun) }), task.lastRun.error ? ` · ${task.lastRun.error}` : '') : null,
+      expanded ? [...(task.runs ?? [])].reverse().slice(0, 5).map(run => h('span', { key: run.id, className: 'bt-set-hint' },
+        `${dayAndTime(run.queuedAt)} · ${runText(run)}${run.error ? ` · ${run.error}` : ''}`)) : null),
     h('span', { className: 'bt-task-next', 'data-state': task.state === 'overdue' ? 'overdue' : undefined }, nextText(task)),
     h('button', {
       type: 'button', className: 'bt-mini bt-task-remove', 'data-confirm': confirming || undefined, disabled: busy,
@@ -138,7 +144,7 @@ function TaskForm({ roster, actions, start, onDone, onCancel }) {
     setError('')
     let when
     try { when = timing() } catch { setError(t('Pick a date and time')); setBusy(false); return }
-    void actions.scheduleCreate({ target, title, prompt, when })
+    void actions.scheduleCreate({ target: roster.byId[target] ? { kind: 'bot', botId: target } : target, title, prompt, when })
       .then(onDone, (failure) => { setError(hostText(failure?.message ?? String(failure))); setBusy(false) })
   }
   const toggleDay = day => setWeekdays(days => (days.includes(day) ? days.filter(item => item !== day) : [...days, day].sort()))

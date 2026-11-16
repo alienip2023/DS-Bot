@@ -5,6 +5,10 @@
 // them. A group chat's task lives on the group's own Session, so the reminder reaches
 // the group like a message from the user (see reminderText). DSH 0.2.0 mounts the service only with its Automation tasks bundle on, so
 // the service is optional and every endpoint reports whether it is there.
+// Stable Bot targets are stored and dispatched by bot-routines.js; DSH does not
+// accept that target kind. Session targets keep the compatibility paths below.
+
+import { installBotRoutines } from './bot-routines.js'
 
 const MAX_TITLE = 120
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/
@@ -87,6 +91,7 @@ function selectorOf(when) {
 
 export function install(rt) {
   const { ctx } = rt
+  const routines = installBotRoutines(rt)
   let service = null
 
   const attach = (sub) => {
@@ -123,6 +128,7 @@ export function install(rt) {
         : entry.status === 'paused' ? 'paused' : 'finished'
       tasks.push({ ...entry, sessionId, ...owner, state })
     }
+    tasks.push(...await routines.view())
     return { available: true, tasks }
   }
 
@@ -130,9 +136,10 @@ export function install(rt) {
     schedules: () => schedulesView(),
     async 'schedule-create'(body) {
       if (service === null) throw invalid('Automation tasks are off in DSH')
-      const bot = rt.botOf(body.target)
+      const botTarget = body.target?.kind === 'bot'
+      const bot = rt.botOf(botTarget ? body.target.botId : body.target)
       const room = rt.roomOf(body.target)
-      if (bot === undefined && room === undefined) throw invalid('No such Bot or group chat')
+      if (bot === undefined && (botTarget || room === undefined)) throw invalid('No such Bot or group chat')
       const title = String(body.title ?? '').trim()
       const prompt = String(body.prompt ?? '').trim()
       if (title === '') throw invalid('Give the task a name')
@@ -140,12 +147,20 @@ export function install(rt) {
       if (prompt === '') throw invalid('Say what the Bot should do')
       const sessionId = bot ? rt.chatOf(bot.id) : rt.sessionOfRoom(room)
       const selector = selectorOf(body.when)
+      if (botTarget) {
+        await routines.create({ target: body.target, title, prompt, selector })
+        return schedulesView()
+      }
       if (hostWide(service)) await service.create({ title, prompt, timing: timingOf(selector), target: { kind: 'session', sessionId } })
       else await service.create(sessionId, { title, prompt, ...selector })
       return schedulesView()
     },
     async 'schedule-delete'(body) {
       if (service === null) throw invalid('Automation tasks are off in DSH')
+      if (body.target?.kind === 'bot') {
+        await routines.remove(body)
+        return schedulesView()
+      }
       if (ownerOf(body.sessionId) === undefined) throw invalid('No such task')
       if (hostWide(service)) {
         // Ids are Host-wide here, so the task must still deliver to the team Session named.

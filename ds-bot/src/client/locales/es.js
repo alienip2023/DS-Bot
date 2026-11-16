@@ -1,6 +1,10 @@
 // Spanish (es) localization for DS Bot client and DSH settings namespaces.
 
 export const ES = {
+  'Queued': 'En cola',
+  'Running': 'En ejecución',
+  'Succeeded': 'Completado',
+  'Last run: {status}': 'Última ejecución: {status}',
   "Android beta": "Android beta",
   "Cannot reach the Server. Trying again…": "No se puede conectar con el servidor. Reintentando…",
   "No phones yet": "Aún no hay teléfonos",

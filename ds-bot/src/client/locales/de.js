@@ -1,6 +1,10 @@
 // German (de) localization for DS Bot client and DSH settings namespaces.
 
 export const DE = {
+  'Queued': 'In Warteschlange',
+  'Running': 'Wird ausgeführt',
+  'Succeeded': 'Erfolgreich',
+  'Last run: {status}': 'Letzte Ausführung: {status}',
   "Android beta": "Android-Beta",
   "Cannot reach the Server. Trying again…": "Server nicht erreichbar. Neuer Versuch…",
   "No phones yet": "Noch keine Telefone",

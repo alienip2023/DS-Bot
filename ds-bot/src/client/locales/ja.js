@@ -1,6 +1,10 @@
 // Japanese (ja) localization for DS Bot client and DSH settings namespaces.
 
 export const JA = {
+  'Queued': '待機中',
+  'Running': '実行中',
+  'Succeeded': '成功',
+  'Last run: {status}': '前回の実行：{status}',
   "Android beta": "Android ベータ版",
   "Cannot reach the Server. Trying again…": "サーバーに接続できません。再試行しています…",
   "No phones yet": "スマートフォンはまだありません",

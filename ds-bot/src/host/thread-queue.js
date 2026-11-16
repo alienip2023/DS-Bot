@@ -80,6 +80,7 @@ export function install(rt) {
   }
 
   const abortError = () => Object.assign(new Error('This message was cancelled before it started'), { name: 'AbortError', code: 'ABORT_ERR' })
+  const cancelled = entry => { void Promise.resolve().then(() => entry.onCancel?.()).catch(error => rt.warn?.('ds-bot: queued cancellation failed: %s', error)) }
 
   const runningEntryOf = (sessionId) => {
     for (const slot of slots.values()) {
@@ -165,6 +166,7 @@ export function install(rt) {
       watch: undefined,
       signal,
       onAbort: undefined,
+      onCancel: spec.onCancel,
     }
     const slot = slotOf(owner.botId)
     if (slot.running === null) {
@@ -178,6 +180,7 @@ export function install(rt) {
         if (at === -1) return
         slot.queue.splice(at, 1)
         clearAbort(entry)
+        cancelled(entry)
       }
       signal.addEventListener('abort', entry.onAbort, { once: true })
     }
@@ -211,7 +214,7 @@ export function install(rt) {
     const slot = slots.get(botId)
     if (slot === undefined) return
     if (slot.entry !== null) clearWatch(slot.entry)
-    for (const entry of slot.queue) clearAbort(entry)
+    for (const entry of slot.queue) { clearAbort(entry); cancelled(entry) }
     slots.delete(botId)
   }
 
@@ -223,6 +226,7 @@ export function install(rt) {
     if (at === -1) return { cancelled: false, remaining: slot.queue.length }
     const [gone] = slot.queue.splice(at, 1)
     clearAbort(gone)
+    cancelled(gone)
     return { cancelled: true, remaining: slot.queue.length }
   }
 
@@ -239,6 +243,7 @@ export function install(rt) {
         if (entry.sessionId !== sessionId) continue
         slot.queue.splice(at, 1)
         clearAbort(entry)
+        cancelled(entry)
         dropped += 1
       }
       if (slot.entry !== null && slot.entry.sessionId === sessionId) running = slot.entry
