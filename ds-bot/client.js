@@ -41,6 +41,7 @@ module.exports = __toCommonJS(index_exports);
 
 // src/client/locales/zh-tw.js
 var PHRASES = [
+  ["运行于 ", "運行於 "],
   ["剪贴板", "剪貼簿"],
   ["文件夹", "資料夾"],
   ["服务商", "供應商"],
@@ -149,6 +150,7 @@ var JA = {
   "Your phone scans it once. After that it connects by itself.": "スキャンは 1 回だけです。その後は自動で接続します。",
   "Beta": "ベータ",
   "Main Bot": "メイン Bot",
+  "Running on {host}": "{host} で実行中",
   "Working": "実行中",
   "Waiting for your answer": "回答待ち",
   "Waiting for {names}": "{names} の応答待ち",
@@ -7378,6 +7380,7 @@ var FR = {
   "Your phone scans it once. After that it connects by itself.": "Votre téléphone le scanne une seule fois. Ensuite, il se connecte tout seul.",
   "Beta": "Bêta",
   "Main Bot": "Bot principal",
+  "Running on {host}": "S'exécute sur {host}",
   "Working": "En cours",
   "Waiting for your answer": "Attend votre réponse",
   "Waiting for {names}": "En attente de {names}",

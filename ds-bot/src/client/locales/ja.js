@@ -27,6 +27,7 @@ export const JA = {
   "Your phone scans it once. After that it connects by itself.": "スキャンは 1 回だけです。その後は自動で接続します。",
   "Beta": "ベータ",
   "Main Bot": "メイン Bot",
+  'Running on {host}': '{host} で実行中',
   "Working": "実行中",
   "Waiting for your answer": "回答待ち",
   "Waiting for {names}": "{names} の応答待ち",

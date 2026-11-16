@@ -2,6 +2,7 @@
 // Applies Taiwan/HK standard UI terminology first, then character-level mapping.
 
 const PHRASES = [
+  ['运行于 ', '運行於 '],
   ['剪贴板', '剪貼簿'],
   ['文件夹', '資料夾'],
   ['服务商', '供應商'],

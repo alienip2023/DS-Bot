@@ -27,6 +27,7 @@ export const FR = {
   "Your phone scans it once. After that it connects by itself.": "Votre téléphone le scanne une seule fois. Ensuite, il se connecte tout seul.",
   "Beta": "Bêta",
   "Main Bot": "Bot principal",
+  'Running on {host}': "S'exécute sur {host}",
   "Working": "En cours",
   "Waiting for your answer": "Attend votre réponse",
   "Waiting for {names}": "En attente de {names}",
