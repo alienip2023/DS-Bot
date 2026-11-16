@@ -804,6 +804,7 @@ export const KO = {
   '{count} images': '이미지 {count}장',
   'Replies from': '그룹 답장:',
   'Reply from': '답장:',
+  'ReplyFrom': '원격 봇의 답장: ',
   'Message from': '메시지 발신:',
   'Stopped by': '중지한 주체:',
   '{count} messages with': '메시지 {count}개 · 상대:',

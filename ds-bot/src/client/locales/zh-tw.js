@@ -78,6 +78,10 @@ export function toTraditional(text) {
   return res
 }
 
+export const ZH_TW_OVERRIDES = {
+  'ReplyFrom': '收到來自跨機 Bot 的回覆：',
+}
+
 export function convertDict(dict) {
   const out = {}
   for (const [k, v] of Object.entries(dict)) out[k] = toTraditional(v)

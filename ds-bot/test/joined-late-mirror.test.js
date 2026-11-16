@@ -62,7 +62,7 @@ test('a result after the soft deadline closes its original page turn before buff
   await w.idle()
   strictRestore(session)
   assert.deepEqual(endKinds(session), ['completed', 'completed'])
-  assert.deepEqual(texts(session, 'user/message'), ['from the page', '[来自 local] from the team'])
+  assert.deepEqual(texts(session, 'user/message'), ['from the page', 'from the team'])
   assert.deepEqual(texts(session, 'assistant/message').slice(-2), ['page answer late', 'team answer'])
 })
 
@@ -95,7 +95,7 @@ test('a late answer after Stop also waits for the open Bot-to-Bot turn, then res
 
   strictRestore(session)
   assert.equal(endKinds(session).length, 3)
-  assert.deepEqual(texts(session, 'user/message'), ['from the page', '[来自 local] from the team'])
+  assert.deepEqual(texts(session, 'user/message'), ['from the page', 'from the team'])
   const answers = texts(session, 'assistant/message')
   assert.equal(answers.length, 4)
   assert.match(answers[1], /^⏹/)
@@ -130,7 +130,7 @@ test('a late answer that arrives while an exchange is still queued restores stri
 
   strictRestore(session)
   assert.equal(endKinds(session).length, 2, 'the queued exchange writes one closed turn')
-  assert.deepEqual(texts(session, 'user/message'), ['from the page', '[来自 local] from the team'])
+  assert.deepEqual(texts(session, 'user/message'), ['from the page', 'from the team'])
   const answers = texts(session, 'assistant/message')
   assert.equal(answers.length, 4)
   assert.match(answers[0], /Delivered to Joined/)

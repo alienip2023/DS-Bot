@@ -804,6 +804,7 @@ export const DE = {
   '{count} images': '{count} Bilder',
   'Replies from': 'Antworten von',
   'Reply from': 'Antwort von',
+  'ReplyFrom': 'Antwort vom Remote-Bot: ',
   'Message from': 'Nachricht von',
   'Stopped by': 'Gestoppt von',
   '{count} messages with': '{count} Nachrichten mit',

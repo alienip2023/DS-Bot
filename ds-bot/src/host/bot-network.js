@@ -111,7 +111,7 @@ export function install(rt) {
     }
     await rt.sendUser({
       sessionId: rt.chatOf(bot.id),
-      content: [{ type: 'text', text: `[来自 ${payload.from.name}] ${payload.text}` }],
+      content: [{ type: 'text', text: `[Message from ${payload.from.name}]\n${payload.text}` }],
       requestId: payload.exchangeId,
     })
     return null

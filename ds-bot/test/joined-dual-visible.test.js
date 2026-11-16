@@ -1,11 +1,15 @@
 // DS Bot business-layer coverage only: the registry/receiver boundary bypasses RA validation.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createBotTurnReceiver, handleJoinedTurn } from '../src/host/joined-turn.js'
+import { createBotTurnReceiver, handleJoinedTurn, remoteGroupSession } from '../src/host/joined-turn.js'
 import { makeWorld, textRequest } from './joined-world.js'
 
 const BODY = '  original body\n正文保持原样  '
 const drain = () => new Promise(resolve => setImmediate(resolve))
+
+function occurrences(text, substring) {
+  return text.split(substring).length - 1
+}
 
 function hubWorld(t, sender = { id: 'sender', name: 'X' }) {
   const w = makeWorld()
@@ -38,24 +42,41 @@ async function receive(turn) {
   }
   const accept = createBotTurnReceiver(rt)
   const result = await accept({ remoteBotId: 'local', exchangeId: 'node-exchange', text: BODY, ...turn })
-  assert.deepEqual(result, { ok: true, exchangeId: 'node-exchange', text: 'node reply' })
+  const roomId = typeof turn.roomId === 'string' ? turn.roomId.trim() : ''
+  assert.deepEqual(result, { ok: true, exchangeId: 'node-exchange', text: 'node reply', ...(roomId ? { roomId } : {}) })
   assert.equal(prompts.length, 1)
-  assert.equal(prompts[0].sessionId, 'node-chat')
+  assert.equal(prompts[0].sessionId, roomId ? remoteGroupSession(roomId, 'local') : 'node-chat')
   assert.equal(prompts[0].requestId, 'node-exchange')
   return prompts[0].content
 }
 
-test('node receiver prefixes a named sender and preserves the complete body', async () => {
-  assert.deepEqual(await receive({ senderBotId: 'sender', senderName: 'X' }), [
-    { type: 'text', text: `[来自 X] ${BODY}` },
-  ])
-})
+for (const senderName of ['X', '  X  ']) {
+  test(`node receiver adds one sender header and preserves the complete body: ${JSON.stringify(senderName)}`, async () => {
+    const content = await receive({ senderBotId: 'sender', senderName })
+    assert.deepEqual(content, [{ type: 'text', text: `[Message from X]\n${BODY}` }])
+    assert.equal(content[0].text.split('\n')[0], '[Message from X]')
+    assert.equal(occurrences(content[0].text, 'X'), 1)
+    assert.equal(occurrences(content[0].text, '[来自'), 0)
+  })
+}
+
+for (const [roomName, groupName] of [[' Team ', 'Team'], ['', 'room-1'], [undefined, 'room-1']]) {
+  test(`node receiver includes the group and sender exactly once: ${JSON.stringify(roomName)}`, async () => {
+    const content = await receive({ roomId: ' room-1 ', roomName, senderBotId: 'sender', senderName: ' X ' })
+    assert.deepEqual(content, [{ type: 'text', text: `[群 ${groupName}]\n[Message from X]\n${BODY}` }])
+    assert.equal(content[0].text.split('\n')[1], '[Message from X]')
+    assert.equal(occurrences(content[0].text, groupName), 1)
+    assert.equal(occurrences(content[0].text, 'X'), 1)
+    assert.equal(occurrences(content[0].text, '[来自'), 0)
+  })
+}
 
 for (const senderName of [undefined, null, '', '   ', 42]) {
   test(`node receiver preserves the original text without a usable senderName: ${JSON.stringify(senderName)}`, async () => {
     // Omitting both fields models an old RA dropping the optional identity fields.
     const turn = senderName === undefined ? {} : { senderBotId: 'sender', senderName }
     assert.deepEqual(await receive(turn), [{ type: 'text', text: BODY }])
+    assert.deepEqual(await receive({ ...turn, roomId: 'room-1', roomName: ' Team ' }), [{ type: 'text', text: `[群 Team] ${BODY}` }])
   })
 }
 
@@ -75,15 +96,15 @@ for (const [label, sender, senderName] of [
         senderBotId: 'sender', senderName,
       },
     }])
-    assert.equal(mirrorPrompt(w).content[0].text, `[来自 ${senderName}] ${BODY}`)
+    assert.equal(mirrorPrompt(w).content[0].text, BODY)
   })
 }
 
-test('hub mirror prefixes the sender name and keeps joined:<exchangeId> as its rpcId', async t => {
+test('hub mirror preserves the body and keeps joined:<exchangeId> as its rpcId', async t => {
   const w = hubWorld(t)
   await w.send()
   const prompt = mirrorPrompt(w)
-  assert.deepEqual(prompt.content, [{ type: 'text', text: `[来自 X] ${BODY}` }])
+  assert.deepEqual(prompt.content, [{ type: 'text', text: BODY }])
   assert.equal(prompt.source.rpcId, 'joined:dual-visible')
 })
 

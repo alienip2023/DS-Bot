@@ -331,8 +331,9 @@ test('incoming ask injects a named user message, keeps the exchange id, and retu
   const w = nodeWorld(t)
   const receive = [...w.handlers][0]
   assert.equal(await receive(message({ to: { id: w.local.id } })), null)
-  assert.deepEqual(w.injected, [{ sessionId: 'local-chat', content: [{ type: 'text', text: '[来自 Source] Hello' }], requestId: 'exchange-1' }])
-  assert.ok(w.injected[0].content[0].text.startsWith('[来自 '))
+  assert.deepEqual(w.injected, [{ sessionId: 'local-chat', content: [{ type: 'text', text: '[Message from Source]\nHello' }], requestId: 'exchange-1' }])
+  assert.ok(w.injected[0].content[0].text.startsWith('[Message from '))
+  assert.equal(w.injected[0].content[0].text.includes('[来自'), false)
   assert.equal(w.sent.length, 0)
   await w.ctx.dispose()
   assert.equal(w.handlers.size, 0)
@@ -364,7 +365,7 @@ test('a node tool carries sender identity through the real joined handler to bot
   })
   assert.match(frame.payload.exchangeId, /^[0-9a-f-]{36}$/)
   const prompt = hub.sessionOf('mirror-1').log.find(event => event.type === 'user/message')
-  assert.equal(prompt.data.content[0].text, '[来自 Local] Across nodes')
+  assert.equal(prompt.data.content[0].text, 'Across nodes')
   assert.equal(source.injected.length, 0, 'no automatic reply is injected')
 })
 

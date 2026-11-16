@@ -804,6 +804,7 @@ export const ES = {
   '{count} images': '{count} imágenes',
   'Replies from': 'Respuestas de',
   'Reply from': 'Respuesta de',
+  'ReplyFrom': 'Respuesta del bot remoto: ',
   'Message from': 'Mensaje de',
   'Stopped by': 'Detenido por',
   '{count} messages with': '{count} mensajes con',

@@ -113,6 +113,9 @@ function toTraditional(text2) {
   for (const ch of out) res += CHAR_MAP.get(ch) ?? ch;
   return res;
 }
+var ZH_TW_OVERRIDES = {
+  "ReplyFrom": "收到來自跨機 Bot 的回覆："
+};
 function convertDict(dict) {
   const out = {};
   for (const [k, v] of Object.entries(dict)) out[k] = toTraditional(v);
@@ -915,6 +918,7 @@ var JA = {
   "{count} images": "画像 {count} 枚",
   "Replies from": "グループ返信:",
   "Reply from": "返信元:",
+  "ReplyFrom": "リモートBotからの返信：",
   "Message from": "メッセージ送信元:",
   "Stopped by": "停止者:",
   "{count} messages with": "{count} 件のやり取り:",
@@ -3324,6 +3328,7 @@ var KO = {
   "{count} images": "이미지 {count}장",
   "Replies from": "그룹 답장:",
   "Reply from": "답장:",
+  "ReplyFrom": "원격 봇의 답장: ",
   "Message from": "메시지 발신:",
   "Stopped by": "중지한 주체:",
   "{count} messages with": "메시지 {count}개 · 상대:",
@@ -5749,6 +5754,7 @@ var ES = {
   "{count} images": "{count} imágenes",
   "Replies from": "Respuestas de",
   "Reply from": "Respuesta de",
+  "ReplyFrom": "Respuesta del bot remoto: ",
   "Message from": "Mensaje de",
   "Stopped by": "Detenido por",
   "{count} messages with": "{count} mensajes con",
@@ -8145,6 +8151,7 @@ var FR = {
   "{count} images": "{count} images",
   "Replies from": "Réponses de",
   "Reply from": "Réponse de",
+  "ReplyFrom": "Réponse du bot distant : ",
   "Message from": "Message de",
   "Stopped by": "Arrêté par",
   "{count} messages with": "{count} messages avec",
@@ -10554,6 +10561,7 @@ var DE = {
   "{count} images": "{count} Bilder",
   "Replies from": "Antworten von",
   "Reply from": "Antwort von",
+  "ReplyFrom": "Antwort vom Remote-Bot: ",
   "Message from": "Nachricht von",
   "Stopped by": "Gestoppt von",
   "{count} messages with": "{count} Nachrichten mit",
@@ -13027,6 +13035,7 @@ var ZH = {
   "{count} images": "{count} 张图片",
   "Replies from": "群聊回复：",
   "Reply from": "收到回复：",
+  "ReplyFrom": "收到来自跨机 Bot 的回复：",
   "Message from": "收到消息：",
   "Stopped by": "叫停者：",
   "{count} messages with": "{count} 条消息，来自",
@@ -13953,7 +13962,7 @@ Object.assign(ZH, {
   "No machines have joined yet": "还没有机器接入",
   "Its own memory": "该 Bot 自己的记忆"
 });
-var ZH_TW = convertDict(ZH);
+var ZH_TW = { ...convertDict(ZH), ...ZH_TW_OVERRIDES };
 var HOST_ERRORS_ZH_TW = convertHostErrors(HOST_ERRORS);
 var LANGUAGES = [
   { id: "zh-TW", label: "繁體中文", fallback: "zh" },
@@ -27283,6 +27292,11 @@ function chatRow(row, key, { sessionId, selfId, roster, actions, useUi, onBtwDel
     case "event": {
       if (row.role === "report") return (0, import_react33.createElement)(GroupEvent, { key, prefix: t("Replies from"), room: roster.roomsById[row.roomId], name: t("a group chat"), roster, actions });
       const other = roster.byId[row.botId] ?? { id: row.botId, name: row.name ?? t("a Bot"), color: "gray" };
+      if (row.role === "reply" && row.joinedTurn === true) {
+        return (0, import_react33.createElement)(EventLine, { key, prefix: t("ReplyFrom"), bots: [other], onOpen: () => {
+          if (selfId && other.id) actions.openExchange(selfId, other.id);
+        }, whole: true });
+      }
       const prefix = { stopped: t("Stopped by"), reply: t("Reply from") }[row.role] ?? t("Message from");
       return (0, import_react33.createElement)(EventLine, { key, prefix, bots: [other], onOpen: () => {
         if (selfId && other.id) actions.openExchange(selfId, other.id);

@@ -792,6 +792,7 @@ export const FR = {
   "{count} images": "{count} images",
   "Replies from": "Réponses de",
   "Reply from": "Réponse de",
+  'ReplyFrom': 'Réponse du bot distant : ',
   "Message from": "Message de",
   "Stopped by": "Arrêté par",
   "{count} messages with": "{count} messages avec",

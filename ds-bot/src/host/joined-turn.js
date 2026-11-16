@@ -46,7 +46,7 @@ async function openMirrorTurn(rt, bot, text, xid, senderName, roomId) {
     // A page turn may hold this Session: beginJoinedMirror then buffers the exchange until the
     // page turn ends, so the two writers never take turns on the same log (joined-mirror-writer.js).
     // All joined members in a room share its log, so they share its writer gate too.
-    return beginJoinedMirror(rt, bot, session, { text: textWithSender(text, senderName), rpcId, state, ...(room ? { writerId: session.id } : {}) })
+    return beginJoinedMirror(rt, bot, session, { text: text ?? '', rpcId, state, ...(room ? { writerId: session.id } : {}) })
   } catch (error) {
     rt.warn?.('ds-bot: a Bot-to-Bot message for %s was not mirrored: %s', bot.id, error?.message ?? error)
     return undefined
@@ -65,10 +65,6 @@ export function joinedDispatchRole(role) {
 
 function trimmed(value) {
   return typeof value === 'string' ? value.trim() : ''
-}
-
-function textWithSender(text, senderName) {
-  return trimmed(senderName) === '' ? text ?? '' : `[来自 ${senderName}] ${text ?? ''}`
 }
 
 export function listenBotTurnResult(registry, exchangeId, nodeId, timeoutMs, remoteBotId, { lateWindowMs = 0, onTimeout } = {}) {
@@ -252,7 +248,7 @@ export async function replyToSender(rt, { fromId, toId, exchangeId, work, text, 
   if (roomId) {
     const room = rt.roomOf?.(roomId)
     if (room) {
-      await rt.deliver?.({ fromId: toId, toId: fromId ?? toId, text, role: 'reply', replyTo: exchangeId, roomId, ...(work ? { work } : {}) })
+      await rt.deliver?.({ fromId: toId, toId: fromId ?? toId, text, role: 'reply', replyTo: exchangeId, roomId, ...(work ? { work } : {}), joinedTurn: true })
       return
     }
     rt.warn?.('ds-bot: room %s for joined reply %s was not found; falling back to private chat', roomId, exchangeId)
@@ -266,6 +262,7 @@ export async function replyToSender(rt, { fromId, toId, exchangeId, work, text, 
     role: 'reply',
     replyTo: exchangeId,
     ...(work ? { work } : {}),
+    joinedTurn: true,
   })
 }
 
@@ -437,11 +434,18 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
       // when the turn finishes, resolving `done`.
       if (typeof rt.sendUser !== 'function') throw new Error('sendUser unavailable')
       const sessionIdForTurn = roomId ? await groupSessionFor(bot, roomId, trimmed(turn.roomName)) : rt.chatOf?.(bot.id)
-      const send = () => rt.sendUser({
-        sessionId: sessionIdForTurn,
-        content: [{ type: 'text', text: roomId ? `[群 ${trimmed(turn.roomName) || roomId}] ${textWithSender(turn.text, turn.senderName)}` : textWithSender(turn.text, turn.senderName) }],
-        requestId: exchangeId,
-      })
+      const send = () => {
+        const name = typeof turn.senderName === 'string' ? turn.senderName.trim() : ''
+        const header = name === '' ? '' : '[Message from ' + name + ']'
+        const text = roomId
+          ? '[群 ' + (trimmed(turn.roomName) || roomId) + ']' + (header === '' ? ' ' : '\n' + header + '\n') + (turn.text ?? '')
+          : header === '' ? (turn.text ?? '') : header + '\n' + (turn.text ?? '')
+        return rt.sendUser({
+          sessionId: sessionIdForTurn,
+          content: [{ type: 'text', text }],
+          requestId: exchangeId,
+        })
+      }
       if (typeof rt.sendThreadTurn === 'function') {
         await rt.sendThreadTurn({
           botId: bot.id, kind: 'send', preview: turn.text, releaseOn: 'turn-end', run: send,

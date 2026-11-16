@@ -89,7 +89,7 @@ test('duplicate deferred deliveries for the same exchangeId dispatch and reply o
   w.reply(0, 'one answer')
   await drain()
   assert.deepEqual(w.replies, [{
-    fromId: w.bot.id, toId: 'sender', text: 'one answer', role: 'reply', replyTo: 'duplicate',
+    fromId: w.bot.id, toId: 'sender', text: 'one answer', role: 'reply', replyTo: 'duplicate', joinedTurn: true,
   }])
   assert.equal(w.session.log.filter(e => e.type === 'turn/start').length, 1)
   assert.equal(w.session.log.filter(e => e.type === 'turn/end').length, 1)

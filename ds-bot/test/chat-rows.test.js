@@ -80,6 +80,30 @@ test('a view row renders as a view card from its blueprint', () => {
   assert.equal(rendered.props.className, 'bt-q-inline')
 })
 
+test('joined replies use their event prefix and open the exchange, while other events keep their prefixes', () => {
+  const opened = []
+  for (const [role, joinedTurn, botId, expected] of [
+    ['reply', true, 'b', 'ReplyFrom'],
+    ['reply', true, 'remote', 'ReplyFrom'],
+    ['reply', undefined, 'b', 'Reply from'],
+    ['reply', 'true', 'b', 'Reply from'],
+    ['stopped', true, 'b', 'Stopped by'],
+    ['request', true, 'b', 'Message from'],
+  ]) {
+    const [row] = ChatRows({
+      items: [{ kind: 'event', role, joinedTurn, botId, name: 'Remote' }],
+      sessionId: 'b', roster, actions: { openExchange: (...ids) => opened.push(ids) },
+    })
+    assert.equal(row.type.name, 'EventLine')
+    assert.equal(row.props.prefix, expected)
+    assert.equal(row.props.whole, true)
+    assert.equal(row.props.bots[0].id, botId)
+    assert.equal(row.props.bots[0].name, botId === 'b' ? 'Writer' : 'Remote')
+    row.props.onOpen()
+    assert.deepEqual(opened.at(-1), ['b', botId])
+  }
+})
+
 test('with the clock, a time separator sits above the first entry and after each pause of half an hour', () => {
   const items = [
     { kind: 'divider', time: 0 },

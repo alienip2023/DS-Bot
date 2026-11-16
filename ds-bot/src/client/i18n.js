@@ -1,7 +1,7 @@
 // Interface copy follows the DSH language. Keys are the English text; `zh`, `zh-TW`,
 // `ja`, `ko`, `es`, `fr` and `de` map them. Copy is looked up at render time and every
 // slot outlet re-renders on a language switch, so nothing caches a translated string.
-import { convertDict, convertHostErrors, toTraditional } from './locales/zh-tw.js'
+import { convertDict, convertHostErrors, toTraditional, ZH_TW_OVERRIDES } from './locales/zh-tw.js'
 import { DSH_JA, HOST_ERRORS_JA, JA } from './locales/ja.js'
 import { DSH_KO, HOST_ERRORS_KO, KO } from './locales/ko.js'
 import { DSH_ES, HOST_ERRORS_ES, ES } from './locales/es.js'
@@ -863,6 +863,7 @@ const ZH = {
   '{count} images': '{count} 张图片',
   'Replies from': '群聊回复：',
   'Reply from': '收到回复：',
+  'ReplyFrom': '收到来自跨机 Bot 的回复：',
   'Message from': '收到消息：',
   'Stopped by': '叫停者：',
   '{count} messages with': '{count} 条消息，来自',
@@ -1805,7 +1806,7 @@ Object.assign(ZH, {
   'Its own memory': '该 Bot 自己的记忆',
 })
 
-const ZH_TW = convertDict(ZH)
+const ZH_TW = { ...convertDict(ZH), ...ZH_TW_OVERRIDES }
 const HOST_ERRORS_ZH_TW = convertHostErrors(HOST_ERRORS)
 
 export const LANGUAGES = [
