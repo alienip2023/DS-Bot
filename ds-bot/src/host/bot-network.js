@@ -96,8 +96,8 @@ export function install(rt) {
   const receive = payload => stopped ? undefined : handleNodeMessage(rt, payload)
   const previous = serviceOf(rt, 'remote-agent:bot-message')
   let offReceiver
-  if (typeof ctx?.set === 'function') ctx.set('remote-agent:bot-message', receive)
-  else offReceiver = ctx?.provide?.('remote-agent:bot-message', receive)
+  if (previous === undefined) offReceiver = ctx?.provide?.('remote-agent:bot-message', receive)
+  else if (typeof ctx?.set === 'function') ctx.set('remote-agent:bot-message', receive)
 
   rt.botNetwork = serviceOf(rt, 'remote-agent:bot-network')
   const offMessage = rt.botNetwork?.onMessage(async payload => {
@@ -127,7 +127,7 @@ export function install(rt) {
     offSaved?.()
     offMessage?.()
     offReceiver?.()
-    if (typeof ctx.set === 'function' && serviceOf(rt, 'remote-agent:bot-message') === receive) ctx.set('remote-agent:bot-message', previous)
+    if (previous !== undefined && typeof ctx.set === 'function' && serviceOf(rt, 'remote-agent:bot-message') === receive) ctx.set('remote-agent:bot-message', previous)
     asks.delete(rt)
     rt.botNetwork = undefined
   }, 'ds-bot: Bot network')

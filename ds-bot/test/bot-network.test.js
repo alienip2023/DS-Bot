@@ -14,7 +14,10 @@ function world(t, { network, registry = new EventEmitter() } = {}) {
   const peer = { id: 'peer:h:c', name: 'Peer', origin: 'peer', worker: { home: 'hub', hubId: 'h' } }
   const services = { 'remote-agent:registry': registry, 'remote-agent:bot-network': network }
   const ctx = fakeContext({ services })
-  ctx.set = (key, value) => { services[key] = value }
+  ctx.set = (key, value) => {
+    if (!Object.hasOwn(services, key)) throw new Error(`cannot set property "${key}" without provide`)
+    services[key] = value
+  }
   const frames = []
   const joinedTurns = []
   const delivered = []
@@ -135,6 +138,43 @@ test('private Bots stay outside the network directory and cannot receive network
   assert.equal(directoryOf(w.rt).some(bot => bot.id === w.local.id), false)
   await handleNodeMessage(w.rt, message({ to: { id: w.local.id } }))
   assert.equal(w.delivered.length, 0)
+})
+
+test('install provides an absent receiver and only sets and restores a provided receiver', async t => {
+  for (const provided of [false, true]) {
+    await t.test(provided ? 'already provided' : 'not provided', async t => {
+      const w = world(t)
+      const name = 'remote-agent:bot-message'
+      const previous = () => null
+      if (provided) w.ctx.provide(name, previous)
+      const originalProvide = w.ctx.provide.bind(w.ctx)
+      let offReceiver
+      const provide = t.mock.method(w.ctx, 'provide', (name, value) => {
+        offReceiver = t.mock.fn(originalProvide(name, value))
+        return offReceiver
+      })
+      const set = t.mock.method(w.ctx, 'set')
+
+      assert.doesNotThrow(() => install(w.rt))
+      const receive = w.ctx.get(name)
+      assert.equal(typeof receive, 'function')
+      assert.notEqual(receive, previous)
+      assert.equal(provide.mock.callCount(), provided ? 0 : 1)
+      assert.equal(set.mock.callCount(), provided ? 1 : 0)
+      const registration = (provided ? set : provide).mock.calls[0]
+      assert.deepEqual(registration.arguments, [name, receive])
+
+      const cleanup = await w.ctx.dispose()
+      assert.ok(cleanup.every(result => result.status === 'fulfilled'))
+      assert.equal(w.ctx.get(name), provided ? previous : undefined)
+      assert.equal(set.mock.callCount(), provided ? 2 : 0)
+      if (provided) assert.deepEqual(set.mock.calls[1].arguments, [name, previous])
+      else assert.equal(offReceiver.mock.callCount(), 1)
+      await w.ctx.dispose()
+      assert.equal(set.mock.callCount(), provided ? 2 : 0)
+      if (!provided) assert.equal(offReceiver.mock.callCount(), 1)
+    })
+  }
 })
 
 test('install registers the hub receiver and publishes on online, roster changes, and a 60s fallback', async t => {
