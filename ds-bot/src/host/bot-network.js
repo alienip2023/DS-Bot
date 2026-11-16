@@ -54,7 +54,9 @@ export async function handleNodeMessage(rt, payload) {
     fromId: payload.from.id, toId: to.id, text: payload.text,
     role: 'default', exchangeId: payload.exchangeId,
   }
-  if (to.origin === 'joined') return rt.handleJoinedTurn({ ...message, defer: true })
+  if (to.origin === 'joined') return rt.handleJoinedTurn({
+    ...message, senderName: payload.from.name, senderBotId: payload.from.id, defer: true,
+  })
   return rt.deliver({ ...message, fromName: payload.from.name })
 }
 

@@ -286,7 +286,8 @@ export async function handleJoinedTurn(rt, msg = {}) {
   const existing = rt.joinedDeliveries?.get(xid)
   if (existing) return msg.defer === true ? xid : existing.waited
   const sender = rt.botOf?.(fromId)
-  const senderName = trimmed(sender?.name) === '' ? fromId : sender.name
+  const senderName = trimmed(msg.senderName) || (trimmed(sender?.name) === '' ? fromId : sender.name)
+  const senderBotId = trimmed(msg.senderBotId) || fromId
   const opened = await openMirrorTurn(rt, to, text, xid, senderName, roomId)
   // A retried delivery is already on the page: dispatch again (the node's exchange is keyed by
   // xid), but do not open a second turn there.
@@ -311,7 +312,7 @@ export async function handleJoinedTurn(rt, msg = {}) {
   let sent = false
   try {
     sent = registry.send(nodeId, 'bot/turn', {
-      nodeId, remoteBotId, exchangeId: xid, text: text ?? '', senderBotId: fromId, senderName, ...roomFields,
+      nodeId, remoteBotId, exchangeId: xid, text: text ?? '', senderBotId, senderName, ...roomFields,
     })
   } catch { /* the connection may close between lookup and send */ }
   if (sent !== true) {

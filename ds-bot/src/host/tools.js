@@ -204,9 +204,12 @@ export function install(rt) {
           if (String(args.message ?? '').trim() === '') return 'Write a message to send.'
           const room = rt.roomOf(rt.groupOwners.get(exec.agent?.id)?.roomId)
           if (room !== undefined) refuse(`Not sent: ${remote.name} is on another node, and work for this group stays in it.`)
+          const nodeId = rt.botNetwork?.nodeId
+          if (typeof nodeId !== 'string' || nodeId.trim() === '') refuse('bot-network-identity-unavailable')
+          const from = { id: sender.id, name: sender.name || sender.id, nodeId }
           const to = { id: remote.id, name: remote.name, nodeId: remote.nodeId }
           const text = absoluteLinks(String(args.message), rt.sessionFolder?.(exec.agent?.session ?? exec.agent))
-          if (!rt.botNetwork.send({ to, exchangeId: randomUUID(), kind: 'ask', text, depth: 0 })) refuse(`Message to ${remote.name} could not be sent; the Bot network is unavailable.`)
+          if (!rt.botNetwork.send({ from, to, exchangeId: randomUUID(), kind: 'ask', text, depth: 0 })) refuse(`Message to ${remote.name} could not be sent; the Bot network is unavailable.`)
           return `Sent to ${remote.name} on ${remote.nodeId}; its reply will arrive later as a new message.`
         }
       }
