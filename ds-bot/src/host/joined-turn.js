@@ -36,7 +36,7 @@ const MIRROR_RPC_PREFIX = 'joined:'
 // or with the visible failure line. `duplicate` means this exchange is already on the page
 // (a retried delivery): the turn is not opened again. Any mirror failure is a warning only —
 // it must never block the dispatch itself.
-async function openMirrorTurn(rt, bot, text, xid) {
+async function openMirrorTurn(rt, bot, text, xid, senderName) {
   try {
     const session = await ensureMirrorSession(rt, bot)
     const rpcId = MIRROR_RPC_PREFIX + xid
@@ -44,7 +44,7 @@ async function openMirrorTurn(rt, bot, text, xid) {
     const state = mirrorStateOf(rt, bot.id, session)
     // A page turn may hold this Session: beginJoinedMirror then buffers the exchange until the
     // page turn ends, so the two writers never take turns on the same log (joined-mirror-writer.js).
-    return beginJoinedMirror(rt, bot, session, { text, rpcId, state })
+    return beginJoinedMirror(rt, bot, session, { text: textWithSender(text, senderName), rpcId, state })
   } catch (error) {
     rt.warn?.('ds-bot: a Bot-to-Bot message for %s was not mirrored: %s', bot.id, error?.message ?? error)
     return undefined
@@ -63,6 +63,10 @@ export function joinedDispatchRole(role) {
 
 function trimmed(value) {
   return typeof value === 'string' ? value.trim() : ''
+}
+
+function textWithSender(text, senderName) {
+  return trimmed(senderName) === '' ? text ?? '' : `[来自 ${senderName}] ${text ?? ''}`
 }
 
 export function listenBotTurnResult(registry, exchangeId, nodeId, timeoutMs, remoteBotId, { lateWindowMs = 0, onTimeout } = {}) {
@@ -268,7 +272,9 @@ export async function handleJoinedTurn(rt, msg = {}) {
   const xid = trimmed(exchangeId) || randomUUID()
   const existing = rt.joinedDeliveries?.get(xid)
   if (existing) return msg.defer === true ? xid : existing.waited
-  const opened = await openMirrorTurn(rt, to, text, xid)
+  const sender = rt.botOf?.(fromId)
+  const senderName = trimmed(sender?.name) === '' ? fromId : sender.name
+  const opened = await openMirrorTurn(rt, to, text, xid, senderName)
   // A retried delivery is already on the page: dispatch again (the node's exchange is keyed by
   // xid), but do not open a second turn there.
   const mirror = opened?.duplicate === true ? undefined : opened
@@ -291,7 +297,9 @@ export async function handleJoinedTurn(rt, msg = {}) {
   })
   let sent = false
   try {
-    sent = registry.send(nodeId, 'bot/turn', { nodeId, remoteBotId, exchangeId: xid, text: text ?? '' })
+    sent = registry.send(nodeId, 'bot/turn', {
+      nodeId, remoteBotId, exchangeId: xid, text: text ?? '', senderBotId: fromId, senderName,
+    })
   } catch { /* the connection may close between lookup and send */ }
   if (sent !== true) {
     wait.cancel()
@@ -384,7 +392,7 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
       if (typeof rt.sendUser !== 'function') throw new Error('sendUser unavailable')
       await rt.sendUser({
         sessionId: rt.chatOf?.(bot.id),
-        content: [{ type: 'text', text: turn.text ?? '' }],
+        content: [{ type: 'text', text: textWithSender(turn.text, turn.senderName) }],
         requestId: exchangeId,
       })
     } catch {
