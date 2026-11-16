@@ -11,6 +11,7 @@ import { AgentBadge } from './agent-badge.js'
 import { reducedMotion } from './activity-row.js'
 import { Shimmer, workPhrase } from './cells.js'
 import { SPRING_GLIDE, SPRING_POP, SPRING_SHAPE, SPRING_TAP, stepMenuFocus, useLinger, useViewport, viewBottom } from './motion.js'
+import { joinedMachineLabel } from './joined-machine-label.js'
 import { hostText, t } from './i18n.js'
 import { clientErrors } from './diagnostics.js'
 import { showsDshRow } from './dsh-offer.js'
@@ -214,7 +215,7 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
   // Another machine's Bot, mirrored read-only: it has no local Session to open.
   const peer = bot.origin === 'peer' && bot.worker?.home === 'hub'
   const machine = joined
-    ? [t('Running on {host}', { host: bot.worker.hostname || bot.worker.nodeId }), bot.worker.online === false ? '离线' : ''].filter(Boolean).join(' · ')
+    ? [joinedMachineLabel(bot.worker, t), bot.worker.online === false ? '离线' : ''].filter(Boolean).join(' · ')
     : peer
       ? [bot.worker?.hostname || bot.worker?.nodeId || '', bot.worker?.online === false ? '离线' : '在线'].filter(Boolean).join(' · ')
       : ''
@@ -1594,7 +1595,3 @@ export const SIDEBAR_CSS = `
 .bt-sec-add-list{display:flex;flex-direction:column;gap:2px;max-height:240px;overflow-y:auto}
 @media (prefers-reduced-motion:reduce){.bt-sec-body,.bt-sec-chev,.bt-sec-act,.bt-rail-folder{transition:none}.bt-sec-pile{animation:none}}
 `
-
-// Exported for unit testing: returns the preview text shown under a joined Bot's name.
-// Knife: remove the t('Running on {host}') call → sidebar label test fails.
-export { joinedMachineLabel } from './joined-machine-label.js'

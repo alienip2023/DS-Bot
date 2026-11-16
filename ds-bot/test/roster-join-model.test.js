@@ -78,8 +78,6 @@ describe('joined roster model and missing-flag heal', () => {
     })
     assert.equal(state.bots[id].worker.missingFromReport, false)
   })
-})
-
   it('applyRosterReport sets homeNodeId at the row top level, outside worker', () => {
     // Knife: remove `homeNodeId: nodeId` from row construction → this test fails.
     const state = { bots: {} }
@@ -168,3 +166,4 @@ describe('joined roster model and missing-flag heal', () => {
     assert.equal(calls[0]?.key, 'Running on {host}')
     assert.equal(calls[0]?.params?.host, 'n5')
   })
+})
