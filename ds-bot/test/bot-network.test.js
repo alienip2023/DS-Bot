@@ -4,7 +4,9 @@ import { test } from 'node:test'
 import { MODULES } from '../index.js'
 import { directoryOf, publishDirectory, handleNodeMessage, install } from '../src/host/bot-network.js'
 import { install as installTools } from '../src/host/tools.js'
+import { handleJoinedTurn } from '../src/host/joined-turn.js'
 import { fakeContext } from './fake-ctx.js'
+import { makeWorld } from './joined-world.js'
 
 function world(t, { network, registry = new EventEmitter() } = {}) {
   const local = { id: 'local', name: 'Local', role: 'Writer', sessionId: 'local-chat' }
@@ -69,10 +71,10 @@ test('publishDirectory sends the current directory to every online node', async 
   }
 })
 
-test('hub routes asks to joined Bots with defer:true', async t => {
+test('hub passes joined routing arguments with defer:true (stubbed handler)', async t => {
   const w = world(t)
   await handleNodeMessage(w.rt, message())
-  assert.deepEqual(w.joinedTurns, [{ fromId: 'source', toId: w.joined.id, text: 'Hello', role: 'default', exchangeId: 'exchange-1', defer: true }])
+  assert.deepEqual(w.joinedTurns, [{ fromId: 'source', toId: w.joined.id, text: 'Hello', role: 'default', exchangeId: 'exchange-1', senderName: 'Source', senderBotId: 'source', defer: true }])
   assert.equal(w.delivered.length, 0)
 })
 
@@ -173,13 +175,21 @@ test('install registers the hub receiver and publishes on online, roster changes
   assert.equal(w.frames.length, 0)
 })
 
+// Minimal remote-agent send contract, copied here to avoid a cross-repository import.
+function validateNodeMessage(payload, nodeId) {
+  if (!payload.from || ['id', 'name', 'nodeId'].some(key => typeof payload.from[key] !== 'string' || payload.from[key].trim() === '') || payload.from.nodeId !== nodeId) {
+    throw Object.assign(new Error('bot-message-invalid'), { code: 'bot-message-invalid' })
+  }
+}
+
 function nodeWorld(t, { sendResult = true } = {}) {
   const sent = []
   const handlers = new Set()
   const target = { id: 'joined:n3:c', name: 'Scout', role: 'Research', nodeId: 'n3' }
   const network = {
+    nodeId: 'n1',
     directory: () => [target],
-    send: payload => { sent.push(payload); return sendResult },
+    send: payload => { validateNodeMessage(payload, network.nodeId); sent.push(payload); return sendResult },
     onMessage: handler => { handlers.add(handler); return () => handlers.delete(handler) },
   }
   const w = world(t, { network })
@@ -196,9 +206,36 @@ test('message_bot uses the live remote directory when the local lookup misses', 
   const result = await w.tool.execute({ to: 'Scout', message: 'Investigate' }, w.exec)
   assert.equal(result, 'Sent to Scout on n3; its reply will arrive later as a new message.')
   assert.equal(w.sent.length, 1)
-  assert.deepEqual(w.sent[0], { to: { id: w.target.id, name: 'Scout', nodeId: 'n3' }, exchangeId: w.sent[0].exchangeId, kind: 'ask', text: 'Investigate', depth: 0 })
+  assert.deepEqual(w.sent[0], { from: { id: 'local', name: 'Local', nodeId: 'n1' }, to: { id: w.target.id, name: 'Scout', nodeId: 'n3' }, exchangeId: w.sent[0].exchangeId, kind: 'ask', text: 'Investigate', depth: 0 })
   assert.match(w.sent[0].exchangeId, /^[0-9a-f-]{36}$/)
   assert.equal(w.delivered.length, 0)
+})
+
+test('remote send passes the node identity validator with all three sender fields', async t => {
+  const w = nodeWorld(t)
+  assert.throws(() => validateNodeMessage({}, 'n1'), { code: 'bot-message-invalid' })
+  assert.throws(() => validateNodeMessage(message(), 'other-node'), { code: 'bot-message-invalid' })
+  await w.tool.execute({ to: 'Scout', message: 'Validated' }, w.exec)
+  assert.deepEqual(w.sent[0].from, { id: w.local.id, name: w.local.name, nodeId: w.network.nodeId })
+  assert.doesNotThrow(() => validateNodeMessage(w.sent[0], w.network.nodeId))
+})
+
+test('remote send falls back to the local sender id when its name is empty', async t => {
+  const w = nodeWorld(t)
+  w.local.name = ''
+  await w.tool.execute({ to: 'Scout', message: 'Validated' }, w.exec)
+  assert.deepEqual(w.sent[0].from, { id: 'local', name: 'local', nodeId: 'n1' })
+})
+
+test('remote send refuses missing or invalid node identity before calling send', async t => {
+  const w = nodeWorld(t)
+  let attempts = 0
+  w.network.send = () => { attempts++; return true }
+  for (const nodeId of [undefined, null, '', '   ', 42]) {
+    w.network.nodeId = nodeId
+    await assert.rejects(w.tool.execute({ to: 'Scout', message: 'Hello' }, w.exec), /bot-network-identity-unavailable/)
+  }
+  assert.equal(attempts, 0)
 })
 
 test('list_bots makes directory destinations discoverable without persisting shadows', async t => {
@@ -246,29 +283,34 @@ test('incoming ask injects a named user message, keeps the exchange id, and retu
   assert.equal(w.handlers.size, 0)
 })
 
-test('a node tool reaches a second node through the hub joined route without an automatic reply', async t => {
+test('a node tool carries sender identity through the real joined handler to bot/turn', async t => {
   const source = nodeWorld(t)
-  const hub = world(t)
-  const destination = nodeWorld(t)
-  const receive = [...destination.handlers][0]
-  source.target.id = hub.joined.id
-  source.target.nodeId = hub.joined.worker.nodeId
+  const hub = makeWorld({ bot: { id: 'joined:n2:b', worker: { nodeId: 'n2', remoteBotId: 'b', home: 'remote' } } })
+  hub.rt.handleJoinedTurn = args => handleJoinedTurn(hub.rt, args)
+  t.after(() => hub.emitter.emit('nodeOffline', { nodeId: 'n2' }))
+  source.target.id = hub.bot.id
+  source.target.nodeId = hub.bot.worker.nodeId
   const relayed = []
   source.network.send = payload => {
-    relayed.push(handleNodeMessage(hub.rt, { ...payload, from: { id: source.local.id, name: source.local.name, nodeId: 'n1' } }))
+    validateNodeMessage(payload, source.network.nodeId)
+    relayed.push(handleNodeMessage(hub.rt, payload))
     return true
-  }
-  hub.rt.handleJoinedTurn = async turn => {
-    assert.equal(turn.defer, true)
-    assert.equal(turn.toId, hub.joined.id)
-    return receive(message({ exchangeId: turn.exchangeId, from: { id: source.local.id, name: source.local.name, nodeId: 'n1' }, to: { id: destination.local.id }, text: turn.text }))
   }
   await source.tool.execute({ to: 'Scout', message: 'Across nodes' }, source.exec)
   await Promise.all(relayed)
-  assert.equal(destination.injected.length, 1)
-  assert.equal(destination.injected[0].content[0].text, '[来自 Local] Across nodes')
-  assert.match(destination.injected[0].requestId, /^[0-9a-f-]{36}$/)
-  assert.equal(destination.sent.length, 0)
+  assert.equal(hub.rt.botOf(source.local.id), undefined, 'the sender is not on the hub roster')
+  assert.equal(hub.frames.length, 1)
+  const frame = hub.frames[0]
+  assert.equal(frame.type, 'bot/turn')
+  assert.equal(frame.nodeId, 'n2')
+  assert.deepEqual(frame.payload, {
+    nodeId: 'n2', remoteBotId: 'b', exchangeId: frame.payload.exchangeId, text: 'Across nodes',
+    senderName: 'Local', senderBotId: 'local',
+  })
+  assert.match(frame.payload.exchangeId, /^[0-9a-f-]{36}$/)
+  const prompt = hub.sessionOf('mirror-1').log.find(event => event.type === 'user/message')
+  assert.equal(prompt.data.content[0].text, '[来自 Local] Across nodes')
+  assert.equal(source.injected.length, 0, 'no automatic reply is injected')
 })
 
 test('node receiver ignores replies and warns about unknown or nonlocal ask destinations', async t => {

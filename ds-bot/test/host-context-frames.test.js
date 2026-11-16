@@ -1,5 +1,5 @@
-// N-1 I6 (contract §N.4): the frames to a node carry no environment. Bot-to-Bot turns add
-// senderBotId/senderName to the four page-turn keys; `bot/create` has no os/host/env/platform key. Both
+// N-1 I6 (contract §N.4): the frames to a node carry no environment. Page turns carry four
+// routing/body fields; Bot-to-Bot turns also carry sender identity. `bot/create` has no environment key. Both
 // turn-sending code paths and the create path are driven for real with a registry that records frames.
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
@@ -20,7 +20,7 @@ describe('N-1 I6: frames carry no environment', () => {
     assert.equal(turns[0].payload.text, 'hello node')
   })
 
-  it('I6-turn-relay: a relayed turn adds only senderBotId and senderName', async () => {
+  it('I6-turn-relay: a relayed turn adds sender identity without environment fields', async () => {
     const w = makeWorld()
     await handleJoinedTurn(w.rt, { fromId: 'chief', toId: w.bot.id, text: 'from a teammate', exchangeId: 'x-1', timeoutMs: 5 })
     const turns = w.frames.filter(frame => frame.type === 'bot/turn')
