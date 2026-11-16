@@ -247,6 +247,39 @@ test('install tolerates a network service without onMessage', t => {
   assert.equal(w.rt.botNetwork, network)
 })
 
+test('hub-shaped network service does not break list_bots', async t => {
+  const network = { sendDirectory: () => {}, sendMessage: () => {}, dispose: () => {} }
+  const w = world(t, { network })
+  install(w.rt)
+  installTools(w.rt)
+  const tool = w.rt.teamTools.find(tool => tool.name === 'list_bots')
+  let result
+  await assert.doesNotReject(async () => { result = await tool.execute({}, { agent: { id: 'local-chat' } }) })
+  assert.match(result, /^Bots:\n- Local \(Writer, you\)/)
+  assert.match(result, /\n- Remote \(Research\)/)
+  assert.match(result, /\n- Peer \(/)
+})
+
+test('hub-shaped network service preserves the missing-Bot message_bot result', async t => {
+  const network = { sendDirectory: () => {}, sendMessage: () => {}, dispose: () => {} }
+  const w = world(t, { network })
+  install(w.rt)
+  installTools(w.rt)
+  const tool = w.rt.teamTools.find(tool => tool.name === 'message_bot')
+  let result
+  await assert.doesNotReject(async () => { result = await tool.execute({ to: 'Scout', message: 'Hello' }, { agent: { id: 'local-chat' } }) })
+  assert.equal(result, 'No Bot named Scout. Team: Local, Remote, Peer')
+})
+
+test('node-shaped network service still lists and routes to remote Bots', async t => {
+  const w = nodeWorld(t)
+  const list = w.rt.teamTools.find(tool => tool.name === 'list_bots')
+  assert.match(await list.execute({}, w.exec), /Scout.*Research.*n3/)
+  assert.equal(await w.tool.execute({ to: 'Scout', message: 'Investigate' }, w.exec), 'Sent to Scout on n3; its reply will arrive later as a new message.')
+  assert.equal(w.sent.length, 1)
+  assert.deepEqual(w.sent[0].to, { id: w.target.id, name: 'Scout', nodeId: 'n3' })
+})
+
 test('install subscribes to onMessage once and unsubscribes on cleanup', async t => {
   const w = nodeWorld(t)
   assert.equal(w.handlers.size, 1)

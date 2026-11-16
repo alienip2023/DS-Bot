@@ -51,6 +51,8 @@ const AVATAR_PARAM = {
   description: 'Profile picture: a local image path (a relative path starts in your working folder) or a data URL. PNG, JPEG, WebP, or GIF; square, 256x256 recommended, up to 120 KB. Images are not resized.',
 }
 const WORKING_DIRECTORY_TOOL = 'working_directory'
+const networkDirectoryOf = rt =>
+  typeof rt.botNetwork?.directory === 'function' ? rt.botNetwork.directory() : []
 
 export function install(rt) {
   const { ctx, state } = rt
@@ -156,7 +158,7 @@ export function install(rt) {
     async execute(args, exec) {
       await rt.load()
       const self = rt.selfOf(exec.agent?.id)
-      const network = !args.bot && !args.group ? (rt.botNetwork?.directory() ?? []).filter(bot => rt.findBot(bot.name) === undefined) : []
+      const network = !args.bot && !args.group ? networkDirectoryOf(rt).filter(bot => rt.findBot(bot.name) === undefined) : []
       if (Object.keys(state.bots).length === 0 && network.length === 0) return 'No Bots yet.'
       const { bots, rooms, none, error } = listScope(args, self)
       if (error !== undefined) return error
@@ -315,8 +317,10 @@ export function install(rt) {
       const sender = callerBot(exec)
       if (sender === undefined) return 'Only Bots on the team can use message_bot.'
       const target = rt.findBot(args.to)
-      if (target === undefined && rt.botNetwork) {
-        const remote = rt.botNetwork.directory().find(bot => bot.name === args.to)
+      if (target === undefined &&
+          typeof rt.botNetwork?.directory === 'function' &&
+          typeof rt.botNetwork?.send === 'function') {
+        const remote = networkDirectoryOf(rt).find(bot => bot.name === args.to)
         if (remote) {
           if (String(args.message ?? '').trim() === '') return 'Write a message to send.'
           const room = rt.roomOf(rt.groupOwners.get(exec.agent?.id)?.roomId)
