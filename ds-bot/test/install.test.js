@@ -29,6 +29,42 @@ function start(state, { config = {}, services } = {}) {
   return { ctx, call, stop, rt }
 }
 
+test('remote-tasks loads the ledger, filters either Bot role and applies the limit', async t => {
+  const { call, stop, rt } = start()
+  t.after(stop)
+  let loaded = false
+  const load = rt.load
+  rt.load = async () => { await load(); loaded = true }
+  const rows = [
+    { taskId: 'unrelated', fromId: 'other', toId: 'helper' },
+    { taskId: 'sent', fromId: 'chief', toId: 'worker' },
+    { taskId: 'received', fromId: 'worker', toId: 'chief' },
+  ]
+  rt.listRemoteTasks = async () => { assert.equal(loaded, true); return rows }
+  assert.deepEqual(await call('remote-tasks', { botId: 'chief', limit: 1 }), { ok: true, value: { tasks: [rows[1]] } })
+  assert.deepEqual(await call('remote-tasks', { botId: 'chief' }), { ok: true, value: { tasks: rows.slice(1) } })
+  assert.deepEqual(await call('remote-tasks', { botId: 42 }), { ok: true, value: { tasks: rows } })
+})
+
+test('remote-tasks returns an empty list when its module is absent', async t => {
+  const { call, stop, rt } = start()
+  t.after(stop)
+  delete rt.listRemoteTasks
+  assert.deepEqual(await call('remote-tasks'), { ok: true, value: { tasks: [] } })
+})
+
+test('remote-tasks warns and returns an empty list when the ledger rejects', async t => {
+  const { ctx, call, stop, rt } = start()
+  t.after(stop)
+  const error = new Error('ledger unavailable')
+  const warnings = []
+  ctx.warn = (...args) => warnings.push(args)
+  rt.listRemoteTasks = async () => { throw error }
+  assert.deepEqual(await call('remote-tasks', { botId: 'chief' }), { ok: true, value: { tasks: [] } })
+  assert.equal(warnings.length, 1)
+  assert.equal(warnings[0][1], error)
+})
+
 // Listeners run in registration order; the team tools are not in this list
 // because they are registered per Bot session scope, not globally.
 test('apply registers listeners and effects in a fixed order', (t) => {

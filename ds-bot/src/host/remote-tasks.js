@@ -89,6 +89,15 @@ export async function listRemoteTasks(rt) {
   return mergeRemoteTasks([...(rt.remoteTasks?.values() ?? [])], hubTasks)
 }
 
+export function pickRemoteTasks(rows, botId, limit) {
+  if (!Array.isArray(rows)) return []
+  const count = Number.isInteger(limit) ? Math.max(1, Math.min(50, limit)) : 20
+  const tasks = typeof botId === 'string' && botId !== ''
+    ? rows.filter(row => row?.fromId === botId || row?.toId === botId)
+    : rows
+  return tasks.slice(0, count)
+}
+
 export function humanizeElapsed(elapsedMs) {
   const seconds = Math.max(0, Math.floor(elapsedMs / 1000))
   if (seconds < 60) return `${seconds} 秒`

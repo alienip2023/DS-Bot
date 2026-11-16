@@ -1603,6 +1603,14 @@ const ZH = {
   'Running': '运行中',
   'Succeeded': '成功',
   'Last run: {status}': '上次运行：{status}',
+  'Remote tasks': '远程任务',
+  'Completed': '已完成',
+  'Node offline': '节点离线',
+  '{count} lines': '{count} 行',
+  '{count}s': '{count} 秒',
+  '{count}m': '{count} 分钟',
+  '{count}h': '{count} 小时',
+  'No remote tasks yet. Send a task to a Bot on another machine.': '还没有远程任务。向另一台机器上的 Bot 发送一个任务。',
 
 }
 

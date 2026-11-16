@@ -23,6 +23,7 @@ import { ensureMirrorSession, mirrorStateOf, hasPromptRequest } from './mirror.j
 import { startPageTurn } from './executor.js'
 import { JOINED_TURN_TIMEOUT_MS } from './joined-turn.js'
 import { createTurnTracker } from './turn-tracker.js'
+import { pickRemoteTasks } from './remote-tasks.js'
 
 // Pure helper: map a registry defaultModel (string or {provider,model} object) to a ref string.
 export function mapDefaultModel(dm) {
@@ -539,6 +540,16 @@ export function install(rt) {
         case 'usage':
           await rt.load()
           return ok(await rt.usageView({ timeZone: typeof body.timeZone === 'string' ? body.timeZone.slice(0, 64) : undefined }))
+        case 'remote-tasks': {
+          try {
+            await rt.load()
+            const rows = await (rt.listRemoteTasks?.() ?? [])
+            return ok({ tasks: pickRemoteTasks(rows, typeof body.botId === 'string' ? body.botId : '', body.limit) })
+          } catch (error) {
+            ctx.warn?.('ds-bot: remote tasks unavailable: %s', error)
+            return ok({ tasks: [] })
+          }
+        }
         case 'room-progress': {
           // Any part id of the group's own Session means the group itself.
           const room = rt.roomOf(body.roomId) ?? rt.roomOf(rt.pastOwners.get(body.roomId)?.roomId)

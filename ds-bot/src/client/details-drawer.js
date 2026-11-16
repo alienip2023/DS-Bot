@@ -17,6 +17,7 @@ import { MemoryHubRow } from './memory-hub-panel.js'
 import { canShowMemoryHub } from './memory-backends.js'
 import { failureText } from './error-text.js'
 import { ScheduleSummary } from './schedules.js'
+import { RemoteTasksRow } from './remote-tasks-row.js'
 import { useGlide, useMorph } from './motion.js'
 import { MemberApprovals, MemberState, StopMemberWork, StopRoomWork, useMemberWork, workState } from './member-status.js'
 import { canSetGoal, goalView, hasGoalAdmin } from './goal.js'
@@ -345,6 +346,7 @@ export function DetailsDrawer({ sessionId, startRenaming, startTab, hasStrip, ro
         usage ? h('div', { key: 'usage' }, h('div', { className: 'bt-section-title' }, t('Usage')),
           h('div', { className: 'bt-kv' }, h('span', null, bot.name), h('span', null, usage))) : null,
         h(ScheduleSummary, { key: 'routines', bot, actions }),
+        h(RemoteTasksRow, { key: 'remote-tasks', bot, actions }),
       ] : null,
       bot && tab === 'browser' ? h(BrowserCards, { bot, sessionId, roster, actions, useBrowserTabs, useBrowserPages }) : null)]
 }
