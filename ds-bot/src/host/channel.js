@@ -82,7 +82,7 @@ export function trackerSweepMs(rt) {
 export function createSendUser(rt, { textOfContent, getMirrorState, ctx } = {}) {
   const _textOfContent = textOfContent ?? ((c) => (typeof c === 'string' ? c : Array.isArray(c) ? c.map(b => typeof b?.text === 'string' ? b.text : '').join('') : ''))
   const _getMirrorState = getMirrorState ?? mirrorStateOf
-  return async function sendUser({ sessionId: ref, content, requestId = randomUUID() }) {
+  return async function sendUser({ sessionId: ref, content, requestId = randomUUID(), wait = false }) {
     // Joined shadow: ensureMirrorSession + startPageTurn (user message on the page first, node answer after)
     const directBot = rt.botOf(ref)
     const joinedBot = joinedShadow(directBot) ? directBot
@@ -95,11 +95,14 @@ export function createSendUser(rt, { textOfContent, getMirrorState, ctx } = {}) 
       const ms = _getMirrorState(rt, joinedBot.id, session)
       // One in-flight turn per Bot (the same table the page's prompt takeover uses); the
       // user's message is on the page before the node answers.
-      startPageTurn({
+      const started = startPageTurn({
         rt, bot: joinedBot, text, requestId, session, state: ms,
         tracker: rt.turnTracker,
         timeoutMs: rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS,
       })
+      // The page acknowledges dispatch; a programmatic caller (a routine) needs the real
+      // outcome, so it opts into awaiting the turn.
+      if (wait === true) return started.done
       return { accepted: true }
     }
     // Original path for non-joined

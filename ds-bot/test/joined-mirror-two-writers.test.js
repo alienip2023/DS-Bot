@@ -161,7 +161,7 @@ test('a timed-out exchange reuses its waiter on retry and writes the late answer
   w.reply(0, { text: 'late answer' })
   await drain()
   assert.equal(assertStrictTurns(session), 1, 'the retry must not open a second turn')
-  assert.deepEqual(texts(session, 'user/message'), ['first try'])
+  assert.deepEqual(texts(session, 'user/message'), ['[来自 local] first try'])
   assert.equal(texts(session, 'assistant/message').at(-1), 'late answer')
   assert.equal(w.rt.state.exchanges.length, 1)
 })

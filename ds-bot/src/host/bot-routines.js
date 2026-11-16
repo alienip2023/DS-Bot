@@ -80,7 +80,7 @@ export function installBotRoutines(rt) {
     await rt.save()
     const text = `[Scheduled task: ${task.title}]\n${task.prompt}`
     if (bot.origin === 'joined') {
-      const result = await rt.sendUser({ sessionId: botId, requestId: run.id, content: [{ type: 'text', text }] })
+      const result = await rt.sendUser({ sessionId: botId, requestId: run.id, content: [{ type: 'text', text }], wait: true })
       if (result?.ok === false) throw new Error('Bot turn was stopped')
     } else {
       let resolve
