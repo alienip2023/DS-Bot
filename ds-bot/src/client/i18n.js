@@ -11,6 +11,8 @@ import { DSH_DE, HOST_ERRORS_DE, DE } from './locales/de.js'
 export const NAMESPACE = 'ds-bot'
 
 const ZH = {
+  'Reusable by the team, including connected nodes': '团队可复用（包括已连接节点）',
+  'Managed on its source host': '由来源主机管理',
   // Shared
   'Main Bot': '主 Bot',
   Working: '进行中',

@@ -11,6 +11,7 @@ import { dirname, join } from 'node:path'
 import { replaceFile } from './files.js'
 import { looksLikeKey, looksSecret, writtenIn } from './memory.js'
 import { validateCapabilityName } from './capabilities.js'
+import { sharedSkillProblem } from './skill-share.js'
 
 export const LEARNING = {
   minTurnMs: 3 * 60_000,
@@ -657,7 +658,7 @@ export function install(rt) {
   }, 'ds-bot: learning')
 
   // The user's answer to a card.
-  async function answer({ id, approve }) {
+  async function answer({ id, approve, teamReusable }) {
     const store = data()
     const proposal = Object.hasOwn(store.proposals, id) ? store.proposals[id] : undefined
     if (proposal === undefined) throw Object.assign(new Error('This proposal is no longer open'), { code: 'bot/stale' })
@@ -679,7 +680,7 @@ export function install(rt) {
     }
     // A failed approval keeps the card, so the user can still decline it.
     if (proposal.kind === 'agents') await applyAgents(proposal)
-    else await applySkill(proposal)
+    else await applySkill(proposal, teamReusable)
     settle('approved')
     await persist()
     return { applied: true }
@@ -725,9 +726,15 @@ export function install(rt) {
     }
   }
 
-  async function applySkill(proposal) {
+  async function applySkill(proposal, teamReusable) {
     const bot = rt.botOf(proposal.botId)
     if (bot === undefined) throw new Error('The Bot that learned this skill is gone')
+    if (teamReusable === true) {
+      if (rt.isPrivate(bot.id)) throw new Error('A private Bot cannot share learned skills.')
+      await rt.loadSecrets()
+      const problem = sharedSkillProblem(proposal, rt)
+      if (problem) throw new Error(problem)
+    }
     const current = skillsOf()[proposal.name]
     const store = data()
     if (proposal.action === 'create') {
@@ -746,15 +753,16 @@ export function install(rt) {
       }
     } else if (proposal.action === 'update') {
       if (current === undefined || hashOf(`${current.description}\n${current.content}`) !== proposal.base) throw new Error(`${proposal.name} changed since this was proposed`)
-      const item = await rt.capabilitySave({ name: proposal.name, kind: 'skill', description: proposal.description, content: proposal.content }, { botId: bot.id, ui: false })
+      const item = await rt.capabilitySave({ name: proposal.name, kind: 'skill', description: proposal.description, content: proposal.content }, { botId: bot.id, ui: true })
       store.learned[bot.id] = [...new Set([...(store.learned[bot.id] ?? []), item.name])]
       await persist()
     }
     if (!(bot.capabilities ?? []).includes(proposal.name)) await rt.capabilityEndpoint('bot-capability', { botId: bot.id, name: proposal.name, attached: true })
+    if (teamReusable === true) await rt.capabilitySave({ name: proposal.name, kind: 'skill', description: proposal.description, content: proposal.content, teamReusable: true }, { ui: true })
   }
 
   async function learningEndpoint(endpoint, body) {
-    if (endpoint === 'learning-answer') return answer({ id: String(body.id ?? ''), approve: body.approve === true })
+    if (endpoint === 'learning-answer') return answer({ id: String(body.id ?? ''), approve: body.approve === true, teamReusable: body.teamReusable === true })
     throw new Error(`Unknown endpoint ${endpoint}`)
   }
 

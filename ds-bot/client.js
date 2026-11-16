@@ -127,6 +127,8 @@ var JA = {
   "Running": "実行中",
   "Succeeded": "成功",
   "Last run: {status}": "前回の実行：{status}",
+  "Reusable by the team, including connected nodes": "接続されたノードを含むチームで再利用可能",
+  "Managed on its source host": "元のホストで管理",
   "Android beta": "Android ベータ版",
   "Cannot reach the Server. Trying again…": "サーバーに接続できません。再試行しています…",
   "No phones yet": "スマートフォンはまだありません",
@@ -2504,6 +2506,8 @@ var KO = {
   "Running": "실행 중",
   "Succeeded": "성공",
   "Last run: {status}": "최근 실행: {status}",
+  "Reusable by the team, including connected nodes": "연결된 노드를 포함한 팀에서 재사용",
+  "Managed on its source host": "원본 호스트에서 관리",
   "Android beta": "Android 베타",
   "Cannot reach the Server. Trying again…": "서버에 연결할 수 없습니다. 다시 시도하는 중…",
   "No phones yet": "아직 휴대폰이 없습니다",
@@ -4926,6 +4930,8 @@ var ES = {
   "Running": "En ejecución",
   "Succeeded": "Completado",
   "Last run: {status}": "Última ejecución: {status}",
+  "Reusable by the team, including connected nodes": "Reutilizable por el equipo, incluidos los nodos conectados",
+  "Managed on its source host": "Administrado en el equipo de origen",
   "Android beta": "Android beta",
   "Cannot reach the Server. Trying again…": "No se puede conectar con el servidor. Reintentando…",
   "No phones yet": "Aún no hay teléfonos",
@@ -7348,6 +7354,8 @@ var FR = {
   "Running": "En cours",
   "Succeeded": "Réussie",
   "Last run: {status}": "Dernière exécution : {status}",
+  "Reusable by the team, including connected nodes": "Réutilisable par l’équipe, y compris les nœuds connectés",
+  "Managed on its source host": "Géré sur l’hôte d’origine",
   "Android beta": "Android bêta",
   "Cannot reach the Server. Trying again…": "Impossible de joindre le serveur. Nouvel essai…",
   "No phones yet": "Aucun téléphone pour l’instant",
@@ -9725,6 +9733,8 @@ var DE = {
   "Running": "Wird ausgeführt",
   "Succeeded": "Erfolgreich",
   "Last run: {status}": "Letzte Ausführung: {status}",
+  "Reusable by the team, including connected nodes": "Im Team wiederverwendbar, einschließlich verbundener Knoten",
+  "Managed on its source host": "Auf dem Ursprungshost verwaltet",
   "Android beta": "Android-Beta",
   "Cannot reach the Server. Trying again…": "Server nicht erreichbar. Neuer Versuch…",
   "No phones yet": "Noch keine Telefone",
@@ -12144,6 +12154,8 @@ Object.assign(DE, {
 // src/client/i18n.js
 var NAMESPACE = "ds-bot";
 var ZH = {
+  "Reusable by the team, including connected nodes": "团队可复用（包括已连接节点）",
+  "Managed on its source host": "由来源主机管理",
   // Shared
   "Main Bot": "主 Bot",
   Working: "进行中",
@@ -23428,8 +23440,10 @@ function CapabilityForm({ draft, setDraft, items, actions, onClose }) {
         payload.transport = "streamable-http";
         payload.url = draft.url;
         payload.headers = parseMap(draft.headersText, t("Headers"));
-      } else if (draft.kind === "skill") payload.content = draft.content;
-      else payload.items = draft.items;
+      } else if (draft.kind === "skill") {
+        payload.content = draft.content;
+        payload.teamReusable = draft.teamReusable === true;
+      } else payload.items = draft.items;
     } catch (failure) {
       setError(failure?.message ?? String(failure));
       return;
@@ -23482,6 +23496,12 @@ function CapabilityForm({ draft, setDraft, items, actions, onClose }) {
       (0, import_react24.createElement)(Field, { label: "Headers (JSON)", value: draft.headersText, onChange: (value) => set("headersText", value), multiline: true, placeholder: t('{"API_KEY": "$DSH_SECRET_MY_KEY"}') })
     ) : null,
     draft.kind === "skill" ? (0, import_react24.createElement)(Field, { label: "Skill instructions", value: draft.content, onChange: (value) => set("content", value), multiline: true }) : null,
+    draft.kind === "skill" ? (0, import_react24.createElement)(
+      "label",
+      { className: "bt-set-row bt-bs-row" },
+      (0, import_react24.createElement)("span", { className: "bt-set-copy" }, t("Reusable by the team, including connected nodes")),
+      (0, import_react24.createElement)("input", { type: "checkbox", checked: draft.teamReusable === true, onChange: (event) => set("teamReusable", event.target.checked) })
+    ) : null,
     draft.kind === "pack" ? (0, import_react24.createElement)(
       import_react24.Fragment,
       null,
@@ -23520,8 +23540,12 @@ function CapabilityRow({ item, onEdit, onDelete, onApprove, confirming }) {
         "span",
         { className: "bt-connector-actions" },
         item.kind === "mcp" && item.transport === "stdio" && !item.approved ? (0, import_react24.createElement)("button", { type: "button", className: "bt-soft bt-soft-sm", onClick: onApprove }, t("Allow")) : null,
-        (0, import_react24.createElement)("button", { type: "button", className: "bt-soft bt-soft-sm", onClick: onEdit }, t("Edit")),
-        (0, import_react24.createElement)("button", { type: "button", className: "bt-soft bt-soft-sm", onClick: onDelete }, confirming ? t("Click again to delete.") : t("Delete"))
+        item.sharedFrom ? (0, import_react24.createElement)("span", { className: "bt-set-hint" }, t("Managed on its source host")) : (0, import_react24.createElement)(
+          import_react24.Fragment,
+          null,
+          (0, import_react24.createElement)("button", { type: "button", className: "bt-soft bt-soft-sm", onClick: onEdit }, t("Edit")),
+          (0, import_react24.createElement)("button", { type: "button", className: "bt-soft bt-soft-sm", onClick: onDelete }, confirming ? t("Click again to delete.") : t("Delete"))
+        )
       )
     )
   );
@@ -42148,6 +42172,7 @@ function ProposalCard({ proposal, initialError = "", onFailure, onResolved, acti
   const [busy, setBusy] = (0, import_react66.useState)(false);
   const [error, setError] = (0, import_react66.useState)(initialError);
   const [open, setOpen] = (0, import_react66.useState)(false);
+  const [teamReusable, setTeamReusable] = (0, import_react66.useState)(false);
   const busyRef = (0, import_react66.useRef)(false);
   const titleId = (0, import_react66.useId)();
   const answer = (approve) => {
@@ -42155,7 +42180,7 @@ function ProposalCard({ proposal, initialError = "", onFailure, onResolved, acti
     busyRef.current = true;
     setBusy(true);
     setError("");
-    void Promise.resolve().then(() => actions.learningAnswer(proposal.id, approve)).then(() => onResolved(proposal.id), (failure) => {
+    void Promise.resolve().then(() => actions.learningAnswer(proposal.id, approve, teamReusable)).then(() => onResolved(proposal.id), (failure) => {
       const message = failure?.message ?? String(failure);
       setError(message);
       onFailure(proposal, message);
@@ -42199,6 +42224,12 @@ function ProposalCard({ proposal, initialError = "", onFailure, onResolved, acti
     { className: "bt-q bt-learning-card", role: "group", "aria-labelledby": titleId, "aria-busy": busy },
     agents ? (0, import_react66.createElement)(ProposalHead, { titleId, icon: PencilIcon, title: kind }) : (0, import_react66.createElement)(ProposalHead, { titleId, title: proposal.name, kind, detail: proposal.description, oldDetail }),
     change,
+    !agents ? (0, import_react66.createElement)(
+      "label",
+      { className: "bt-set-row bt-bs-row" },
+      (0, import_react66.createElement)("span", { className: "bt-set-copy" }, t("Reusable by the team, including connected nodes")),
+      (0, import_react66.createElement)("input", { type: "checkbox", checked: teamReusable, disabled: busy, onChange: (event) => setTeamReusable(event.target.checked) })
+    ) : null,
     error ? (0, import_react66.createElement)("div", { className: "bt-learning-error", role: "alert" }, error) : null,
     (0, import_react66.createElement)(ProposalFoot, { busy, answer })
   );
@@ -43338,7 +43369,7 @@ function apply(ctx) {
   }, "ds-bot: restore the last Thread page");
   const actions = {
     ...teamActions({ call, after, partFor, roster, ui: ui2, live, cards, heldCards, turnClock, panelFolded, openSession: (id) => actions.openSession(id), ...sessionProbes(ctx, quietly) }),
-    learningAnswer: (id, approve) => after(call("learning-answer", { id, approve })),
+    learningAnswer: (id, approve, teamReusable = false) => after(call("learning-answer", { id, approve, teamReusable })),
     // The full-pane overlays sit above the conversation, so opening one must dismiss them
     // or the click appears to do nothing.
     isAgentSession: (id) => isAgentSessionId(id),

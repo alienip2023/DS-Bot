@@ -11,6 +11,7 @@
 import { randomBytes } from 'node:crypto'
 import { copyFileSync, existsSync } from 'node:fs'
 import { hostname as osHostname } from 'node:os'
+import { applySharedSkills, sharedSkillSnapshot } from './skill-share.js'
 
 export const PEER_LEVELS = Object.freeze(['off', 'roster', 'dispatch', 'groups'])
 const LEVEL_RANK = new Map(PEER_LEVELS.map((level, index) => [level, index]))
@@ -228,7 +229,7 @@ export function ensureRegistrySubscription(rt) {
   try {
     const onRoster = (info) => {
       // The node has new local Bots: answer with ours, once, after the burst settles.
-      if (peerLevelOf(rt.state) !== 'off') markPeerRosterDirty(rt, info?.nodeId)
+      markPeerRosterDirty(rt, info?.nodeId)
     }
     registry.on('roster', onRoster)
     subscriptions.set(rt, { registry, onRoster })
@@ -255,6 +256,8 @@ export async function pushPeerRoster(rt, nodeId) {
   const registry = registryOf(rt)
   if (!registry || typeof registry.send !== 'function') return false
   if (!speaksPeer(registry, nodeId)) return false
+  if (rt.loadSecrets) await rt.loadSecrets()
+  if (closed.has(rt)) return false
   ensureRegistrySubscription(rt)
   const hubId = ensureHubId(rt)
   const payload = {
@@ -262,6 +265,7 @@ export async function pushPeerRoster(rt, nodeId) {
     level,
     hostname: osHostname().slice(0, 80),
     bots: level === 'off' ? [] : localBotsForPeer(rt),
+    skills: sharedSkillSnapshot(rt, { forward: true }),
   }
   let sent = false
   try {
@@ -285,7 +289,6 @@ export async function pushPeerRoster(rt, nodeId) {
 // node that announced peer/v1 when the change is local.
 export function markPeerRosterDirty(rt, nodeId) {
   if (closed.has(rt)) return
-  if (peerLevelOf(rt.state) === 'off') return
   let map = timers.get(rt)
   if (map === undefined) {
     map = new Map()
@@ -433,8 +436,11 @@ async function clearPeerShadows(rt) {
 }
 
 export async function handlePeerRoster(rt, data) {
+  if (closed.has(rt)) return false
   const checked = sanitizePeerRoster(data)
   if (!checked.ok) return false
+  await applySharedSkills(rt, `hub:${checked.value.hubId}`, data.skills, { isActive: () => !closed.has(rt) })
+  if (closed.has(rt)) return false
   ensureFederationState(rt.state)
   const local = peerLevelOf(rt.state)
   const level = effectiveLevel(local, checked.value.level)

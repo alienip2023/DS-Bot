@@ -585,7 +585,7 @@ export function apply(ctx) {
   }, 'ds-bot: restore the last Thread page')
   const actions = {
     ...teamActions({ call, after, partFor, roster, ui, live, cards, heldCards, turnClock, panelFolded, openSession: id => actions.openSession(id), ...sessionProbes(ctx, quietly) }),
-    learningAnswer: (id, approve) => after(call('learning-answer', { id, approve })),
+    learningAnswer: (id, approve, teamReusable = false) => after(call('learning-answer', { id, approve, teamReusable })),
     // The full-pane overlays sit above the conversation, so opening one must dismiss them
     // or the click appears to do nothing.
     isAgentSession: id => isAgentSessionId(id),

@@ -5,6 +5,8 @@ export const ES = {
   'Running': 'En ejecución',
   'Succeeded': 'Completado',
   'Last run: {status}': 'Última ejecución: {status}',
+  "Reusable by the team, including connected nodes": "Reutilizable por el equipo, incluidos los nodos conectados",
+  "Managed on its source host": "Administrado en el equipo de origen",
   "Android beta": "Android beta",
   "Cannot reach the Server. Trying again…": "No se puede conectar con el servidor. Reintentando…",
   "No phones yet": "Aún no hay teléfonos",

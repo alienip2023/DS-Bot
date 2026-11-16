@@ -5,6 +5,8 @@ export const JA = {
   'Running': '実行中',
   'Succeeded': '成功',
   'Last run: {status}': '前回の実行：{status}',
+  "Reusable by the team, including connected nodes": "接続されたノードを含むチームで再利用可能",
+  "Managed on its source host": "元のホストで管理",
   "Android beta": "Android ベータ版",
   "Cannot reach the Server. Trying again…": "サーバーに接続できません。再試行しています…",
   "No phones yet": "スマートフォンはまだありません",

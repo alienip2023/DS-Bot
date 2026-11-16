@@ -15,6 +15,7 @@ function ProposalCard({ proposal, initialError = '', onFailure, onResolved, acti
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(initialError)
   const [open, setOpen] = useState(false)
+  const [teamReusable, setTeamReusable] = useState(false)
   const busyRef = useRef(false)
   const titleId = useId()
   const answer = approve => {
@@ -22,7 +23,7 @@ function ProposalCard({ proposal, initialError = '', onFailure, onResolved, acti
     busyRef.current = true
     setBusy(true)
     setError('')
-    void Promise.resolve().then(() => actions.learningAnswer(proposal.id, approve))
+    void Promise.resolve().then(() => actions.learningAnswer(proposal.id, approve, teamReusable))
       .then(() => onResolved(proposal.id), failure => {
         const message = failure?.message ?? String(failure)
         setError(message)
@@ -64,6 +65,9 @@ function ProposalCard({ proposal, initialError = '', onFailure, onResolved, acti
       ? h(ProposalHead, { titleId, icon: PencilIcon, title: kind })
       : h(ProposalHead, { titleId, title: proposal.name, kind, detail: proposal.description, oldDetail }),
     change,
+    !agents ? h('label', { className: 'bt-set-row bt-bs-row' },
+      h('span', { className: 'bt-set-copy' }, t('Reusable by the team, including connected nodes')),
+      h('input', { type: 'checkbox', checked: teamReusable, disabled: busy, onChange: event => setTeamReusable(event.target.checked) })) : null,
     error ? h('div', { className: 'bt-learning-error', role: 'alert' }, error) : null,
     h(ProposalFoot, { busy, answer }))
 }

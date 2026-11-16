@@ -3,6 +3,7 @@
 import { ensureMainThread } from './bot-store.js'
 import { mirrorTurnOpen } from './joined-mirror-writer.js'
 import { hasHistoryIdentity, syncJoinedHistory } from './joined-history.js'
+import { applySharedSkills, sharedSkillSnapshot } from './skill-share.js'
 
 export function joinedShadow(bot) {
   return Boolean(bot && bot.origin === 'joined' && bot.worker && bot.worker.home === 'remote')
@@ -387,6 +388,9 @@ export function install(rt) {
   const onRoster = (report) => {
     if (stopped) return
     applyRosterReport(rt.state, report)
+    if (typeof report?.nodeId === 'string' && report.nodeId.trim() !== '') {
+      void applySharedSkills(rt, `node:${report.nodeId}`, report.skills, { isActive: () => !stopped }).catch(error => rt.warn?.('ds-bot: skill roster not applied: %s', error?.message))
+    }
     void rt.save?.()
     for (const bot of Object.values(rt.state.bots ?? {})) {
       if (bot?.origin === 'joined' && (!settled.has(bot.id) || bot.mirrorHistory)) pending.add(bot.id)
@@ -410,15 +414,21 @@ export function install(rt) {
     registry.on('roster', onRoster)
     registry.on('nodeOffline', onOffline)
   }
-  const publish = () => {
+  const publish = async () => {
     let report
     try { report = ctx?.get?.('remote-agent:roster-report') } catch { report = undefined }
     if (typeof report !== 'function') return
-    report({ bots: reportableBots(rt.state?.bots) })
+    await rt.load?.()
+    if (stopped) return
+    await rt.loadSecrets?.()
+    if (stopped) return
+    report({ bots: reportableBots(rt.state?.bots), skills: sharedSkillSnapshot(rt) })
   }
+  rt.publishSkillRoster = publish
   attach()
-  publish()
-  const timer = setInterval(() => { attach(); publish() }, 5_000)
+  const publishSafe = () => { void Promise.resolve().then(publish).catch(error => rt.warn?.('ds-bot: skill roster publish failed: %s', error?.message)) }
+  publishSafe()
+  const timer = setInterval(() => { attach(); publishSafe() }, 5_000)
   timer.unref?.()
   ctx?.effect?.(() => () => {
     stopped = true

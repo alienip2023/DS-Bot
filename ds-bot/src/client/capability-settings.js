@@ -45,7 +45,10 @@ function CapabilityForm({ draft, setDraft, items, actions, onClose }) {
         payload.transport = 'streamable-http'
         payload.url = draft.url
         payload.headers = parseMap(draft.headersText, t('Headers'))
-      } else if (draft.kind === 'skill') payload.content = draft.content
+      } else if (draft.kind === 'skill') {
+        payload.content = draft.content
+        payload.teamReusable = draft.teamReusable === true
+      }
       else payload.items = draft.items
     } catch (failure) {
       setError(failure?.message ?? String(failure))
@@ -79,6 +82,9 @@ function CapabilityForm({ draft, setDraft, items, actions, onClose }) {
       h(Field, { label: 'URL', value: draft.url, onChange: value => set('url', value) }),
       h(Field, { label: 'Headers (JSON)', value: draft.headersText, onChange: value => set('headersText', value), multiline: true, placeholder: t('{"API_KEY": "$DSH_SECRET_MY_KEY"}') })) : null,
     draft.kind === 'skill' ? h(Field, { label: 'Skill instructions', value: draft.content, onChange: value => set('content', value), multiline: true }) : null,
+    draft.kind === 'skill' ? h('label', { className: 'bt-set-row bt-bs-row' },
+      h('span', { className: 'bt-set-copy' }, t('Reusable by the team, including connected nodes')),
+      h('input', { type: 'checkbox', checked: draft.teamReusable === true, onChange: event => set('teamReusable', event.target.checked) })) : null,
     draft.kind === 'pack' ? h(Fragment, null,
       available.length === 0 ? h('div', { className: 'bt-set-row' }, h('span', { className: 'bt-set-hint' }, t('Save an MCP server or skill first.')))
         : available.map(item => h('label', { key: item.name, className: 'bt-set-row bt-bs-row' },
@@ -105,8 +111,9 @@ function CapabilityRow({ item, onEdit, onDelete, onApprove, confirming }) {
       h('span', { className: 'bt-connector-actions' },
         item.kind === 'mcp' && item.transport === 'stdio' && !item.approved
           ? h('button', { type: 'button', className: 'bt-soft bt-soft-sm', onClick: onApprove }, t('Allow')) : null,
-        h('button', { type: 'button', className: 'bt-soft bt-soft-sm', onClick: onEdit }, t('Edit')),
-        h('button', { type: 'button', className: 'bt-soft bt-soft-sm', onClick: onDelete }, confirming ? t('Click again to delete.') : t('Delete')))))
+        item.sharedFrom ? h('span', { className: 'bt-set-hint' }, t('Managed on its source host')) : h(Fragment, null,
+          h('button', { type: 'button', className: 'bt-soft bt-soft-sm', onClick: onEdit }, t('Edit')),
+          h('button', { type: 'button', className: 'bt-soft bt-soft-sm', onClick: onDelete }, confirming ? t('Click again to delete.') : t('Delete'))))))
 }
 
 export function CapabilitiesPage({ roster, actions, run }) {

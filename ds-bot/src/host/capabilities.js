@@ -1,6 +1,7 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { encodeUrlComponent } from './secrets.js'
 import { own } from './store.js'
+import { sharedSkillProblem } from './skill-share.js'
 
 const MCP_CLIENT = '@deepseek-ai/dsh-mcp-client'
 const NAME = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
@@ -93,6 +94,7 @@ export function install(rt) {
     if (!['mcp', 'skill', 'pack'].includes(kind)) throw new Error('Choose an MCP server, skill, or pack.')
     const items = ensureLibrary()
     const previous = own(items, name)
+    if (previous?.sharedFrom) throw new Error('Imported skills are changed or withdrawn on their source host.')
     if (previous && !ui) editCheck(previous, botId, 'change')
     if (previous && previous.kind !== kind) throw new Error('A capability cannot change its kind. Delete it and save a new one.')
     const now = Date.now()
@@ -124,6 +126,19 @@ export function install(rt) {
       }
     } else if (kind === 'skill') {
       item.content = String(body.content ?? '').trim()
+      const changed = previous?.content !== item.content || previous?.description !== item.description
+      const reusable = body.teamReusable === undefined ? previous?.teamReusable === true && !changed : body.teamReusable === true
+      if (reusable) {
+        if (!ui && (body.teamReusable === true || changed)) throw new Error('Only the user can approve sharing a skill with the team.')
+        if (rt.isPrivate?.(item.createdBy)) throw new Error('A private Bot cannot share learned skills.')
+        const problem = sharedSkillProblem(item, rt)
+        if (problem) throw new Error(problem)
+        item.teamReusable = true
+        item.sharedId = previous?.sharedId ?? randomUUID()
+      } else if (previous?.sharedId) {
+        item.sharedId = previous.sharedId
+        item.teamReusable = false
+      }
     } else {
       const names = [...new Set(strings(body.items))]
       for (const childName of names) {
@@ -138,8 +153,10 @@ export function install(rt) {
   const capabilitySave = async (body, options = {}) => {
     await rt.load()
     writeCheck()
+    if (body?.teamReusable === true) await rt.loadSecrets()
     const item = itemInput(body ?? {}, options)
     await rt.save()
+    rt.markPeerRosterDirty?.()
     return item
   }
   const capabilityDelete = async (name, { botId, ui } = {}) => {
@@ -148,11 +165,13 @@ export function install(rt) {
     const items = ensureLibrary()
     const item = own(items, String(name ?? ''))
     if (!item) throw new Error(`No capability named ${name}.`)
+    if (item.sharedFrom) throw new Error('Imported skills are changed or withdrawn on their source host.')
     if (!ui) editCheck(item, botId, 'delete')
     delete items[item.name]
     for (const pack of Object.values(items)) if (pack.kind === 'pack') pack.items = (pack.items ?? []).filter(child => child !== item.name)
     for (const bot of Object.values(state.bots)) bot.capabilities = (bot.capabilities ?? []).filter(attached => attached !== item.name)
     await rt.save()
+    rt.markPeerRosterDirty?.()
     return true
   }
   // Called with the Bot being deleted, after it left the team. The shared list belongs to

@@ -5,6 +5,8 @@ export const KO = {
   'Running': '실행 중',
   'Succeeded': '성공',
   'Last run: {status}': '최근 실행: {status}',
+  "Reusable by the team, including connected nodes": "연결된 노드를 포함한 팀에서 재사용",
+  "Managed on its source host": "원본 호스트에서 관리",
   "Android beta": "Android 베타",
   "Cannot reach the Server. Trying again…": "서버에 연결할 수 없습니다. 다시 시도하는 중…",
   "No phones yet": "아직 휴대폰이 없습니다",
