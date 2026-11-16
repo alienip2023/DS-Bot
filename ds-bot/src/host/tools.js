@@ -51,10 +51,24 @@ const WORKING_DIRECTORY_TOOL = 'working_directory'
 export function install(rt) {
   const { ctx, state } = rt
 
-  function workerReadOnlyCheck() {
-    let role
-    try { role = ctx.get('remote-agent:role') } catch { role = undefined }
-    if (role !== 'worker') return undefined
+  function workerRole() {
+    try { return ctx.get('remote-agent:role') } catch { return undefined }
+  }
+
+  function workerCreateBotCheck(args) {
+    if (workerRole() !== 'worker') return undefined
+    if (args.type === 'remote-worker' && args.worker?.hubUrl) return 'E_WORKER_READONLY'
+    return undefined
+  }
+
+  function workerUpdateBotCheck(bot) {
+    if (workerRole() !== 'worker') return undefined
+    if (bot.origin === 'joined' || bot.worker?.nodeId) return 'E_WORKER_READONLY'
+    return undefined
+  }
+
+  function workerCreateGroupCheck() {
+    if (workerRole() !== 'worker') return undefined
     return 'E_WORKER_READONLY'
   }
 
@@ -441,7 +455,7 @@ export function install(rt) {
     output,
     async execute(args, exec) {
       await rt.load()
-      const workerErr = workerReadOnlyCheck()
+      const workerErr = workerCreateBotCheck(args)
       if (workerErr) return workerErr
       if (!rt.isMain(rt.selfOf(exec.agent?.id))) return 'Only the Main Bot can create Bots. Ask the Main Bot instead.'
       try {
@@ -493,8 +507,8 @@ export function install(rt) {
       if (caller === undefined) return 'Only Bots on the team can use update_bot.'
       const bot = args.bot ? rt.findBot(args.bot) : caller
       if (bot === undefined) return `No Bot named ${args.bot}.`
-      const workerErrU = workerReadOnlyCheck()
-      if (workerErrU && bot.id !== caller.id) return workerErrU
+      const workerErrU = workerUpdateBotCheck(bot)
+      if (workerErrU) return workerErrU
       if (bot.id !== caller.id && !rt.isMain(self)) return 'Only a Main Bot can change another Bot. Leave out bot to change yourself, or ask a Main Bot with message_bot.'
       try {
         const { name: newName, role, instructions, color, model, effort, section, type, worker } = args
@@ -620,7 +634,7 @@ export function install(rt) {
     async execute(args, exec) {
       await rt.load()
       const self = rt.selfOf(exec.agent?.id)
-      const workerErrG = workerReadOnlyCheck()
+      const workerErrG = workerCreateGroupCheck()
       if (workerErrG) return workerErrG
       if (!rt.isMain(self)) return 'Only a Main Bot can create group chats. Ask a Main Bot instead.'
       const { bots, unknown } = resolveBots(args.members)

@@ -123,11 +123,18 @@ describe('L2 worker role permissions', () => {
     assert.deepEqual(state.mainBotIds, ['new-bot'])
   })
 
-  it('create_bot returns E_WORKER_READONLY on worker node', async t => {
+  it('create_bot returns E_WORKER_READONLY for remote-worker on worker node', async t => {
     const { rt, execute } = toolsWorld(t, 'worker')
     t.mock.method(rt, 'isMain', () => false)
-    assert.equal(await execute('create_bot', { name: 'New Bot', role: 'Writer', instructions: 'Write reports.' }), 'E_WORKER_READONLY')
+    assert.equal(await execute('create_bot', { name: 'New Bot', role: 'Writer', instructions: 'Write reports.', type: 'remote-worker', worker: { hubUrl: 'wss://hub.example.com' } }), 'E_WORKER_READONLY')
     assert.equal(rt.createBot.mock.callCount(), 0)
+  })
+
+  it('create_bot on worker does not return E_WORKER_READONLY for local bot', async t => {
+    const { rt, execute } = toolsWorld(t, 'worker')
+    t.mock.method(rt, 'isMain', () => false)
+    const result = await execute('create_bot', { name: 'New Bot', role: 'Writer', instructions: 'Write reports.' })
+    assert.notEqual(result, 'E_WORKER_READONLY')
   })
 
   it('create_bot succeeds when role is undefined (fail-open)', async t => {
@@ -142,11 +149,19 @@ describe('L2 worker role permissions', () => {
     assert.equal(rt.createBot.mock.callCount(), 1)
   })
 
-  it('update_bot returns E_WORKER_READONLY when changing another bot on worker', async t => {
+  it('update_bot returns E_WORKER_READONLY when changing a joined bot on worker', async t => {
     const { rt, other, execute } = toolsWorld(t, 'worker')
-    assert.equal(await execute('update_bot', { bot: other.name, name: 'Changed' }), 'E_WORKER_READONLY')
+    other.origin = 'joined'
+    other.worker = { nodeId: 'n2' }
+    assert.equal(await execute('update_bot', { bot: 'Other', name: 'Changed' }), 'E_WORKER_READONLY')
     assert.equal(rt.updateBot.mock.callCount(), 0)
-    assert.equal(other.name, 'Other')
+  })
+
+  it('update_bot on worker does not return E_WORKER_READONLY for local bot', async t => {
+    const { rt, execute } = toolsWorld(t, 'worker')
+    t.mock.method(rt, 'isMain', () => false)
+    const result = await execute('update_bot', { bot: 'Other', name: 'Changed' })
+    assert.notEqual(result, 'E_WORKER_READONLY')
   })
 
   it('update_bot allows self-update on worker', async t => {
