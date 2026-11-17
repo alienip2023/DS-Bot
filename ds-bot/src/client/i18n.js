@@ -108,6 +108,7 @@ const ZH = {
   // Fork: machine selector for creating a Bot on a remote node
   Machine: '建在哪台机器',
   'This machine': '本机',
+  'Other machines': '其他机器',
   'The Bot will be created on the selected remote machine.': 'Bot 会建在所选的远程机器上。',
   'Create the Bot on this machine, or pick a connected remote machine.': '建在本机，或选一台已连上的远程机器。',
   'No connected remote machines yet.': '还没有连上的远程机器。',
@@ -1956,6 +1957,13 @@ Object.assign(ZH, {
   'No machines have joined yet': '还没有机器接入',
   'Its own memory': '该 Bot 自己的记忆',
 })
+
+// Keep the sidebar's new peer heading present in every supported dictionary.
+Object.assign(JA, { 'Other machines': '他のマシン' })
+Object.assign(KO, { 'Other machines': '다른 머신' })
+Object.assign(ES, { 'Other machines': 'Otras máquinas' })
+Object.assign(FR, { 'Other machines': 'Autres machines' })
+Object.assign(DE, { 'Other machines': 'Andere Rechner' })
 
 const ZH_TW = { ...convertDict(ZH), ...ZH_TW_OVERRIDES }
 const HOST_ERRORS_ZH_TW = convertHostErrors(HOST_ERRORS)

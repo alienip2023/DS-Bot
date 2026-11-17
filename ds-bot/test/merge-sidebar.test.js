@@ -87,6 +87,14 @@ const hasRow = (tree, id) => rowOf(tree, id) !== undefined
 const SECTIONS = [{ id: 's1', name: 'Work', collapsed: false, order: 0 }]
 const GROUPS = { fleet: { id: 'fleet', name: '执行机', botIds: ['g1bot'], order: 0, collapsed: false } }
 
+test('peer group headings render in English', async () => {
+  const { TeamSidebar } = await loadSidebar()
+  const peer = { id: 'peer:n1:rb1', name: 'Peer', createdAt: 6, origin: 'peer', homeNodeId: 'n1', worker: { home: 'hub', nodeId: 'n1' } }
+  const tree = render(TeamSidebar, roster({ extraBots: [peer] }))
+  const headings = find(tree, node => node.props?.className === 'bt-hint bt-group-head')
+  assert.deepEqual(headings.map(node => node.kids), ['This machine', 'Other machines'])
+})
+
 test('M-side-no-groups: a roster that still carries state.groups renders no group header and no new-group row', async () => {
   const { TeamSidebar } = await loadSidebar()
   const tree = render(TeamSidebar, roster({ sections: SECTIONS, groups: GROUPS }))

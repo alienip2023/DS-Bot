@@ -13054,6 +13054,7 @@ var ZH = {
   // Fork: machine selector for creating a Bot on a remote node
   Machine: "建在哪台机器",
   "This machine": "本机",
+  "Other machines": "其他机器",
   "The Bot will be created on the selected remote machine.": "Bot 会建在所选的远程机器上。",
   "Create the Bot on this machine, or pick a connected remote machine.": "建在本机，或选一台已连上的远程机器。",
   "No connected remote machines yet.": "还没有连上的远程机器。",
@@ -14901,6 +14902,11 @@ Object.assign(ZH, {
   "No machines have joined yet": "还没有机器接入",
   "Its own memory": "该 Bot 自己的记忆"
 });
+Object.assign(JA, { "Other machines": "他のマシン" });
+Object.assign(KO, { "Other machines": "다른 머신" });
+Object.assign(ES, { "Other machines": "Otras máquinas" });
+Object.assign(FR, { "Other machines": "Autres machines" });
+Object.assign(DE, { "Other machines": "Andere Rechner" });
 var ZH_TW = { ...convertDict(ZH), ...ZH_TW_OVERRIDES };
 var HOST_ERRORS_ZH_TW = convertHostErrors(HOST_ERRORS);
 var LANGUAGES = [
@@ -31902,7 +31908,7 @@ function TeamSidebar(props) {
         }
       },
       wideContent ? main ? (0, import_react37.createElement)(BotRow, { ...rowProps, bot: main, marked: markedUnread[main.id] === true }) : roster.ready ? null : bootFailed ? (0, import_react37.createElement)(BootFailed, { actions }) : (0, import_react37.createElement)("div", { className: "bt-hint" }, t("Setting up your Main Bot…")) : null,
-      wideContent && peerGroups.length > 0 ? (0, import_react37.createElement)("div", { className: "bt-hint bt-group-head", "data-group": "local" }, "本机") : null,
+      wideContent && peerGroups.length > 0 ? (0, import_react37.createElement)("div", { className: "bt-hint bt-group-head", "data-group": "local" }, t("This machine")) : null,
       sections.length > 0 && wideContent ? (0, import_react37.createElement)("div", {
         className: "bt-sec-ungrouped",
         "data-dragging": dragId ? "true" : void 0,
@@ -31913,7 +31919,7 @@ function TeamSidebar(props) {
       wideContent && peerGroups.length > 0 ? (0, import_react37.createElement)(
         "div",
         { className: "bt-peer-groups", "data-group": "other-machines" },
-        (0, import_react37.createElement)("div", { className: "bt-hint bt-group-head" }, "其他机器"),
+        (0, import_react37.createElement)("div", { className: "bt-hint bt-group-head" }, t("Other machines")),
         peerGroups.map(([node, bots]) => (0, import_react37.createElement)(
           "div",
           { key: node, className: "bt-peer-node", "data-node": node },

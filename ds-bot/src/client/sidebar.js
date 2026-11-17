@@ -996,7 +996,7 @@ export function TeamSidebar(props) {
       onDragLeave: (event) => { if (!event.currentTarget.contains(event.relatedTarget)) setDropTarget(null) },
     },
       wideContent ? (main ? h(BotRow, { ...rowProps, bot: main, marked: markedUnread[main.id] === true }) : roster.ready ? null : bootFailed ? h(BootFailed, { actions }) : h('div', { className: 'bt-hint' }, t('Setting up your Main Bot…'))) : null,
-      wideContent && peerGroups.length > 0 ? h('div', { className: 'bt-hint bt-group-head', 'data-group': 'local' }, '本机') : null,
+      wideContent && peerGroups.length > 0 ? h('div', { className: 'bt-hint bt-group-head', 'data-group': 'local' }, t('This machine')) : null,
       sections.length > 0 && wideContent
         ? h('div', {
             className: 'bt-sec-ungrouped',
@@ -1007,7 +1007,7 @@ export function TeamSidebar(props) {
           }, ungrouped.map(entry => renderSidebarEntry(entry, rowProps, markedUnread, onDragStart)))
         : ungrouped.map(entry => renderSidebarEntry(entry, rowProps, markedUnread, onDragStart)),
       wideContent && peerGroups.length > 0 ? h('div', { className: 'bt-peer-groups', 'data-group': 'other-machines' },
-        h('div', { className: 'bt-hint bt-group-head' }, '其他机器'),
+        h('div', { className: 'bt-hint bt-group-head' }, t('Other machines')),
         peerGroups.map(([node, bots]) => h('div', { key: node, className: 'bt-peer-node', 'data-node': node },
           h('div', { className: 'bt-hint bt-peer-node-name' }, node === 'hub' ? 'hub' : node),
           bots.map(bot => h(BotRow, { ...rowProps, key: bot.id, bot, marked: false }))))) : null,
