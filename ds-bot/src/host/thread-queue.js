@@ -15,6 +15,10 @@ import { mainThreadId, threadOf } from './bot-store.js'
 // A turn the Session accepted but never started (no `turn/start`) would hold the Bot
 // forever; past this it is let go once, with a warning, and the queue moves on.
 const ACCEPT_WAIT_MS = 60_000
+// How often a running turn that has not started is checked for a failure. A refused turn
+// sets `bot.blocked` and may never emit `turn/end` (turns.js), so nothing else tells the
+// queue; this is not the accept wait, which stays above.
+const FAILURE_POLL_MS = 250
 // What a queued message shows in the Bot's queue panel.
 const PREVIEW_MAX = 120
 
@@ -29,7 +33,7 @@ export function install(rt) {
   const slotOf = (botId) => {
     let slot = slots.get(botId)
     if (slot === undefined) {
-      slot = { botId, running: null, entry: null, queue: [] }
+      slot = { botId, running: null, entry: null, queue: [], state: 'idle', failure: null }
       slots.set(botId, slot)
     }
     return slot
@@ -68,6 +72,42 @@ export function install(rt) {
       clearTimeout(entry.watch)
       entry.watch = undefined
     }
+    if (entry.probe !== undefined) {
+      clearInterval(entry.probe)
+      entry.probe = undefined
+    }
+  }
+
+  // The failure a turn left on its Bot, if it left one since it started: `bot.blocked`
+  // is written by turns.js (a refused turn, a managed-model failure) and only an
+  // earlier-than-this-turn record is not this turn's.
+  const failureOf = (entry) => {
+    const blocked = rt.botOf?.(entry.botId)?.blocked
+    if (blocked === undefined || typeof blocked.code !== 'string') return undefined
+    if (typeof blocked.at === 'number' && typeof entry.startedAt === 'number' && blocked.at < entry.startedAt) return undefined
+    return blocked
+  }
+
+  // running -> failed: record it, show it, release the queue at once. The next message
+  // moves failed -> queued (or runs) like any other.
+  function fail(entry, failure, { report = true } = {}) {
+    const slot = slots.get(entry.botId)
+    if (slot === undefined || slot.running?.queueId !== entry.queueId) return
+    slot.state = 'failed'
+    slot.failure = { code: failure.code, at: Date.now(), threadId: entry.threadId }
+    // turns.js already rows a failure that came as an error `turn/end`; one the queue
+    // finds on the Bot (a refused turn with no turn/end) gets its row here.
+    if (report) {
+      rt.noteFailure?.({
+        source: 'turn',
+        code: failure.code,
+        text: failure.message || `the turn failed (${failure.code})`,
+        bot: rt.botOf?.(entry.botId)?.name,
+        sessionId: entry.sessionId,
+        threadId: entry.threadId,
+      })
+    }
+    release(entry)
   }
 
   // A queued message can be withdrawn (Stop, a disposed Session, the caller's signal)
@@ -98,6 +138,7 @@ export function install(rt) {
     clearAbort(entry)
     slot.running = null
     slot.entry = null
+    if (slot.state !== 'failed') slot.state = 'idle'
     const next = slot.queue.shift()
     if (next !== undefined) {
       void start(slot, next).catch(error => rt.warn?.('ds-bot: queued turn for %s failed: %s', slot.botId, error))
@@ -108,6 +149,9 @@ export function install(rt) {
     // It is this entry's turn: the caller's abort no longer withdraws it, the Session's
     // own `turn/end` (or the watch) releases it from here.
     clearAbort(entry)
+    // failed -> queued -> running: a failure does not stop the next message.
+    slot.state = 'running'
+    slot.failure = null
     slot.running = { queueId: entry.queueId, threadId: entry.threadId, sessionId: entry.sessionId, startedAt: Date.now(), kind: entry.kind }
     slot.entry = entry
     entry.startedAt = slot.running.startedAt
@@ -121,12 +165,28 @@ export function install(rt) {
         release(entry)
       }, ACCEPT_WAIT_MS)
       entry.watch.unref?.()
+      // A failure is not an accept wait: it is seen as soon as the Bot records it.
+      entry.probe = setInterval(() => {
+        if (slot.running?.queueId !== entry.queueId) return clearWatch(entry)
+        if (entry.sawStart === true) return clearWatch(entry)
+        const failure = failureOf(entry)
+        if (failure !== undefined) fail(entry, failure)
+      }, FAILURE_POLL_MS)
+      entry.probe.unref?.()
     }
     try {
       await entry.run()
     } catch (error) {
+      if (typeof error?.code === 'string' && slot.running?.queueId === entry.queueId) {
+        slot.state = 'failed'
+        slot.failure = { code: error.code, at: Date.now(), threadId: entry.threadId }
+      }
       release(entry)
       throw error
+    }
+    if (entry.releaseOn === 'turn-end' && slot.running?.queueId === entry.queueId && entry.sawStart !== true) {
+      const failure = failureOf(entry)
+      if (failure !== undefined) fail(entry, failure)
     }
     // A joined turn's `done` resolves when the node finished the turn, so it releases here.
     if (entry.releaseOn === 'run') release(entry)
@@ -262,7 +322,12 @@ export function install(rt) {
       clearWatch(entry)
       return
     }
-    if (event?.type === 'turn/end') release(entry)
+    if (event?.type === 'turn/end') {
+      const kind = event.data?.reason?.kind
+      const failure = kind === 'error' ? { code: event.data.reason.error?.code ?? 'UNKNOWN', message: event.data.reason.error?.message } : kind === 'completed' ? undefined : failureOf(entry)
+      if (failure !== undefined) fail(entry, failure, { report: kind !== 'error' })
+      else release(entry)
+    }
   })
 
   Object.assign(rt, {
