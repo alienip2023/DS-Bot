@@ -729,7 +729,7 @@ export function install(rt) {
     if (nodePrefOff()) {
       throw nodeError('memory/federation-unsupported', 'Federated memory is turned off on this node (prefs.memoryFederation=false); nothing was saved.')
     }
-    const scope = change.scope === 'node' ? 'node' : 'own'
+    const scope = change.scope === 'node' ? 'node' : change.scope === 'bot' ? 'bot' : 'own'
     const item = {
       requestId: randomUUID(),
       remoteBotId: text(bot?.id),
@@ -775,7 +775,7 @@ export function install(rt) {
     }
     if (!nodeOnline()) throw nodeError('memory/federation-offline')
     if (!nodeCapable()) throw nodeError('memory/federation-unsupported')
-    const scope = request.scope === 'node' ? 'node' : request.scope === 'team' ? 'team' : 'own'
+    const scope = request.scope === 'node' ? 'node' : request.scope === 'bot' ? 'bot' : request.scope === 'team' ? 'team' : 'own'
     const frame = {
       requestId: randomUUID(),
       remoteBotId: text(bot?.id),

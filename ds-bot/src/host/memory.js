@@ -1362,14 +1362,15 @@ export function install(rt) {
     if (value === '') return {}
     if (/^(own|me|mine|self|yours?|自己|我)$/i.test(value)) return { scope: 'own' }
     if (/^(node|this node|节点|本节点)$/i.test(value)) return { scope: 'node' }
+    if (/^(bot|cluster|cluster bot|机器人|集群)$/i.test(value)) return { scope: 'bot' }
     if (/^(team|团队|共享)$/i.test(value)) {
       return write
         ? { error: 'The team memory is written on the hub by a Main Bot or a group admin; a node cannot write it. Nothing was saved.', code: 'memory/team-read-only' }
         : { scope: 'team' }
     }
     if (/^(group|this group|群|本群|群聊)$/i.test(value)) return { error: 'Group memory stays on the hub\'s own machine; a node has no group memory to read or write.' }
-    if (rt.findBot(value) !== undefined) return { error: 'A federated Bot keeps its own memory on its node; scope is "own", "node", or "team". Use message_bot to ask that Bot.' }
-    return { error: `No scope named ${value}. Use "own" for your memory, "node" for the memory of the Bots on this node, or "team" for the team memory.` }
+    if (rt.findBot(value) !== undefined) return { error: 'A federated Bot uses scope "own", "node", "bot", or "team"; "bot" is the memory the Bot keeps under its cluster identity, readable from any machine once that Bot has an identity. Use message_bot to ask that Bot.' }
+    return { error: `No scope named ${value}. Use "own" for your memory, "node" for the memory of the Bots on this node, "bot" for the memory the Bot keeps under its cluster identity, readable from any machine once that Bot has an identity, or "team" for the team memory.` }
   }
   const federationUnavailable = () => {
     if (rt.memoryNode === undefined) return 'Federated memory is not available in this Bot\'s host.'
@@ -1389,7 +1390,7 @@ export function install(rt) {
     const noNode = rt.memoryNode === undefined || (typeof rt.memoryNode.nodeId === 'function' && !rt.memoryNode.nodeId())
     return { message: stopped, code: noNode ? 'memory/federation-unsupported' : REFUSED }
   }
-  const federationLabel = scope => (scope === 'own' ? 'your memory' : scope === 'node' ? 'this node\'s memory' : 'the team memory')
+  const federationLabel = scope => (scope === 'own' ? 'your memory' : scope === 'node' ? 'this node\'s memory' : scope === 'bot' ? 'the Bot\'s cluster memory' : 'the team memory')
 
   async function federationRemember(args, caller) {
     const stopped = federationStopped()
@@ -1476,7 +1477,7 @@ export function install(rt) {
       }
       sections.push({ scope, entries: Array.isArray(result?.entries) ? result.entries : [] })
     }
-    const where = scope => (scope === 'own' ? 'yours' : scope === 'node' ? 'node' : 'team')
+    const where = scope => (scope === 'own' ? 'yours' : scope === 'node' ? 'node' : scope === 'bot' ? 'bot' : 'team')
     if (topic !== undefined) {
       const found = sections.filter(section => section.entries.length > 0)
       if (found.length === 0) return `No topic [[${topic}]] in ${scopes.map(federationLabel).join(' or ')}.`
