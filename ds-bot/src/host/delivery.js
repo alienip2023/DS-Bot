@@ -5,9 +5,17 @@ import { HISTORY_TIMEOUT_MS, LONG_HEAD, MESSAGE_INLINE_MAX, READ_LINE_MAX, SOURC
 import { joinedShadow, refuseJoinedDispatch } from './roster-join.js'
 import { headOf, textOf } from './text.js'
 import { sendToPeer } from './bot-network.js'
+import { classify } from './msg-classes.js'
+
+// For remote dispatch, control is local, an answer is refused, everything else is work.
+// An answer is not new work: never dispatch it to another machine.
+const ANSWER_ROLES = new Set(['reply', 'report'])
 
 export function install(rt) {
   const { ctx, state } = rt
+  const visibleTurns = new WeakMap()
+  let disposed = false
+  ctx.effect?.(() => () => { disposed = true }, 'ds-bot: visible delivery turns')
 
   const resolveAgent = async (sessionId) => {
     const resolved = await ctx.sessionController.resolveAgent(sessionId)
@@ -111,8 +119,7 @@ export function install(rt) {
     // do not fall through to a local session or handleRemoteTurn.
     const refused = refuseJoinedDispatch(to)
     if (refused) {
-      const skip = role === 'reply' || role === 'report' || role === 'kickoff' || role === 'continue' || role === 'update'
-      if (!skip && typeof rt.handleJoinedTurn === 'function') {
+      if (!ANSWER_ROLES.has(role) && classify(role) !== 'control' && typeof rt.handleJoinedTurn === 'function') {
         await writeBook()
         // joinedAsync remains accepted for older callers; only wait:true opts out of deferral.
         return rt.handleJoinedTurn({ fromId, toId, text, role, exchangeId, replyTo, work, ...(roomId ? { roomId, roomName: rt.roomOf?.(roomId)?.name } : {}), defer: wait !== true, ...(joinedAsync ? { joinedAsync: true } : {}), ...(stopped === true ? { stopped: true } : {}) })
@@ -123,11 +130,10 @@ export function install(rt) {
     // falls through to a local Session.
     if (to.origin === 'peer') return sendToPeer(rt, { fromId, toId, text, exchangeId })
     // Worker Bot routing: dispatch to the remote hub instead of a local Session turn.
-    // Reply, report, kickoff, and continue messages skip this path — they are either
-    // results already coming back from the hub, or internal lifecycle messages.
+    // Answers and lifecycle controls keep the local delivery path.
     if (to.type === 'remote-worker'
       && rt.handleRemoteTurn !== undefined
-      && role !== 'reply' && role !== 'report' && role !== 'kickoff' && role !== 'continue' && role !== 'update') {
+      && !ANSWER_ROLES.has(role) && classify(role) !== 'control') {
       return rt.handleRemoteTurn({ fromId, toId, text, role, exchangeId, replyTo, work })
     }
     const fromName = senderName ?? from?.name ?? 'You'
@@ -158,8 +164,6 @@ export function install(rt) {
     await writeBook()
     await rt.ensureCapabilities(targetSessionId)
     const agent = await resolveAgent(targetSessionId)
-    // A steered message cuts into a running turn at its next step; a follow-up
-    // queues for the next turn (see turns.js for how each is routed).
     const message = createUserMessage({
       content: [
         { type: 'text', text: `${headerFor(role, fromName, room?.name, audience, note, deferred, { resumed, retried, resent, abandoned, asker })}\n${text}` },
@@ -189,21 +193,44 @@ export function install(rt) {
       rt.ledger.append(book, { event: 'delivered', id: exchangeId, sessionId: targetSessionId, time: Date.now() })
       await rt.ledger.written(book).catch(() => {})
     }
+    const visible = classify(role) === 'visible' && typeof agent.session?.append === 'function'
+    if (visible) {
+      // The chat projector renders user sources verbatim; relay sources show only an
+      // exchange link. Keep the relay metadata on the wake that owns the next turn.
+      agent.session.append('user/message', { ...message, source: { ...source, kind: 'user' } }, { surfaceOp: 'append' })
+      await ctx.sessions.flush(agent.session)
+    }
     const send = async () => {
-      if (steer) agent.steer(message)
+      if (visible) {
+        // The content is already in model history. An empty, deferred relay wakes the
+        // agent without rendering or admitting that content a second time. Never wait
+        // for the sender's active turn here: it may itself be awaiting this delivery.
+        const wake = createUserMessage({ content: [], source: { ...source, deferred: true } })
+        const previous = visibleTurns.get(agent) ?? Promise.resolve()
+        const pending = previous.catch(() => {}).then(async () => {
+          await agent.whenIdle()
+          if (disposed) return
+          agent.followup(wake)
+          await agent.whenIdle()
+          await ctx.sessions.flush(agent.session)
+        })
+        visibleTurns.set(agent, pending)
+        void pending.catch(error => rt.warn('ds-bot: visible delivery turn failed: %s', error)).finally(() => {
+          if (visibleTurns.get(agent) === pending) visibleTurns.delete(agent)
+        })
+      } else if (steer) agent.steer(message)
       else agent.followup(message)
       await ctx.sessions.flush(agent.session)
       if (book !== undefined) await markDelivered()
       else recordExchangeEntry()
     }
-    // A steered message cuts into a running turn at its next step; it must not wait
-    // behind that turn, so it never goes through the serial gate.
+    // Steering bypasses the serial gate; visible input still waits for its own turn.
     if (steer) {
       await send()
       return exchangeId
     }
-    // Everything else waits for the Bot's running turn (thread-model §4.5): a queued
-    // delivery is written to the Session and recorded only when its turn starts.
+    // Visible input is already on the timeline; the serial gate orders its wake
+    // behind the Bot's current turn (thread-model §4.5).
     const run = async () => {
       await send()
     }

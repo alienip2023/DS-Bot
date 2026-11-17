@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { classify } from './msg-classes.js'
 // The hub publishes destinations; nodes keep the directory in remote-agent memory.
 const DIRECTORY_DELAY_MS = 1_000
 const REFRESH_MS = 60_000
@@ -114,7 +115,7 @@ export async function handleNodeMessage(rt, payload) {
     role: 'default', exchangeId: payload.exchangeId,
   }
   if (to.origin === 'joined') return rt.handleJoinedTurn({
-    ...message, senderName: payload.from.name, senderBotId: payload.from.id, defer: true,
+    ...message, senderName: payload.from.name, senderBotId: payload.from.id, defer: classify(message.role) === 'control',
   })
   return rt.deliver({ ...message, fromName: payload.from.name })
 }
