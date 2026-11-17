@@ -6,6 +6,7 @@ import { joinedShadow, shadowId } from './roster-join.js'
 import {
   ensureMirrorSession, hasPromptRequest, mirrorStateOf,
 } from './mirror.js'
+import { classify } from './msg-classes.js'
 import { beginJoinedMirror, closeJoinedMirror, markJoinedMirrorPending } from './joined-mirror-writer.js'
 
 export const BRIDGE_DOWN_TEXT = '副机仍在执行，桥已断'
@@ -28,7 +29,6 @@ const inflightByRegistry = new WeakMap()
 export function joinedTimeoutFrom(value) {
   return Number.isInteger(value) && value >= 1000 && value <= MAX_TIMER_MS ? value : JOINED_TURN_TIMEOUT_MS
 }
-const SKIP_ROLES = new Set(['reply', 'report', 'kickoff', 'continue', 'update'])
 const MIRROR_RPC_PREFIX = 'joined:'
 
 // A Bot-to-Bot message is a real exchange on the joined Bot's page too. Open a mirror turn
@@ -60,7 +60,7 @@ function closeMirrorTurn(rt, mirror, botId, { text, seq, error, stopped } = {}) 
 
 
 export function joinedDispatchRole(role) {
-  return !SKIP_ROLES.has(role)
+  return classify(role) === 'visible'
 }
 
 function trimmed(value) {
