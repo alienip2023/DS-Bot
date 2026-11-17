@@ -33,6 +33,10 @@ export function reportableBots(bots) {
     // Omit rather than send null/empty/over-long: the hub must not clear a known model.
     const model = typeof bot.model === 'string' ? bot.model.trim() : ''
     if (model !== '' && model.length <= 128) entry.model = model
+    const clusterBotId = typeof bot.clusterBotId === 'string' ? bot.clusterBotId.trim() : ''
+    if (clusterBotId !== '' && clusterBotId.length <= 64 && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(clusterBotId)) {
+      entry.clusterBotId = clusterBotId
+    }
     return [entry]
   })
 }
@@ -56,6 +60,7 @@ export function applyRosterReport(state, report, now = Date.now(), onChange) {
     seenIds.add(id)
     const existing = state.bots[id]
     const reportedModel = typeof bot.model === 'string' ? bot.model.trim() : ''
+    const clusterBotId = typeof bot.clusterBotId === 'string' ? bot.clusterBotId.trim() : ''
     const row = {
       ...(existing ?? {}),
       id,
@@ -80,6 +85,9 @@ export function applyRosterReport(state, report, now = Date.now(), onChange) {
     }
     // No model in this report keeps existing?.model. Do not write null or ''.
     if (reportedModel !== '') row.model = reportedModel
+    if (clusterBotId !== '' && clusterBotId.length <= 64 && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(clusterBotId)) {
+      row.clusterBotId = clusterBotId
+    }
     if (!existing || Object.keys(row).some(key => key !== 'worker' && row[key] !== existing[key])
       || Object.keys(row.worker).some(key => key !== 'lastSeen' && row.worker[key] !== existing.worker?.[key])
       || mainThreadOf(state, id) === undefined) changed = true
