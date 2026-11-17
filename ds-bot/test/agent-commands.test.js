@@ -7,6 +7,7 @@ import { install } from '../src/host/agent-commands.js'
 // list(agent), find/execute, and a `commands/change` event on every registration.
 function world({ config = {} } = {}) {
   let dshRuns = 0
+  let registers = 0
   const global = new Map()
   const scoped = new Map()
   const listeners = new Map()
@@ -43,6 +44,7 @@ function world({ config = {} } = {}) {
       register(definition) {
         const map = scoped.get(sessionId) ?? new Map()
         if (map.has(definition.name)) throw new Error(`duplicate command ${definition.name}`)
+        registers += 1
         map.set(definition.name, definition)
         scoped.set(sessionId, map)
         notify()
@@ -85,7 +87,7 @@ function world({ config = {} } = {}) {
     agents.push(entry)
     return entry
   }
-  return { cleanups, ctx, rt, service, registerGlobal, emit, agent, agents, runs: () => dshRuns }
+  return { cleanups, ctx, rt, service, registerGlobal, emit, agent, agents, scoped, registers: () => registers, runs: () => dshRuns }
 }
 
 test('the shield shadows every command a Bot sees and refuses a typed command with its arguments', () => {
@@ -195,6 +197,74 @@ test('a Bot whose agent arrives before its state entry gets the shield on the ne
   assert.match(w.service.find(a, 'plan').description, /Not available/)
   const { result } = await w.service.execute(a, '/plan 明天上线')
   assert.equal(result.kind, 'error')
+  assert.equal(w.runs(), 0)
+})
+
+test('an ordinary save does not rebuild the shadows', () => {
+  const w = world()
+  install(w.rt)
+  w.rt.chatOwners.set('a', 'a').set('b', 'b')
+  w.registerGlobal('plan')
+  w.registerGlobal('goal')
+  for (const sessionId of ['a', 'b']) w.emit('agent/created', { agent: w.agent(sessionId) })
+  assert.equal(w.scoped.get('a').size, 2)
+  assert.equal(w.scoped.get('b').size, 2)
+  const registered = w.registers()
+  assert.equal(registered, 4)
+
+  for (let i = 0; i < 5; i++) {
+    for (const listener of w.rt.saved) listener()
+    assert.equal(w.registers(), registered, 'ordinary saves must not register shadows again')
+  }
+})
+
+test('a save that first covers a Bot registers its shadows once', async () => {
+  const w = world()
+  w.rt.state = { bots: {} }
+  w.rt.chatOf = id => (id === 'bot-a' ? 'a' : undefined)
+  install(w.rt)
+  w.registerGlobal('plan')
+  w.registerGlobal('goal')
+  const a = w.agent('a')
+  w.emit('agent/created', { agent: a })
+  for (const listener of w.rt.saved) listener()
+  assert.equal(w.registers(), 0)
+  assert.equal(w.service.find(a, 'plan').description, 'global plan')
+
+  w.rt.state.bots['bot-a'] = { id: 'bot-a' }
+  for (const listener of w.rt.saved) listener()
+  assert.equal(w.registers(), 2, 'the first covered save must register exactly one set of shadows')
+  assert.equal(w.scoped.get('a').size, 2)
+  assert.equal((await w.service.execute(a, '/plan')).result.kind, 'error')
+  for (let i = 0; i < 5; i++) {
+    for (const listener of w.rt.saved) listener()
+    assert.equal(w.registers(), 2, 'later saves must keep the existing shadows')
+  }
+  assert.equal(w.runs(), 0)
+})
+
+test('commands/change still refreshes the shadows', async () => {
+  const w = world()
+  install(w.rt)
+  w.rt.chatOwners.set('a', 'a')
+  w.registerGlobal('plan')
+  const a = w.agent('a')
+  w.emit('agent/created', { agent: a })
+  const b = w.agent('b')
+  w.emit('agent/created', { agent: b })
+  assert.equal(w.registers(), 1)
+
+  // A command event can catch up a newly covered agent before the next save.
+  w.rt.chatOwners.set('b', 'b')
+  w.registerGlobal('newcmd')
+  const { result } = await w.service.execute(a, '/newcmd')
+  assert.equal(result.kind, 'error')
+  assert.match(result.text, /DSH \/newcmd command does not run in a Bot's chat/)
+  assert.equal((await w.service.execute(b, '/newcmd')).result.kind, 'error')
+  assert.equal(w.registers(), 5)
+  const registered = w.registers()
+  for (const listener of w.rt.saved) listener()
+  assert.equal(w.registers(), registered)
   assert.equal(w.runs(), 0)
 })
 
