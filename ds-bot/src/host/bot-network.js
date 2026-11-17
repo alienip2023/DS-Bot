@@ -16,8 +16,14 @@ const isSessionPeer = bot => bot?.origin === 'peer' && typeof bot.homeNodeId ===
 
 // Turns the hub's directory into read-only, memory-only peer rows and reaps the rest.
 // Returns the rows now present, or null when the frame was not the hub's.
-export function applyDirectory(rt, bots, source) {
+export function applyDirectory(rt, payload, source) {
   if (source !== HUB_FRAME) return null
+  const bots = Array.isArray(payload) ? payload : payload?.bots
+  const rooms = Array.isArray(payload) ? [] : payload?.rooms
+  rt.hubRooms = (Array.isArray(rooms) ? rooms : [])
+    .filter(room => room && typeof room.id === 'string' && room.id.trim() !== '' && typeof room.name === 'string' && Number.isInteger(room.members) && room.members >= 0)
+    .slice(0, 100)
+    .map(room => ({ id: room.id, name: room.name.trim().slice(0, 40), members: room.members }))
   const own = serviceOf(rt, 'remote-agent:bot-network')?.nodeId
   const next = {}
   for (const entry of Array.isArray(bots) ? bots : []) {
@@ -40,6 +46,7 @@ export function applyDirectory(rt, bots, source) {
 export function reapStalePeers(rt, now = Date.now()) {
   const at = peerAt.get(rt)
   if (at !== undefined && now - at < STALE_MS) return false
+  rt.hubRooms = []
   let removed = false
   for (const [id, bot] of Object.entries(rt.state.bots)) if (isSessionPeer(bot)) { delete rt.state.bots[id]; removed = true }
   return removed
@@ -76,11 +83,17 @@ export function directoryOf(rt) {
   }))
 }
 
+export function roomsOf(rt) {
+  return Object.values(rt.state.rooms ?? {}).filter(room => room.private !== true).slice(0, 100).map(room => ({
+    id: room.id, name: room.name, members: Object.keys(room.members ?? {}).length,
+  }))
+}
+
 export async function publishDirectory(rt) {
   const registry = serviceOf(rt, 'remote-agent:registry')
   if (typeof registry?.send !== 'function' || typeof registry.onlineNodes !== 'function') return
   await rt.load?.()
-  const payload = { bots: directoryOf(rt), at: Date.now() }
+  const payload = { bots: directoryOf(rt), rooms: roomsOf(rt), at: Date.now() }
   for (const { nodeId } of registry.onlineNodes()) {
     try { registry.send(nodeId, 'bot/directory', payload) } catch (error) {
       rt.warn?.('ds-bot: Bot directory send to %s failed: %s', nodeId, error)
@@ -115,7 +128,8 @@ export async function handleNodeMessage(rt, payload) {
     role: 'default', exchangeId: payload.exchangeId,
   }
   if (to.origin === 'joined') return rt.handleJoinedTurn({
-    ...message, senderName: payload.from.name, senderBotId: payload.from.id, defer: classify(message.role) === 'control',
+    // A node ask is already accepted on that node; the hub must not await the joined turn.
+    ...message, senderName: payload.from.name, senderBotId: payload.from.id, defer: true,
   })
   return rt.deliver({ ...message, fromName: payload.from.name })
 }
@@ -125,7 +139,7 @@ export function install(rt) {
   let stopped = false
   let attached
   let dirtyTimer
-  let lastDirectory = JSON.stringify(directoryOf(rt))
+  let lastDirectory = JSON.stringify({ bots: directoryOf(rt), rooms: roomsOf(rt) })
   const publish = () => {
     if (stopped) return
     void publishDirectory(rt).catch(error => rt.warn?.('ds-bot: Bot directory publish failed: %s', error))
@@ -148,7 +162,7 @@ export function install(rt) {
     attached?.on?.('roster', dirty)
   }
   const offSaved = rt.onSaved?.(() => {
-    const next = JSON.stringify(directoryOf(rt))
+    const next = JSON.stringify({ bots: directoryOf(rt), rooms: roomsOf(rt) })
     if (next === lastDirectory) return
     lastDirectory = next
     dirty()
@@ -178,7 +192,7 @@ export function install(rt) {
   })
     : undefined
   const offDirectory = typeof rt.botNetwork?.on === 'function' ? (() => {
-    const onDirectory = bots => { if (!stopped) applyDirectory(rt, bots, HUB_FRAME) }
+    const onDirectory = payload => { if (!stopped) applyDirectory(rt, payload, HUB_FRAME) }
     rt.botNetwork.on('directory', onDirectory)
     return () => rt.botNetwork?.off?.('directory', onDirectory)
   })() : undefined

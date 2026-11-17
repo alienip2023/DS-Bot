@@ -159,7 +159,7 @@ test('a control message keeps followup delivery without an immediate transcript 
   await agent.whenIdle()
 })
 
-test('a visible node message to a joined Bot is delivered without deferral', async () => {
+test('a visible node message to a joined Bot is dispatched at once without holding the node', async () => {
   const calls = []
   const rt = {
     state: { bots: { joined: { id: 'joined', origin: 'joined' } } },
@@ -169,5 +169,6 @@ test('a visible node message to a joined Bot is delivered without deferral', asy
     kind, from: { id: 'sender', name: 'Sender' }, to: { id: 'joined' }, text: kind, exchangeId: kind, depth: 0,
   })
   assert.equal(calls.length, 2)
-  assert.ok(calls.every(message => message.defer === false))
+  // defer only decides whether the caller awaits; the turn is dispatched either way.
+  assert.ok(calls.every(message => message.defer === true))
 })

@@ -131,13 +131,12 @@ export function install(rt) {
     const now = bot.id === self || shadow ? '' : `\n  now: ${rt.statusOf(bot.id)}`
     return `- ${bot.name}${tags ? ` (${tags})` : ''}${job}${now}`
   }
-  // Hub rooms a joined Bot belongs to: name and member count only, read-only, memory-only.
-  // The directory frame has no room field (the plugin validator drops unknown fields), so
-  // rt.hubRooms stays empty until the hub has a way to send them; offline says so.
+  // Hub rooms from the directory: name and member count only, read-only, memory-only.
   const hubRoomLines = (args) => {
     if (typeof rt.botNetwork?.send !== 'function' || args.bot || args.group) return []
     const online = rt.hubOnline?.() === true || Object.values(state.bots).some(bot => bot.origin === 'peer')
     if (!online) return ['Hub group chats: unavailable, the hub is offline.']
+    if (!rt.hubRooms?.length) return ['Hub group chats: none you can see.']
     return (rt.hubRooms ?? []).map(room => `- "${room.name}" — ${room.members} members (hub, read-only)`)
   }
   // The Bots and group chats list_bots shows: the whole team, one Bot, one group's
