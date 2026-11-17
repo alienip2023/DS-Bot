@@ -88,7 +88,7 @@ const ZH = {
   'Bot type': 'Bot 类型',
   'Normal Bot': '普通 Bot',
   'Worker Bot (Remote Machine)': '执行机（远程机器）',
-  'A Worker Bot runs tasks on a remote machine via dsh-remote-agent.': '执行机通过 dsh-remote-agent 在远程机器上跑任务。',
+  'A Worker Bot runs tasks on a remote machine via AI Unified (dsh-ai-unified).': '执行机通过 AI 大一统（dsh-ai-unified）在远程机器上跑任务。',
   'A normal Bot runs in this DeepSeek Harness instance.': '普通 Bot 在这个 DeepSeek Harness 实例里运行。',
   'Hub URL': 'Hub 地址',
   'URL of the hub the worker should connect to.': '执行机要连接的 Hub 地址。',

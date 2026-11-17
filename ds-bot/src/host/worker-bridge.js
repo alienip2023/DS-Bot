@@ -1,5 +1,5 @@
 // Worker Bridge: routes turns for type=remote-worker Bots to the remote hub via
-// dsh-remote-agent's hub API, then delivers the task result back as a Bot reply.
+// the hub API of the peer plugin AI Unified (dsh-ai-unified), then delivers the task result back as a Bot reply.
 //
 // Phase 4 additions:
 //   - Load balancing: bot.worker.nodes[] array; pickNode() selects least-loaded node.
@@ -155,7 +155,7 @@ export function install(rt) {
     if (tools === undefined) {
       void rt.deliver?.({
         fromId: toId, toId: fromId ?? toId,
-        text: `[Worker Bot ${to.name} is not reachable: hub tools are not loaded. Make sure dsh-remote-agent is running in hub mode.]`,
+        text: `[Worker Bot ${to.name} is not reachable: hub tools are not loaded. Make sure AI Unified (dsh-ai-unified) is running in hub mode.]`,
         role: 'reply', replyTo: exchangeId, ...(work ? { work } : {}),
       }).catch(() => {})
       return exchangeId

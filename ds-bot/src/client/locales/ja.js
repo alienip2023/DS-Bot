@@ -2446,7 +2446,7 @@ Object.assign(JA, {
   "The Bot will be created on the selected remote machine.": "Bot は選択したリモートマシンに作成されます。",
   "No connected remote machines yet.": "接続済みのリモートマシンはまだありません。",
   "Create the Bot on this machine, or pick a connected remote machine.": "このマシンに Bot を作成するか、接続済みのリモートマシンを選んでください。",
-  "A Worker Bot runs tasks on a remote machine via dsh-remote-agent.": "ワーカー Bot は dsh-remote-agent 経由でリモートマシン上のタスクを実行します。",
+  "A Worker Bot runs tasks on a remote machine via AI Unified (dsh-ai-unified).": "ワーカー Bot は AI Unified（dsh-ai-unified）経由でリモートマシン上のタスクを実行します。",
   "A normal Bot runs in this DeepSeek Harness instance.": "通常の Bot はこの DeepSeek Harness インスタンスで動作します。",
   "Where this Bot keeps its memory. Auto Detect uses dsh-mneme when it is installed.": "この Bot がメモリを保存する場所です。自動検出は dsh-mneme がインストールされていればそれを使います。",
   "URL of the hub the worker should connect to.": "ワーカーが接続するハブの URL です。",
