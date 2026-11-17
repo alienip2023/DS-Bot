@@ -686,7 +686,7 @@ export function TeamSidebar(props) {
   const order = useMemo(() => {
     const stamps = JSON.parse(updated)
     const botEntries = roster.bots
-      .filter(bot => bot.id !== roster.mainBotId)
+      .filter(bot => bot.id !== roster.mainBotId && bot.origin !== 'peer')
       .map(bot => ({ kind: 'bot', item: bot, at: stamps[currentPart(bot)] ?? bot.createdAt }))
     const roomEntries = roster.rooms.map(room => ({ kind: 'room', item: room, at: stamps[room.id] ?? room.createdAt }))
     const agentEntries = (roster.agents ?? []).map(agent => ({ kind: 'agent', item: agent, at: Math.max(0, ...agent.sessions.map(id => stamps[id] ?? 0)) || agent.createdAt }))
@@ -694,6 +694,16 @@ export function TeamSidebar(props) {
       Number(Boolean(b.item.pinned)) - Number(Boolean(a.item.pinned)) || b.at - a.at
     )
   }, [roster, updated])
+  // Another machine's Bots, read-only, grouped by the node they live on.
+  const peerGroups = useMemo(() => {
+    const byNode = new Map()
+    for (const bot of roster.bots.filter(bot => bot.origin === 'peer')) {
+      const node = bot.homeNodeId ?? bot.worker?.nodeId ?? ''
+      if (!byNode.has(node)) byNode.set(node, [])
+      byNode.get(node).push(bot)
+    }
+    return [...byNode.entries()].sort(([a], [b]) => a.localeCompare(b))
+  }, [roster])
   const sections = roster.sections ?? []
   const sectionSet = useMemo(() => new Set(sections.map(sec => sec.id)), [sections])
   const ungrouped = useMemo(
@@ -986,6 +996,7 @@ export function TeamSidebar(props) {
       onDragLeave: (event) => { if (!event.currentTarget.contains(event.relatedTarget)) setDropTarget(null) },
     },
       wideContent ? (main ? h(BotRow, { ...rowProps, bot: main, marked: markedUnread[main.id] === true }) : roster.ready ? null : bootFailed ? h(BootFailed, { actions }) : h('div', { className: 'bt-hint' }, t('Setting up your Main Bot…'))) : null,
+      wideContent && peerGroups.length > 0 ? h('div', { className: 'bt-hint bt-group-head', 'data-group': 'local' }, '本机') : null,
       sections.length > 0 && wideContent
         ? h('div', {
             className: 'bt-sec-ungrouped',
@@ -995,6 +1006,11 @@ export function TeamSidebar(props) {
             onDrop: event => onDropSec(event, null),
           }, ungrouped.map(entry => renderSidebarEntry(entry, rowProps, markedUnread, onDragStart)))
         : ungrouped.map(entry => renderSidebarEntry(entry, rowProps, markedUnread, onDragStart)),
+      wideContent && peerGroups.length > 0 ? h('div', { className: 'bt-peer-groups', 'data-group': 'other-machines' },
+        h('div', { className: 'bt-hint bt-group-head' }, '其他机器'),
+        peerGroups.map(([node, bots]) => h('div', { key: node, className: 'bt-peer-node', 'data-node': node },
+          h('div', { className: 'bt-hint bt-peer-node-name' }, node === 'hub' ? 'hub' : node),
+          bots.map(bot => h(BotRow, { ...rowProps, key: bot.id, bot, marked: false }))))) : null,
       sections.map(section => h(SectionBlock, {
         key: section.id,
         section,
@@ -1552,6 +1568,7 @@ export const SIDEBAR_CSS = `
 .bt-sec[data-collapsed=false] .bt-sec-chev{transform:rotate(90deg)}
 .bt-sec-chev svg{width:12px;height:12px}
 .bt-sec-dot{width:6px;height:6px;border-radius:50%;corner-shape:round;flex:none}
+.bt-group-head{font-weight:600;margin:8px 0 2px}.bt-peer-node-name{opacity:.7;margin:4px 0 2px}
 .bt-sec-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:0 1 auto}
 .bt-sec-count{font-size:11px;line-height:16px;font-weight:500;color:var(--bt-ink-3);font-variant-numeric:tabular-nums;flex:none}
 .bt-sec-head-wrap:hover .bt-sec-count-hide{display:none}

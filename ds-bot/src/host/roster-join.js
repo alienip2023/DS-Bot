@@ -22,7 +22,7 @@ export function shadowId(nodeId, remoteBotId) {
 export function reportableBots(bots) {
   return Object.values(bots ?? {}).flatMap((bot) => {
     if (!bot || typeof bot !== 'object') return []
-    if (bot.type === 'remote-worker') return []
+    if (bot.type === 'remote-worker' || bot.origin === 'peer') return []
     const id = typeof bot.id === 'string' ? bot.id.trim() : ''
     if (id === '') return []
     const entry = {

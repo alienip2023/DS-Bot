@@ -10,6 +10,7 @@ import { missingFileRefs } from './claims.js'
 import { absoluteLinks } from './links.js'
 import { NAME_MAX } from './requests.js'
 import { unquote } from './text.js'
+import { sendToPeer } from './bot-network.js'
 import { formatRemoteTask } from './remote-tasks.js'
 import { isOpenPart, ownChatSessions } from './threads.js'
 import { mentionSpans } from '../shared/mentions.js'
@@ -130,6 +131,15 @@ export function install(rt) {
     const now = bot.id === self || shadow ? '' : `\n  now: ${rt.statusOf(bot.id)}`
     return `- ${bot.name}${tags ? ` (${tags})` : ''}${job}${now}`
   }
+  // Hub rooms a joined Bot belongs to: name and member count only, read-only, memory-only.
+  // The directory frame has no room field (the plugin validator drops unknown fields), so
+  // rt.hubRooms stays empty until the hub has a way to send them; offline says so.
+  const hubRoomLines = (args) => {
+    if (typeof rt.botNetwork?.send !== 'function' || args.bot || args.group) return []
+    const online = rt.hubOnline?.() === true || Object.values(state.bots).some(bot => bot.origin === 'peer')
+    if (!online) return ['Hub group chats: unavailable, the hub is offline.']
+    return (rt.hubRooms ?? []).map(room => `- "${room.name}" — ${room.members} members (hub, read-only)`)
+  }
   // The Bots and group chats list_bots shows: the whole team, one Bot, one group's
   // members, or one Bot that must be in that group.
   const listScope = (args, self) => {
@@ -169,6 +179,7 @@ export function install(rt) {
         '',
         rooms.length === 0 ? none : 'Group chats:',
         ...rooms.map(room => roomLine(room, self)),
+        ...hubRoomLines(args),
       ].join('\n')
     },
   }))
@@ -336,9 +347,16 @@ export function install(rt) {
       }
       if (target === undefined) return `No Bot named ${args.to}. Team: ${Object.values(state.bots).map(bot => bot.name).join(', ')}`
       if (target.id === sender.id) return 'You cannot message yourself.'
-      // A peer shadow is listed for the team to see, not to send to: this release has no
-      // dispatch wire, and answering locally would fake a turn from another machine.
-      if (target.origin === 'peer') return `${target.name} runs on another machine and is in the read-only list; this release cannot send to it.`
+      // A peer row is another machine's Bot: the message goes to the hub as one bot/message
+      // frame, and the reply comes back later as a new message. No queue, no retry.
+      if (target.origin === 'peer') {
+        if (String(args.message ?? '').trim() === '') return 'Write a message to send.'
+        if (rt.roomOf(rt.groupOwners.get(exec.agent?.id)?.roomId) !== undefined) refuse(`Not sent: ${target.name} is on another machine, and work for this group stays in it.`)
+        const text = absoluteLinks(String(args.message), rt.sessionFolder?.(exec.agent?.session ?? exec.agent))
+        const result = sendToPeer(rt, { fromId: sender.id, toId: target.id, text })
+        if (!result.ok) refuse(`Not sent to ${target.name}: ${result.error}${result.error === 'E_HUB_OFFLINE' ? '. The hub is offline; nothing was queued, send again when it is back.' : ''}`)
+        return `Sent to ${target.name} on ${target.homeNodeId}; its reply will arrive later as a new message.`
+      }
       if (String(args.message ?? '').trim() === '') return 'Write a message to send.'
       const name = typeof args.request_id === 'string' ? args.request_id.trim() : ''
       if (name.length > NAME_MAX) return `The request_id is ${name.length} characters long; a request name is at most ${NAME_MAX}.`

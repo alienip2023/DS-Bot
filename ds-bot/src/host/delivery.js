@@ -4,6 +4,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { HISTORY_TIMEOUT_MS, LONG_HEAD, MESSAGE_INLINE_MAX, READ_LINE_MAX, SOURCE_KIND, TEXT_KEPT, TEXT_SHOW_MAX } from './constants.js'
 import { joinedShadow, refuseJoinedDispatch } from './roster-join.js'
 import { headOf, textOf } from './text.js'
+import { sendToPeer } from './bot-network.js'
 
 export function install(rt) {
   const { ctx, state } = rt
@@ -118,9 +119,9 @@ export function install(rt) {
       }
       return refused
     }
-    // A peer shadow is another machine's Bot in a read-only list. It has no wire to
-    // dispatch on in this release, and it must never fall through to a local Session.
-    if (to.origin === 'peer') return { ok: false, error: 'E_PEER_NOT_ENABLED' }
+    // A peer row is another machine's Bot: the hub carries the message, and it never
+    // falls through to a local Session.
+    if (to.origin === 'peer') return sendToPeer(rt, { fromId, toId, text, exchangeId })
     // Worker Bot routing: dispatch to the remote hub instead of a local Session turn.
     // Reply, report, kickoff, and continue messages skip this path — they are either
     // results already coming back from the hub, or internal lifecycle messages.

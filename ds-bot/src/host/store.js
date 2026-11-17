@@ -37,7 +37,12 @@ export function install(rt) {
   const { warn } = rt
   const sessionIdOf = id => (typeof id === 'string' && id !== '' ? id : undefined)
 
-  const EMPTY = JSON.stringify(state)
+  // A peer row the hub's directory put here lives in memory for this session only: it
+  // names a hub and a home node, and is never written, so a restart cannot revive it.
+  const sessionPeer = bot => bot?.origin === 'peer' && typeof bot.homeNodeId === 'string' && typeof bot.hubId === 'string'
+  const serialize = () => JSON.stringify(state, (key, value) => key === 'bots' && value === state.bots
+    ? Object.fromEntries(Object.entries(value).filter(([, bot]) => !sessionPeer(bot))) : value)
+  const EMPTY = serialize()
   // The other dsh host that holds state.lock while this one only reads (see home-lock.js);
   // undefined while this host may write.
   let holder
@@ -374,7 +379,7 @@ export function install(rt) {
     const stale = Object.values(state.rooms).filter(room => !room.named && room.name !== rt.autoRoomName(room.members))
     for (const room of stale) room.name = rt.autoRoomName(room.members)
     indexSessions()
-    if (!migrated && stale.length === 0 && parsed !== undefined) savedSnapshot = JSON.stringify(state)
+    if (!migrated && stale.length === 0 && parsed !== undefined) savedSnapshot = serialize()
     return { migrated: migrated || stale.length > 0, stale }
   }
 
@@ -417,7 +422,7 @@ export function install(rt) {
       if (stamp() !== seen) {
         const aside = `${statePath}.replaced-${Date.now()}`
         try {
-          await writeFile(aside, JSON.stringify(state))
+          await writeFile(aside, serialize())
           warn('ds-bot: %s changed while no host held the team; it is adopted and this host\'s state is kept as %s', statePath, aside)
         } catch (error) {
           warn('ds-bot: %s changed while no host held the team; it is adopted, and this host\'s state is lost because it could not be kept aside: %s', statePath, error)
@@ -535,9 +540,9 @@ export function install(rt) {
         }
         ensureLock()
         state.exchanges = state.exchanges.slice(-MAX_EXCHANGES)
-        if (!force && stamp() !== '' && JSON.stringify(state) === savedSnapshot) return
+        if (!force && stamp() !== '' && serialize() === savedSnapshot) return
         state.revision += 1
-        const snapshot = JSON.stringify(state)
+        const snapshot = serialize()
         await writeFile(temp, snapshot, 'utf8')
         ensureLock()
         await replaceFile(temp, statePath, ensureLock)

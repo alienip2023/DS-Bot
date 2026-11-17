@@ -31598,13 +31598,22 @@ function TeamSidebar(props) {
   });
   const order = (0, import_react37.useMemo)(() => {
     const stamps = JSON.parse(updated);
-    const botEntries = roster.bots.filter((bot) => bot.id !== roster.mainBotId).map((bot) => ({ kind: "bot", item: bot, at: stamps[currentPart(bot)] ?? bot.createdAt }));
+    const botEntries = roster.bots.filter((bot) => bot.id !== roster.mainBotId && bot.origin !== "peer").map((bot) => ({ kind: "bot", item: bot, at: stamps[currentPart(bot)] ?? bot.createdAt }));
     const roomEntries = roster.rooms.map((room2) => ({ kind: "room", item: room2, at: stamps[room2.id] ?? room2.createdAt }));
     const agentEntries = (roster.agents ?? []).map((agent) => ({ kind: "agent", item: agent, at: Math.max(0, ...agent.sessions.map((id) => stamps[id] ?? 0)) || agent.createdAt }));
     return [...botEntries, ...roomEntries, ...agentEntries].sort(
       (a, b) => Number(Boolean(b.item.pinned)) - Number(Boolean(a.item.pinned)) || b.at - a.at
     );
   }, [roster, updated]);
+  const peerGroups = (0, import_react37.useMemo)(() => {
+    const byNode = /* @__PURE__ */ new Map();
+    for (const bot of roster.bots.filter((bot2) => bot2.origin === "peer")) {
+      const node = bot.homeNodeId ?? bot.worker?.nodeId ?? "";
+      if (!byNode.has(node)) byNode.set(node, []);
+      byNode.get(node).push(bot);
+    }
+    return [...byNode.entries()].sort(([a], [b]) => a.localeCompare(b));
+  }, [roster]);
   const sections = roster.sections ?? [];
   const sectionSet = (0, import_react37.useMemo)(() => new Set(sections.map((sec) => sec.id)), [sections]);
   const ungrouped = (0, import_react37.useMemo)(
@@ -31893,6 +31902,7 @@ function TeamSidebar(props) {
         }
       },
       wideContent ? main ? (0, import_react37.createElement)(BotRow, { ...rowProps, bot: main, marked: markedUnread[main.id] === true }) : roster.ready ? null : bootFailed ? (0, import_react37.createElement)(BootFailed, { actions }) : (0, import_react37.createElement)("div", { className: "bt-hint" }, t("Setting up your Main Bot…")) : null,
+      wideContent && peerGroups.length > 0 ? (0, import_react37.createElement)("div", { className: "bt-hint bt-group-head", "data-group": "local" }, "本机") : null,
       sections.length > 0 && wideContent ? (0, import_react37.createElement)("div", {
         className: "bt-sec-ungrouped",
         "data-dragging": dragId ? "true" : void 0,
@@ -31900,6 +31910,17 @@ function TeamSidebar(props) {
         onDragOver: (event) => onDragOverSec(event, "__none__"),
         onDrop: (event) => onDropSec(event, null)
       }, ungrouped.map((entry) => renderSidebarEntry(entry, rowProps, markedUnread, onDragStart))) : ungrouped.map((entry) => renderSidebarEntry(entry, rowProps, markedUnread, onDragStart)),
+      wideContent && peerGroups.length > 0 ? (0, import_react37.createElement)(
+        "div",
+        { className: "bt-peer-groups", "data-group": "other-machines" },
+        (0, import_react37.createElement)("div", { className: "bt-hint bt-group-head" }, "其他机器"),
+        peerGroups.map(([node, bots]) => (0, import_react37.createElement)(
+          "div",
+          { key: node, className: "bt-peer-node", "data-node": node },
+          (0, import_react37.createElement)("div", { className: "bt-hint bt-peer-node-name" }, node === "hub" ? "hub" : node),
+          bots.map((bot) => (0, import_react37.createElement)(BotRow, { ...rowProps, key: bot.id, bot, marked: false }))
+        ))
+      ) : null,
       sections.map((section) => (0, import_react37.createElement)(SectionBlock, {
         key: section.id,
         section,
@@ -32471,6 +32492,7 @@ var SIDEBAR_CSS = `
 .bt-sec[data-collapsed=false] .bt-sec-chev{transform:rotate(90deg)}
 .bt-sec-chev svg{width:12px;height:12px}
 .bt-sec-dot{width:6px;height:6px;border-radius:50%;corner-shape:round;flex:none}
+.bt-group-head{font-weight:600;margin:8px 0 2px}.bt-peer-node-name{opacity:.7;margin:4px 0 2px}
 .bt-sec-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:0 1 auto}
 .bt-sec-count{font-size:11px;line-height:16px;font-weight:500;color:var(--bt-ink-3);font-variant-numeric:tabular-nums;flex:none}
 .bt-sec-head-wrap:hover .bt-sec-count-hide{display:none}

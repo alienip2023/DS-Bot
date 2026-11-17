@@ -48,7 +48,8 @@ test('delivery refuses a shadow before the remote-worker path', async () => {
   const { w, id } = await world()
   const out = await w.rt.deliver({ toId: id, text: 'hello', role: 'request' })
   assert.equal(out.ok, false)
-  assert.equal(out.error, 'E_PEER_NOT_ENABLED')
+  assert.notEqual(out.error, 'E_PEER_NOT_ENABLED')
+  assert.equal(out.error, 'E_PEER_UNKNOWN')
 })
 
 test('the channel answers bot/refused for a shadow menu action', async () => {
