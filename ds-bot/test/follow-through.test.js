@@ -611,37 +611,35 @@ test('a message a shutdown cancelled is sent again once; one still waiting, take
   assert.deepEqual(third.agentOf('b').calls.map(message => message.source.exchangeId), [plan, numbers].map(message => message.source.exchangeId))
 })
 
-test('a queued request kept over a restart is sent again however old, and the asker is told it was late', async (t) => {
+test('a queued request older than the TTL is dropped after a restart, and a recent one is still sent', async (t) => {
   const home = freshHome(t)
   const first = await start(home)
   await first.tool('message_bot', { to: 'Writer', message: 'Draft the plan', when: 'queue' }, 'a')
-  await settle(() => (notes(home).queued.b ?? []).length === 1)
-  const [plan] = first.agentOf('b').calls
+  await first.tool('message_bot', { to: 'Writer', message: 'Check the numbers', when: 'queue' }, 'a')
+  await settle(() => (notes(home).queued.b ?? []).length === 2)
+  const [plan, numbers] = first.agentOf('b').calls
   await first.stop()
 
-  // The note waited through a long stop: it is still sent again, not dropped.
   const file = join(home, 'inflight.json')
   const noted = notes(home)
-  noted.queued.b[0].at = Date.now() - 25 * 60 * 60 * 1000
+  const now = Date.now()
+  noted.queued.b[0].at = now - 25 * 60 * 60 * 1000
+  noted.queued.b[1].at = now - 20 * 60 * 1000
   writeFileSync(file, JSON.stringify(noted))
 
   t.mock.timers.enable({ apis: ['setTimeout'] })
+  const warnings = []
   const second = await start(home)
+  second.ctx.logger.warn = (...args) => warnings.push(args.join(' '))
   t.mock.timers.tick(3000)
   await settle(() => second.agentOf('b').calls.length === 1)
+  await settleState(t, home, () => (notes(home).queued.b ?? []).length === 1)
   const [again] = second.agentOf('b').calls
-  assert.deepEqual([again.source.exchangeId, again.source.role], [plan.source.exchangeId, 'request'])
+  assert.deepEqual([again.source.exchangeId, again.source.role], [numbers.source.exchangeId, 'request'])
   assert.match(text(again), /^\[Message from Chief · DeepSeek Harness restarted before it could reach you\]/)
-
-  // The work is marked, so the answer that goes up says the request arrived late.
-  await settleState(t, home, () => stateOf(home).works?.[plan.source.exchangeId]?.late === true)
-  run(second, 'b', 1, again)
-  second.emit('b', 'assistant/message', { message: { content: [{ type: 'text', text: 'The plan is ready.' }] } })
-  second.emit('b', 'turn/end', { turn: 1, reason: { kind: 'completed' } })
-  await settle(() => second.agentOf('a').calls.length === 1)
-  const reply = text(second.agentOf('a').calls[0])
-  assert.match(reply, /^\[Reply from Writer\]\n\[This request reached Writer only after DeepSeek Harness restarted\.\]/)
-  assert.match(reply, /The plan is ready\./)
+  assert.equal(second.agentOf('b').calls.some(message => message.source.exchangeId === plan.source.exchangeId), false)
+  assert.deepEqual((notes(home).queued.b ?? []).map(item => item.args.exchangeId), [numbers.source.exchangeId])
+  assert.equal(warnings.filter(line => /dropped .*stale queued notes/.test(line)).length, 1)
 })
 
 test('queued deliveries are kept whole, not cut at fifty', async (t) => {

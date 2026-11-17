@@ -20,6 +20,7 @@ import { threadCurrentOfPart } from './threads.js'
 
 // Long enough for DSH to finish opening its workspaces after a start.
 export const RESUME_DELAY_MS = 3000
+export const QUEUED_TTL_MS = 30 * 60 * 1000
 
 export const resumeText = record => [
   'DeepSeek Harness restarted while you were working on this, so your last turn stopped before it finished.',
@@ -427,16 +428,23 @@ export function install(rt) {
     // A Bot that is gone takes its notes with it; what a turn already read here
     // is done with.
     const pending = queued
+    const now = Date.now()
+    const stale = new Set()
     queued = {}
     for (const [oldId, list] of Object.entries(pending)) {
       if (!Array.isArray(list)) continue
       for (const item of list) {
+        if (Number.isFinite(item?.at) && now - item.at > QUEUED_TTL_MS) {
+          stale.add(item)
+          continue
+        }
         if (item?.args?.exchangeId === undefined || taken?.has(item.args.exchangeId) === true || rt.botOf(item.args.toId) === undefined) continue
         const key = sessionFor(oldId, item.args) ?? oldId
         queued = { ...queued, [key]: [...(queued[key] ?? []), item] }
       }
     }
     persist()
+    if (stale.size > 0) rt.warn?.('ds-bot: dropped %d stale queued notes older than 30 minutes', stale.size)
     // Agents and inboxes are read before anything wakes their Sessions.
     const cut = []
     for (const [sessionId, record] of Object.entries(noted)) {
@@ -454,7 +462,8 @@ export function install(rt) {
     firstTurn = undefined
     for (const [sessionId, list] of Object.entries(dropped)) {
       if (!Array.isArray(list)) continue
-      await resendQueued(sessionId, list).catch(error => rt.warn('ds-bot: sending again what %s was sent failed: %s', sessionId, error))
+      // Resends read the original notes, which still include the expired items.
+      await resendQueued(sessionId, list.filter(item => !stale.has(item))).catch(error => rt.warn('ds-bot: sending again what %s was sent failed: %s', sessionId, error))
     }
     taken = undefined
     for (const [sessionId, record] of cut) {
