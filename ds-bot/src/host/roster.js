@@ -245,6 +245,7 @@ export function install(rt) {
       const resolvedSecId = !main ? resolveSectionInput({ section, sectionId }) : undefined
       state.bots[id] = {
         id,
+        clusterBotId: id,
         name: cleanName,
         role: String(role).trim().slice(0, 24),
         // A color is only stored when the user picks one; otherwise the id picks it.

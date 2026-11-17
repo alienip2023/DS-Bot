@@ -202,6 +202,15 @@ export function install(rt) {
 
   const reviewOn = config.memoryReview !== false
   const root = join(home, 'memory')
+  const registerLegacyMounts = () => {
+    for (const bot of Object.values(state.bots)) {
+      if (typeof bot.clusterBotId === 'string' && bot.clusterBotId !== ''
+        && existsSync(scopeDir(root, { kind: 'bot', botId: bot.id }))) {
+        registerBotScopeMount(root, bot.clusterBotId, bot.id)
+      }
+    }
+  }
+  registerLegacyMounts()
   const journalPath = join(root, 'journal.jsonl')
   // The half-written row of the change log, kept beside it as the evidence it is.
   const tornPath = join(root, 'journal.torn')
@@ -211,7 +220,15 @@ export function install(rt) {
   // The same rule for summaries, snapshots and archives; remote ids use `safeScopeId`.
   const safeId = legacySafeId
   const TEAM = { kind: 'team' }
-  const ownScope = botId => ({ kind: 'bot', botId })
+  const ownScope = (botId) => {
+    const clusterBotId = state.bots[botId]?.clusterBotId
+    return typeof clusterBotId === 'string' && clusterBotId !== ''
+      ? { kind: 'clusterBot', clusterBotId } : { kind: 'bot', botId }
+  }
+  const scopeBotId = scope => (scope.kind === 'clusterBot'
+    ? Object.values(state.bots).find(bot => bot.clusterBotId === scope.clusterBotId)?.id
+    : scope.kind === 'bot' && scope.nodeId === undefined ? scope.botId : undefined)
+  const isOwnScope = (scope, botId) => scopeKey(scope) !== undefined && scopeKey(scope) === scopeKey(ownScope(botId))
   const groupScope = roomId => ({ kind: 'group', roomId })
   // The keys of the scopes that cross a machine boundary. They are keys only: a key never
   // becomes a path segment (see `scopeDir`), so `a:b/c` cannot choose its own folder.
@@ -234,7 +251,8 @@ export function install(rt) {
       const dir = join(root, 'nodes', safeScopeId(nodeId))
       return { path: join(dir, 'journal.jsonl'), torn: join(dir, 'journal.torn') }
     }
-    const botId = scope?.startsWith('bot:') ? scope.slice(4) : undefined
+    const botId = scope?.startsWith('clusterBot:') ? scopeBotId({ kind: 'clusterBot', clusterBotId: scope.slice(11) })
+      : scope?.startsWith('bot:') ? scope.slice(4) : undefined
     const archived = (state.privateArchives ?? []).find(entry => entry.id === botId)
     if (op === 'archive' || (botId === undefined || (!rt.isPrivate(botId) && archived === undefined))) return { path: journalPath, torn: tornPath }
     const dir = archived?.archivePath ?? dirOf(ownScope(botId))
@@ -424,8 +442,7 @@ export function install(rt) {
   // Whether anything but a tidy changed a memory after a time.
   function changedSince(key, time) {
     readTail(journalPath)
-    const botId = key.startsWith('bot:') ? key.slice(4) : undefined
-    if (botId !== undefined) readTail(journalFor(key, 'read').path)
+    if (/^(bot:|clusterBot:)/.test(key)) readTail(journalFor(key, 'read').path)
     return recentRows.some(row => row.scope === key && (time === undefined || row.time > time) && row.op !== 'tidy' && row.op !== 'tidy-undo')
   }
 
@@ -436,7 +453,7 @@ export function install(rt) {
   // describes a topic or an entire batch. Record the actual change once here.
   function mainChanges(scope, steps, row) {
     // Only this host's scopes have a MEMORY.md whose before/after the panel undoes.
-    if (!/^(team$|bot:|group:)/.test(String(scope ?? ''))) return undefined
+    if (!/^(team$|bot:|clusterBot:|group:)/.test(String(scope ?? ''))) return undefined
     const path = join(dirOf(journalScope(scope)), MAIN)
     const step = steps.findLast(item => item.path === relativePath(root, path))
     if (step === undefined) return undefined
@@ -503,7 +520,11 @@ export function install(rt) {
 
   // A change that was interrupted is finished when the host starts.
   ctx.effect(() => {
-    void rt.load().then(() => recover()).catch(error => rt.warn('ds-bot: memory recovery failed: %s', error?.message ?? error))
+    void rt.load().then(() => {
+      // The store loads asynchronously, after modules have installed on an empty state.
+      registerLegacyMounts()
+      return recover()
+    }).catch(error => rt.warn('ds-bot: memory recovery failed: %s', error?.message ?? error))
   }, 'ds-bot: memory recovery')
 
   // Checked when the write runs: a Bot or group chat deleted after the write was
@@ -516,7 +537,7 @@ export function install(rt) {
     const botActor = actor?.id === 'user' ? undefined : actor?.id
     // A remote Bot's scope names the Bot on its node, not a Bot of this host: only a
     // local scope (this host's own Bot) can be "gone".
-    const scopeBot = scope.kind === 'bot' && scope.nodeId === undefined ? scope.botId : undefined
+    const scopeBot = scopeBotId(scope)
     const gone = [scopeBot, botActor].some(id => id !== undefined && rt.botOf(id) === undefined)
     if (gone) throw Object.assign(new Error('That Bot has been deleted'), { code: GONE })
     if (scope.kind === 'group' && rt.roomOf(scope.roomId) === undefined) throw Object.assign(new Error('That group chat has been deleted'), { code: GONE })
@@ -568,7 +589,7 @@ export function install(rt) {
     if (scope.botId !== botId && !rt.isMain(botId)) return 'Only a Main Bot can change another Bot\'s memory. Use message_bot to tell that Bot instead.'
     return undefined
   }
-  const labelOf = (scope, botId) => (scope.kind === 'team' ? 'the team memory' : scope.kind === 'group' ? 'the group memory' : scope.botId === botId ? 'your memory' : `${rt.botOf(scope.botId)?.name ?? 'that Bot'}'s memory`)
+  const labelOf = (scope, botId) => (scope.kind === 'team' ? 'the team memory' : scope.kind === 'group' ? 'the group memory' : botId !== undefined && isOwnScope(scope, botId) ? 'your memory' : `${rt.botOf(scopeBotId(scope))?.name ?? 'that Bot'}'s memory`)
 
   // The words an entry may not hold.
   const secretEntry = text => (rt.redactSecrets?.(text) ?? text) !== text || looksSecret(text)
@@ -657,7 +678,7 @@ export function install(rt) {
   const news = new Map()
   const noteNews = (scope, actor, op, line) => {
     if (actor.id === 'user') return
-    const id = scope.kind === 'team' ? actor.id : scope.kind === 'group' ? scope.roomId : scope.botId
+    const id = scope.kind === 'team' ? actor.id : scope.kind === 'group' ? scope.roomId : scopeBotId(scope)
     if (rt.botOf(id) === undefined && rt.roomOf(id) === undefined) return
     news.set(id, { at: Date.now(), op, text: splitMeta(String(line ?? '').replace(/^- /, '')).text.slice(0, NEWS_TEXT_MAX) })
   }
@@ -787,6 +808,8 @@ export function install(rt) {
   // A deleted Bot's memory moves to the archive, whole.
   function archiveBotMemory(botId) {
     const bot = rt.botOf(botId)
+    const remote = bot?.worker?.home === 'remote' ? bot.worker : undefined
+    const scope = remote === undefined ? ownScope(botId) : { kind: 'bot', nodeId: remote.nodeId, botId: remote.remoteBotId ?? botId }
     for (const sessionId of [botId, rt.chatOf(botId), ...(bot?.segments ?? []).map(segment => segment.sessionId), ...openSessions(bot), ...rt.groupSessionsOf(botId)]) renewMemory(sessionId)
     summaries.delete(botId)
     news.delete(botId)
@@ -797,8 +820,6 @@ export function install(rt) {
       await unlink(join(root, 'summaries', `${safeId(botId)}.json`)).catch(() => {})
       // A remote Bot's memory lives under its node, and is archived from there: the
       // node's tree keeps its shape, the archived folder still holds every entry.
-      const remote = bot?.worker?.home === 'remote' ? bot.worker : undefined
-      const scope = remote === undefined ? ownScope(botId) : { kind: 'bot', nodeId: remote.nodeId, botId: remote.remoteBotId ?? botId }
       const dir = dirOf(scope)
       if (!existsSync(dir)) return
       const name = `${safeId(botId)}-${new Date().toISOString().replace(/[:.]/g, '-')}`
@@ -1274,7 +1295,7 @@ export function install(rt) {
   }
   const metaFor = async (caller, scope) => ({
     source: await sourceOf(caller.sessionId),
-    ...(scope.kind !== 'bot' || scope.botId !== caller.bot.id ? { by: caller.bot.name } : {}),
+    ...(!isOwnScope(scope, caller.bot.id) ? { by: caller.bot.name } : {}),
     added: today(),
   })
 
@@ -1555,12 +1576,13 @@ export function install(rt) {
     const { scope, error } = namedScope(raw, botId, roomId)
     if (error) return { error }
     if (scope === undefined) return { scopes: roomId === undefined ? [ownScope(botId), TEAM] : [ownScope(botId), groupScope(roomId), TEAM] }
-    if (scope.kind === 'bot' && scope.botId !== botId) {
-      if (rt.isPrivate(scope.botId)) return { error: 'That Bot is private. Ask the user to share what you need.' }
+    const owner = scopeBotId(scope)
+    if (owner !== undefined && !isOwnScope(scope, botId)) {
+      if (rt.isPrivate(owner)) return { error: 'That Bot is private. Ask the user to share what you need.' }
     }
     return { scopes: [scope] }
   }
-  const tagOf = (scope, botId) => (scope.kind === 'team' ? 'team' : scope.kind === 'group' ? 'group' : scope.botId === botId ? 'yours' : rt.botOf(scope.botId)?.name ?? '?')
+  const tagOf = (scope, botId) => (scope.kind === 'team' ? 'team' : scope.kind === 'group' ? 'group' : isOwnScope(scope, botId) ? 'yours' : rt.botOf(scopeBotId(scope))?.name ?? '?')
 
   rt.teamTools.push(defineTool({
     name: 'recall',
@@ -1993,7 +2015,8 @@ export function install(rt) {
   // Archive rows move whole folders and are not undone this way.
 
   const journalScope = key => (key === 'team' ? TEAM
-    : typeof key === 'string' && key.startsWith('bot:') ? ownScope(key.slice(4))
+    : typeof key === 'string' && key.startsWith('clusterBot:') ? { kind: 'clusterBot', clusterBotId: key.slice(11) }
+      : typeof key === 'string' && key.startsWith('bot:') ? ownScope(key.slice(4))
       : typeof key === 'string' && key.startsWith('group:') ? groupScope(key.slice(6))
         : undefined)
 
