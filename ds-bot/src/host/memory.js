@@ -28,7 +28,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, truncateSync, unlinkSync, writeFileSync } from 'node:fs'
 import { appendFile, mkdir, rename, unlink, writeFile } from 'node:fs/promises'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { HarnessError, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { MEMORY_BACKENDS } from './constants.js'
@@ -136,6 +136,26 @@ export function safeScopeId(id) {
   const plain = value.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64) || 'id'
   return `${plain}-${createHash('sha256').update(value).digest('hex').slice(0, 8)}`
 }
+// The dot makes this namespace disjoint from every legacy Bot directory name.
+export const clusterBotDirName = clusterBotId => `cluster.${safeScopeId(clusterBotId)}`
+
+// Explicit, process-local mounts only. The caller supplies an old local Bot id;
+// neither registering nor removing a mount changes any file.
+const botScopeMounts = new Map()
+export function registerBotScopeMount(root, clusterBotId, legacyBotId) {
+  const key = scopeDir(resolve(root), { kind: 'clusterBot', clusterBotId })
+  const mounts = botScopeMounts.get(key) ?? new Set()
+  mounts.add(scopeDir(resolve(root), { kind: 'bot', botId: legacyBotId }))
+  botScopeMounts.set(key, mounts)
+  return [...mounts]
+}
+export function removeBotScopeMount(root, clusterBotId, legacyBotId) {
+  const key = scopeDir(resolve(root), { kind: 'clusterBot', clusterBotId })
+  const mounts = botScopeMounts.get(key)
+  const removed = mounts?.delete(scopeDir(resolve(root), { kind: 'bot', botId: legacyBotId })) ?? false
+  if (mounts?.size === 0) botScopeMounts.delete(key)
+  return removed
+}
 // Keys of the scopes that cross a machine boundary. They are keys only: a key never
 // becomes a path segment (see `scopeDir`), so `a:b/c` cannot choose its own folder.
 export const nodeKey = nodeId => `node:${nodeId}`
@@ -145,6 +165,7 @@ export const remoteBotKey = (nodeId, botId) => `joined:${nodeId}:${botId}`
 export function scopeKey(scope) {
   if (scope?.kind === 'team') return 'team'
   if (scope?.kind === 'group') return `group:${scope.roomId}`
+  if (scope?.kind === 'clusterBot') return `clusterBot:${scope.clusterBotId}`
   if (scope?.kind === 'bot' && scope.nodeId === undefined) return `bot:${scope.botId}`
   return undefined
 }
@@ -154,6 +175,7 @@ export function scopeDir(root, scope) {
   if (scope?.kind === 'team') return join(root, 'team')
   if (scope?.kind === 'group') return join(root, 'groups', legacySafeId(scope.roomId))
   if (scope?.kind === 'node') return join(root, 'nodes', safeScopeId(scope.nodeId))
+  if (scope?.kind === 'clusterBot') return join(root, 'bots', clusterBotDirName(scope.clusterBotId))
   if (scope?.kind === 'bot' && scope.nodeId !== undefined) {
     return join(root, 'nodes', safeScopeId(scope.nodeId), 'bots', safeScopeId(scope.botId))
   }
@@ -248,8 +270,7 @@ export function install(rt) {
       return unreadable(path, error)
     }
   }
-  const topicNames = (scope) => {
-    const dir = dirOf(scope)
+  const topicsIn = (dir) => {
     try {
       return readdirSync(dir).filter(name => name.endsWith('.md') && name !== MAIN).map(name => name.slice(0, -3)).sort()
     } catch (error) {
@@ -257,16 +278,22 @@ export function install(rt) {
       return unreadable(dir, error)
     }
   }
+  const topicNames = scope => topicsIn(dirOf(scope))
   // MEMORY.md first, then the topics by name.
-  const loadScope = (scope) => {
-    const dir = dirOf(scope)
-    return [undefined, ...topicNames(scope)].map((topic) => {
+  const loadDir = (dir) => {
+    return [undefined, ...topicsIn(dir)].map((topic) => {
       const file = topic === undefined ? MAIN : `${topic}.md`
       const content = readText(join(dir, file))
       return { topic, file, path: join(dir, file), content, ...parseMemory(content) }
     })
   }
-  const mainLimit = scope => state.prefs.memoryLimits?.[scope.kind] ?? MEMORY_LIMITS[scope.kind]
+  const loadScope = scope => loadDir(dirOf(scope))
+  const mountedFiles = scope => scope.kind !== 'clusterBot' ? []
+    : [...botScopeMounts.get(resolve(dirOf(scope))) ?? []].flatMap(dir => loadDir(dir).map(file => ({ ...file, mountedFrom: dir })))
+  const mainLimit = (scope) => {
+    const kind = scope.kind === 'clusterBot' ? 'bot' : scope.kind
+    return state.prefs.memoryLimits?.[kind] ?? MEMORY_LIMITS[kind]
+  }
   const fileName = file => (file.topic === undefined ? MAIN : `topic [[${file.topic}]]`)
 
   async function writeText(path, text) {
@@ -523,6 +550,9 @@ export function install(rt) {
   function writeDenied(scope, botId) {
     if (scope.kind === 'team') return writesTeam(botId) ? undefined : 'Only Main Bots and group admins write the team memory. Tell a Main Bot with message_bot what the team should know.'
     if (scope.kind === 'group') return rt.roomOf(scope.roomId)?.members.includes(botId) ? undefined : 'Only the members of a group chat write its memory.'
+    if (scope.kind === 'clusterBot') {
+      return rt.botOf(botId)?.clusterBotId === scope.clusterBotId || rt.isMain(botId) ? undefined : 'Only that Bot (or a Main Bot here) can change its cluster memory.'
+    }
     // A node's memory is shared by the Bots on that node; only a Main Bot here writes
     // it from elsewhere.
     if (scope.kind === 'node') {
@@ -686,13 +716,24 @@ export function install(rt) {
     return found[0]
   }
 
+  function findWritable(scope, files, topic, wanted, label) {
+    const pool = topic === undefined ? files : files.filter(file => file.topic === topic)
+    if (matchEntries(allEntries(pool), wanted).length === 0) {
+      const mounted = mountedFiles(scope).filter(file => topic === undefined || file.topic === topic)
+      if (matchEntries(allEntries(mounted), wanted).length > 0) {
+        throw Object.assign(new Error('Mounted memory is read-only.'), { code: REFUSED })
+      }
+    }
+    return findOne(files, topic, wanted, label)
+  }
+
   // The entry keeps its place; `topic` only narrows where to look.
   function replaceEntry({ scope, topic, match, text, meta, actor, label, topicOnly = false }) {
     return queued(async () => {
       await recoverPending()
       writable(scope, actor)
       const files = loadScope(scope)
-      const old = findOne(files, topic, match, label)
+      const old = findWritable(scope, files, topic, match, label)
       if (topicOnly && old.file.topic === undefined) throw Object.assign(new Error('Changing a team entry that every conversation reads requires always: true.'), { code: DENIED })
       const line = formatEntry(text, { id: entryId(old), ...meta, ...(old.meta.pinned === undefined ? {} : { pinned: old.meta.pinned }) })
       const lines = [...old.file.lines]
@@ -715,7 +756,7 @@ export function install(rt) {
       await recoverPending()
       writable(scope, actor)
       const files = loadScope(scope)
-      const old = findOne(files, topic, match, label)
+      const old = findWritable(scope, files, topic, match, label)
       return removeEntryNow({ scope, files, old, actor, label })
     })
   }
@@ -2182,7 +2223,8 @@ export function install(rt) {
     // remote change goes through the same `queued` line as a local one; the adapter
     // never opens a second writer.
     memoryHost: Object.freeze({
-      TEAM, ownScope, groupScope, dirOf, mainLimit, loadScope, readScope: scope => settled(() => loadScope(scope)),
+      TEAM, ownScope, groupScope, dirOf, mainLimit, loadScope,
+      readScope: scope => settled(() => [...loadScope(scope), ...mountedFiles(scope)]),
       addEntry, replaceEntry, removeEntry, entryProblem, secretEntry, logKeyOf, logPlaceOf,
     }),
   })

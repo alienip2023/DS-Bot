@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 import { within } from './folders.js'
 import { unquote } from './text.js'
 import { openSessions } from './threads.js'
+import { clusterBotDirName } from './memory.js'
 
 const FILE_TOOLS = { read: 'file_path', write: 'file_path', edit: 'file_path', read_image: 'file_path', str_replace_editor: 'path' }
 const WRITE_TOOLS = ['write', 'edit', 'str_replace_editor']
@@ -63,6 +64,7 @@ export function install(rt) {
   const regionsOf = async bot => (await Promise.all([
     bot.workDir,
     join(rt.home, 'memory', 'bots', bot.id),
+    bot.clusterBotId ? join(rt.home, 'memory', 'bots', clusterBotDirName(bot.clusterBotId)) : undefined,
     join(rt.home, 'browser-profiles', bot.id),
     join(rt.home, 'browser-downloads', bot.id),
     join(rt.home, 'side', `${bot.id}.json`),

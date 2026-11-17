@@ -278,6 +278,7 @@ export function install(rt) {
   function writeScope(message, nodeId, bot) {
     const name = text(message?.scope)
     if (name === 'node') return { kind: 'node', nodeId }
+    if (name === 'bot' && text(bot.clusterBotId) !== '') return { kind: 'clusterBot', clusterBotId: bot.clusterBotId }
     if (name === 'own' || name === 'bot') return { kind: 'bot', nodeId, botId: bot.worker.remoteBotId }
     return undefined
   }
@@ -324,13 +325,11 @@ export function install(rt) {
     if (bot === undefined) return { ok: false, seq: seq(), error: CODES.notOnRoster }
     const name = text(message?.scope)
     const scope = name === 'team' ? { kind: 'team' }
-      : name === 'node' ? { kind: 'node', nodeId }
-        : name === 'own' || name === 'bot' ? { kind: 'bot', nodeId, botId: bot.worker.remoteBotId }
-          : undefined
+      : writeScope(message, nodeId, bot)
     if (scope === undefined) return { ok: false, seq: seq(), error: CODES.denied }
     const limit = Math.max(1, Math.min(MAX_READ, Number.isInteger(message?.limit) ? message.limit : DEFAULT_READ))
     const files = await host.readScope(scope)
-    let entries = files.flatMap(file => file.entries.map(entry => ({ entry, topic: file.topic })))
+    let entries = files.flatMap(file => file.entries.map(entry => ({ entry, topic: file.topic, mountedFrom: file.mountedFrom })))
     if (typeof message?.topic === 'string' && message.topic !== '') entries = entries.filter(item => item.topic === message.topic)
     if (typeof message?.query === 'string' && message.query.trim() !== '') {
       const query = message.query.trim().toLowerCase()
@@ -343,6 +342,7 @@ export function install(rt) {
         id: entryId(item.entry),
         text: item.entry.text,
         ...(item.topic === undefined ? {} : { topic: item.topic }),
+        ...(item.mountedFrom === undefined ? {} : { mountedFrom: item.mountedFrom }),
       })),
     }
     if (typeof message?.topic === 'string' && message.topic !== '') result.topic = message.topic
