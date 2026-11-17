@@ -445,7 +445,7 @@ export function install(rt) {
       if (sizes.length === 0) delete state.prefs.memoryLimits
       else state.prefs.memoryLimits = { ...state.prefs.memoryLimits, ...Object.fromEntries(sizes) }
     }
-    return rt.save()
+    return rt.save({ immediate: true })
   }
 
   const handle = async (endpoint, payload, signal) => {

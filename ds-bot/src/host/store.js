@@ -27,6 +27,13 @@ export function install(rt) {
   let loaded = null
   let storeReady = false
   let writing = Promise.resolve()
+  let savedSnapshot
+  let deferred = false
+  let saveTimer
+  const cancelSaveTimer = () => {
+    clearTimeout(saveTimer)
+    saveTimer = undefined
+  }
   const { warn } = rt
   const sessionIdOf = id => (typeof id === 'string' && id !== '' ? id : undefined)
 
@@ -126,6 +133,9 @@ export function install(rt) {
   // Fill `state` from the saved file and bring an older team up to date. Returns the
   // groups whose Session titles still need the new name.
   const adopt = (parsed) => {
+    cancelSaveTimer()
+    deferred = false
+    savedSnapshot = undefined
     lockEpoch += 1
     const hadCapabilities = parsed !== null && parsed !== undefined && Object.hasOwn(parsed, 'capabilities')
     for (const key of Object.keys(state)) delete state[key]
@@ -364,6 +374,7 @@ export function install(rt) {
     const stale = Object.values(state.rooms).filter(room => !room.named && room.name !== rt.autoRoomName(room.members))
     for (const room of stale) room.name = rt.autoRoomName(room.members)
     indexSessions()
+    if (!migrated && stale.length === 0 && parsed !== undefined) savedSnapshot = JSON.stringify(state)
     return { migrated: migrated || stale.length > 0, stale }
   }
 
@@ -490,9 +501,7 @@ export function install(rt) {
     return warnReadOnly()
   }
 
-  const save = ({ required = false } = {}) => {
-    if (stopped) return required ? Promise.reject(new Error('The Bot team cannot be saved after this host stopped.')) : writing
-    indexSessions()
+  const writeState = ({ required = false, force = false } = {}) => {
     // A reading host keeps the file's revision, so its window does not skip the next change.
     if (!writable()) return required ? Promise.reject(new Error(`This host cannot save the Bot team: ${readOnly()}`)) : writing
     const run = writing.then(async () => {
@@ -506,9 +515,6 @@ export function install(rt) {
       // The snapshot is taken here, so a save made while an adopt was pending
       // writes the adopted state, not the stale one it had.
       const epoch = lockEpoch
-      state.revision += 1
-      state.exchanges = state.exchanges.slice(-MAX_EXCHANGES)
-      const snapshot = JSON.stringify(state)
       const temp = `${statePath}.${process.pid}.tmp`
       try {
         await mkdir(home, { recursive: true })
@@ -528,10 +534,15 @@ export function install(rt) {
           }
         }
         ensureLock()
+        state.exchanges = state.exchanges.slice(-MAX_EXCHANGES)
+        if (!force && stamp() !== '' && JSON.stringify(state) === savedSnapshot) return
+        state.revision += 1
+        const snapshot = JSON.stringify(state)
         await writeFile(temp, snapshot, 'utf8')
         ensureLock()
         await replaceFile(temp, statePath, ensureLock)
         seen = stamp()
+        savedSnapshot = snapshot
         rt.capabilitiesStateSaved?.()
         for (const listener of savedListeners) {
           try { listener() } catch (error) { warn('ds-bot: saved listener failed: %s', error) }
@@ -548,9 +559,48 @@ export function install(rt) {
     })
   }
 
+  // Only liveness updates opt into the bounded window. Existing callers retain
+  // their durability contract: awaiting save() still waits for the file replace.
+  // `force` also notifies revision-based views of data kept outside state.json.
+  const save = ({ immediate = true, required = false, force = false } = {}) => {
+    if (stopped) return required ? Promise.reject(new Error('The Bot team cannot be saved after this host stopped.')) : writing
+    indexSessions()
+    if (!immediate && !required && !force) {
+      if (!writable()) return writing
+      deferred = true
+      if (saveTimer === undefined) {
+        saveTimer = setTimeout(() => {
+          saveTimer = undefined
+          void flush().catch(() => {})
+        }, 60_000)
+        saveTimer.unref?.()
+      }
+      return writing
+    }
+    const pending = deferred
+    const epoch = lockEpoch
+    cancelSaveTimer()
+    deferred = false
+    return writeState({ required, force }).catch(error => {
+      if (pending && lockEpoch === epoch) deferred = true
+      throw error
+    })
+  }
+
+  const flush = () => {
+    cancelSaveTimer()
+    if (!deferred) return writing
+    const epoch = lockEpoch
+    deferred = false
+    return writeState().catch(error => {
+      if (lockEpoch === epoch) deferred = true
+      throw error
+    })
+  }
+
   ctx.effect(() => () => {
     stopped = true
-    return writing.finally(() => lock.release())
+    return flush().finally(() => lock.release())
   }, 'ds-bot: state lock')
 
   const botOf = id => (id === undefined ? undefined : own(state.bots, id))
@@ -751,7 +801,7 @@ export function install(rt) {
   }
 
   Object.assign(rt, {
-    state, load, save, refresh, readOnly, hasLoaded, syncReadOnly, own, onSaved, closeCard,
+    state, load, save, flush, refresh, readOnly, hasLoaded, syncReadOnly, own, onSaved, closeCard,
     botOf, roomOf, isMain, chatOf, sessionOfRoom, selfOf, isBotSession,
     chatOwners, groupOwners, roomOwners, pastOwners,
     groupSessionsOf, dropGroupSession, retireGroupSession, findBot, findRooms, isAdminOf,

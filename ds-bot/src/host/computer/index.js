@@ -98,7 +98,7 @@ export function install(rt) {
   const setProviderStatus = (next) => {
     if (next.state === providerStatus.state && next.name === providerStatus.name && next.message === providerStatus.message) return
     providerStatus = next
-    void rt.save().catch(error => rt.warn('ds-bot: computer-use status not saved: %s', error))
+    void rt.save({ immediate: true, force: true }).catch(error => rt.warn('ds-bot: computer-use status not saved: %s', error))
   }
   let mountedByUs = false
   let registryFiber

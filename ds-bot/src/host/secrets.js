@@ -348,7 +348,7 @@ export function install(rt) {
     usedTimer = setTimeout(() => {
       usedTimer = null
       if (loadedReadOnly || rt.readOnly() !== undefined || blocked !== undefined) return
-      void mutate(() => persist().then(() => rt.save())).catch(() => {})
+      void mutate(() => persist().then(() => rt.save({ force: true }))).catch(() => {})
     }, USED_SAVE_MS)
     usedTimer.unref?.()
   }
@@ -418,7 +418,7 @@ export function install(rt) {
   async function commit(notes) {
     changed()
     await persist()
-    await rt.save()
+    await rt.save({ force: true })
     for (const [botId, text] of notes) await tell(botId, text)
   }
 
@@ -480,7 +480,7 @@ export function install(rt) {
       fillSecrets(payload)
       changed()
       // A reading host cannot save; unlocking still works in this process.
-      await rt.save().catch(() => {})
+      await rt.save({ force: true }).catch(() => {})
       return secretStoreStatus()
     },
     // Rewrite the same file as an envelope. The plaintext file is replaced atomically,
@@ -503,7 +503,7 @@ export function install(rt) {
         throw error
       }
       changed()
-      await rt.save()
+      await rt.save({ force: true })
       return secretStoreStatus()
     },
     // Write the values back as the plaintext file, after proving the passphrase against
@@ -533,7 +533,7 @@ export function install(rt) {
         throw error
       }
       changed()
-      await rt.save()
+      await rt.save({ force: true })
       return secretStoreStatus()
     },
     // From a card (requestId) or from the settings page (name).

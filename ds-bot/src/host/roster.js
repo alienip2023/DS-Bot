@@ -307,12 +307,12 @@ export function install(rt) {
         .catch(error => rt.warn('ds-bot: scoped tools for %s not applied: %s', cleanName, error))
       if (modelRef === undefined) {
         bot.kickoff = greeting
-        await rt.save()
+        await rt.save({ immediate: true })
         // The Session was resolved before the Bot existed, so its scoped tools land now.
         await scopeTools()
         return bot
       }
-      await rt.save()
+      await rt.save({ immediate: true })
       await scopeTools()
       // The greeting runs on the Bot's own model, once its provider is registered.
       void rt.waitForModel(bot)
@@ -627,7 +627,7 @@ export function install(rt) {
       if (workDir === undefined) delete bot.workDir
       else bot.workDir = workDir
     }
-    await rt.save()
+    await rt.save({ immediate: true })
     // The system prompt reads the live profile every turn, but a Session with
     // several rounds behind it follows the old kickoff's pull until a message
     // lands; notify the Bot's chat so the next turn honors the new profile.
@@ -1191,7 +1191,7 @@ export function install(rt) {
   // to another dsh keeps them, since the other host's copy still has them.
   async function saveForDelete() {
     try {
-      await rt.save()
+      await rt.save({ immediate: true })
       return undefined
     } catch (error) {
       if (error?.code === 'ELOCKLOST' || rt.readOnly() !== undefined) throw error

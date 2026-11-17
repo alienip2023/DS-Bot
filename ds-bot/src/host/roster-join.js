@@ -1,6 +1,6 @@
 // Step 1: a remote DS-Bot roster becomes shadow rows in the controller sidebar.
 // No turn is started here, and no local session is created.
-import { ensureMainThread } from './bot-store.js'
+import { ensureMainThread, mainThreadOf } from './bot-store.js'
 import { mirrorTurnOpen } from './joined-mirror-writer.js'
 import { hasHistoryIdentity, syncJoinedHistory } from './joined-history.js'
 import { applySharedSkills, sharedSkillSnapshot } from './skill-share.js'
@@ -37,7 +37,7 @@ export function reportableBots(bots) {
   })
 }
 
-export function applyRosterReport(state, report, now = Date.now()) {
+export function applyRosterReport(state, report, now = Date.now(), onChange) {
   if (!state.bots || typeof state.bots !== 'object') state.bots = {}
   const nodeId = typeof report?.nodeId === 'string' ? report.nodeId.trim() : ''
   if (nodeId === '') return []
@@ -46,6 +46,7 @@ export function applyRosterReport(state, report, now = Date.now()) {
   const bots = Array.isArray(report?.bots) ? report.bots : []
   const seen = []
   const seenIds = new Set()
+  let changed = false
   for (const bot of bots) {
     if (!bot || typeof bot !== 'object' || bot.type === 'remote-worker') continue
     const remoteBotId = typeof bot.id === 'string' ? bot.id.trim() : ''
@@ -79,6 +80,9 @@ export function applyRosterReport(state, report, now = Date.now()) {
     }
     // No model in this report keeps existing?.model. Do not write null or ''.
     if (reportedModel !== '') row.model = reportedModel
+    if (!existing || Object.keys(row).some(key => key !== 'worker' && row[key] !== existing[key])
+      || Object.keys(row.worker).some(key => key !== 'lastSeen' && row.worker[key] !== existing.worker?.[key])
+      || mainThreadOf(state, id) === undefined) changed = true
     state.bots[id] = row
     // A shadow row without a Main Thread would route its messages to nowhere.
     ensureMainThread(state, row)
@@ -91,9 +95,11 @@ export function applyRosterReport(state, report, now = Date.now()) {
     if (bot?.origin !== 'joined' || bot?.worker?.nodeId !== nodeId || bot?.worker?.home !== 'remote') continue
     if (seenIds.has(bot.id)) continue
     if (!bot.worker) bot.worker = {}
+    if (bot.worker.missingFromReport !== true) changed = true
     bot.worker.missingFromReport = true
     bot.worker.lastSeen = bot.worker.lastSeen ?? now
   }
+  onChange?.(changed)
   return seen
 }
 
@@ -388,11 +394,12 @@ export function install(rt) {
   }
   const onRoster = (report) => {
     if (stopped) return
-    applyRosterReport(rt.state, report)
+    let changed = false
+    applyRosterReport(rt.state, report, Date.now(), value => { changed = value })
     if (typeof report?.nodeId === 'string' && report.nodeId.trim() !== '') {
       void applySharedSkills(rt, `node:${report.nodeId}`, report.skills, { isActive: () => !stopped }).catch(error => rt.warn?.('ds-bot: skill roster not applied: %s', error?.message))
+      void rt.save?.({ immediate: changed })?.catch(error => rt.warn?.('ds-bot: joined roster not saved: %s', error))
     }
-    void rt.save?.()
     for (const bot of Object.values(rt.state.bots ?? {})) {
       if (bot?.origin === 'joined' && (!settled.has(bot.id) || bot.mirrorHistory)) pending.add(bot.id)
     }

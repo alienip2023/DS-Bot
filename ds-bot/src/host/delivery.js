@@ -180,7 +180,7 @@ export function install(rt) {
       const earlier = state.exchanges.findIndex(other => other.id === exchangeId)
       if (earlier === -1) state.exchanges.push(entry)
       else if (merged) state.exchanges[earlier] = entry
-      void rt.save().catch(() => {})
+      void rt.save({ immediate: true }).catch(() => {})
     }
     // The book holds the text already; its mark says the message went out. A mark
     // that is lost only hides it from the dialog.

@@ -100,7 +100,7 @@ export function install(rt) {
   // the revision, so a window polls fresh chats.
   const persist = async (botId) => {
     await writeBot(botId).catch(error => rt.warn('ds-bot: side chats of %s not saved: %s', botId, error))
-    await rt.save()
+    await rt.save({ force: true })
   }
 
   // A Bot's chat list, reading its file once. The owning host records the

@@ -337,7 +337,7 @@ export function install(rt) {
         byBot.set(sessionId, list)
         throw error
       }
-      await rt.save()
+      await rt.save({ immediate: true, force: true })
       return { deleted: true }
     })
     deleting = run.catch(() => {})
