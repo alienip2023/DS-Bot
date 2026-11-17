@@ -13,8 +13,18 @@
 // repeat side effects. Removing receipts needs a separate, explicit retention policy.
 import { createHash, randomUUID } from 'node:crypto'
 
-// A request name this long is a mistake, not an identity.
-export const NAME_MAX = 200
+// A request name is 1 to 80 characters of [A-Za-z0-9_-]; anything else is a mistake, not an identity.
+export const NAME_MIN = 1
+export const NAME_MAX = 80
+const NAME_CHARS = /^[A-Za-z0-9_-]+$/
+
+// The reason a request name is refused, or undefined when it is acceptable.
+export function nameProblem(name) {
+  if (name.length < NAME_MIN) return `The request_id is ${name.length} characters long; a request name is at least ${NAME_MIN}.`
+  if (name.length > NAME_MAX) return `The request_id is ${name.length} characters long; a request name is at most ${NAME_MAX}.`
+  if (!NAME_CHARS.test(name)) return 'The request_id may contain only letters, digits, "_" and "-".'
+  return undefined
+}
 
 export function install(rt) {
   const { state } = rt

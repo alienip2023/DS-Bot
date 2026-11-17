@@ -8,7 +8,7 @@ import { COLORS, EXTRA_COLORS, MESSAGE_INLINE_MAX, ROOM_MODES, SOURCE_KIND, TEXT
 import { within } from './folders.js'
 import { missingFileRefs } from './claims.js'
 import { absoluteLinks } from './links.js'
-import { NAME_MAX } from './requests.js'
+import { NAME_MAX, NAME_MIN, nameProblem } from './requests.js'
 import { unquote } from './text.js'
 import { formatRemoteTask } from './remote-tasks.js'
 import { isOpenPart, ownChatSessions } from './threads.js'
@@ -308,7 +308,7 @@ export function install(rt) {
       },
       request_id: {
         type: 'string',
-        description: `Your own name for this request, up to ${NAME_MAX} characters, so that a repeat of it is not sent twice. Send the same request_id with the same message when you repeat a call: the receipt of the first call comes back and nothing is sent again. A request_id names one request: with other content it is refused.`,
+        description: `Your own name for this request, ${NAME_MIN} to ${NAME_MAX} characters of letters, digits, _ and -, so that a repeat of it is not sent twice. Send the same request_id with the same message when you repeat a call: the receipt of the first call comes back and nothing is sent again. A request_id names one request: with other content it is refused.`,
       },
     },
     output,
@@ -341,7 +341,8 @@ export function install(rt) {
       if (target.origin === 'peer') return `${target.name} runs on another machine and is in the read-only list; this release cannot send to it.`
       if (String(args.message ?? '').trim() === '') return 'Write a message to send.'
       const name = typeof args.request_id === 'string' ? args.request_id.trim() : ''
-      if (name.length > NAME_MAX) return `The request_id is ${name.length} characters long; a request name is at most ${NAME_MAX}.`
+      const nameError = name === '' ? undefined : nameProblem(name)
+      if (nameError !== undefined) return nameError
       const text = absoluteLinks(String(args.message), rt.sessionFolder?.(exec.agent?.session ?? exec.agent))
       const room = rt.roomOf(rt.groupOwners.get(exec.agent?.id)?.roomId)
       // The request the caller named: it is admitted once, and a repeat of it is not sent again.
