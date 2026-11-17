@@ -36,7 +36,7 @@ test('a refused write leaves the sequence and the inbox alone, so the retry runs
   assert.equal(refused.ok, false)
   assert.equal(refused.error, 'memory/too-large')
   assert.equal(rt.memoryHub.seq(), 0)
-  assert.deepEqual(Object.keys(rt.state.memoryFederation.inbox), [])
+  assert.deepEqual(Object.keys(rt.memoryMeta.view().inbox), [])
 
   await registry.emitAsync('memoryWrite', writeFrame('n1', 'rb1', 'req-long', { text: 'short enough' }))
   const accepted = registry.frames('mem/write-result').at(-1).payload
@@ -52,13 +52,13 @@ test('an inbox answer older than seven days is forgotten when a node says hello'
   t.after(close)
 
   const day = 24 * 60 * 60 * 1000
-  rt.state.memoryFederation.inbox = {
+  rt.memoryMeta.view().inbox = {
     'n1:stale': { at: Date.now() - 8 * day, frame: { requestId: 'stale', ok: true, seq: 1 } },
     'n1:fresh': { at: Date.now() - day, frame: { requestId: 'fresh', ok: true, seq: 1 } },
   }
   await registry.emitAsync('memoryHello', { nodeId: 'n1', appliedSeq: 1 })
 
-  assert.deepEqual(Object.keys(rt.state.memoryFederation.inbox), ['n1:fresh'])
+  assert.deepEqual(Object.keys(rt.memoryMeta.view().inbox), ['n1:fresh'])
 })
 
 test('the inbox keeps a thousand answers, dropping the oldest first', async (t) => {
@@ -69,10 +69,10 @@ test('the inbox keeps a thousand answers, dropping the oldest first', async (t) 
   for (let index = 0; index < 1005; index += 1) {
     inbox[`n1:req-${index}`] = { at: Date.now() - 60_000 + index, frame: { requestId: `req-${index}`, ok: true, seq: index } }
   }
-  rt.state.memoryFederation.inbox = inbox
+  rt.memoryMeta.view().inbox = inbox
   await registry.emitAsync('memoryHello', { nodeId: 'n1', appliedSeq: 0 })
 
-  const left = Object.keys(rt.state.memoryFederation.inbox)
+  const left = Object.keys(rt.memoryMeta.view().inbox)
   assert.equal(left.length, 1000)
   assert.equal(left.includes('n1:req-0'), false)
   assert.equal(left.includes('n1:req-4'), false)

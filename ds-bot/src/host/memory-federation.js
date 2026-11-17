@@ -9,13 +9,12 @@
 // file system. `rt.memoryHost` is the only door.
 import { MEMORY_LIMITS, bodySize, cleanTopic, entryId, fitSnapshot, isExpired, isPinned } from './memory-entries.js'
 import { randomUUID } from 'node:crypto'
+import { createMemoryMeta } from './memory-meta.js'
 import { joinedShadow, shadowId } from './roster-join.js'
 
 const CAP = 'memory-sync/1'
 const DEBOUNCE_MS = 500
 const ATTACH_MS = 5_000
-const INBOX_MAX = 1_000
-const INBOX_TTL_MS = 7 * 24 * 60 * 60 * 1_000
 const DEFAULT_READ = 30
 const MAX_READ = 50
 const MAX_SNAPSHOT_BOTS = 64
@@ -110,28 +109,10 @@ export function install(rt) {
   }
   const warnf = (error, what) => warn(`memory federation: ${what}: %s`, error?.message ?? error)
 
-  // The state object keeps its identity across an adopt, but its fields are replaced:
-  // read `state.memoryFederation` every time instead of holding the object.
-  function federation() {
-    const state = rt.state
-    let fed = state.memoryFederation
-    if (fed === null || typeof fed !== 'object' || Array.isArray(fed)) fed = state.memoryFederation = {}
-    if (!Number.isInteger(fed.seq) || fed.seq < 0) fed.seq = 0
-    if (fed.schemaVersion !== 1) fed.schemaVersion = 1
-    if (fed.nodes === null || typeof fed.nodes !== 'object' || Array.isArray(fed.nodes)) fed.nodes = {}
-    if (fed.inbox === null || typeof fed.inbox !== 'object' || Array.isArray(fed.inbox)) fed.inbox = {}
-    return fed
-  }
-  const seq = () => federation().seq
-
-  function nodeRecord(nodeId) {
-    const fed = federation()
-    let record = fed.nodes[nodeId]
-    if (record === null || typeof record !== 'object' || Array.isArray(record)) record = fed.nodes[nodeId] = {}
-    if (!Number.isInteger(record.lastSeq) || record.lastSeq < 0) record.lastSeq = 0
-    if (!Number.isInteger(record.sentSeq) || record.sentSeq < 0) record.sentSeq = 0
-    return record
-  }
+  const meta = createMemoryMeta({ home: rt.home, warn })
+  const federation = () => meta.view()
+  const seq = () => meta.seq()
+  const nodeRecord = nodeId => meta.nodeRecord(nodeId)
 
   function registryOf() {
     try { return rt.ctx?.get?.('remote-agent:registry') } catch { return undefined }
@@ -271,37 +252,8 @@ export function install(rt) {
 
   // A request that is retried after the hub already wrote it replays the first
   // answer, seq included, so the node sees one write and one sequence step.
-  function replayed(key) {
-    const fed = federation()
-    const entry = fed.inbox[key]
-    if (entry === null || typeof entry !== 'object') return undefined
-    if (!Number.isFinite(entry.at) || entry.at < Date.now() - INBOX_TTL_MS) return undefined
-    return entry.frame
-  }
-
-  // Seven days or a thousand answers, whichever comes first. Runs when an inbox is
-  // written and once at start: a stale answer is worse than none, because it can
-  // hide a write the node thinks it still has to retry.
-  function cleanInbox() {
-    const fed = federation()
-    const cutoff = Date.now() - INBOX_TTL_MS
-    let removed = 0
-    for (const name of Object.keys(fed.inbox)) {
-      const entry = fed.inbox[name]
-      if (entry === null || typeof entry !== 'object' || !Number.isFinite(entry.at) || entry.at < cutoff) {
-        delete fed.inbox[name]
-        removed += 1
-      }
-    }
-    const left = Object.keys(fed.inbox)
-    if (left.length <= INBOX_MAX) return removed
-    left.sort((a, b) => (fed.inbox[a].at ?? 0) - (fed.inbox[b].at ?? 0))
-    for (const name of left.slice(0, left.length - INBOX_MAX)) {
-      delete fed.inbox[name]
-      removed += 1
-    }
-    return removed
-  }
+  const replayed = key => meta.lookup(key)?.frame
+  const cleanInbox = () => meta.cleanInbox()
 
   function touch(nodeId) {
     if (nodeId === '') return
@@ -352,14 +304,14 @@ export function install(rt) {
     if (op === 'forget' && target === '') return { ok: false, seq: seq(), error: CODES.noMatch }
     const actor = { id: bot.id, name: bot.name }
     const label = scope.kind === 'node' ? 'the node memory' : 'its own memory'
-    const meta = { source: 'memory federation', by: bot.id, added: today() }
+    const entryMeta = { source: 'memory federation', by: bot.id, added: today() }
     try {
       const result = op === 'add'
-        ? await host.addEntry({ scope, topic: message?.topic, text: value, meta, actor, label })
+        ? await host.addEntry({ scope, topic: message?.topic, text: value, meta: entryMeta, actor, label })
         : op === 'replace'
-          ? await host.replaceEntry({ scope, topic: message?.topic, match: target, text: value, meta, actor, label })
+          ? await host.replaceEntry({ scope, topic: message?.topic, match: target, text: value, meta: entryMeta, actor, label })
           : await host.removeEntry({ scope, topic: message?.topic, match: target, actor, label })
-      if (result?.changed === true) federation().seq += 1
+      if (result?.changed === true) meta.bumpSeq()
       return { ok: true, seq: seq(), changed: result?.changed === true }
     } catch (error) {
       return { ok: false, seq: seq(), error: errorCode(error) }
@@ -404,7 +356,6 @@ export function install(rt) {
     if (Number.isInteger(message?.appliedSeq) && message.appliedSeq >= 0) record.lastSeq = message.appliedSeq
     touch(nodeId)
     cleanInbox()
-    void rt.save()
     void push(nodeId).catch(error => warnf(error, `pushing the first snapshot to ${nodeId}`))
   }
 
@@ -417,7 +368,6 @@ export function install(rt) {
     // A node cannot have applied a sequence the hub has not reached yet.
     record.lastSeq = Math.min(acked, seq())
     touch(nodeId)
-    void rt.save()
   }
 
   async function onWrite(message) {
@@ -441,10 +391,9 @@ export function install(rt) {
     const job = (async () => {
       const frame = { requestId, ...(await writeFrame(message)) }
       if (frame.ok === true) {
-        federation().inbox[key] = { at: Date.now(), frame }
-        cleanInbox()
+        meta.remember(key, { at: Date.now(), frame })
+        if (frame.changed === true) meta.noteChanged()
         markDirty(text(message?.scope) === 'team' ? '*' : nodeId)
-        void rt.save()
       }
       return frame
     })()
@@ -563,8 +512,8 @@ export function install(rt) {
   }
 
   async function afterPanelChange(scope) {
-    federation().seq += 1
-    await rt.save()
+    meta.bumpSeq()
+    meta.noteChanged()
     markDirty(scope.kind === 'team' ? '*' : scope.nodeId)
   }
 
@@ -950,6 +899,7 @@ export function install(rt) {
   }
 
   async function memoryHubEndpoint(endpoint, body) {
+    await rt.memoryMetaReady
     if (endpoint === 'memory-hub-scopes') return await scopes()
     if (endpoint === 'memory-hub-view') return await view(body)
     if (endpoint === 'memory-hub-add') return await add(body)
@@ -958,6 +908,7 @@ export function install(rt) {
   }
 
   Object.assign(rt, {
+    memoryMeta: meta,
     memoryHubEndpoint,
     memoryFederationView,
     memoryHub: Object.freeze({
@@ -991,17 +942,27 @@ export function install(rt) {
   // Start reading after the first load, so the inbox cleanup and the attach see the
   // state on disk. A hub that starts with nodes already connected pushes once.
   ctx.effect(() => {
-    void rt.load().then(() => {
+    rt.memoryMetaReady = rt.load().then(async () => {
+      if (stopped) return
+      // The node cache and outbox retain their existing state-file persistence.
+      nodeAttach()
+      nodeTicker = setInterval(nodeAttach, NODE_TICK_MS)
+      nodeTicker.unref?.()
+      await meta.load()
+      if (stopped) return
+      const legacy = rt.state.memoryFederation
+      if (legacy && (legacy.seq > 0 || Object.keys(legacy.nodes ?? {}).length > 0 || Object.keys(legacy.inbox ?? {}).length > 0)) {
+        meta.importLegacy(legacy)
+        rt.state.memoryFederation = {}
+        await rt.save({ immediate: false })
+      }
       if (stopped) return
       cleanInbox()
       attach()
       ticker = setInterval(attach, ATTACH_MS)
       ticker.unref?.()
-      // A node finds ra's link service on the same tick: either plugin may load first.
-      nodeAttach()
-      nodeTicker = setInterval(nodeAttach, NODE_TICK_MS)
-      nodeTicker.unref?.()
-    }).catch(error => warnf(error, 'starting'))
+    })
+    void rt.memoryMetaReady.catch(error => warnf(error, 'starting'))
     return () => {
       stopped = true
       if (timer !== undefined) clearTimeout(timer)
@@ -1011,6 +972,7 @@ export function install(rt) {
       dirty.clear()
       detach()
       nodeDispose()
+      meta.close()
     }
   }, 'ds-bot: memory federation')
 }

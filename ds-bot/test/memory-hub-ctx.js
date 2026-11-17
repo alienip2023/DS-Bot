@@ -73,6 +73,7 @@ export async function hub({ nodes = [{ nodeId: 'n1', hostname: 'dshtest-1' }], r
   const ctx = fakeContext({ services: { 'remote-agent:registry': registry } })
   const rt = createRuntime(ctx, { home })
   await rt.load()
+  await rt.memoryMetaReady
   for (const report of roster) applyRosterReport(rt.state, report)
   await rt.save()
   return {

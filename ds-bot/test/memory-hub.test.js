@@ -51,7 +51,7 @@ test('a retried request is answered with the first result and written once', asy
   assert.equal(rt.memoryHub.seq(), 1)
   const body = readFileSync(dir('nodes', 'n1', 'bots', 'rb1', 'MEMORY.md'), 'utf8')
   assert.equal(body.split('only once').length - 1, 1)
-  assert.equal(Object.keys(rt.state.memoryFederation.inbox).length, 1)
+  assert.equal(Object.keys(rt.memoryMeta.view().inbox).length, 1)
 })
 
 test('a node that writes the team memory is refused before a file or the sequence is touched', async (t) => {
@@ -66,7 +66,7 @@ test('a node that writes the team memory is refused before a file or the sequenc
   assert.equal(answer.seq, 0)
   assert.equal(rt.memoryHub.seq(), 0)
   assert.equal(existsSync(dir('team')), false)
-  assert.deepEqual(Object.keys(rt.state.memoryFederation.inbox), [])
+  assert.deepEqual(Object.keys(rt.memoryMeta.view().inbox), [])
 })
 
 test('a Bot reads the team, its node and its own memory, and nothing of another Bot', async (t) => {
@@ -128,12 +128,12 @@ test('a team change is pushed whole to every node, and an ack moves what that no
   for (const nodeId of ['n1', 'n2']) {
     const frame = pushed.find(item => item.nodeId === nodeId)
     assert.match(frame.payload.team, /the team line/)
-    assert.equal(rt.state.memoryFederation.nodes[nodeId].sentSeq, seq)
+    assert.equal(rt.memoryMeta.view().nodes[nodeId].sentSeq, seq)
   }
 
   await registry.emitAsync('memoryAck', { nodeId: 'n1', seq })
-  assert.equal(rt.state.memoryFederation.nodes.n1.lastSeq, seq)
-  assert.equal(rt.state.memoryFederation.nodes.n2.lastSeq, 0)
+  assert.equal(rt.memoryMeta.view().nodes.n1.lastSeq, seq)
+  assert.equal(rt.memoryMeta.view().nodes.n2.lastSeq, 0)
 })
 
 test('an over-budget snapshot keeps team, then node, then Bots, and says it was cut', async (t) => {
@@ -234,13 +234,13 @@ test('an ack ahead of the hub sequence is clamped to it', async (t) => {
 
   // Nothing has changed yet: a node that claims more than the hub knows is held at 0.
   await registry.emitAsync('memoryAck', { nodeId: 'n1', seq: 99 })
-  assert.equal(rt.state.memoryFederation.nodes.n1.lastSeq, 0)
+  assert.equal(rt.memoryMeta.view().nodes.n1.lastSeq, 0)
 
   await registry.emitAsync('memoryWrite', writeFrame('n1', 'rb1', 'req-ack', { text: 'one line' }))
   await registry.emitAsync('memoryAck', { nodeId: 'n1', seq: 99 })
   // The hub never lets an ack run ahead of its own sequence, or a later snapshot at
   // seq 1 would look stale to that node forever.
-  assert.equal(rt.state.memoryFederation.nodes.n1.lastSeq, 1)
+  assert.equal(rt.memoryMeta.view().nodes.n1.lastSeq, 1)
 })
 
 test('a remote add writes its own folder and never the root MEMORY.md', async (t) => {
