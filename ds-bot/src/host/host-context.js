@@ -18,7 +18,7 @@ import { dshVersion } from './diagnostics.js'
 //  - `auto` switches the text on only where the node-policy service exists, so a hub's own prompt
 //    is byte for byte what it was before this module (I5). What counts is the SERVICE, not its roots:
 //    ra registers `remote-agent:node-policy` also when the node has no roots (it only warns, then
-//    provides `{ roots: [] }`, AI Unified (dsh-ai-unified) lib/node/index.js:664-677), so such a worker still gets
+//    provides `{ roots: [] }`, AI Unified (dsh-ai-cluster) lib/node/index.js:664-677), so such a worker still gets
 //    the text — only the "Writable workspace roots" line is missing. A process without the service at
 //    all (a hub) gets nothing.
 //  - a field that cannot be read is left out, never written as "unknown".

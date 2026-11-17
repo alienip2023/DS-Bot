@@ -6,7 +6,7 @@ import { DICTIONARY } from '../src/client/i18n.js'
 
 const ROOT = join(import.meta.dirname, '..')
 const OLD_NAME = 'dsh-remote-agent'
-const WORKER_KEY = 'A Worker Bot runs tasks on a remote machine via AI Unified (dsh-ai-unified).'
+const WORKER_KEY = 'A Worker Bot runs tasks on a remote machine via AI Unified (dsh-ai-cluster).'
 
 test('i18n.js and locales/*.js never mention the old package name', () => {
   const dir = join(ROOT, 'src/client/locales')
@@ -37,8 +37,8 @@ test('the Worker Bot key exists in every locale and carries the new name', () =>
   for (const loc of ['zh', 'zh-TW', 'ja', 'ko', 'es', 'fr', 'de']) {
     const value = DICTIONARY[loc]?.[WORKER_KEY]
     assert.equal(typeof value, 'string', `${loc}: missing key`)
-    assert.ok(value.includes('dsh-ai-unified'), `${loc}: package name must stay untranslated`)
+    assert.ok(value.includes('dsh-ai-cluster'), `${loc}: package name must stay untranslated`)
   }
-  assert.equal(DICTIONARY.zh[WORKER_KEY], '执行机通过 AI 大一统（dsh-ai-unified）在远程机器上跑任务。')
-  assert.ok(DICTIONARY['zh-TW'][WORKER_KEY].includes('大一統'))
+  assert.equal(DICTIONARY.zh[WORKER_KEY], '执行机通过 AI 集群控制（dsh-ai-cluster）在远程机器上跑任务。')
+  assert.ok(DICTIONARY['zh-TW'][WORKER_KEY].includes('AI 集群控制'))
 })

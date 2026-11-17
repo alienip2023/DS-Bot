@@ -195,7 +195,7 @@ export function CreateBot({ roster, actions, start, brief = '', onBack, canGoBac
         h('option', { value: 'normal' }, t('Normal Bot')),
         h('option', { value: 'remote-worker' }, t('Worker Bot (Remote Machine)'))),
       h('span', { className: 'bt-note' }, botType === 'remote-worker'
-        ? t('A Worker Bot runs tasks on a remote machine via AI Unified (dsh-ai-unified).')
+        ? t('A Worker Bot runs tasks on a remote machine via AI Unified (dsh-ai-cluster).')
         : t('A normal Bot runs in this DeepSeek Harness instance.'))) : null,
     !isRemoteNode ? h('div', { className: 'bt-field' },
       h('span', { className: 'bt-field-label' }, t('Memory Backend')),

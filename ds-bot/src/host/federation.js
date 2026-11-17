@@ -1,6 +1,6 @@
 // Peer roster: a read-only shadow list of another machine's Bots.
 //
-// One DS Bot is the hub, the other machines run the peer plugin AI Unified (dsh-ai-unified). A node's
+// One DS Bot is the hub, the other machines run the peer plugin AI Unified (dsh-ai-cluster). A node's
 // remote-agent reads its local team and reports it upward as `node/roster`; the
 // registry forwards that as the `roster` event, and this module mirrors those Bots
 // here as read-only rows (`origin: 'peer'`). Nothing about a peer row may look like

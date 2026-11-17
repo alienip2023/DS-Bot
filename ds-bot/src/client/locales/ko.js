@@ -2482,7 +2482,7 @@ Object.assign(KO, {
   "The Bot will be created on the selected remote machine.": "Bot은 선택한 원격 머신에 생성됩니다.",
   "No connected remote machines yet.": "연결된 원격 머신이 아직 없습니다.",
   "Create the Bot on this machine, or pick a connected remote machine.": "이 머신에 Bot을 만들거나 연결된 원격 머신을 선택하세요.",
-  "A Worker Bot runs tasks on a remote machine via AI Unified (dsh-ai-unified).": "워커 Bot은 AI Unified(dsh-ai-unified)를 통해 원격 머신에서 작업을 실행합니다.",
+  "A Worker Bot runs tasks on a remote machine via AI Unified (dsh-ai-cluster).": "워커 Bot은 AI Unified(dsh-ai-cluster)를 통해 원격 머신에서 작업을 실행합니다.",
   "A normal Bot runs in this DeepSeek Harness instance.": "일반 Bot은 이 DeepSeek Harness 인스턴스에서 실행됩니다.",
   "Where this Bot keeps its memory. Auto Detect uses dsh-mneme when it is installed.": "이 Bot이 메모리를 보관하는 위치입니다. 자동 감지는 dsh-mneme이 설치되어 있으면 사용합니다.",
   "URL of the hub the worker should connect to.": "워커가 연결할 허브의 URL입니다.",
