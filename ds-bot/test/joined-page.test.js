@@ -139,11 +139,12 @@ test('8. node receiver: chatPage throws → ok:false error', async () => {
 
 // ── channel.js routing test ──────────────────────────────────────────────────────
 // Goes through the real channel.js installed route (installChannel + route.fetch).
-// Knife: remove the joined-shadow branch in channel.js case 'chat' → this goes red.
+// src/host/channel.js:263, S2-2: joined shadows read the local mirror, or an empty page before it exists.
+// Knife: route joined shadows to joinedChatPage → this goes red.
 import { install as installChannel } from '../src/host/channel.js'
 
-function makeChannelRtForChat() {
-  let chatPageCalls = 0
+function makeChannelRtForChat({ sessionId } = {}) {
+  const chatPageCalls = []
   let joinedChatPageCalls = 0
   const items = [{ kind: 'user', text: 'remote hello' }]
   let route = null
@@ -191,11 +192,11 @@ function makeChannelRtForChat() {
     warn() {},
     noteFailure() {},
     chatOf(botId) { const bot = this.state.bots[botId]; return bot?.sessionId ?? botId },
-    async chatPage() { chatPageCalls++; return { sessionId: 'local-s', items: [{ kind: 'user', text: 'local page' }], cursor: null } },
+    async chatPage(...args) { chatPageCalls.push(args); return { sessionId: 'local-s', items: [{ kind: 'user', text: 'local page' }], cursor: null } },
     joinedChatPage() { joinedChatPageCalls++; return Promise.resolve({ sessionId: 'remote-s', items, cursor: null }) },
     joinedHistoryTimeoutMs: 5000,
   }
-  state.bots['joined:n1:session-abc'] = { id: 'joined:n1:session-abc', origin: 'joined', worker: { nodeId: 'n1', remoteBotId: 'session-abc', home: 'remote' } }
+  state.bots['joined:n1:session-abc'] = { id: 'joined:n1:session-abc', origin: 'joined', sessionId, worker: { nodeId: 'n1', remoteBotId: 'session-abc', home: 'remote' } }
   state.bots['local-bot'] = { id: 'local-bot', origin: 'local', sessionId: 'local-s' }
   installChannel(rt)
   const call = async (endpoint, payload) => {
@@ -205,21 +206,32 @@ function makeChannelRtForChat() {
     })
     return response.json()
   }
-  return { call, getChatPageCalls: () => chatPageCalls, getJoinedChatPageCalls: () => joinedChatPageCalls }
+  return { call, getChatPageCalls: () => chatPageCalls.length, getChatPageArgs: () => chatPageCalls, getJoinedChatPageCalls: () => joinedChatPageCalls }
 }
 
-test('9. channel chat route: joined shadow → joinedChatPage, local bot → chatPage', async () => {
-  const { call, getChatPageCalls, getJoinedChatPageCalls } = makeChannelRtForChat()
-  // joined shadow → must route to joinedChatPage
-  const joinedRes = await call('chat', { botId: 'joined:n1:session-abc' })
+test('9. channel chat route: a joined shadow reads its mirror session, a local bot reads chatPage', async () => {
+  const botId = 'joined:n1:session-abc'
+  const joined = makeChannelRtForChat({ sessionId: 'mirror-s' })
+  const joinedRes = await joined.call('chat', { botId })
   assert.equal(joinedRes.ok, true)
-  assert.equal(getJoinedChatPageCalls(), 1, 'joinedChatPage must be called for joined shadow')
-  assert.equal(getChatPageCalls(), 0, 'chatPage must NOT be called for joined shadow')
-  assert.deepEqual(joinedRes.value.items, [{ kind: 'user', text: 'remote hello' }])
-  // local bot → must route to chatPage
-  const localRes = await call('chat', { botId: 'local-bot' })
-  assert.equal(getChatPageCalls(), 1, 'chatPage must be called for local bot')
-  assert.equal(getJoinedChatPageCalls(), 1, 'joinedChatPage must NOT be called for local bot')
+  assert.equal(joined.getJoinedChatPageCalls(), 0, 'joinedChatPage must be called zero times for a joined shadow')
+  assert.equal(joined.getChatPageCalls(), 1, 'chatPage must be called once for a joined shadow with a mirror session')
+  assert.deepEqual(joined.getChatPageArgs()[0], [botId, undefined, false])
+  assert.deepEqual(joinedRes.value.items, [{ kind: 'user', text: 'local page' }])
+
+  const empty = makeChannelRtForChat()
+  const emptyRes = await empty.call('chat', { botId })
+  assert.equal(emptyRes.ok, true)
+  assert.equal(empty.getJoinedChatPageCalls(), 0, 'joinedChatPage must be called zero times for a joined shadow without a mirror session')
+  assert.equal(empty.getChatPageCalls(), 0, 'chatPage must not be called before the mirror session exists')
+  assert.deepEqual(emptyRes.value, { sessionId: botId, items: [], cursor: null })
+
+  const local = makeChannelRtForChat()
+  const localRes = await local.call('chat', { botId: 'local-bot' })
+  assert.equal(localRes.ok, true)
+  assert.equal(local.getChatPageCalls(), 1, 'chatPage must be called once for a local bot')
+  assert.equal(local.getJoinedChatPageCalls(), 0, 'joinedChatPage must be called zero times for a local bot')
+  assert.deepEqual(local.getChatPageArgs()[0], ['local-bot', undefined, false])
   assert.deepEqual(localRes.value.items, [{ kind: 'user', text: 'local page' }])
 })
 
