@@ -821,15 +821,20 @@ export function install(rt) {
       // A remote Bot's memory lives under its node, and is archived from there: the
       // node's tree keeps its shape, the archived folder still holds every entry.
       const dir = dirOf(scope)
-      if (!existsSync(dir)) return
+      const legacy = remote === undefined && scope.kind === 'clusterBot' ? dirOf({ kind: 'bot', botId }) : undefined
+      const hasPrimary = existsSync(dir)
+      const hasLegacy = legacy !== undefined && existsSync(legacy)
+      if (!hasPrimary && !hasLegacy) return
       const name = `${safeId(botId)}-${new Date().toISOString().replace(/[:.]/g, '-')}`
+      const archive = join(root, 'archive', name)
       await mkdir(join(root, 'archive'), { recursive: true })
-      await rename(dir, join(root, 'archive', name))
+      await rename(hasPrimary ? dir : legacy, archive)
+      if (hasPrimary && hasLegacy) await rename(legacy, join(archive, 'legacy'))
       // The memory is in the archive from here: a log row that cannot be written must not
       // hide where it went, which the privacy guard needs to keep a private archive closed.
       await journalRow({ id: randomUUID(), time: new Date().toISOString(), op: 'archive', scope: logKeyOf(scope), ...logPlaceOf(scope), actor: 'user', actorName: 'user', botName: bot?.name, to: `archive/${name}` })
         .catch(error => rt.warn('ds-bot: archive of the memory of %s not logged: %s', bot?.name ?? botId, error))
-      return join(root, 'archive', name)
+      return archive
     }).catch(error => rt.warn('ds-bot: memory of %s not archived: %s', bot?.name ?? botId, error))
   }
 

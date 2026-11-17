@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { test } from 'node:test'
 import { createRuntime } from '../index.js'
+import { clusterBotDirName } from '../src/host/memory.js'
 import { fakeApproval, fakeContext } from './fake-ctx.js'
 
 let rt
@@ -517,6 +518,55 @@ test('deleting a private Bot keeps its folder and archived memory closed', async
   await assert.rejects(rt.createBot({ name: 'Third', workDir: diary }), CLOSED)
   const third = await rt.createBot({ name: 'Third', workDir: project })
   await assert.rejects(rt.updateBot(third.id, { workDir: diary, private: true }), CLOSED)
+})
+
+test('deleting a private cluster Bot archives its legacy memory and keeps the returned path', async (t) => {
+  const { rt, home, project, state, stop } = await start()
+  t.after(stop)
+  const bot = await rt.createBot({ name: 'Legacy', workDir: project })
+  await rt.updateBot(bot.id, { private: true })
+  assert.ok(bot.clusterBotId)
+  const legacy = join(home, 'memory', 'bots', bot.id)
+  const primary = join(home, 'memory', 'bots', clusterBotDirName(bot.clusterBotId))
+  mkdirSync(legacy, { recursive: true })
+  writeFileSync(join(legacy, 'MEMORY.md'), 'old memory')
+  assert.equal(existsSync(primary), false)
+  const archiveBotMemory = rt.archiveBotMemory
+  let archivePath
+  rt.archiveBotMemory = async (id) => {
+    archivePath = await archiveBotMemory(id)
+    return archivePath
+  }
+
+  await rt.deleteBot(bot.id)
+
+  assert.ok(existsSync(join(archivePath ?? '', 'MEMORY.md')), 'the archive contains the old MEMORY.md')
+  assert.equal(readFileSync(join(archivePath, 'MEMORY.md'), 'utf8'), 'old memory')
+  assert.equal(state().privateArchives.find(entry => entry.id === bot.id).archivePath, archivePath)
+  assert.equal(existsSync(legacy), false)
+})
+
+test('deleting a private cluster Bot archives both primary and legacy memory together', async (t) => {
+  const { rt, home, project, state, stop } = await start()
+  t.after(stop)
+  const bot = await rt.createBot({ name: 'Both', workDir: project })
+  await rt.updateBot(bot.id, { private: true })
+  assert.ok(bot.clusterBotId)
+  const legacy = join(home, 'memory', 'bots', bot.id)
+  const primary = join(home, 'memory', 'bots', clusterBotDirName(bot.clusterBotId))
+  for (const [dir, text] of [[primary, 'primary memory'], [legacy, 'old memory']]) {
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'MEMORY.md'), text)
+  }
+
+  await rt.deleteBot(bot.id)
+
+  const { archivePath } = state().privateArchives.find(entry => entry.id === bot.id)
+  assert.equal(readFileSync(join(archivePath, 'MEMORY.md'), 'utf8'), 'primary memory')
+  assert.ok(existsSync(join(archivePath, 'legacy', 'MEMORY.md')), 'the archive contains the old MEMORY.md under legacy')
+  assert.equal(readFileSync(join(archivePath, 'legacy', 'MEMORY.md'), 'utf8'), 'old memory')
+  assert.equal(existsSync(primary), false)
+  assert.equal(existsSync(legacy), false)
 })
 
 test('the user lifts what a deleted private Bot left closed, one Bot at a time', async (t) => {
