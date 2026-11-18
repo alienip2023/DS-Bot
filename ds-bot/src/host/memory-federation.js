@@ -292,6 +292,8 @@ export function install(rt) {
     // The node's own tool route refused a team write before it sent anything; the hub
     // refuses it again here, before a file or the sequence is touched.
     if (name === 'team') return { ok: false, seq: seq(), error: CODES.teamReadOnly }
+    // Without a cluster identity, the legacy scope fallback would split Bot memory.
+    if (name === 'bot' && text(bot.clusterBotId) === '') return { ok: false, seq: seq(), error: CODES.refused }
     const scope = writeScope(message, nodeId, bot)
     if (scope === undefined) return { ok: false, seq: seq(), error: CODES.denied }
     const op = text(message?.op)
@@ -627,7 +629,11 @@ export function install(rt) {
   function nodeError(code, message) {
     return Object.assign(new Error(message ?? NODE_MESSAGES[code] ?? code), { code })
   }
-  const nodeFailure = code => nodeError(text(code) || 'memory/failed', HUB_MESSAGES[text(code)] ?? `The hub answered ${text(code) || 'an error'}.`)
+  function nodeFailure(code, scope) {
+    const message = HUB_MESSAGES[text(code)] ?? `The hub answered ${text(code) || 'an error'}.`
+    const hint = code === CODES.refused && scope === 'bot' ? ' A "bot" write requires clusterBotId on the hub roster. Nothing was saved.' : ''
+    return nodeError(text(code) || 'memory/failed', message + hint)
+  }
 
   // What the hub last rendered for this node: the three segments exactly as the hub
   // built them, and the seq they belong to. `at` is when this node applied it.
@@ -765,7 +771,7 @@ export function install(rt) {
       }
       throw failure
     }
-    if (result?.ok !== true) throw nodeFailure(result?.error)
+    if (result?.ok !== true) throw nodeFailure(result?.error, scope)
     return { ok: true, changed: result.changed === true, id: result.id, seq: result.seq }
   }
 

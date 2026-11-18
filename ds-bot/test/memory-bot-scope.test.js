@@ -246,20 +246,36 @@ test('private regions close that bot cluster directory and leave its neighbour o
   assert.equal(inspected.includes(own), false, 'a bot without a clusterBotId gains no cluster region')
 })
 
-test('a roster row without a usable clusterBotId retains the old node-local bot scope', async (t) => {
-  const { rt, root, write, read } = await start(t)
+test('a roster row refuses bot writes without a usable clusterBotId and allows them once present', async (t) => {
+  const { rt, root, write, read, accesses } = await start(t)
   const bot = rt.botOf(shadowId('n1', 'rb1'))
   let count = 0
   for (const clusterBotId of [undefined, null, '', '  ', 17, {}]) {
     bot.clusterBotId = clusterBotId
-    const text = `fallback fact ${++count}`
+    const text = `refused fact ${++count}`
     const answer = await write({ text, clusterBotId: 'forged' })
-    assert.equal(answer.ok, true)
-    const entries = (await read({ clusterBotId: 'forged' })).entries
-    assert.ok(entries.some(entry => entry.text === text))
-    assert.deepEqual((await read({ scope: 'own' })).entries, entries)
+    assert.equal(answer.ok, false)
+    assert.equal(answer.error, 'memory/refused')
+    assert.equal(answer.seq, 0)
+    assert.deepEqual(accesses.filter(name => name !== 'readScope'), [], 'a refused write must not reach the memory writer')
+    assert.deepEqual((await read({ clusterBotId: 'forged' })).entries, [])
+    assert.deepEqual((await read({ scope: 'own' })).entries, [])
+    assert.equal(existsSync(join(root, 'nodes', 'n1', 'bots', 'rb1')), false)
   }
-  assert.ok(existsSync(join(root, 'nodes', 'n1', 'bots', 'rb1', 'MEMORY.md')))
+  assert.equal(existsSync(join(root, 'nodes', 'n1', 'bots', 'rb1', 'MEMORY.md')), false)
   assert.equal(existsSync(join(root, 'bots')), false)
-  assert.equal(rt.memoryHub.seq(), 6)
+  assert.equal(rt.memoryHub.seq(), 0)
+
+  bot.clusterBotId = 'shared'
+  const answer = await write({ text: 'cluster fact after identity', clusterBotId: 'forged' })
+  assert.equal(answer.ok, true)
+  assert.equal(answer.changed, true)
+  assert.equal(answer.seq, 1)
+  assert.match(readFileSync(join(root, 'bots', 'cluster.shared', 'MEMORY.md'), 'utf8'), /cluster fact after identity/)
+  assert.equal(existsSync(join(root, 'bots', 'cluster.forged')), false)
+  assert.deepEqual((await read({})).entries.map(entry => entry.text), ['cluster fact after identity'])
+  assert.deepEqual((await read({ nodeId: 'n2', remoteBotId: 'rb2' })).entries.map(entry => entry.text), ['cluster fact after identity'])
+  assert.deepEqual((await read({ scope: 'own' })).entries, [])
+  assert.equal(existsSync(join(root, 'nodes', 'n1', 'bots', 'rb1')), false)
+  assert.equal(rt.memoryHub.seq(), 1)
 })

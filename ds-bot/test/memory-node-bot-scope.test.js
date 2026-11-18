@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { test } from 'node:test'
 import { shadowId } from '../src/host/roster-join.js'
 import { hub, rosterFor } from './memory-hub-ctx.js'
@@ -105,7 +105,7 @@ test('unknown and named Bot scope messages explain bot cluster memory', async (t
   assert.equal(frames(link, 'mem/read').length, 0)
 })
 
-test('the hub falls back to the node Bot directory when it has no cluster identity', async (t) => {
+test('the hub refuses a bot write when the roster row has no cluster identity', async (t) => {
   const remote = await hub({ roster: [rosterFor('n1', ['b1'])] })
   t.after(() => remote.close())
   assert.equal(remote.rt.botOf(shadowId('n1', 'b1')).clusterBotId, undefined)
@@ -122,13 +122,27 @@ test('the hub falls back to the node Bot directory when it has no cluster identi
   await rt.load()
   const beforeWarnings = [...warnings]
 
-  assert.match(await tool('remember', { text: 'Fallback memory', scope: 'bot' }), /^Saved\./)
-  assert.equal(frames(link, 'mem/write').at(-1).payload.scope, 'bot')
-  assert.match(readFileSync(remote.dir('nodes', 'n1', 'bots', 'b1', 'MEMORY.md'), 'utf8'), /Fallback memory/)
+  await assert.rejects(tool('remember', { text: 'Fallback memory', scope: 'bot' }), error => {
+    assert.equal(error.code, 'memory/refused')
+    assert.match(error.message, /A "bot" write requires clusterBotId on the hub roster\. Nothing was saved\./)
+    return true
+  })
+  const sent = frames(link, 'mem/write')
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0].payload.scope, 'bot')
+  const answer = remote.registry.frames('mem/write-result').at(-1).payload
+  assert.equal(answer.requestId, sent[0].payload.requestId)
+  assert.equal(answer.ok, false)
+  assert.equal(answer.error, 'memory/refused')
+  assert.equal(existsSync(remote.dir('nodes', 'n1', 'bots', 'b1', 'MEMORY.md')), false)
+  assert.equal(existsSync(remote.dir('nodes', 'n1', 'bots', 'b1')), false)
   assert.equal(existsSync(remote.dir('bots')), false)
-  assert.match(await tool('recall', { scope: 'bot' }), /\[bot\] Fallback memory/)
-  assert.equal(frames(link, 'mem/read').at(-1).payload.scope, 'bot')
-  assert.match(await tool('recall', { scope: 'own' }), /\[yours\] Fallback memory/)
+  assert.equal(await tool('recall', { scope: 'bot' }), "The Bot's cluster memory: nothing saved yet.")
+  assert.equal(await tool('recall', { scope: 'own' }), 'Your memory: nothing saved yet.')
+  assert.deepEqual(frames(link, 'mem/read').map(frame => frame.payload.scope), ['bot', 'own'])
+  assert.deepEqual(remote.registry.frames('mem/read-result').map(frame => frame.payload.entries), [[], []])
+  assert.equal(existsSync(remote.dir('nodes', 'n1', 'bots', 'b1')), false)
+  assert.equal(remote.rt.memoryHub.seq(), 0)
   assert.deepEqual(warnings, beforeWarnings)
   assert.deepEqual(rt.memoryNode.outbox(), [])
 })
