@@ -46,6 +46,7 @@ export function applyDirectory(rt, payload, source) {
 export function reapStalePeers(rt, now = Date.now()) {
   const at = peerAt.get(rt)
   if (at !== undefined && now - at < STALE_MS) return false
+  peerAt.delete(rt)
   rt.hubRooms = []
   let removed = false
   for (const [id, bot] of Object.entries(rt.state.bots)) if (isSessionPeer(bot)) { delete rt.state.bots[id]; removed = true }
@@ -195,6 +196,11 @@ export function install(rt) {
   else if (typeof ctx?.set === 'function') ctx.set('remote-agent:bot-message', receive)
 
   rt.botNetwork = serviceOf(rt, 'remote-agent:bot-network')
+  // remote-agent exposes no link state: allow the first directory a stale window,
+  // then use directory receipt (including empty frames) as the liveness lease.
+  if (typeof rt.botNetwork?.send === 'function') peerAt.set(rt, Date.now())
+  rt.hubOnline = () => !stopped && typeof rt.botNetwork?.send === 'function'
+    && peerAt.has(rt) && Date.now() - peerAt.get(rt) < STALE_MS
   const offMessage = typeof rt.botNetwork?.onMessage === 'function'
     ? rt.botNetwork.onMessage(async payload => {
     if (stopped || payload.kind !== 'ask') return null
@@ -234,5 +240,6 @@ export function install(rt) {
     if (previous !== undefined && typeof ctx.set === 'function' && serviceOf(rt, 'remote-agent:bot-message') === receive) ctx.set('remote-agent:bot-message', previous)
     asks.delete(rt)
     rt.botNetwork = undefined
+    rt.hubOnline = undefined
   }, 'ds-bot: Bot network')
 }
