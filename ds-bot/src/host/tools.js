@@ -134,7 +134,9 @@ export function install(rt) {
   // Hub rooms from the directory: name and member count only, read-only, memory-only.
   const hubRoomLines = (args) => {
     if (typeof rt.botNetwork?.send !== 'function' || args.bot || args.group) return []
-    const online = rt.hubOnline?.() === true || Object.values(state.bots).some(bot => bot.origin === 'peer')
+    const online = typeof rt.hubOnline === 'function'
+      ? rt.hubOnline() === true
+      : Object.values(state.bots).some(bot => bot.origin === 'peer')
     if (!online) return ['Hub group chats: unavailable, the hub is offline.']
     if (!rt.hubRooms?.length) return ['Hub group chats: none you can see.']
     return (rt.hubRooms ?? []).map(room => `- "${room.name}" — ${room.members} members (hub, read-only)`)
