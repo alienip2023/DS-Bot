@@ -1079,14 +1079,20 @@ export class LocalAgentAdapter extends LlmAdapter {
   }
 }
 
-// The result DSH gives approve_agent_action decides the agent's option: only
-// the structured {"decision":"allow"} the tool returns on approval counts;
-// free text, a parse failure, an error or a denial rejects the action.
-function pickAllowOption(options, result) {
-  if (result.isError === true) return null
-  let decision
-  try { decision = JSON.parse(result.text ?? '')?.decision } catch { decision = undefined }
-  if (decision !== 'allow') return null
+// The result DSH gives approve_agent_action decides the agent's option.
+// INVARIANT: only a structured {"decision":"allow"} allows. Free text ("allow", "同意",
+// "approved"), a parse failure, an error, and the non-answers `unavailable`,
+// `cancelled` and `expired` (a bare string or an object carrying them as `decision`,
+// `status` or `outcome`) all reject the action.
+const DENY_WORDS = new Set(['unavailable', 'cancelled', 'canceled', 'expired', 'reject', 'rejected', 'deny', 'denied'])
+export const isDenyWord = value => typeof value === 'string' && DENY_WORDS.has(value.trim().toLowerCase())
+export function pickAllowOption(options, result) {
+  if (result?.isError === true) return null
+  let parsed
+  try { parsed = JSON.parse(result?.text ?? '') } catch { parsed = undefined }
+  // An explicit non-answer is a denial, whatever else the payload says.
+  if (isDenyWord(parsed) || isDenyWord(result?.text) || [parsed?.decision, parsed?.status, parsed?.outcome].some(isDenyWord)) return null
+  if (parsed?.decision !== 'allow') return null
   return optionOf(options, 'allow') ?? null
 }
 
@@ -1097,7 +1103,8 @@ const optionOf = (options, kind) => ((options ?? []).find(entry => entry.kind ==
 
 // What the preset answers without asking: an option id, null to refuse, or
 // undefined to ask the user.
-function presetAnswer(preset, event) {
+// Pinned: no new automatic allow path. Only full access allows unasked.
+export function presetAnswer(preset, event) {
   if (preset === 'danger-full-access') return optionOf(event.options, 'allow')
   if (preset === 'read-only' && event.changes === true) return optionOf(event.options, 'reject') ?? null
   return undefined

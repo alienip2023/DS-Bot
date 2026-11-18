@@ -7,6 +7,18 @@ import { cleanEnv, findEngineExecutable, spawnAgent, terminateChild } from './di
 // The name the loopback MCP server is registered under in each thread's config.
 const MCP_SERVER = 'dsbot'
 
+export const SANDBOXES = Object.freeze(['read-only', 'workspace-write', 'danger-full-access'])
+// undefined mode = no sandbox sent (unchanged). Anything else must be a known sandbox
+// that resolves to itself, else bot/invalid.
+export function resolveSandbox(mode) {
+  if (mode === undefined || mode === null || mode === '') return undefined
+  const resolved = typeof mode === 'string' ? SANDBOXES.find(name => name === mode) : undefined
+  if (resolved === undefined || resolved !== mode) {
+    throw Object.assign(new Error(`Codex sandbox "${String(mode)}" is not one of ${SANDBOXES.join(', ')}; refusing to start the thread`), { code: 'bot/invalid' })
+  }
+  return resolved
+}
+
 export class CodexEngine {
   constructor(route, engine, { findExecutable }) {
     this.route = route
@@ -180,6 +192,10 @@ export class CodexEngine {
   }
 
   async open(dshSessionId, { cwd, mcp, resumeId, mode, instructions, model, ephemeral }) {
+    // Refuse before anything is spawned or sent: a mode that is not one of the known
+    // sandboxes, or one that does not resolve to the value sent, never starts a thread.
+    // (cliMode() in engines.js only ever yields these three; this is the last gate.)
+    const sandbox = resolveSandbox(mode)
     const peer = await this.ensure()
     const thread = this.threadFor(dshSessionId)
     if (resumeId !== undefined) thread.threadId = resumeId
@@ -191,7 +207,7 @@ export class CodexEngine {
     const params = {
       cwd,
       ...(model && model !== 'default' ? { model } : {}),
-      ...(mode ? { sandbox: mode, approvalPolicy: mode === 'danger-full-access' ? 'never' : 'on-request' } : {}),
+      ...(sandbox !== undefined ? { sandbox, approvalPolicy: sandbox === 'danger-full-access' ? 'never' : 'on-request' } : {}),
       ...(mcp !== undefined ? { config: { mcp_servers: { [MCP_SERVER]: { url: mcp.url, http_headers: { Authorization: `Bearer ${mcp.token}` } } } } } : {}),
     }
     if (thread.threadId !== undefined) {
