@@ -71,7 +71,7 @@ test('resume drops three stale notes and resends two recent notes in order', asy
   assert.deepEqual(host.late, ['new-1', 'new-2'])
   assert.deepEqual(host.warnings, [[warning, 3]])
   assert.deepEqual(host.rt.unreadOf('chat-a'), fresh.map(item => item.args))
-  assert.deepEqual(f.read(), { turns: {}, queued: { 'chat-a': fresh } })
+  assert.deepEqual(f.read(), { version: 1, turns: {}, queued: { 'chat-a': fresh } })
 
   const restarted = f.start()
   await restarted.recover()
@@ -106,7 +106,7 @@ test('resume drops every stale note across sessions, warns once, and persists an
   await host.recover()
   assert.deepEqual(host.delivered, [])
   assert.deepEqual(host.warnings, [[warning, 3]])
-  assert.deepEqual(f.read(), { turns: {}, queued: {} })
+  assert.deepEqual(f.read(), { version: 1, turns: {}, queued: {} })
   const restarted = f.start()
   await restarted.recover()
   assert.deepEqual(restarted.delivered, [])
