@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { applyDirectory, directoryOf, publishDirectory, reapStalePeers, roomsOf } from '../src/host/bot-network.js'
+import { applyRosterReport } from '../src/host/roster-join.js'
 import { entry, fakeNetwork, peerRows } from './peer-fixture.js'
 import { makeBot, threadWorld } from './thread-t2-world.js'
 
@@ -108,18 +109,19 @@ test('hub payloads include real room member counts and exclude private rooms', a
   registry.send = (nodeId, type, payload) => { frames.push({ nodeId, type, payload }); return true }
   const w = await world(t, { 'remote-agent:registry': registry })
   const other = await makeBot(w, 'Other')
-  const room = await w.rt.createRoom({ name: 'Public', members: [w.bot.id, other.id] })
-  const privateRoom = await w.rt.createRoom({ name: 'Private', members: [w.bot.id, other.id] })
+  const [joined] = applyRosterReport(w.rt.state, { nodeId: 'n9', bots: [{ id: 'remote', name: 'Node nine' }] })
+  const room = await w.rt.createRoom({ name: 'Public', members: [w.bot.id, other.id, joined.id] })
+  const privateRoom = await w.rt.createRoom({ name: 'Private', members: [w.bot.id, other.id, joined.id] })
   privateRoom.private = true
-  assert.deepEqual(room.members, [w.bot.id, other.id])
-  assert.deepEqual(roomsOf(w.rt), [{ id: room.id, name: 'Public', members: 2 }])
+  assert.deepEqual(room.members, [w.bot.id, other.id, joined.id])
+  assert.deepEqual(roomsOf(w.rt), [{ id: room.id, name: 'Public', members: 3 }])
   frames.length = 0
   await publishDirectory(w.rt)
   assert.equal(frames.length, 1)
   assert.equal(frames[0].nodeId, 'n9')
   assert.equal(frames[0].type, 'bot/directory')
   assert.deepEqual(frames[0].payload.bots, directoryOf(w.rt))
-  assert.deepEqual(frames[0].payload.rooms, [{ id: room.id, name: 'Public', members: 2 }])
+  assert.deepEqual(frames[0].payload.rooms, [{ id: room.id, name: 'Public', members: 3 }])
   assert.equal(typeof frames[0].payload.at, 'number')
 })
 
@@ -131,12 +133,13 @@ test('room renames and membership changes republish without changing Bot rows', 
   registry.send = (nodeId, type, payload) => { frames.push({ nodeId, type, payload }); return true }
   const w = await world(t, { 'remote-agent:registry': registry })
   const other = await makeBot(w, 'Other')
-  const room = await w.rt.createRoom({ name: 'Team', members: [w.bot.id, other.id] })
+  const [joined] = applyRosterReport(w.rt.state, { nodeId: 'n9', bots: [{ id: 'remote', name: 'Node nine' }] })
+  const room = await w.rt.createRoom({ name: 'Team', members: [w.bot.id, other.id, joined.id] })
   await w.rt.save(true)
   t.mock.timers.tick(1_000)
   await Promise.resolve()
   const before = directoryOf(w.rt)
-  for (const patch of [{ name: 'Renamed' }, { members: [w.bot.id] }]) {
+  for (const patch of [{ name: 'Renamed' }, { members: [w.bot.id, joined.id] }]) {
     frames.length = 0
     Object.assign(room, patch)
     await w.rt.save(true)

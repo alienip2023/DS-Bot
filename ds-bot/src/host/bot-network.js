@@ -84,18 +84,38 @@ export function directoryOf(rt) {
 }
 
 export function roomsOf(rt) {
-  return Object.values(rt.state.rooms ?? {}).filter(room => room.private !== true).slice(0, 100).map(room => ({
-    id: room.id, name: room.name, members: Object.keys(room.members ?? {}).length,
-  }))
+  return roomListsOf(rt).get(HUB_NODE)
+}
+
+function roomListsOf(rt, bots = directoryOf(rt)) {
+  const nodeOf = new Map(bots.map(bot => [bot.id, bot.nodeId]))
+  const lists = new Map([[HUB_NODE, []]])
+  for (const room of Object.values(rt.state.rooms ?? {})) {
+    if (room.private === true) continue
+    const members = room.members ?? []
+    const entry = { id: room.id, name: room.name, members: Object.keys(members).length }
+    const nodes = new Set([HUB_NODE])
+    for (const id of members) {
+      const nodeId = nodeOf.get(id)
+      if (nodeId !== undefined) nodes.add(nodeId)
+    }
+    for (const nodeId of nodes) {
+      if (!lists.has(nodeId)) lists.set(nodeId, [])
+      const rooms = lists.get(nodeId)
+      if (rooms.length < 100) rooms.push(entry)
+    }
+  }
+  return lists
 }
 
 export async function publishDirectory(rt) {
   const registry = serviceOf(rt, 'remote-agent:registry')
   if (typeof registry?.send !== 'function' || typeof registry.onlineNodes !== 'function') return
   await rt.load?.()
-  const payload = { bots: directoryOf(rt), rooms: roomsOf(rt), at: Date.now() }
+  const payload = { bots: directoryOf(rt), at: Date.now() }
+  const rooms = roomListsOf(rt, payload.bots)
   for (const { nodeId } of registry.onlineNodes()) {
-    try { registry.send(nodeId, 'bot/directory', payload) } catch (error) {
+    try { registry.send(nodeId, 'bot/directory', { ...payload, rooms: rooms.get(nodeId) ?? [] }) } catch (error) {
       rt.warn?.('ds-bot: Bot directory send to %s failed: %s', nodeId, error)
     }
   }
@@ -139,7 +159,8 @@ export function install(rt) {
   let stopped = false
   let attached
   let dirtyTimer
-  let lastDirectory = JSON.stringify({ bots: directoryOf(rt), rooms: roomsOf(rt) })
+  const snapshot = () => JSON.stringify({ bots: directoryOf(rt), rooms: [...roomListsOf(rt)] })
+  let lastDirectory = snapshot()
   const publish = () => {
     if (stopped) return
     void publishDirectory(rt).catch(error => rt.warn?.('ds-bot: Bot directory publish failed: %s', error))
@@ -162,7 +183,7 @@ export function install(rt) {
     attached?.on?.('roster', dirty)
   }
   const offSaved = rt.onSaved?.(() => {
-    const next = JSON.stringify({ bots: directoryOf(rt), rooms: roomsOf(rt) })
+    const next = snapshot()
     if (next === lastDirectory) return
     lastDirectory = next
     dirty()
