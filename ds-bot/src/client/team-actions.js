@@ -243,7 +243,7 @@ export function teamActions({ call, after, partFor, roster, ui, live, cards, hel
     answerView: (sessionId, viewId, action, values) => after(call('view-reply', { sessionId: partFor(sessionId), viewId, action, values })),
     dismissView: sessionId => after(call('dismiss-view', { sessionId: partFor(sessionId) })),
     deleteBtw: (sessionId, cardId) => after(call('btw-delete', { sessionId, cardId })),
-    answerApproval: (id, choice) => after(call('approval-answer', { id, choice })),
+    answerApproval: (id, choice, binding) => after(call('approval-answer', binding === undefined ? { id, choice } : { id, choice, binding })),
     computerSetEnabled: enabled => after(call('computer-set-enabled', { enabled })),
     computerSetLevel: (botId, level) => after(call('computer-set-level', { botId, level })),
     computerRevokeApp: (botId, appKey) => after(call('computer-revoke-app', { botId, appKey })),

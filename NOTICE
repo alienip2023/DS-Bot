@@ -241,6 +241,7 @@ their ideas; it does not contain their code.
     message anchors for searching earlier chat.
   - OpenMausBot (https://github.com/milind-soni/OpenMausBot), Apache-2.0:
     group chat rounds and @mention relays between Bots.
+    Resume-failure classification logic in ds-bot/src/host/local-agents/resume-safety.js is ported from OpenMausBot (server/resume-recovery.ts), Apache-2.0.
   - Hermes Agent (https://github.com/NousResearch/hermes-agent) and
     Hermes Bot Mode (https://github.com/NousResearch/Hermes-Bot-Mode), MIT:
     one Session per member per group chat, and the list of earlier user

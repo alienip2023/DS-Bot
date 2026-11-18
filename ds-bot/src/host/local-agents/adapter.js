@@ -8,6 +8,7 @@ import { LlmAdapter, LlmError, offloadedImageText, resolveImageAttachmentAccess,
 import { textOf } from '../text.js'
 import { engineOf, cliMode } from './engines.js'
 import { LoopbackMcp } from './mcp.js'
+import { mayReplay } from './resume-safety.js'
 
 export const DEFAULT_CONTEXT_WINDOW = 200_000
 // The replay window when a CLI session is new or its resume failed.
@@ -52,6 +53,46 @@ function digestChunks(messages) {
     { type: 'finish', reason: { kind: 'stop' } },
   ]
 }
+
+// Events a driver (or this adapter) puts on a live Session's queue. Anything else is
+// discarded by screenEvent: warned about, counted, never taken for `done`.
+// @typedef {{type:'text'|'thought'|'activity', text:string}} TextEvent
+// @typedef {{type:'usage', usage:object}} UsageEvent
+// @typedef {{type:'call', name:string, args?:any, dshCallId:string}} CallEvent
+// @typedef {{type:'permission', id:string, reply:(optionId:string|null)=>void, action?:string, detail?:string, options?:object[], changes?:boolean}} PermissionEvent
+// @typedef {{type:'done', reason?:string, usage?:object, turnId?:string}} DoneEvent
+// @typedef {{type:'error', error:any, turnId?:string}} ErrorEvent
+// @typedef {{type:'compaction', status:'started'|'completed'|'failed'}} CompactionEvent
+// @typedef {{type:'context', used?:number, size?:number}|{type:'effort', effort?:string, defaultEffort?:string}} StateEvent
+// Local only, never from a driver: {type:'abort', error} (the stream's own stop) and {type:'quiet'} (a compaction that said nothing).
+const isText = value => typeof value === 'string'
+const EVENT_CHECKS = new Map([
+  ['text', event => isText(event.text)],
+  ['thought', event => isText(event.text)],
+  ['activity', event => isText(event.text)],
+  ['usage', event => event.usage !== null && typeof event.usage === 'object'],
+  ['call', event => isText(event.name) && isText(event.dshCallId)],
+  ['permission', event => isText(event.id) && event.id !== '' && typeof event.reply === 'function'
+    && (event.options === undefined || Array.isArray(event.options))],
+  ['done', () => true],
+  ['error', event => event.error !== undefined && event.error !== null],
+  ['compaction', event => event.status === 'started' || event.status === 'completed' || event.status === 'failed'],
+  ['context', () => true],
+  ['effort', () => true],
+  ['abort', () => true],
+  ['quiet', () => true],
+])
+// Why an event cannot be used, or undefined when it can. Never includes payload text.
+export function eventProblem(event) {
+  if (event === null || typeof event !== 'object' || Array.isArray(event)) return { kind: 'non-object', label: event === null ? 'null' : Array.isArray(event) ? 'array' : typeof event }
+  if (typeof event.type !== 'string') return { kind: 'bad-type', label: typeof event.type }
+  const check = EVENT_CHECKS.get(event.type)
+  if (check === undefined) return { kind: 'unknown-type', label: event.type.slice(0, 32) }
+  if (!check(event)) return { kind: 'malformed', label: event.type.slice(0, 32) }
+  return undefined
+}
+// Repeats within this window are counted, not warned.
+const EVENT_WARN_EVERY_MS = 60_000
 
 // Marks the one retry of a turn whose saved Claude conversation was gone.
 const RESUME_RETRIED = Symbol('resume retried')
@@ -147,7 +188,7 @@ export class LocalAgentAdapter extends LlmAdapter {
   async liveFor(options, preset) {
     const sessionId = String(options.sessionId)
     let live = this.live.get(sessionId)
-    const record = this.deps.record(sessionId)
+    let record = this.deps.record(sessionId)
     const route = options.provider
     if (live !== undefined && !live.dead && live.route === route) {
       // An agent CLI can exit between the spawn and its first message (a failed
@@ -155,6 +196,7 @@ export class LocalAgentAdapter extends LlmAdapter {
       // new process instead of writing into the one that is gone.
       if (live.engineSession?.dead === true) {
         this.rollbackUnread(live, sessionId)
+        record = this.deps.record(sessionId)
         live.engineSession = undefined
         live.pumpToken = {}
         // The queue belongs to the process that is gone: the retry starts clean
@@ -174,6 +216,8 @@ export class LocalAgentAdapter extends LlmAdapter {
       record,
       cliSessionId: record?.cliSessionId,
       handed: record?.handedId,
+      unresolvedMessageIds: record?.unresolvedMessageIds ?? [],
+      unresolvedCallIds: record?.unresolvedCallIds ?? [],
       promptHash: record?.promptHash,
       defaultEffort: record?.model === options.model ? record?.defaultEffort : undefined,
       effort: record?.effort,
@@ -216,6 +260,26 @@ export class LocalAgentAdapter extends LlmAdapter {
     return live
   }
 
+  // Every event a loop reads passes here first. false: the event was discarded and the
+  // loop goes on with the next one. Rollback (deps.eventValidation === 'warn-only'):
+  // warn, but keep what the loops could always handle; a permission is never kept.
+  screenEvent(live, event) {
+    const problem = eventProblem(event)
+    if (problem === undefined) return true
+    this.eventDiscards = (this.eventDiscards ?? 0) + 1
+    const now = this.deps.now?.() ?? Date.now()
+    if (this.eventWarnedAt === undefined || now - this.eventWarnedAt >= EVENT_WARN_EVERY_MS) {
+      this.eventWarnedAt = now
+      this.deps.rt?.warn?.(`local agent event discarded (${problem.kind}: ${problem.label}); ${this.eventDiscards} discarded so far`)
+    }
+    if (event?.type === 'permission' && typeof event.reply === 'function') {
+      try { event.reply(null) } catch { /* the CLI is gone */ }
+    }
+    // Rollback: an unknown type is kept, as it always was (`default: break`).
+    if (this.deps.eventValidation === 'warn-only' && problem.kind === 'unknown-type') return true
+    return false
+  }
+
   // A Session's record: its CLI session, what was handed to it, and what the CLI said
   // about its context.
   recordOf(live, extra = {}) {
@@ -224,6 +288,8 @@ export class LocalAgentAdapter extends LlmAdapter {
       cliSessionId: live.cliSessionId,
       cwd: live.cwd,
       handedId: live.handed,
+      ...(live.unresolvedCallIds?.length > 0 ? { unresolvedCallIds: live.unresolvedCallIds } : {}),
+      ...(live.unresolvedMessageIds?.length > 0 ? { unresolvedMessageIds: live.unresolvedMessageIds } : {}),
       promptHash: live.promptHash,
       model: live.model,
       ...(live.defaultEffort === undefined ? {} : { defaultEffort: live.defaultEffort }),
@@ -330,23 +396,27 @@ export class LocalAgentAdapter extends LlmAdapter {
     await this.closeLive(live, { idle: true })
   }
 
-  // A Claude CLI that died before `system/init` never read the prompt it was
-  // handed: roll the marker back in the live state and in the saved record, so a
-  // host that restarts before the next call still replays the input. ACP and
-  // Codex create their session before the prompt, so theirs was read.
-  // A resume that found its conversation gone also drops the id: the next start
-  // opens a new conversation and replays the history, instead of failing every
-  // turn on the same id.
-  rollbackUnread(live, sessionId) {
+  // Failure before init says nothing about whether stdin reached the CLI. Only
+  // an explicit refusal before the write permits replay of the unresolved input.
+  rollbackUnread(live, sessionId, failed = false) {
     if (live.spec.kind !== 'claude') return
     const session = live.engineSession
-    if (session?.dead !== true || session.cliSessionId !== undefined || session.rolledBack === true) return
-    session.rolledBack = true
-    if (session.resumeMissing === true) {
-      live.cliSessionId = undefined
-      live.handed = undefined
-      live.resumeLost = true
-    } else live.handed = live.handedBefore
+    if (session?.rolledBack === true) return
+    if (!failed && (session?.dead !== true || (session.cliSessionId !== undefined && live.state === 'idle'))) return
+    if (session !== undefined) session.rolledBack = true
+    live.resumeClass = session?.resumeClass ?? 'unknown'
+    live.cliSessionId = undefined
+    live.handed = live.handedBefore
+    if (mayReplay(live.resumeClass)) live.handed = undefined
+    else live.unresolvedMessageIds = [...new Set([...live.unresolvedMessageIds, ...(live.turnMessageIds ?? [])])]
+    // A new action must ask again: callbacks and decisions belong to the old turn.
+    live.unresolvedCallIds = [...new Set([...live.unresolvedCallIds, ...live.pending.keys()])]
+    live.pending.clear()
+    live.queue.length = 0
+    live.continuation = undefined
+    live.turnTag = undefined
+    live.state = 'idle'
+    live.engine.forget?.(String(sessionId))
     this.deps.saveRecord(sessionId, this.recordOf(live))
   }
 
@@ -388,10 +458,29 @@ export class LocalAgentAdapter extends LlmAdapter {
 
     // What the request carries past the last handed message. When the marker is
     // gone the CLI session is stale or new: it gets a replay instead of a delta.
-    const messages = options.messages ?? []
+    const excluded = new Set(live.unresolvedMessageIds)
+    const excludedCalls = new Set(live.unresolvedCallIds)
+    let unresolved = false
+    const messages = (options.messages ?? []).filter(message => {
+      if (message.role === 'tool' && excludedCalls.has(message.toolCallId)) return false
+      if (excluded.has(message.id)) { unresolved = true; return false }
+      if (message.role === 'user') unresolved = false
+      return !unresolved || message.role === 'system'
+    })
+    const latestUser = (options.messages ?? []).findLast(message => message.role === 'user')
+    if (latestUser !== undefined && excluded.has(latestUser.id)) {
+      yield { type: 'finish', reason: { kind: 'stop' } }
+      return
+    }
     const at = live.handed === undefined ? -1 : messages.findIndex(message => message.id === live.handed)
-    const fresh = live.handed === undefined || at === -1
+    const fresh = live.cliSessionId === undefined || live.handed === undefined || at === -1
     const delta = fresh ? [] : messages.slice(at + 1)
+    if (live.state === 'idle') {
+      live.handedBefore = live.handed
+      live.turnMessageIds = []
+    }
+    const input = fresh ? messages.slice(Math.max(0, messages.findLastIndex(message => message.role === 'user'))) : delta
+    live.turnMessageIds = [...new Set([...(live.turnMessageIds ?? []), ...input.map(message => message.id).filter(id => id !== undefined)])]
 
     // Results of the calls the last step emitted answer the suspended CLI calls.
     // A user message never resolves an approve_agent_action pending: only that
@@ -460,7 +549,11 @@ export class LocalAgentAdapter extends LlmAdapter {
         system: live.spec.kind === 'claude' ? instructions : undefined,
       }
       live.engineSession = await live.engine.open(sessionId, openArgs)
-        .catch(error => { throw toLlmError(error, live) })
+        .catch(error => {
+          this.rollbackUnread(live, sessionId, true)
+          const failure = toLlmError(error, live)
+          throw live.spec.kind === 'claude' ? unknownOutcome(failure) : failure
+        })
       // A resumed CLI reports its id only with `system/init`: keep the saved one
       // in the meantime, or a resume that fails would erase it.
       const reportedId = live.engineSession.acpSessionId ?? live.engineSession.threadId ?? live.engineSession.cliSessionId
@@ -488,7 +581,7 @@ export class LocalAgentAdapter extends LlmAdapter {
       const pendingId = session.whenSessionId?.()
       if (pendingId !== undefined) {
         void pendingId.then((id) => {
-          if (id === undefined || live.dead) return
+          if (id === undefined || live.dead || session.rolledBack === true) return
           live.cliSessionId = id
           this.deps.saveRecord(sessionId, this.recordOf(live, { cliSessionId: id, cwd, promptHash: live.promptHash ?? promptHash, model: options.model }))
         })
@@ -552,7 +645,6 @@ export class LocalAgentAdapter extends LlmAdapter {
     // anything must not count that message as delivered.
     const last = messages.at(-1)
     if (last !== undefined) {
-      live.handedBefore = live.handed
       live.handed = last.id
       this.deps.saveRecord(sessionId, this.recordOf(live, { cwd, promptHash: live.promptHash ?? promptHash, model: options.model }))
     }
@@ -560,15 +652,14 @@ export class LocalAgentAdapter extends LlmAdapter {
     try {
       yield* this.drain(live, options)
     } catch (error) {
-      // The caller sees the failure now: a start that died before reading its
-      // prompt must not count as delivered, in case the host restarts next.
-      this.rollbackUnread(live, sessionId)
-      // The saved conversation is gone: start over in a new one with the
-      // history, once, so the user sees the answer instead of this failure.
-      if (live.resumeLost === true && options[RESUME_RETRIED] !== true) {
-        live.resumeLost = false
+      this.rollbackUnread(live, sessionId, true)
+      if (mayReplay(live.resumeClass) && options[RESUME_RETRIED] !== true) {
+        live.resumeClass = undefined
         yield* this.stream({ ...options, [RESUME_RETRIED]: true })
         return
+      }
+      if (live.spec.kind === 'claude' && !mayReplay(live.resumeClass)) {
+        throw unknownOutcome(error)
       }
       throw error
     }
@@ -624,7 +715,7 @@ export class LocalAgentAdapter extends LlmAdapter {
 
   discardTurnOutput(live) {
     // Requests retain their reply callbacks until surfaced and answered.
-    live.events = live.events.filter(event => event.type === 'permission' || event.type === 'call')
+    live.events = live.events.filter(event => event?.type === 'permission' || event?.type === 'call')
   }
 
   // Codex resolves on acceptance; ACP resolves only when the entire turn ends.
@@ -724,6 +815,8 @@ export class LocalAgentAdapter extends LlmAdapter {
     try {
     for (;;) {
       const event = await Promise.race([live.next(), abortPromise]).catch(error => ({ type: 'abort', error }))
+      // Screened before the stale-turn filter, so a stale malformed event is warned once too.
+      if (!this.screenEvent(live, event)) continue
       if (event.type === 'abort') {
         this.stopTurn(live, 'the turn was stopped')
         yield { type: 'finish', reason: { kind: 'aborted', failure: { code: 'ABORTED', message: 'the turn was stopped' } } }
@@ -947,6 +1040,7 @@ export class LocalAgentAdapter extends LlmAdapter {
           clearTimeout(timer)
           next.drop()
         }
+        if (!this.screenEvent(live, event)) continue
         switch (event.type) {
           case 'text': text += event.text; break
           case 'call': {
@@ -1048,14 +1142,20 @@ export class LocalAgentAdapter extends LlmAdapter {
   }
 }
 
-// The result DSH gives approve_agent_action decides the agent's option: only
-// the structured {"decision":"allow"} the tool returns on approval counts;
-// free text, a parse failure, an error or a denial rejects the action.
-function pickAllowOption(options, result) {
-  if (result.isError === true) return null
-  let decision
-  try { decision = JSON.parse(result.text ?? '')?.decision } catch { decision = undefined }
-  if (decision !== 'allow') return null
+// The result DSH gives approve_agent_action decides the agent's option.
+// INVARIANT: only a structured {"decision":"allow"} allows. Free text ("allow", "同意",
+// "approved"), a parse failure, an error, and the non-answers `unavailable`,
+// `cancelled` and `expired` (a bare string or an object carrying them as `decision`,
+// `status` or `outcome`) all reject the action.
+const DENY_WORDS = new Set(['unavailable', 'cancelled', 'canceled', 'expired', 'reject', 'rejected', 'deny', 'denied'])
+export const isDenyWord = value => typeof value === 'string' && DENY_WORDS.has(value.trim().toLowerCase())
+export function pickAllowOption(options, result) {
+  if (result?.isError === true) return null
+  let parsed
+  try { parsed = JSON.parse(result?.text ?? '') } catch { parsed = undefined }
+  // An explicit non-answer is a denial, whatever else the payload says.
+  if (isDenyWord(parsed) || isDenyWord(result?.text) || [parsed?.decision, parsed?.status, parsed?.outcome].some(isDenyWord)) return null
+  if (parsed?.decision !== 'allow') return null
   return optionOf(options, 'allow') ?? null
 }
 
@@ -1066,7 +1166,8 @@ const optionOf = (options, kind) => ((options ?? []).find(entry => entry.kind ==
 
 // What the preset answers without asking: an option id, null to refuse, or
 // undefined to ask the user.
-function presetAnswer(preset, event) {
+// Pinned: no new automatic allow path. Only full access allows unasked.
+export function presetAnswer(preset, event) {
   if (preset === 'danger-full-access') return optionOf(event.options, 'allow')
   if (preset === 'read-only' && event.changes === true) return optionOf(event.options, 'reject') ?? null
   return undefined
@@ -1151,6 +1252,10 @@ async function renderReplay(messages, system, resolveImage) {
   if (picked.length === 0) return []
   const head = system === '' ? '' : `The team instructions for this conversation:\n${system}\n\n`
   return mergeTextBlocks([{ type: 'text', text: `${head}The conversation so far (oldest first):` }, ...picked.flat()])
+}
+
+function unknownOutcome(error) {
+  return new LlmError(`The outcome of the previous action is unknown; it will not be replayed automatically. Earlier tool results may not be carried over. Start a new action to retry. ${error.message}`, error.code ?? 'LOCAL_AGENT_EXIT')
 }
 
 // Process exits, missing CLIs, quota and sign-in failures get typed codes so DS

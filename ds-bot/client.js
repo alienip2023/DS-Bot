@@ -2570,7 +2570,7 @@ Object.assign(JA, {
   "The Bot will be created on the selected remote machine.": "Bot は選択したリモートマシンに作成されます。",
   "No connected remote machines yet.": "接続済みのリモートマシンはまだありません。",
   "Create the Bot on this machine, or pick a connected remote machine.": "このマシンに Bot を作成するか、接続済みのリモートマシンを選んでください。",
-  "A Worker Bot runs tasks on a remote machine via dsh-remote-agent.": "ワーカー Bot は dsh-remote-agent 経由でリモートマシン上のタスクを実行します。",
+  "A Worker Bot runs tasks on a remote machine via AI Unified (dsh-ai-cluster).": "ワーカー Bot は AI Unified（dsh-ai-cluster）経由でリモートマシン上のタスクを実行します。",
   "A normal Bot runs in this DeepSeek Harness instance.": "通常の Bot はこの DeepSeek Harness インスタンスで動作します。",
   "Where this Bot keeps its memory. Auto Detect uses dsh-mneme when it is installed.": "この Bot がメモリを保存する場所です。自動検出は dsh-mneme がインストールされていればそれを使います。",
   "URL of the hub the worker should connect to.": "ワーカーが接続するハブの URL です。",
@@ -5154,7 +5154,7 @@ Object.assign(KO, {
   "The Bot will be created on the selected remote machine.": "Bot은 선택한 원격 머신에 생성됩니다.",
   "No connected remote machines yet.": "연결된 원격 머신이 아직 없습니다.",
   "Create the Bot on this machine, or pick a connected remote machine.": "이 머신에 Bot을 만들거나 연결된 원격 머신을 선택하세요.",
-  "A Worker Bot runs tasks on a remote machine via dsh-remote-agent.": "워커 Bot은 dsh-remote-agent를 통해 원격 머신에서 작업을 실행합니다.",
+  "A Worker Bot runs tasks on a remote machine via AI Unified (dsh-ai-cluster).": "워커 Bot은 AI Unified(dsh-ai-cluster)를 통해 원격 머신에서 작업을 실행합니다.",
   "A normal Bot runs in this DeepSeek Harness instance.": "일반 Bot은 이 DeepSeek Harness 인스턴스에서 실행됩니다.",
   "Where this Bot keeps its memory. Auto Detect uses dsh-mneme when it is installed.": "이 Bot이 메모리를 보관하는 위치입니다. 자동 감지는 dsh-mneme이 설치되어 있으면 사용합니다.",
   "URL of the hub the worker should connect to.": "워커가 연결할 허브의 URL입니다.",
@@ -7738,7 +7738,7 @@ Object.assign(ES, {
   "The Bot will be created on the selected remote machine.": "El Bot se creará en la máquina remota seleccionada.",
   "No connected remote machines yet.": "Aún no hay máquinas remotas conectadas.",
   "Create the Bot on this machine, or pick a connected remote machine.": "Crea el Bot en esta máquina o elige una máquina remota conectada.",
-  "A Worker Bot runs tasks on a remote machine via dsh-remote-agent.": "Un Bot trabajador ejecuta tareas en una máquina remota mediante dsh-remote-agent.",
+  "A Worker Bot runs tasks on a remote machine via AI Unified (dsh-ai-cluster).": "Un Bot trabajador ejecuta tareas en una máquina remota mediante AI Unified (dsh-ai-cluster).",
   "A normal Bot runs in this DeepSeek Harness instance.": "Un Bot normal se ejecuta en esta instancia de DeepSeek Harness.",
   "Where this Bot keeps its memory. Auto Detect uses dsh-mneme when it is installed.": "Dónde guarda su memoria este Bot. La detección automática usa dsh-mneme si está instalado.",
   "URL of the hub the worker should connect to.": "URL del hub al que debe conectarse el trabajador.",
@@ -10277,7 +10277,7 @@ Object.assign(FR, {
   "The Bot will be created on the selected remote machine.": "Le Bot sera créé sur la machine distante sélectionnée.",
   "No connected remote machines yet.": "Aucune machine distante connectée pour l’instant.",
   "Create the Bot on this machine, or pick a connected remote machine.": "Créez le Bot sur cette machine ou choisissez une machine distante connectée.",
-  "A Worker Bot runs tasks on a remote machine via dsh-remote-agent.": "Un Bot worker exécute des tâches sur une machine distante via dsh-remote-agent.",
+  "A Worker Bot runs tasks on a remote machine via AI Unified (dsh-ai-cluster).": "Un Bot worker exécute des tâches sur une machine distante via AI Unified (dsh-ai-cluster).",
   "A normal Bot runs in this DeepSeek Harness instance.": "Un Bot normal s’exécute dans cette instance de DeepSeek Harness.",
   "Where this Bot keeps its memory. Auto Detect uses dsh-mneme when it is installed.": "Où ce Bot conserve sa mémoire. La détection automatique utilise dsh-mneme s’il est installé.",
   "URL of the hub the worker should connect to.": "URL du hub auquel le worker doit se connecter.",
@@ -12861,7 +12861,7 @@ Object.assign(DE, {
   "The Bot will be created on the selected remote machine.": "Der Bot wird auf dem ausgewählten entfernten Rechner erstellt.",
   "No connected remote machines yet.": "Noch keine verbundenen entfernten Rechner.",
   "Create the Bot on this machine, or pick a connected remote machine.": "Erstelle den Bot auf diesem Rechner oder wähle einen verbundenen entfernten Rechner.",
-  "A Worker Bot runs tasks on a remote machine via dsh-remote-agent.": "Ein Worker-Bot führt Aufgaben über dsh-remote-agent auf einem entfernten Rechner aus.",
+  "A Worker Bot runs tasks on a remote machine via AI Unified (dsh-ai-cluster).": "Ein Worker-Bot führt Aufgaben über AI Unified (dsh-ai-cluster) auf einem entfernten Rechner aus.",
   "A normal Bot runs in this DeepSeek Harness instance.": "Ein normaler Bot läuft in dieser DeepSeek-Harness-Instanz.",
   "Where this Bot keeps its memory. Auto Detect uses dsh-mneme when it is installed.": "Wo dieser Bot seinen Speicher ablegt. „Automatisch erkennen“ nutzt dsh-mneme, wenn es installiert ist.",
   "URL of the hub the worker should connect to.": "URL des Hubs, mit dem sich der Worker verbinden soll.",
@@ -13034,7 +13034,7 @@ var ZH = {
   "Bot type": "Bot 类型",
   "Normal Bot": "普通 Bot",
   "Worker Bot (Remote Machine)": "执行机（远程机器）",
-  "A Worker Bot runs tasks on a remote machine via dsh-remote-agent.": "执行机通过 dsh-remote-agent 在远程机器上跑任务。",
+  "A Worker Bot runs tasks on a remote machine via AI Unified (dsh-ai-cluster).": "执行机通过 AI 集群控制（dsh-ai-cluster）在远程机器上跑任务。",
   "A normal Bot runs in this DeepSeek Harness instance.": "普通 Bot 在这个 DeepSeek Harness 实例里运行。",
   "Hub URL": "Hub 地址",
   "URL of the hub the worker should connect to.": "执行机要连接的 Hub 地址。",
@@ -15689,7 +15689,7 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
     answerView: (sessionId, viewId, action, values) => after(call2("view-reply", { sessionId: partFor(sessionId), viewId, action, values })),
     dismissView: (sessionId) => after(call2("dismiss-view", { sessionId: partFor(sessionId) })),
     deleteBtw: (sessionId, cardId) => after(call2("btw-delete", { sessionId, cardId })),
-    answerApproval: (id, choice) => after(call2("approval-answer", { id, choice })),
+    answerApproval: (id, choice, binding) => after(call2("approval-answer", binding === void 0 ? { id, choice } : { id, choice, binding })),
     computerSetEnabled: (enabled) => after(call2("computer-set-enabled", { enabled })),
     computerSetLevel: (botId, level) => after(call2("computer-set-level", { botId, level })),
     computerRevokeApp: (botId, appKey) => after(call2("computer-revoke-app", { botId, appKey })),
@@ -33196,7 +33196,7 @@ function CreateBot({ roster, actions, start, brief = "", onBack, canGoBack, onCr
         (0, import_react40.createElement)("option", { value: "normal" }, t("Normal Bot")),
         (0, import_react40.createElement)("option", { value: "remote-worker" }, t("Worker Bot (Remote Machine)"))
       ),
-      (0, import_react40.createElement)("span", { className: "bt-note" }, botType === "remote-worker" ? t("A Worker Bot runs tasks on a remote machine via dsh-remote-agent.") : t("A normal Bot runs in this DeepSeek Harness instance."))
+      (0, import_react40.createElement)("span", { className: "bt-note" }, botType === "remote-worker" ? t("A Worker Bot runs tasks on a remote machine via AI Unified (dsh-ai-cluster).") : t("A normal Bot runs in this DeepSeek Harness instance."))
     ) : null,
     !isRemoteNode ? (0, import_react40.createElement)(
       "div",
@@ -43453,11 +43453,12 @@ var stateLine = (className, at, ...what) => (0, import_react70.createElement)(
   (0, import_react70.createElement)("span", { className: "bt-member-what" }, ...what),
   typeof at === "number" ? (0, import_react70.createElement)(Elapsed, { at, className: "bt-member-time" }) : null
 );
+var approvalBinding = (approval) => typeof approval?.sessionId === "string" && approval.sessionId !== "" && typeof approval.fingerprint === "string" && approval.fingerprint !== "" ? { sessionId: approval.sessionId, fingerprint: approval.fingerprint } : void 0;
 function ApprovalCard({ approval, bot, actions }) {
   const [busy, setBusy] = (0, import_react70.useState)(false);
   const answer = (choice) => {
     setBusy(true);
-    void Promise.resolve(actions.answerApproval(approval.id, choice)).catch((error) => actions.reportError(error, "approval")).finally(() => setBusy(false));
+    void Promise.resolve(actions.answerApproval(approval.id, choice, approvalBinding(approval))).catch((error) => actions.reportError(error, "approval")).finally(() => setBusy(false));
   };
   return (0, import_react70.createElement)(
     "div",

@@ -10,8 +10,8 @@
 // that waits for it, and an outcome that cannot be read is said to be unknown. The
 // request itself is never sent again there.
 import { randomUUID } from 'node:crypto'
-import { readFileSync } from 'node:fs'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { readFileSync, renameSync } from 'node:fs'
+import fsp from 'node:fs/promises'
 import { join } from 'node:path'
 import { HISTORY_TIMEOUT_MS, MESSAGE_INLINE_MAX, SOURCE_KIND, STEER_CUT } from './constants.js'
 import { answerSender, cutOffText, failureLine, turnFailure } from './turns.js'
@@ -104,12 +104,43 @@ const triggerOf = info => ({
   ...(info.senderRoomId ? { senderRoomId: info.senderRoomId } : {}),
 })
 
-const readNotes = (file) => {
+// Written into inflight.json so a later format can tell itself apart. A file without it is
+// the legacy format and loads as is; `turns` and `queued` keep their names and shapes, so
+// an older reader still reads a newer file.
+export const NOTES_VERSION = 1
+
+const object = value => (value !== null && typeof value === 'object' && !Array.isArray(value) ? value : {})
+
+// A missing file is a first start. A file that cannot be read as notes is kept under
+// another name (its bytes untouched), reported once, and read as empty: nothing is guessed
+// from it and nothing is delivered from it.
+const readNotes = (file, rt) => {
+  let text
   try {
-    const parsed = JSON.parse(readFileSync(file, 'utf8'))
-    const object = value => (value !== null && typeof value === 'object' && !Array.isArray(value) ? value : {})
-    return { turns: object(parsed?.turns), queued: object(parsed?.queued) }
-  } catch {
+    text = readFileSync(file, 'utf8')
+  } catch (error) {
+    if (error?.code !== 'ENOENT') rt?.warn?.('ds-bot: reading the noted running turns failed: %s', error)
+    return { turns: {}, queued: {} }
+  }
+  try {
+    const parsed = JSON.parse(text)
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new TypeError('inflight.json is not an object')
+    return { turns: object(parsed.turns), queued: object(parsed.queued) }
+  } catch (error) {
+    let kept = 'left in place'
+    // A read-only host writes nothing, a rename included.
+    if (rt?.readOnly?.() === undefined) {
+      const target = `${file}.corrupt-${Date.now()}`
+      try {
+        renameSync(file, target)
+        kept = target
+      } catch { /* the file stays where it is */ }
+    }
+    rt?.noteFailure?.({
+      level: 'warn',
+      source: 'resume',
+      text: `the noted running turns could not be read (${error?.message ?? error}); nothing from them will be picked up (${kept})`,
+    })
     return { turns: {}, queued: {} }
   }
 }
@@ -119,7 +150,7 @@ export function install(rt) {
   const file = join(home, 'inflight.json')
 
   // What the last run left; read before this run notes anything.
-  let interrupted = readNotes(file)
+  let interrupted = readNotes(file, rt)
 
   /** @type {Record<string, {botId:string, roomId?:string, since:number, trigger?:any, approval?:{tool:string, reason:string}, resumed?:boolean}>} */
   let turns = {}
@@ -133,18 +164,27 @@ export function install(rt) {
   const persist = () => {
     // Only the host that saves the team runs its work again.
     if (stopped || rt.readOnly() !== undefined) return
-    latest = JSON.stringify({ turns, queued })
+    latest = JSON.stringify({ version: NOTES_VERSION, turns, queued })
     // One write waits at a time and takes the latest notes, so a busy round does not
     // write the file once per change.
     if (due) return
     due = true
-    // Written in place: a rename over the file fails on Windows while anything reads
-    // it, and a torn write only loses what one restart would pick up.
+    // Written to a temp file and renamed over the target, so the target holds either the
+    // old bytes or the complete new ones. Where the rename is refused (Windows, while
+    // something reads the file) the old bytes stay and the next change writes again; the
+    // file is never rewritten in place, since a torn write would lose the notes.
     writing = writing.then(async () => {
       due = false
       const snapshot = latest
-      await mkdir(home, { recursive: true })
-      await writeFile(file, snapshot, 'utf8')
+      await fsp.mkdir(home, { recursive: true })
+      const temp = `${file}.tmp-${process.pid}`
+      try {
+        await fsp.writeFile(temp, snapshot, 'utf8')
+        await fsp.rename(temp, file)
+      } catch (error) {
+        await fsp.rm(temp, { force: true }).catch(() => {})
+        throw error
+      }
     }).catch(error => rt.warn('ds-bot: noting running turns failed: %s', error))
   }
   const update = (id, change) => {

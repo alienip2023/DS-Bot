@@ -2482,7 +2482,7 @@ Object.assign(DE, {
   "The Bot will be created on the selected remote machine.": "Der Bot wird auf dem ausgewählten entfernten Rechner erstellt.",
   "No connected remote machines yet.": "Noch keine verbundenen entfernten Rechner.",
   "Create the Bot on this machine, or pick a connected remote machine.": "Erstelle den Bot auf diesem Rechner oder wähle einen verbundenen entfernten Rechner.",
-  "A Worker Bot runs tasks on a remote machine via dsh-remote-agent.": "Ein Worker-Bot führt Aufgaben über dsh-remote-agent auf einem entfernten Rechner aus.",
+  "A Worker Bot runs tasks on a remote machine via AI Unified (dsh-ai-cluster).": "Ein Worker-Bot führt Aufgaben über AI Unified (dsh-ai-cluster) auf einem entfernten Rechner aus.",
   "A normal Bot runs in this DeepSeek Harness instance.": "Ein normaler Bot läuft in dieser DeepSeek-Harness-Instanz.",
   "Where this Bot keeps its memory. Auto Detect uses dsh-mneme when it is installed.": "Wo dieser Bot seinen Speicher ablegt. „Automatisch erkennen“ nutzt dsh-mneme, wenn es installiert ist.",
   "URL of the hub the worker should connect to.": "URL des Hubs, mit dem sich der Worker verbinden soll.",

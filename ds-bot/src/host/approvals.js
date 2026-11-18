@@ -3,13 +3,24 @@
 // the group chat. A Bot's own chat keeps DSH's card, but DS Bot can answer those too
 // (IM chats, the phone app): the request is raced — whichever side answers first wins,
 // and the other card withdraws.
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 
-const OUTCOMES = { allow: 'allowed-once', reject: 'rejected' }
+const OUTCOMES = Object.freeze({ allow: 'allowed-once', reject: 'rejected' })
+// The three outcome values an approval can settle with; `unavailable` and `expired` are not among them.
+export const APPROVAL_OUTCOME_VALUES = Object.freeze({ allow: 'allowed-once', reject: 'rejected', cancel: 'cancelled' })
+
+// The request fingerprint binds an answer to the one request it was shown for:
+//   sha256(sessionId \0 toolName \0 callId \0 at)
+// all taken from the DSH `approval/request` event (`request.agent.session.id ?? request.agent.id`,
+// `request.toolName`, `request.callId`) plus the entry's open time. A missing callId is ''.
+export const approvalFingerprint = (sessionId, tool, callId, at) => createHash('sha256')
+  .update([String(sessionId), String(tool), String(callId ?? ''), String(at)].join('\u0000')).digest('hex')
+
+const stale = (message) => Object.assign(new Error(message), { code: 'bot/stale' })
 
 export function install(rt) {
   const { ctx } = rt
-  /** @type {Map<string, {id:string, sessionId:string, botId:string, roomId?:string, tool:string, reason:string, detail:{text?:string, code?:string}, at:number, answer?:(outcome:string)=>void}>} */
+  /** @type {Map<string, {id:string, sessionId:string, botId:string, roomId?:string, tool:string, reason:string, detail:{text?:string, code?:string}, at:number, fingerprint:string, answer?:(outcome:string)=>void}>} */
   const pending = new Map()
   const approvalListeners = new Set()
   const onApproval = (listener) => {
@@ -29,26 +40,44 @@ export function install(rt) {
     const botId = owner?.botId ?? (sessionId === undefined ? undefined : rt.chatOwners.get(sessionId))
     if (botId === undefined) return next()
     const id = randomUUID()
+    const at = Date.now()
+    const toolName = String(request.toolName ?? '')
     const entry = {
       id,
       sessionId,
       botId,
       ...(owner ? { roomId: owner.roomId } : {}),
-      tool: String(request.toolName ?? ''),
+      tool: toolName,
       reason: String(request.reason ?? '').slice(0, 500),
       detail: rt.callDetail?.(sessionId, request.callId) ?? {},
-      at: Date.now(),
+      at,
+      fingerprint: approvalFingerprint(sessionId, toolName, request.callId, at),
+    }
+    // The audit note is part of the approval path: if it cannot be written the request
+    // is not shown or answerable, and the caller gets a denial, never an allow.
+    try {
+      rt.noteApproval?.(sessionId, { tool: entry.tool, reason: entry.reason.slice(0, 200) })
+    } catch (error) {
+      rt.warn('ds-bot: approval audit write failed, denying: %s', error)
+      return 'cancelled'
     }
     pending.set(id, entry)
-    rt.noteApproval?.(sessionId, { tool: entry.tool, reason: entry.reason.slice(0, 200) })
     rt.approvalWaiting?.(entry)
     emit('open', { ...entry, answerable: true })
+    // Returns the outcome actually given, or undefined when the entry was already
+    // settled. If the audit record cannot be cleared the outcome can only be a denial.
     const settle = (outcome) => {
-      if (!pending.has(id)) return false
+      if (!pending.has(id)) return undefined
       pending.delete(id)
-      rt.noteApproval?.(sessionId, undefined)
-      emit('settled', { id, outcome })
-      return true
+      let given = outcome
+      try {
+        rt.noteApproval?.(sessionId, undefined)
+      } catch (error) {
+        rt.warn('ds-bot: approval audit clear failed, denying: %s', error)
+        given = outcome === OUTCOMES.allow ? 'cancelled' : outcome
+      }
+      emit('settled', { id, outcome: given })
+      return given
     }
     if (owner === undefined) {
       // An own-chat approval races DSH's card. The card sees `linked`, our own
@@ -60,8 +89,9 @@ export function install(rt) {
       request.signal = linked.signal
       return new Promise((resolve, reject) => {
         const complete = (outcome) => {
-          if (!settle(outcome)) return
-          resolve(outcome)
+          const given = settle(outcome)
+          if (given === undefined) return
+          resolve(given)
           linked.abort()
           if (request.signal === linked.signal) request.signal = original
         }
@@ -76,7 +106,7 @@ export function install(rt) {
           // DSH's answerer threw: close the entry and give the caller the error
           // the way the pre-race code did, instead of hanging forever.
           (error) => {
-            if (!settle('cancelled')) return
+            if (settle('cancelled') === undefined) return
             reject(error)
             linked.abort()
             if (request.signal === linked.signal) request.signal = original
@@ -87,8 +117,9 @@ export function install(rt) {
     rt.yieldRoomTurn?.(sessionId)
     return new Promise((resolve) => {
       entry.answer = (outcome) => {
-        if (!settle(outcome)) return
-        resolve(outcome)
+        const given = settle(outcome)
+        if (given === undefined) return
+        resolve(given)
       }
       if (request.signal?.aborted) entry.answer('cancelled')
       request.signal?.addEventListener('abort', () => entry.answer('cancelled'), { once: true })
@@ -98,9 +129,17 @@ export function install(rt) {
   const approvalsView = () => [...pending.values()].map(({ answer, ...entry }) => ({ ...entry, answerable: answer !== undefined }))
   const waitsForApproval = sessionId => [...pending.values()].some(entry => entry.sessionId === sessionId)
 
-  function answerApproval(id, choice) {
+  // `binding` ({sessionId, fingerprint}) is optional: a caller without one answers the
+  // exact open entry id (legacy path). If given, both fields must be present and equal
+  // the stored ones, else the approval is stale and the request is left unanswered.
+  function answerApproval(id, choice, binding) {
     const entry = pending.get(String(id ?? ''))
-    if (entry?.answer === undefined) throw Object.assign(new Error('This approval is no longer open'), { code: 'bot/stale' })
+    if (entry?.answer === undefined) throw stale('This approval is no longer open')
+    if (binding !== undefined && binding !== null
+      && (typeof binding.sessionId !== 'string' || typeof binding.fingerprint !== 'string'
+        || binding.sessionId !== entry.sessionId || binding.fingerprint !== entry.fingerprint)) {
+      throw stale('This approval no longer matches the request it was shown for')
+    }
     const outcome = OUTCOMES[choice]
     if (outcome === undefined) throw Object.assign(new Error('Choose allow or reject'), { code: 'bot/invalid' })
     entry.answer(outcome)
