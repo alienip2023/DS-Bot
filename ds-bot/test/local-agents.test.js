@@ -645,9 +645,9 @@ test('claude: a prompt written as the CLI dies becomes a typed error', async (t)
   assert.equal(failure.error.code, 'LOCAL_AGENT_EXIT')
 })
 
-// A resume that dies before init must not erase the id the record already has:
-// the next host would have nothing to resume and would send only the delta.
-test('claude: a failed resume keeps the saved session id', async (t) => {
+// A failed resume after the stdin write has an unknown outcome: discard the
+// stale id and rebuild on the next user action without the failed prompt.
+test('claude: a failed resume drops the saved session id', async (t) => {
   const runs = join(mkdtempSync(join(tmpdir(), 'dsb-claude-')), 'runs')
   const records = {}
   const claude = FIXTURE('fake-claude-flaky.mjs')
@@ -662,34 +662,26 @@ test('claude: a failed resume keeps the saved session id', async (t) => {
   assert.match(saved, /^claude-/)
   // The second host resumes, and this CLI run dies before `system/init`.
   await assert.rejects(collect(host().stream(options('s1', [user('m2', 'again')], { provider: 'local-claude-code' }))), error => error.code === 'LOCAL_AGENT_EXIT')
-  assert.equal(records.s1.cliSessionId, saved)
-  // The third host still resumes the conversation the first one started.
+  assert.equal(records.s1.cliSessionId, undefined)
+  // The third host starts a new CLI conversation.
   const third = await collect(host().stream(options('s1', [user('m3', 'third')], { provider: 'local-claude-code' })))
-  assert.match(third.text, new RegExp(`resume=${saved}`))
+  assert.match(third.text, /resume=none/)
 })
 
-// Claude Code deletes old conversations. Resuming one that is gone fails at
-// once; the turn must start a new conversation with the history, not fail on
-// the same id every time.
-test('claude: a saved conversation the CLI no longer has starts over with the history', async (t) => {
+// A missing-conversation diagnostic after the stdin write cannot prove that
+// the prompt was rejected before acceptance.
+test('claude: a missing saved conversation after stdin fails without replay', async (t) => {
   const runs = join(mkdtempSync(join(tmpdir(), 'dsb-claude-')), 'runs')
   const records = { s1: { route: 'local-claude-code', cliSessionId: 'claude-gone', cwd: tmpdir(), handedId: 'm1' } }
   const adapter = makeAdapter({ records, claude: FIXTURE('fake-claude-flaky.mjs'), claudeArgs: [runs, '', 'claude-gone'] })
   t.after(() => adapter.dispose())
   const history = [user('m1', 'fix the login'), user('m2', 'and the logout')]
-  const out = await collect(adapter.stream(options('s1', history, { provider: 'local-claude-code', signal: AbortSignal.timeout(15_000) })))
-  assert.equal(out.finish.kind, 'stop')
-  assert.match(out.text, /resume=none/)
-  assert.equal(readFileSync(runs, 'utf8'), '2')
-  const prompts = readFileSync(`${runs}.prompts`, 'utf8')
-  assert.match(prompts, /fix the login/, 'the new conversation gets the history')
-  assert.match(prompts, /and the logout/)
-  for (let i = 0; i < 40 && records.s1.cliSessionId === 'claude-gone'; i += 1) await new Promise(resolve => setTimeout(resolve, 25))
-  assert.match(records.s1.cliSessionId, /^claude-(?!gone)/)
+  await assert.rejects(collect(adapter.stream(options('s1', history, { provider: 'local-claude-code', signal: AbortSignal.timeout(15_000) }))), /outcome.*unknown/i)
+  assert.equal(readFileSync(runs, 'utf8'), '1')
+  assert.equal(records.s1.cliSessionId, undefined)
+  assert.equal(records.s1.handedId, 'm1')
 })
 
-// A CLI that exits before init for another reason keeps its id (above); only a
-// conversation the CLI reports missing is dropped.
 test('claude: print mode asks DS Bot for permission and lets team tools through', async (t) => {
   const adapter = makeAdapter()
   t.after(() => adapter.dispose())
@@ -712,23 +704,23 @@ test('claude: a retry after a pre-init exit starts a new CLI', async (t) => {
   assert.equal(readFileSync(runs, 'utf8'), '2')
 })
 
-// The failed prompt was handed but never read: the retry must send it again,
-// not only what came after it.
-test('claude: the retry replays the input the dead CLI never read', async (t) => {
+// A write before init is acceptance evidence. Repeating the same request
+// must not send the unresolved input again.
+test('claude: the same request never replays input written before init', async (t) => {
   const runs = join(mkdtempSync(join(tmpdir(), 'dsb-claude-')), 'runs')
   const adapter = makeAdapter({ claude: FIXTURE('fake-claude-flaky.mjs'), claudeArgs: [runs, '1'] })
   t.after(() => adapter.dispose())
   const history = [user('m1', 'fix the login')]
   await assert.rejects(collect(adapter.stream(options('s1', history, { provider: 'local-claude-code' }))), error => error.code === 'LOCAL_AGENT_EXIT')
-  // The same full history comes back, as DS Bot resends the conversation.
+  // The same full history cannot turn a failure into another action.
   const out = await collect(adapter.stream(options('s1', history, { provider: 'local-claude-code', signal: AbortSignal.timeout(15_000) })))
   assert.equal(out.finish.kind, 'stop')
-  assert.match(readFileSync(`${runs}.prompts`, 'utf8'), /fix the login/)
+  assert.equal(readFileSync(runs, 'utf8'), '1')
 })
 
-// The repair card's Retry adds a `continue` message; the new CLI must still see
-// the user message that never got an answer.
-test('claude: the retry flow replays the unanswered message', async (t) => {
+// The repair card's Retry is a new action; its text must not bring the
+// unresolved user prompt back into the rebuilt context.
+test('claude: the retry flow excludes the unresolved message', async (t) => {
   const runs = join(mkdtempSync(join(tmpdir(), 'dsb-claude-')), 'runs')
   const adapter = makeAdapter({ claude: FIXTURE('fake-claude-flaky.mjs'), claudeArgs: [runs, '1'] })
   t.after(() => adapter.dispose())
@@ -743,13 +735,13 @@ test('claude: the retry flow replays the unanswered message', async (t) => {
   const out = await collect(adapter.stream(options('s1', [asked, retry], { provider: 'local-claude-code', signal: AbortSignal.timeout(15_000) })))
   assert.equal(out.finish.kind, 'stop')
   const prompts = readFileSync(`${runs}.prompts`, 'utf8')
-  assert.match(prompts, /fix the login/)
+  assert.doesNotMatch(prompts, /fix the login/)
   assert.match(prompts, /last unanswered message/)
 })
 
-// The rollback is saved, not only kept in memory: a host that restarts after a
-// failed start rebuilds its live state from the record.
-test('claude: a host restart after a failed start still replays the unread input', async (t) => {
+// The unresolved input exclusion is saved: a host restart cannot replay it
+// when the same conversation history arrives again.
+test('claude: a host restart after a failed start excludes unresolved input', async (t) => {
   const runs = join(mkdtempSync(join(tmpdir(), 'dsb-claude-')), 'runs')
   const records = {}
   const claude = FIXTURE('fake-claude-flaky.mjs')
@@ -763,7 +755,8 @@ test('claude: a host restart after a failed start still replays the unread input
   // The first host is gone: the saved record is all the new one has.
   const out = await collect(host().stream(options('s1', history, { provider: 'local-claude-code', signal: AbortSignal.timeout(15_000) })))
   assert.equal(out.finish.kind, 'stop')
-  assert.match(readFileSync(`${runs}.prompts`, 'utf8'), /fix the login/)
+  assert.equal(readFileSync(runs, 'utf8'), '1')
+  assert.deepEqual(records.s1.unresolvedMessageIds, ['m1'])
 })
 
 // ACP and Codex create their session before the prompt, so a process that exits

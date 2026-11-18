@@ -8,6 +8,7 @@ import { LlmAdapter, LlmError, offloadedImageText, resolveImageAttachmentAccess,
 import { textOf } from '../text.js'
 import { engineOf, cliMode } from './engines.js'
 import { LoopbackMcp } from './mcp.js'
+import { mayReplay } from './resume-safety.js'
 
 export const DEFAULT_CONTEXT_WINDOW = 200_000
 // The replay window when a CLI session is new or its resume failed.
@@ -147,7 +148,7 @@ export class LocalAgentAdapter extends LlmAdapter {
   async liveFor(options, preset) {
     const sessionId = String(options.sessionId)
     let live = this.live.get(sessionId)
-    const record = this.deps.record(sessionId)
+    let record = this.deps.record(sessionId)
     const route = options.provider
     if (live !== undefined && !live.dead && live.route === route) {
       // An agent CLI can exit between the spawn and its first message (a failed
@@ -155,6 +156,7 @@ export class LocalAgentAdapter extends LlmAdapter {
       // new process instead of writing into the one that is gone.
       if (live.engineSession?.dead === true) {
         this.rollbackUnread(live, sessionId)
+        record = this.deps.record(sessionId)
         live.engineSession = undefined
         live.pumpToken = {}
         // The queue belongs to the process that is gone: the retry starts clean
@@ -174,6 +176,8 @@ export class LocalAgentAdapter extends LlmAdapter {
       record,
       cliSessionId: record?.cliSessionId,
       handed: record?.handedId,
+      unresolvedMessageIds: record?.unresolvedMessageIds ?? [],
+      unresolvedCallIds: record?.unresolvedCallIds ?? [],
       promptHash: record?.promptHash,
       defaultEffort: record?.model === options.model ? record?.defaultEffort : undefined,
       effort: record?.effort,
@@ -224,6 +228,8 @@ export class LocalAgentAdapter extends LlmAdapter {
       cliSessionId: live.cliSessionId,
       cwd: live.cwd,
       handedId: live.handed,
+      ...(live.unresolvedCallIds?.length > 0 ? { unresolvedCallIds: live.unresolvedCallIds } : {}),
+      ...(live.unresolvedMessageIds?.length > 0 ? { unresolvedMessageIds: live.unresolvedMessageIds } : {}),
       promptHash: live.promptHash,
       model: live.model,
       ...(live.defaultEffort === undefined ? {} : { defaultEffort: live.defaultEffort }),
@@ -330,23 +336,27 @@ export class LocalAgentAdapter extends LlmAdapter {
     await this.closeLive(live, { idle: true })
   }
 
-  // A Claude CLI that died before `system/init` never read the prompt it was
-  // handed: roll the marker back in the live state and in the saved record, so a
-  // host that restarts before the next call still replays the input. ACP and
-  // Codex create their session before the prompt, so theirs was read.
-  // A resume that found its conversation gone also drops the id: the next start
-  // opens a new conversation and replays the history, instead of failing every
-  // turn on the same id.
-  rollbackUnread(live, sessionId) {
+  // Failure before init says nothing about whether stdin reached the CLI. Only
+  // an explicit refusal before the write permits replay of the unresolved input.
+  rollbackUnread(live, sessionId, failed = false) {
     if (live.spec.kind !== 'claude') return
     const session = live.engineSession
-    if (session?.dead !== true || session.cliSessionId !== undefined || session.rolledBack === true) return
-    session.rolledBack = true
-    if (session.resumeMissing === true) {
-      live.cliSessionId = undefined
-      live.handed = undefined
-      live.resumeLost = true
-    } else live.handed = live.handedBefore
+    if (session?.rolledBack === true) return
+    if (!failed && (session?.dead !== true || (session.cliSessionId !== undefined && live.state === 'idle'))) return
+    if (session !== undefined) session.rolledBack = true
+    live.resumeClass = session?.resumeClass ?? 'unknown'
+    live.cliSessionId = undefined
+    live.handed = live.handedBefore
+    if (mayReplay(live.resumeClass)) live.handed = undefined
+    else live.unresolvedMessageIds = [...new Set([...live.unresolvedMessageIds, ...(live.turnMessageIds ?? [])])]
+    // A new action must ask again: callbacks and decisions belong to the old turn.
+    live.unresolvedCallIds = [...new Set([...live.unresolvedCallIds, ...live.pending.keys()])]
+    live.pending.clear()
+    live.queue.length = 0
+    live.continuation = undefined
+    live.turnTag = undefined
+    live.state = 'idle'
+    live.engine.forget?.(String(sessionId))
     this.deps.saveRecord(sessionId, this.recordOf(live))
   }
 
@@ -388,10 +398,29 @@ export class LocalAgentAdapter extends LlmAdapter {
 
     // What the request carries past the last handed message. When the marker is
     // gone the CLI session is stale or new: it gets a replay instead of a delta.
-    const messages = options.messages ?? []
+    const excluded = new Set(live.unresolvedMessageIds)
+    const excludedCalls = new Set(live.unresolvedCallIds)
+    let unresolved = false
+    const messages = (options.messages ?? []).filter(message => {
+      if (message.role === 'tool' && excludedCalls.has(message.toolCallId)) return false
+      if (excluded.has(message.id)) { unresolved = true; return false }
+      if (message.role === 'user') unresolved = false
+      return !unresolved || message.role === 'system'
+    })
+    const latestUser = (options.messages ?? []).findLast(message => message.role === 'user')
+    if (latestUser !== undefined && excluded.has(latestUser.id)) {
+      yield { type: 'finish', reason: { kind: 'stop' } }
+      return
+    }
     const at = live.handed === undefined ? -1 : messages.findIndex(message => message.id === live.handed)
-    const fresh = live.handed === undefined || at === -1
+    const fresh = live.cliSessionId === undefined || live.handed === undefined || at === -1
     const delta = fresh ? [] : messages.slice(at + 1)
+    if (live.state === 'idle') {
+      live.handedBefore = live.handed
+      live.turnMessageIds = []
+    }
+    const input = fresh ? messages.slice(Math.max(0, messages.findLastIndex(message => message.role === 'user'))) : delta
+    live.turnMessageIds = [...new Set([...(live.turnMessageIds ?? []), ...input.map(message => message.id).filter(id => id !== undefined)])]
 
     // Results of the calls the last step emitted answer the suspended CLI calls.
     // A user message never resolves an approve_agent_action pending: only that
@@ -460,7 +489,11 @@ export class LocalAgentAdapter extends LlmAdapter {
         system: live.spec.kind === 'claude' ? instructions : undefined,
       }
       live.engineSession = await live.engine.open(sessionId, openArgs)
-        .catch(error => { throw toLlmError(error, live) })
+        .catch(error => {
+          this.rollbackUnread(live, sessionId, true)
+          const failure = toLlmError(error, live)
+          throw live.spec.kind === 'claude' ? unknownOutcome(failure) : failure
+        })
       // A resumed CLI reports its id only with `system/init`: keep the saved one
       // in the meantime, or a resume that fails would erase it.
       const reportedId = live.engineSession.acpSessionId ?? live.engineSession.threadId ?? live.engineSession.cliSessionId
@@ -488,7 +521,7 @@ export class LocalAgentAdapter extends LlmAdapter {
       const pendingId = session.whenSessionId?.()
       if (pendingId !== undefined) {
         void pendingId.then((id) => {
-          if (id === undefined || live.dead) return
+          if (id === undefined || live.dead || session.rolledBack === true) return
           live.cliSessionId = id
           this.deps.saveRecord(sessionId, this.recordOf(live, { cliSessionId: id, cwd, promptHash: live.promptHash ?? promptHash, model: options.model }))
         })
@@ -552,7 +585,6 @@ export class LocalAgentAdapter extends LlmAdapter {
     // anything must not count that message as delivered.
     const last = messages.at(-1)
     if (last !== undefined) {
-      live.handedBefore = live.handed
       live.handed = last.id
       this.deps.saveRecord(sessionId, this.recordOf(live, { cwd, promptHash: live.promptHash ?? promptHash, model: options.model }))
     }
@@ -560,15 +592,14 @@ export class LocalAgentAdapter extends LlmAdapter {
     try {
       yield* this.drain(live, options)
     } catch (error) {
-      // The caller sees the failure now: a start that died before reading its
-      // prompt must not count as delivered, in case the host restarts next.
-      this.rollbackUnread(live, sessionId)
-      // The saved conversation is gone: start over in a new one with the
-      // history, once, so the user sees the answer instead of this failure.
-      if (live.resumeLost === true && options[RESUME_RETRIED] !== true) {
-        live.resumeLost = false
+      this.rollbackUnread(live, sessionId, true)
+      if (mayReplay(live.resumeClass) && options[RESUME_RETRIED] !== true) {
+        live.resumeClass = undefined
         yield* this.stream({ ...options, [RESUME_RETRIED]: true })
         return
+      }
+      if (live.spec.kind === 'claude' && !mayReplay(live.resumeClass)) {
+        throw unknownOutcome(error)
       }
       throw error
     }
@@ -1151,6 +1182,10 @@ async function renderReplay(messages, system, resolveImage) {
   if (picked.length === 0) return []
   const head = system === '' ? '' : `The team instructions for this conversation:\n${system}\n\n`
   return mergeTextBlocks([{ type: 'text', text: `${head}The conversation so far (oldest first):` }, ...picked.flat()])
+}
+
+function unknownOutcome(error) {
+  return new LlmError(`The outcome of the previous action is unknown; it will not be replayed automatically. Earlier tool results may not be carried over. Start a new action to retry. ${error.message}`, error.code ?? 'LOCAL_AGENT_EXIT')
 }
 
 // Process exits, missing CLIs, quota and sign-in failures get typed codes so DS

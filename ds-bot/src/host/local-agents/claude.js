@@ -1,6 +1,7 @@
 // The Claude Code engine: one process per session, stream-json both ways.
 // stdin takes user/control JSON messages; stdout streams the assistant's
 // events until a `result` ends the turn.
+import { classifyResumeFailure } from './resume-safety.js'
 import { cleanEnv, findEngineExecutable, spawnAgent } from './discover.js'
 
 // Claude Code tools that only read; the rest may change files or run something.
@@ -69,6 +70,7 @@ class ClaudeSession {
     this.waiters = []
     this.dead = false
     this.idWaiters = []
+    this.resumeState = { attempted: false, rejected: false, promptSubmitted: false, producedOutput: false }
   }
 
   emit(event) {
@@ -81,8 +83,16 @@ class ClaudeSession {
     return new Promise(resolve => this.waiters.push(resolve))
   }
 
+  get resumeClass() {
+    return classifyResumeFailure(this.resumeState)
+  }
+
   write(message) {
-    try { this.child?.stdin.write(`${JSON.stringify(message)}\n`) } catch { this.dead = true }
+    try {
+      if (this.child === undefined) return
+      this.child.stdin.write(`${JSON.stringify(message)}\n`)
+      if (message.type === 'user') this.resumeState.promptSubmitted = true
+    } catch { this.dead = true }
   }
 
   async start({ cwd, resumeId, system, mode, mcp, model }) {
@@ -110,6 +120,7 @@ class ClaudeSession {
       args.push('--allowedTools', 'mcp__dsbot')
     }
     this.resumeId = resumeId
+    this.resumeState.attempted = resumeId !== undefined
     const child = this.child = spawnAgent(bin, args, {
       env: cleanEnv(this.engine.env ?? {}),
       cwd,
@@ -155,9 +166,6 @@ class ClaudeSession {
     })
     child.on('exit', (code, signal) => {
       this.dead = true
-      // Claude Code deletes old conversations; resuming one that is gone exits
-      // before init with this line on stderr.
-      if (this.resumeId !== undefined && this.cliSessionId === undefined && /no conversation found/i.test(stderr)) this.resumeMissing = true
       for (const resolve of this.idWaiters.splice(0)) resolve(undefined)
       this.emit({ type: 'error', error: fail(`${this.engine.engine.name} exited ${signal === null ? `with code ${code}` : `on ${signal}`}`) })
     })
@@ -175,6 +183,10 @@ class ClaudeSession {
   onLine(line) {
     let event
     try { event = JSON.parse(line) } catch { return }
+    // Content is acceptance evidence even when no init event arrived.
+    if ((event?.type === 'assistant' && event.message?.content?.length > 0)
+      || (event?.type === 'stream_event' && (event.event?.delta !== undefined || event.event?.content_block !== undefined))
+      || (event?.type === 'result' && (event.result?.length > 0 || event.content?.length > 0))) this.resumeState.producedOutput = true
     switch (event?.type) {
       case 'system':
         if (event.subtype === 'init') {
@@ -220,8 +232,8 @@ class ClaudeSession {
       case 'result':
         // A resume of a conversation the CLI no longer has ends at once, before
         // init and with no turn.
-        if (this.resumeId !== undefined && this.cliSessionId === undefined && event.is_error === true && (event.num_turns ?? 0) === 0) {
-          this.resumeMissing = true
+        if (this.resumeId !== undefined && this.cliSessionId === undefined && event.is_error === true && event.num_turns === 0) {
+          this.resumeState.rejected = true
           // It exits next and reads no more input.
           this.dead = true
           this.emit({ type: 'error', error: Object.assign(new Error(`${this.engine.engine.name} no longer has this conversation`), { code: 'LOCAL_AGENT_EXIT' }) })
@@ -251,6 +263,7 @@ class ClaudeSession {
   }
 
   prompt(blocks) {
+    if (this.dead) return Promise.resolve()
     this.running = true
     this.write({ type: 'user', message: { role: 'user', content: claudeContent(blocks) } })
     return Promise.resolve()
