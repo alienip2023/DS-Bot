@@ -5,7 +5,9 @@
 // and the other card withdraws.
 import { createHash, randomUUID } from 'node:crypto'
 
-const OUTCOMES = { allow: 'allowed-once', reject: 'rejected' }
+const OUTCOMES = Object.freeze({ allow: 'allowed-once', reject: 'rejected' })
+// The three outcome values an approval can settle with; `unavailable` and `expired` are not among them.
+export const APPROVAL_OUTCOME_VALUES = Object.freeze({ allow: 'allowed-once', reject: 'rejected', cancel: 'cancelled' })
 
 // The request fingerprint binds an answer to the one request it was shown for:
 //   sha256(sessionId \0 toolName \0 callId \0 at)

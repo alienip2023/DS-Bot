@@ -54,6 +54,46 @@ function digestChunks(messages) {
   ]
 }
 
+// Events a driver (or this adapter) puts on a live Session's queue. Anything else is
+// discarded by screenEvent: warned about, counted, never taken for `done`.
+// @typedef {{type:'text'|'thought'|'activity', text:string}} TextEvent
+// @typedef {{type:'usage', usage:object}} UsageEvent
+// @typedef {{type:'call', name:string, args?:any, dshCallId:string}} CallEvent
+// @typedef {{type:'permission', id:string, reply:(optionId:string|null)=>void, action?:string, detail?:string, options?:object[], changes?:boolean}} PermissionEvent
+// @typedef {{type:'done', reason?:string, usage?:object, turnId?:string}} DoneEvent
+// @typedef {{type:'error', error:any, turnId?:string}} ErrorEvent
+// @typedef {{type:'compaction', status:'started'|'completed'|'failed'}} CompactionEvent
+// @typedef {{type:'context', used?:number, size?:number}|{type:'effort', effort?:string, defaultEffort?:string}} StateEvent
+// Local only, never from a driver: {type:'abort', error} (the stream's own stop) and {type:'quiet'} (a compaction that said nothing).
+const isText = value => typeof value === 'string'
+const EVENT_CHECKS = new Map([
+  ['text', event => isText(event.text)],
+  ['thought', event => isText(event.text)],
+  ['activity', event => isText(event.text)],
+  ['usage', event => event.usage !== null && typeof event.usage === 'object'],
+  ['call', event => isText(event.name) && isText(event.dshCallId)],
+  ['permission', event => isText(event.id) && event.id !== '' && typeof event.reply === 'function'
+    && (event.options === undefined || Array.isArray(event.options))],
+  ['done', () => true],
+  ['error', event => event.error !== undefined && event.error !== null],
+  ['compaction', event => event.status === 'started' || event.status === 'completed' || event.status === 'failed'],
+  ['context', () => true],
+  ['effort', () => true],
+  ['abort', () => true],
+  ['quiet', () => true],
+])
+// Why an event cannot be used, or undefined when it can. Never includes payload text.
+export function eventProblem(event) {
+  if (event === null || typeof event !== 'object' || Array.isArray(event)) return { kind: 'non-object', label: event === null ? 'null' : Array.isArray(event) ? 'array' : typeof event }
+  if (typeof event.type !== 'string') return { kind: 'bad-type', label: typeof event.type }
+  const check = EVENT_CHECKS.get(event.type)
+  if (check === undefined) return { kind: 'unknown-type', label: event.type.slice(0, 32) }
+  if (!check(event)) return { kind: 'malformed', label: event.type.slice(0, 32) }
+  return undefined
+}
+// Repeats within this window are counted, not warned.
+const EVENT_WARN_EVERY_MS = 60_000
+
 // Marks the one retry of a turn whose saved Claude conversation was gone.
 const RESUME_RETRIED = Symbol('resume retried')
 
@@ -218,6 +258,26 @@ export class LocalAgentAdapter extends LlmAdapter {
     live.next = () => (live.events.length > 0 ? Promise.resolve(live.events.shift()) : new Promise(resolve => live.waiters.push(resolve)))
     this.live.set(sessionId, live)
     return live
+  }
+
+  // Every event a loop reads passes here first. false: the event was discarded and the
+  // loop goes on with the next one. Rollback (deps.eventValidation === 'warn-only'):
+  // warn, but keep what the loops could always handle; a permission is never kept.
+  screenEvent(live, event) {
+    const problem = eventProblem(event)
+    if (problem === undefined) return true
+    this.eventDiscards = (this.eventDiscards ?? 0) + 1
+    const now = this.deps.now?.() ?? Date.now()
+    if (this.eventWarnedAt === undefined || now - this.eventWarnedAt >= EVENT_WARN_EVERY_MS) {
+      this.eventWarnedAt = now
+      this.deps.rt?.warn?.(`local agent event discarded (${problem.kind}: ${problem.label}); ${this.eventDiscards} discarded so far`)
+    }
+    if (event?.type === 'permission' && typeof event.reply === 'function') {
+      try { event.reply(null) } catch { /* the CLI is gone */ }
+    }
+    // Rollback: an unknown type is kept, as it always was (`default: break`).
+    if (this.deps.eventValidation === 'warn-only' && problem.kind === 'unknown-type') return true
+    return false
   }
 
   // A Session's record: its CLI session, what was handed to it, and what the CLI said
@@ -655,7 +715,7 @@ export class LocalAgentAdapter extends LlmAdapter {
 
   discardTurnOutput(live) {
     // Requests retain their reply callbacks until surfaced and answered.
-    live.events = live.events.filter(event => event.type === 'permission' || event.type === 'call')
+    live.events = live.events.filter(event => event?.type === 'permission' || event?.type === 'call')
   }
 
   // Codex resolves on acceptance; ACP resolves only when the entire turn ends.
@@ -755,6 +815,8 @@ export class LocalAgentAdapter extends LlmAdapter {
     try {
     for (;;) {
       const event = await Promise.race([live.next(), abortPromise]).catch(error => ({ type: 'abort', error }))
+      // Screened before the stale-turn filter, so a stale malformed event is warned once too.
+      if (!this.screenEvent(live, event)) continue
       if (event.type === 'abort') {
         this.stopTurn(live, 'the turn was stopped')
         yield { type: 'finish', reason: { kind: 'aborted', failure: { code: 'ABORTED', message: 'the turn was stopped' } } }
@@ -978,6 +1040,7 @@ export class LocalAgentAdapter extends LlmAdapter {
           clearTimeout(timer)
           next.drop()
         }
+        if (!this.screenEvent(live, event)) continue
         switch (event.type) {
           case 'text': text += event.text; break
           case 'call': {
