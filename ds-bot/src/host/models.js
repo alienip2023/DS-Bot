@@ -20,6 +20,8 @@ function codedError(code, message) {
 
 const CATALOG_TTL_MS = 10_000
 const ROUTE_WAIT_MS = 30_000
+const ROOM_RETRY_MS = 1500
+const ROOM_RETRY_MAX_MS = 5 * 60_000
 // The DeepSeek account's sign-in grant (dsh-deepseek-account-platform).
 const ACCOUNT_RECORD = 'deepseek-account-platform/default'
 const TRANSIENT_LLM_CODES = new Set(['TRANSPORT', 'TIMEOUT'])
@@ -370,6 +372,7 @@ export function install(rt) {
   // Recheck group Sessions after every restart: Bot-level applied fields cannot
   // prove that an older group Session received the member's thinking level.
   const sessionSelections = new Map()
+  const roomRetry = new Map()
   function selectSessionModel(sessionId, { provider, model, reasoningEffort }) {
     const run = selecting.then(async () => {
       if (llm() === undefined) return
@@ -385,6 +388,7 @@ export function install(rt) {
         await defaults.saveSelection(before).catch(error => rt.warn('ds-bot: the default model was not restored: %s', error))
       }
       sessionSelections.set(sessionId, { provider, model, reasoningEffort })
+      roomRetry.delete(sessionId)
       return result
     })
     selecting = run.catch(() => {})
@@ -466,28 +470,65 @@ export function install(rt) {
   // provider no longer serves fails with UNKNOWN_MODEL whatever its members run on, so
   // it is kept on the model new Bots start on. The record is by Session, so a part moved
   // on to a fresh Session is selected again.
-  // The Sessions whose selection failed. The models may not change again, so the next
-  // sync tries them once more instead of waiting for a change that never comes.
-  const roomRetry = new Set()
+  // Retry state stays in memory: a corrupt stored Session cannot be fixed by selecting
+  // its model again, while a temporary failure waits independently of roster polling.
+  let roomSessions = new Set()
+  function currentRoomSessions() {
+    const current = new Set(Object.values(state.rooms ?? {}).map(room => rt.sessionOfRoom(room)).filter(Boolean))
+    for (const sessionId of new Set([...roomSessions, ...roomRetry.keys()])) {
+      if (current.has(sessionId)) continue
+      roomRetry.delete(sessionId)
+      sessionSelections.delete(sessionId)
+    }
+    roomSessions = current
+    return current
+  }
+  function roomFailure(error) {
+    const seen = new Set()
+    const messages = []
+    for (let cause = error; cause !== undefined && cause !== null && !seen.has(cause); cause = cause.cause) {
+      seen.add(cause)
+      messages.push(`${cause.name ?? ''} ${cause.code ?? ''} ${cause.message ?? String(cause)}`)
+    }
+    const message = messages.join(': ')
+    return {
+      corrupt: /SessionFormatError|\bis corrupt\b|turn\/start does not open the expected turn/i.test(message),
+      key: message,
+      message: message.replace(/\s+/g, ' ').trim().slice(0, 300),
+    }
+  }
   async function selectRoomSession(sessionId) {
+    if (!sessionId || (roomRetry.get(sessionId)?.nextAt ?? 0) > Date.now()) return
     const ref = await defaultBotModel()
     if (ref === undefined) return
+    const retry = roomRetry.get(sessionId)
+    if ((retry?.nextAt ?? 0) > Date.now()) return
     const route = splitRef(ref)
     const applied = sessionSelections.get(sessionId)
     if (applied !== undefined && sameSelection(applied, route)) return
+    const attempt = { count: (retry?.count ?? 0) + 1, nextAt: Infinity }
+    // Also reserves this id while selectSessionModel waits behind another selection.
+    roomRetry.set(sessionId, attempt)
     await selectSessionModel(sessionId, route).then(
       () => { roomRetry.delete(sessionId) },
       (error) => {
-        roomRetry.add(sessionId)
-        rt.warn('ds-bot: model for the group Session %s not applied: %s', sessionId, error)
+        if (roomRetry.get(sessionId) !== attempt) return
+        const failure = roomFailure(error)
+        if (failure.corrupt) {
+          rt.warn('ds-bot: model for the group Session %s not applied (attempt %d): stored session is corrupt; quarantined until deselected or reset. Move the group to a fresh Session.', sessionId, attempt.count)
+          return
+        }
+        const delay = attempt.count === 1 ? 0 : Math.min(ROOM_RETRY_MS * 2 ** Math.min(attempt.count - 2, 8), ROOM_RETRY_MAX_MS)
+        attempt.nextAt = Date.now() + delay
+        attempt.error = failure.key
+        if (retry === undefined || retry.error !== failure.key || delay === ROOM_RETRY_MAX_MS) {
+          rt.warn('ds-bot: model for the group Session %s not applied (attempt %d); next retry in %ds: %s', sessionId, attempt.count, delay / 1000, failure.message)
+        }
       },
     )
   }
   async function syncRoomSessions() {
-    const current = new Set(Object.values(state.rooms ?? {}).map(room => rt.sessionOfRoom(room)))
-    // A deleted group, or one moved on to a fresh part, no longer needs its old Session.
-    for (const sessionId of roomRetry) if (!current.has(sessionId)) roomRetry.delete(sessionId)
-    for (const sessionId of current) await selectRoomSession(sessionId)
+    for (const sessionId of currentRoomSessions()) await selectRoomSession(sessionId)
   }
 
   // A provider may register after the plugin starts; a greeting waits for its Bot's
@@ -512,9 +553,12 @@ export function install(rt) {
   // not one of them): a provider that registers late still gets its Bots' models selected.
   let syncedKey
   const syncModels = () => {
+    const current = currentRoomSessions()
     const key = answerable(catalogCache.value).map(entry => entry.ref).join(',')
     if (key !== syncedKey) { syncedKey = key; modelsSynced = modelsSynced?.then(syncAll, syncAll) ?? syncAll() }
-    else if (roomRetry.size > 0) modelsSynced = modelsSynced?.then(syncRooms, syncRooms) ?? syncRooms()
+    else if ([...current].some(sessionId => roomRetry.has(sessionId) ? roomRetry.get(sessionId).nextAt <= Date.now() : !sessionSelections.has(sessionId))) {
+      modelsSynced = modelsSynced?.then(syncRooms, syncRooms) ?? syncRooms()
+    }
     return modelsSynced
   }
   // Nothing awaits a sync (bootstrap starts one and drops the promise), so a failure
