@@ -3,6 +3,7 @@ import { BotMark, toolState } from './mark.js'
 import { Elapsed, Shimmer, workPhrase } from './cells.js'
 import { SPRING_SHAPE, SPRING_TAP, spring, useLinger } from './motion.js'
 import { t } from './i18n.js'
+import { planAnswer, stateAfterError } from './approval-card-model.js'
 
 // -------------------------------------------------------------------------
 // What a group's members are doing: above the group's composer, one capsule for the
@@ -137,14 +138,35 @@ export const approvalBinding = approval => (
     ? { sessionId: approval.sessionId, fingerprint: approval.fingerprint }
     : undefined)
 
-function ApprovalCard({ approval, bot, actions }) {
-  const [busy, setBusy] = useState(false)
+// Fixed notes per card state; the client names no outcome, only what it can prove.
+const cardNote = state => (
+  state === 'sent' ? t('Answer sent. Waiting for the host to confirm.')
+    : state === 'unavailable' ? t('This approval is no longer available.')
+      : state === 'unverified' ? t('Could not confirm the answer. It may still be pending.')
+        : state === 'unbound' ? t('This approval cannot be verified here. Open the chat to answer.')
+          : null)
+
+export function ApprovalCard({ approval, bot, room, actions }) {
+  const [state, setState] = useState('open')
+  const inflight = useRef(false)
   const answer = (choice) => {
-    setBusy(true)
-    void Promise.resolve(actions.answerApproval(approval.id, choice, approvalBinding(approval)))
-      .catch(error => actions.reportError(error, 'approval'))
-      .finally(() => setBusy(false))
+    if (inflight.current) return
+    const plan = planAnswer(approval, { botId: bot.id, roomId: room?.id }, choice)
+    if (plan.kind !== 'send') { setState(plan.state); return }
+    inflight.current = true
+    setState('sending')
+    let call
+    try { call = Promise.resolve(actions.answerApproval(plan.id, plan.choice, plan.binding)) } catch (error) { call = Promise.reject(error) }
+    void call
+      .then(() => setState('sent'), (error) => {
+        const next = stateAfterError(error)
+        setState(next)
+        if (next === 'unverified') actions.reportError(error, 'approval')
+      })
+      .finally(() => { inflight.current = false })
   }
+  const busy = state === 'sending' || state === 'sent' || state === 'unavailable'
+  const note = cardNote(state)
   return h('div', { className: 'bt-mw-card', role: 'group', 'aria-label': t('{name} is waiting for your approval', { name: bot.name }) },
     h('div', { className: 'bt-mw-tool' }, approval.tool),
     approval.detail?.text ? h('div', { className: 'bt-mw-text' }, approval.detail.text) : null,
@@ -157,7 +179,8 @@ function ApprovalCard({ approval, bot, actions }) {
         h('button', { type: 'button', className: 'bt-q-btn', disabled: busy, onClick: () => answer('reject') }, t('Reject')),
         h('button', { type: 'button', className: 'bt-q-submit', disabled: busy, onClick: () => answer('allow') }, t('Allow once')))
       : h('div', { className: 'bt-mw-actions' },
-        h('button', { type: 'button', className: 'bt-q-btn', onClick: () => actions.openSession(bot.id) }, t("Open {name}'s chat", { name: bot.name }))))
+        h('button', { type: 'button', className: 'bt-q-btn', onClick: () => actions.openSession(bot.id) }, t("Open {name}'s chat", { name: bot.name }))),
+    note ? h('div', { className: 'bt-mw-note', role: 'status' }, note) : null)
 }
 
 // A member's second line in the group's details: what it is doing here, or its role.
@@ -196,9 +219,9 @@ export function StopRoomWork({ room, entries, actions }) {
   return h('button', { type: 'button', className: 'bt-soft bt-soft-sm', disabled: stopping, 'aria-label': label, title: label, onClick: stop }, t('Stop all'))
 }
 
-export function MemberApprovals({ entry, bot, actions }) {
+export function MemberApprovals({ entry, bot, room, actions }) {
   if (entry?.state !== 'ask') return null
-  return h('div', { className: 'bt-member-cards' }, entry.approvals.map(approval => h(ApprovalCard, { key: approval.id, approval, bot, actions })))
+  return h('div', { className: 'bt-member-cards' }, entry.approvals.map(approval => h(ApprovalCard, { key: approval.id, approval, bot, room, actions })))
 }
 
 export function useMemberWork(room, useWork) {
@@ -260,5 +283,6 @@ body[data-ds-dark-theme] .bt-member-state.bt-mw-ask{color:#f0b84a}
 .bt-mw-actions{display:flex;justify-content:flex-end;gap:6px;margin-top:4px}
 .bt-mw-actions>button{height:28px;padding:0 12px;font-size:12px}
 .bt-mw-actions>button:disabled{opacity:.5;cursor:default}
+.bt-mw-note{margin-top:6px;font-size:12px;opacity:.75}
 @media (prefers-reduced-motion:reduce){.bt-mw-pill,.bt-mw-face,.bt-mw-label,.bt-member,.bt-mw-card{animation:none}.bt-mw-pill{transition:background-color .12s ease}}
 `

@@ -1095,6 +1095,10 @@ var JA = {
   "Goal stopped": "目標を終了しました",
   "Reject": "拒否",
   "Allow once": "今回のみ許可",
+  "Answer sent. Waiting for the host to confirm.": "回答を送信しました。ホストの確認を待っています。",
+  "This approval is no longer available.": "この承認はもう利用できません。",
+  "Could not confirm the answer. It may still be pending.": "回答を確認できませんでした。まだ保留中の可能性があります。",
+  "This approval cannot be verified here. Open the chat to answer.": "この承認はここでは確認できません。チャットを開いて回答してください。",
   "Couldn't message {name}": "{name} にメッセージを送信できませんでした",
   "Messaged": "送信先:",
   "Couldn't stop {name}": "{name} を停止できませんでした",
@@ -3664,6 +3668,10 @@ var KO = {
   "Goal stopped": "목표 종료됨",
   Reject: "거절",
   "Allow once": "한 번만 허용",
+  "Answer sent. Waiting for the host to confirm.": "답변을 보냈습니다. 호스트의 확인을 기다리는 중입니다.",
+  "This approval is no longer available.": "이 승인은 더 이상 사용할 수 없습니다.",
+  "Could not confirm the answer. It may still be pending.": "답변을 확인하지 못했습니다. 아직 대기 중일 수 있습니다.",
+  "This approval cannot be verified here. Open the chat to answer.": "여기서는 이 승인을 확인할 수 없습니다. 채팅을 열어 답변하세요.",
   "Couldn't message {name}": "{name}에게 메시지를 보내지 못했습니다",
   Messaged: "메시지 전송됨:",
   "Couldn't stop {name}": "{name}을(를) 중지하지 못했습니다",
@@ -6248,6 +6256,10 @@ var ES = {
   "Goal stopped": "Objetivo detenido",
   Reject: "Rechazar",
   "Allow once": "Permitir una vez",
+  "Answer sent. Waiting for the host to confirm.": "Respuesta enviada. Esperando la confirmación del host.",
+  "This approval is no longer available.": "Esta aprobación ya no está disponible.",
+  "Could not confirm the answer. It may still be pending.": "No se pudo confirmar la respuesta. Puede seguir pendiente.",
+  "This approval cannot be verified here. Open the chat to answer.": "Esta aprobación no se puede verificar aquí. Abre el chat para responder.",
   "Couldn't message {name}": "No se pudo enviar mensaje a {name}",
   Messaged: "Mensaje enviado a",
   "Couldn't stop {name}": "No se pudo detener a {name}",
@@ -8802,6 +8814,10 @@ var FR = {
   "Goal stopped": "Objectif arrêté",
   "Reject": "Refuser",
   "Allow once": "Autoriser une fois",
+  "Answer sent. Waiting for the host to confirm.": "Réponse envoyée. En attente de la confirmation de l'hôte.",
+  "This approval is no longer available.": "Cette approbation n'est plus disponible.",
+  "Could not confirm the answer. It may still be pending.": "Impossible de confirmer la réponse. Elle peut être encore en attente.",
+  "This approval cannot be verified here. Open the chat to answer.": "Cette approbation ne peut pas être vérifiée ici. Ouvrez la discussion pour répondre.",
   "Couldn't message {name}": "Impossible d’envoyer un message à {name}",
   "Messaged": "Message envoyé à",
   "Couldn't stop {name}": "Impossible d’arrêter {name}",
@@ -11371,6 +11387,10 @@ var DE = {
   "Goal stopped": "Ziel abgebrochen",
   Reject: "Ablehnen",
   "Allow once": "Einmalig erlauben",
+  "Answer sent. Waiting for the host to confirm.": "Antwort gesendet. Warte auf die Bestätigung des Hosts.",
+  "This approval is no longer available.": "Diese Genehmigung ist nicht mehr verfügbar.",
+  "Could not confirm the answer. It may still be pending.": "Die Antwort konnte nicht bestätigt werden. Sie ist möglicherweise noch offen.",
+  "This approval cannot be verified here. Open the chat to answer.": "Diese Genehmigung kann hier nicht überprüft werden. Öffne den Chat, um zu antworten.",
   "Couldn't message {name}": "Nachricht an {name} fehlgeschlagen",
   Messaged: "Nachricht gesendet an",
   "Couldn't stop {name}": "{name} konnte nicht gestoppt werden",
@@ -13996,6 +14016,10 @@ var ZH = {
   "Goal stopped": "目标已终止",
   Reject: "拒绝",
   "Allow once": "允许一次",
+  "Answer sent. Waiting for the host to confirm.": "已发送答复，等待主机确认。",
+  "This approval is no longer available.": "此审批已不可用。",
+  "Could not confirm the answer. It may still be pending.": "无法确认答复，它可能仍在等待。",
+  "This approval cannot be verified here. Open the chat to answer.": "无法在此验证该审批，请打开聊天回答。",
   "Couldn't message {name}": "没能给 {name} 发消息",
   Messaged: "已发消息给",
   "Couldn't stop {name}": "没能叫停 {name}",
@@ -43339,6 +43363,22 @@ function RemoteTasksRow({ bot, actions }) {
   );
 }
 
+// src/client/approval-card-model.js
+var CARD_STATES = Object.freeze(["open", "sending", "sent", "unavailable", "unbound", "unverified"]);
+var filled = (value) => typeof value === "string" && value !== "";
+var rowBinding = (row) => filled(row?.sessionId) && filled(row?.fingerprint) ? { sessionId: row.sessionId, fingerprint: row.fingerprint } : void 0;
+function planAnswer(row, { botId, roomId } = {}, choice) {
+  if (choice !== "allow" && choice !== "reject") return { kind: "block", state: "unbound" };
+  if (row?.answerable !== true) return { kind: "block", state: "unavailable" };
+  if (!filled(row.id) || !filled(botId) || !filled(roomId) || row.botId !== botId || row.roomId !== roomId) {
+    return { kind: "block", state: "unbound" };
+  }
+  const binding = rowBinding(row);
+  if (binding === void 0) return { kind: "block", state: "unbound" };
+  return { kind: "send", id: row.id, choice, binding };
+}
+var stateAfterError = (error) => error?.code === "bot/stale" ? "unavailable" : "unverified";
+
 // src/client/member-status.js
 var import_react70 = require("react");
 var NO_WORK = { bots: {}, rooms: {}, approvals: [] };
@@ -43454,12 +43494,35 @@ var stateLine = (className, at, ...what) => (0, import_react70.createElement)(
   typeof at === "number" ? (0, import_react70.createElement)(Elapsed, { at, className: "bt-member-time" }) : null
 );
 var approvalBinding = (approval) => typeof approval?.sessionId === "string" && approval.sessionId !== "" && typeof approval.fingerprint === "string" && approval.fingerprint !== "" ? { sessionId: approval.sessionId, fingerprint: approval.fingerprint } : void 0;
-function ApprovalCard({ approval, bot, actions }) {
-  const [busy, setBusy] = (0, import_react70.useState)(false);
+var cardNote = (state) => state === "sent" ? t("Answer sent. Waiting for the host to confirm.") : state === "unavailable" ? t("This approval is no longer available.") : state === "unverified" ? t("Could not confirm the answer. It may still be pending.") : state === "unbound" ? t("This approval cannot be verified here. Open the chat to answer.") : null;
+function ApprovalCard({ approval, bot, room: room2, actions }) {
+  const [state, setState] = (0, import_react70.useState)("open");
+  const inflight = (0, import_react70.useRef)(false);
   const answer = (choice) => {
-    setBusy(true);
-    void Promise.resolve(actions.answerApproval(approval.id, choice, approvalBinding(approval))).catch((error) => actions.reportError(error, "approval")).finally(() => setBusy(false));
+    if (inflight.current) return;
+    const plan = planAnswer(approval, { botId: bot.id, roomId: room2?.id }, choice);
+    if (plan.kind !== "send") {
+      setState(plan.state);
+      return;
+    }
+    inflight.current = true;
+    setState("sending");
+    let call2;
+    try {
+      call2 = Promise.resolve(actions.answerApproval(plan.id, plan.choice, plan.binding));
+    } catch (error) {
+      call2 = Promise.reject(error);
+    }
+    void call2.then(() => setState("sent"), (error) => {
+      const next = stateAfterError(error);
+      setState(next);
+      if (next === "unverified") actions.reportError(error, "approval");
+    }).finally(() => {
+      inflight.current = false;
+    });
   };
+  const busy = state === "sending" || state === "sent" || state === "unavailable";
+  const note = cardNote(state);
   return (0, import_react70.createElement)(
     "div",
     { className: "bt-mw-card", role: "group", "aria-label": t("{name} is waiting for your approval", { name: bot.name }) },
@@ -43478,7 +43541,8 @@ function ApprovalCard({ approval, bot, actions }) {
       "div",
       { className: "bt-mw-actions" },
       (0, import_react70.createElement)("button", { type: "button", className: "bt-q-btn", onClick: () => actions.openSession(bot.id) }, t("Open {name}'s chat", { name: bot.name }))
-    )
+    ),
+    note ? (0, import_react70.createElement)("div", { className: "bt-mw-note", role: "status" }, note) : null
   );
 }
 function MemberState({ entry, bot }) {
@@ -43505,9 +43569,9 @@ function StopRoomWork({ room: room2, entries: entries2, actions }) {
   const label = t("Stop all work in this group");
   return (0, import_react70.createElement)("button", { type: "button", className: "bt-soft bt-soft-sm", disabled: stopping, "aria-label": label, title: label, onClick: stop }, t("Stop all"));
 }
-function MemberApprovals({ entry, bot, actions }) {
+function MemberApprovals({ entry, bot, room: room2, actions }) {
   if (entry?.state !== "ask") return null;
-  return (0, import_react70.createElement)("div", { className: "bt-member-cards" }, entry.approvals.map((approval) => (0, import_react70.createElement)(ApprovalCard, { key: approval.id, approval, bot, actions })));
+  return (0, import_react70.createElement)("div", { className: "bt-member-cards" }, entry.approvals.map((approval) => (0, import_react70.createElement)(ApprovalCard, { key: approval.id, approval, bot, room: room2, actions })));
 }
 function useMemberWork(room2, useWork) {
   const work = useWork?.((value) => value) ?? NO_WORK;
@@ -43567,6 +43631,7 @@ body[data-ds-dark-theme] .bt-member-state.bt-mw-ask{color:#f0b84a}
 .bt-mw-actions{display:flex;justify-content:flex-end;gap:6px;margin-top:4px}
 .bt-mw-actions>button{height:28px;padding:0 12px;font-size:12px}
 .bt-mw-actions>button:disabled{opacity:.5;cursor:default}
+.bt-mw-note{margin-top:6px;font-size:12px;opacity:.75}
 @media (prefers-reduced-motion:reduce){.bt-mw-pill,.bt-mw-face,.bt-mw-label,.bt-member,.bt-mw-card{animation:none}.bt-mw-pill{transition:background-color .12s ease}}
 `;
 
@@ -43938,7 +44003,7 @@ function MemberRow({ member, entry, room: room2, roster, actions }) {
       ),
       (0, import_react72.createElement)(StopMemberWork, { entry, bot: member, room: room2, actions })
     ),
-    (0, import_react72.createElement)(MemberApprovals, { entry, bot: member, actions })
+    (0, import_react72.createElement)(MemberApprovals, { entry, bot: member, room: room2, actions })
   );
 }
 function GroupOverview({ room: room2, roster, actions, usage, useWork, openSettings }) {
