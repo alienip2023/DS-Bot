@@ -129,11 +129,19 @@ const stateLine = (className, at, ...what) => h('span', { className },
   h('span', { className: 'bt-member-what' }, ...what),
   typeof at === 'number' ? h(Elapsed, { at, className: 'bt-member-time' }) : null)
 
+// The optional stale-card guard for `approval-answer`: both fields come from the host's own
+// view row, never from a caller claim. A row without both gives no binding (legacy path).
+export const approvalBinding = approval => (
+  typeof approval?.sessionId === 'string' && approval.sessionId !== ''
+  && typeof approval.fingerprint === 'string' && approval.fingerprint !== ''
+    ? { sessionId: approval.sessionId, fingerprint: approval.fingerprint }
+    : undefined)
+
 function ApprovalCard({ approval, bot, actions }) {
   const [busy, setBusy] = useState(false)
   const answer = (choice) => {
     setBusy(true)
-    void Promise.resolve(actions.answerApproval(approval.id, choice))
+    void Promise.resolve(actions.answerApproval(approval.id, choice, approvalBinding(approval)))
       .catch(error => actions.reportError(error, 'approval'))
       .finally(() => setBusy(false))
   }

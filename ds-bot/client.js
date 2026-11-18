@@ -15683,7 +15683,7 @@ function teamActions({ call: call2, after, partFor, roster, ui: ui2, live, cards
     answerView: (sessionId, viewId, action, values) => after(call2("view-reply", { sessionId: partFor(sessionId), viewId, action, values })),
     dismissView: (sessionId) => after(call2("dismiss-view", { sessionId: partFor(sessionId) })),
     deleteBtw: (sessionId, cardId) => after(call2("btw-delete", { sessionId, cardId })),
-    answerApproval: (id, choice) => after(call2("approval-answer", { id, choice })),
+    answerApproval: (id, choice, binding) => after(call2("approval-answer", binding === void 0 ? { id, choice } : { id, choice, binding })),
     computerSetEnabled: (enabled) => after(call2("computer-set-enabled", { enabled })),
     computerSetLevel: (botId, level) => after(call2("computer-set-level", { botId, level })),
     computerRevokeApp: (botId, appKey) => after(call2("computer-revoke-app", { botId, appKey })),
@@ -43425,11 +43425,12 @@ var stateLine = (className, at, ...what) => (0, import_react70.createElement)(
   (0, import_react70.createElement)("span", { className: "bt-member-what" }, ...what),
   typeof at === "number" ? (0, import_react70.createElement)(Elapsed, { at, className: "bt-member-time" }) : null
 );
+var approvalBinding = (approval) => typeof approval?.sessionId === "string" && approval.sessionId !== "" && typeof approval.fingerprint === "string" && approval.fingerprint !== "" ? { sessionId: approval.sessionId, fingerprint: approval.fingerprint } : void 0;
 function ApprovalCard({ approval, bot, actions }) {
   const [busy, setBusy] = (0, import_react70.useState)(false);
   const answer = (choice) => {
     setBusy(true);
-    void Promise.resolve(actions.answerApproval(approval.id, choice)).catch((error) => actions.reportError(error, "approval")).finally(() => setBusy(false));
+    void Promise.resolve(actions.answerApproval(approval.id, choice, approvalBinding(approval))).catch((error) => actions.reportError(error, "approval")).finally(() => setBusy(false));
   };
   return (0, import_react70.createElement)(
     "div",
