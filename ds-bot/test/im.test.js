@@ -1937,3 +1937,159 @@ test('a failed update keeps the network reason and redacts a secret as it appear
     return true
   })
 })
+
+import { readFileSync } from 'node:fs'
+
+async function startApprovalCard(t) {
+  const fake = fakeAdapter()
+  const order = []
+  const editCounts = []
+  const connect = fake.connect
+  fake.connect = (...args) => {
+    const handle = connect(...args)
+    const edit = handle.edit
+    handle.edit = (...params) => {
+      order.push('edit')
+      editCounts.push(fake.edited.length)
+      return edit(...params)
+    }
+    return handle
+  }
+  const s = await start({ adapter: fake })
+  let stopping
+  const stop = () => (stopping ??= s.stop())
+  t.after(stop)
+  t.after(s.rt.onApproval((kind, data) => {
+    if (kind === 'settled') order.push(`settled:${data.outcome}`)
+  }))
+  const conn = await add(s)
+  s.rt.state.im.connections[conn.id].paired.push({ id: 'u1', name: 'U1', at: 1 })
+  await s.rt.save()
+  await dm(s, 'u1', 'hi')
+  s.imTurn('a')
+
+  const ask = async (sessionId = 'a') => {
+    const racing = s.fireApprovals({
+      agent: { id: sessionId }, toolName: 'bash', reason: 'run it', signal: new AbortController().signal,
+    }, () => new Promise(() => {}))
+    await s.flush()
+    const { id, fingerprint: fp } = s.rt.approvalsView().find(entry => entry.sessionId === sessionId)
+    const card = fake.sent.find(entry => entry.buttons?.some(button => button.data === `a:${id}:allow`))
+    const press = (choice) => {
+      assert.ok(card, 'the approval card must have been sent')
+      return fake.handlers.onAction({
+        chat: { key: 'dm-u1', kind: 'direct', title: 'U1' }, sender: { id: 'u1', name: 'U1' },
+        data: `a:${id}:${choice}`, messageId: card.messageId ?? 1,
+      })
+    }
+    return { racing, id, fp, card, press }
+  }
+  const drain = async (n) => {
+    for (let poll = 0; poll < 50 && fake.edited.length < n; poll++) await delay(10)
+  }
+  const statePath = join(s.home, 'state.json')
+  const onDisk = () => JSON.parse(readFileSync(statePath))
+  return { s, stop, fake, order, editCounts, ask, drain, statePath, onDisk }
+}
+
+test('approval card: failed save cancels engine and card exactly once, never shows allow', async (t) => {
+  const { s, fake, order, editCounts, ask, drain, statePath, onDisk } = await startApprovalCard(t)
+  const { racing, fp, press } = await ask()
+  const preimage = readFileSync(statePath)
+  assert.equal(onDisk().approvalResults?.[fp], undefined)
+  const blocker = `${statePath}.${process.pid}.tmp`
+  mkdirSync(blocker)
+  await press('allow')
+  assert.equal((await racing)[0], 'cancelled', 'engine outcome must be cancelled after a failed save')
+  assert.deepEqual(readFileSync(statePath), preimage, 'a failed atomic save must leave the disk at the preimage')
+  assert.ok(onDisk().approvalResults?.[fp] === undefined, 'no allow may be persisted')
+  t.diagnostic(`state.json before press and after failed save, ${preimage.length} identical bytes (base64): ${preimage.toString('base64')}`)
+  t.diagnostic(`approvalResults[${fp}] before press and after failed save: undefined`)
+  await drain(1)
+  assert.equal(fake.edited.length, 1, 'cancelled outcome must edit the card exactly once')
+  const body = fake.edited[0].text
+  // Keep the independent label and order failures visible in the same mutation run.
+  const failures = []
+  for (const check of [
+    () => assert.ok(!/Allow once/.test(body) && !/— Allow/.test(body), 'card must not keep the stale allow label after a cancelled save'),
+    () => assert.ok(body.endsWith('— cancelled'), 'card must carry the explicit cancelled label'),
+    () => assert.deepEqual(order, ['settled:cancelled', 'edit'], 'the card edit must follow the engine settled event'),
+  ]) {
+    try { check() } catch (error) { failures.push(error) }
+  }
+  if (failures.length === 1) throw failures[0]
+  if (failures.length > 1) throw new AggregateError(failures, failures.map(error => error.message).join('\n'))
+  assert.deepEqual(editCounts, [0])
+
+  rmSync(blocker, { recursive: true })
+  await s.rt.save({ required: true, force: true })
+  assert.equal(onDisk().approvalResults[fp].result, 'cancelled')
+  const saved = readFileSync(statePath)
+  t.diagnostic(`state.json after explicit save, ${saved.length} bytes (base64): ${saved.toString('base64')}`)
+  t.diagnostic(`approvalResults[${fp}] after explicit save: ${JSON.stringify(onDisk().approvalResults[fp])}`)
+  await s.flush()
+  assert.equal(fake.edited.length, 1, 'no second edit after the later successful save')
+  await press('allow')
+  assert.match(fake.sent.at(-1).text, /already answered/)
+  await s.flush()
+  assert.equal(fake.edited.length, 1)
+})
+
+test('approval card: successful allow and reject each edit once with their own label', async (t) => {
+  for (const [choice, outcome, label] of [['allow', 'allowed-once', 'Allow once'], ['reject', 'rejected', 'Reject']]) {
+    const { stop, fake, order, editCounts, ask, drain, onDisk } = await startApprovalCard(t)
+    try {
+      const { racing, fp, press } = await ask()
+      await press(choice)
+      assert.equal((await racing)[0], outcome)
+      await drain(1)
+      assert.equal(fake.edited.length, 1, `successful ${choice} must edit the card exactly once`)
+      assert.ok(fake.edited[0].text.endsWith(`— ${label}`))
+      assert.equal(onDisk().approvalResults[fp].result, outcome)
+      assert.deepEqual(order, [`settled:${outcome}`, 'edit'], `the successful ${choice} card edit must follow the engine settled event`)
+      assert.deepEqual(editCounts, [0])
+    } finally {
+      await stop()
+    }
+  }
+})
+
+test('approval card: stale press, non-IM answer and IM-less session keep prior behavior', async (t) => {
+  const { s, fake, order, editCounts, ask, drain, onDisk } = await startApprovalCard(t)
+  const { racing, id, press } = await ask()
+  assert.equal(await s.rt.answerApproval(id, 'reject'), 'rejected')
+  assert.equal((await racing)[0], 'rejected')
+  await drain(1)
+  assert.equal(fake.edited.length, 1)
+  assert.ok(fake.edited[0].text.endsWith('— Reject'))
+  assert.deepEqual(order, ['settled:rejected', 'edit'])
+  await press('allow')
+  assert.match(fake.sent.at(-1).text, /already answered/)
+  await s.flush()
+  assert.equal(fake.edited.length, 1)
+
+  const sent = fake.sent.length
+  const withoutOrigin = await ask('b')
+  assert.equal(withoutOrigin.card, undefined)
+  assert.equal(await s.rt.answerApproval(withoutOrigin.id, 'reject'), 'rejected')
+  assert.equal((await withoutOrigin.racing)[0], 'rejected')
+  await s.flush()
+  assert.equal(fake.sent.length, sent)
+  assert.equal(fake.edited.length, 1)
+
+  const readOnly = await ask()
+  // Use the existing runtime seam after opening the card while its adapter is running.
+  const mock = t.mock.method(s.rt, 'readOnly', () => 'held elsewhere')
+  try {
+    await readOnly.press('reject')
+    assert.equal((await readOnly.racing)[0], 'rejected')
+    await drain(2)
+    assert.equal(fake.edited.length, 2)
+    assert.ok(fake.edited[1].text.endsWith('— Reject'))
+    assert.deepEqual(order.slice(-2), ['settled:rejected', 'edit'])
+    assert.deepEqual(editCounts, [0, 1])
+    assert.equal(onDisk().approvalResults?.[readOnly.fp], undefined)
+  } finally {
+    mock.mock.restore()
+  }
+})

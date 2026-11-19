@@ -55,6 +55,7 @@ export function install(rt) {
         secretAsk: `${values.bot} needs the key ${values.name} — fill it on the computer or the phone app.`,
         viewShow: `${values.bot} shared a card — answer it on the computer or the phone app.`,
         answered: 'answered',
+        cancelled: 'cancelled',
         numbers: 'reply with the number',
         numbersMulti: 'reply with the numbers, separated by spaces',
         allow: 'Allow once',
@@ -75,6 +76,7 @@ export function install(rt) {
         secretAsk: `${values.bot} 要密钥 ${values.name}，请在电脑或手机 App 上填。`,
         viewShow: `${values.bot} 发了一个卡片，请在电脑或手机 App 上回复。`,
         answered: '已答',
+        cancelled: '已取消',
         numbers: '回复编号',
         numbersMulti: '回复编号，多选用空格隔开',
         allow: '允许一次',
@@ -95,6 +97,7 @@ export function install(rt) {
         secretAsk: `${values.bot} 要金鑰 ${values.name}，請在電腦或手機 App 上填。`,
         viewShow: `${values.bot} 發了一個卡片，請在電腦或手機 App 上回覆。`,
         answered: '已答',
+        cancelled: '已取消',
         numbers: '回覆編號',
         numbersMulti: '回覆編號，多選用空格隔開',
         allow: '允許一次',
@@ -115,6 +118,7 @@ export function install(rt) {
         secretAsk: `${values.bot} がシークレット ${values.name} を必要としています。PC またはスマホアプリで入力してください。`,
         viewShow: `${values.bot} がカードを共有しました。PC またはスマホアプリで回答してください。`,
         answered: '回答済み',
+        cancelled: 'キャンセル済み',
         numbers: '番号を返信',
         numbersMulti: '番号をスペース区切りで返信',
         allow: '1回許可',
@@ -135,6 +139,7 @@ export function install(rt) {
         secretAsk: `${values.bot}에서 시크릿 ${values.name}이(가) 필요합니다. 컴퓨터나 휴대폰 앱에서 입력해 주세요.`,
         viewShow: `${values.bot}에서 카드를 보냈습니다. 컴퓨터나 휴대폰 앱에서 응답해 주세요.`,
         answered: '응답함',
+        cancelled: '취소됨',
         numbers: '번호로 답장',
         numbersMulti: '공백으로 구분하여 번호로 답장',
         allow: '한 번 허용',
@@ -155,6 +160,7 @@ export function install(rt) {
         secretAsk: `${values.bot} necesita la clave ${values.name} — rellénala en el ordenador o en la app móvil.`,
         viewShow: `${values.bot} compartió una tarjeta — respóndela en el ordenador o en la app móvil.`,
         answered: 'respondido',
+        cancelled: 'cancelado',
         numbers: 'responde con el número',
         numbersMulti: 'responde con los números separados por espacios',
         allow: 'Permitir una vez',
@@ -175,6 +181,7 @@ export function install(rt) {
         secretAsk: `${values.bot} a besoin de la clé ${values.name} — renseignez-la sur l’ordinateur ou l’application mobile.`,
         viewShow: `${values.bot} a partagé une carte — répondez-y sur l’ordinateur ou l’application mobile.`,
         answered: 'répondu',
+        cancelled: 'annulé',
         numbers: 'répondez avec le numéro',
         numbersMulti: 'répondez avec les numéros séparés par des espaces',
         allow: 'Autoriser une fois',
@@ -195,6 +202,7 @@ export function install(rt) {
         secretAsk: `${values.bot} benötigt den Schlüssel ${values.name} — gib ihn am Computer oder in der Smartphone-App ein.`,
         viewShow: `${values.bot} hat eine Karte geteilt — beantworte sie am Computer oder in der Smartphone-App.`,
         answered: 'beantwortet',
+        cancelled: 'abgebrochen',
         numbers: 'mit der Nummer antworten',
         numbersMulti: 'mit durch Leerzeichen getrennten Nummern antworten',
         allow: 'Einmal erlauben',
@@ -725,8 +733,6 @@ export function install(rt) {
     if (held === undefined) return false
     try {
       rt.answerApproval(held.cardKey.slice(2), choice)
-      await settleCard(conn.id, held.cardKey, choice === 'allow' ? text('allow') : text('reject'))
-      await settledEdits(conn)
     } catch (error) {
       if (error?.code === 'bot/stale') {
         await sendCardReply(conn, chat, text('stale'))
@@ -1520,7 +1526,8 @@ export function install(rt) {
     }
     void (async () => {
       for (const conn of Object.values(connections())) {
-        await settleCard(conn.id, `a:${data.id}`, data.outcome === 'allowed-once' ? text('allow') : data.outcome === 'rejected' ? text('reject') : text('answered'))
+        await settleCard(conn.id, `a:${data.id}`, data.outcome === 'allowed-once' ? text('allow') : data.outcome === 'rejected' ? text('reject')
+          : data.outcome === 'cancelled' ? text('cancelled') : text('answered'))
         await settledEdits(conn)
       }
     })().catch(() => {})
