@@ -880,7 +880,14 @@ export function install(rt) {
       const hint = question.multiSelect === true ? text('numbersMulti') : text('numbers')
       return `${text('question', { bot })}${question.question}${question.detail ? `\n${question.detail}` : ''}\n${options}\n(${hint})`
     },
-    approval: (bot, entry) => `${text('approval', { bot })}${entry.tool}${entry.reason ? ` — ${entry.reason}` : ''}${entry.detail?.text ? `\n${entry.detail.text}` : ''}${entry.detail?.code ? `\n${entry.detail.code}` : ''}`,
+    approval: (bot, entry) => {
+      const heading = `${text('approval', { bot })}${entry.tool}`
+      const external = [entry.reason, entry.detail?.text, entry.detail?.code].filter(Boolean)
+      if (external.length === 0) return heading
+      // Load the helper synchronously at the presenter boundary.
+      const { labelInformationOnly } = process.getBuiltinModule('node:module').createRequire(import.meta.url)('../provenance.js')
+      return heading + (entry.reason ? ' — ' : '\n') + labelInformationOnly(external.join('\n'))
+    },
   }
   const cardButtons = {
     question: (question) => (question.multiSelect === true ? undefined : (question.options ?? []).map((option, index) => ({ data: `q:${question.id}:${index}`, label: option.label }))),
