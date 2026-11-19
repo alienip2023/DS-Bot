@@ -33,18 +33,23 @@ function titleChunk(text) {
   ]
 }
 
+function digestLine(message) {
+  const flat = textOf(message.content).replace(/\s+/g, ' ').trim()
+  return flat === '' ? '' : `${message.role}: ${flat.slice(0, 300)}`
+}
+
 // A compaction request neither: a deterministic digest of the messages.
-function digestChunks(messages) {
+export function digestChunks(messages, finalLine = '') {
   const lines = []
   let used = 0
   for (const message of messages ?? []) {
-    const text = textOf(message.content).replace(/\s+/g, ' ').trim()
-    if (text === '') continue
-    const line = `${message.role}: ${text.slice(0, 300)}`
+    const line = digestLine(message)
+    if (line === '') continue
     if (used + line.length > 8 * 1024) break
     lines.push(line)
     used += line.length
   }
+  if (finalLine !== '') lines.push(finalLine)
   const text = `[Earlier conversation, condensed]\n${lines.join('\n')}`
   return [
     { type: 'block-start', index: 0, blockType: 'text' },
@@ -52,6 +57,86 @@ function digestChunks(messages) {
     { type: 'block-end', index: 0, block: { type: 'text', text } },
     { type: 'finish', reason: { kind: 'stop' } },
   ]
+}
+
+// The bounded compaction digest (DS-P2-W2-1). UTF-8 byte budget for header, the omitted
+// marker reserve, folded lines and protected text; the final synthetic prompt is outside it.
+export const COMPACTION_FOLD_BUDGET = 8192
+const DIGEST_HEADER = '[Earlier conversation, condensed]'
+const DIGEST_MARKER_RESERVE = 64
+const DIGEST_OVERSIZE_MARKER = '[digest: protected text exceeds budget; earlier history omitted]'
+const CITATION = /\[\d+\]|\bsrc:[^\s\]]+|https?:\/\/[^\s)\]]+|[\w./-]+:\d+(?:-\d+)?/g
+const byteLength = text => Buffer.byteLength(text, 'utf8')
+
+// One older message, normalized and cut like digestChunks does, except that a cut never
+// lands inside a citation token: that token is kept whole.
+function foldLine(role, text) {
+  const flat = text.replace(/\s+/g, ' ').trim()
+  let cut = 300
+  for (const match of flat.matchAll(CITATION)) {
+    const end = match.index + match[0].length
+    if (match.index < cut && end > cut) cut = end
+  }
+  return `${role}: ${flat.slice(0, cut)}`
+}
+
+// `genuine` is the history without the final synthetic prompt. Returns the digest text.
+function foldDigest(genuine) {
+  const rows = genuine.map(message => ({ role: message.role, text: textOf(message.content) }))
+  const last = rows.length - 1
+  const pendingIdx = last >= 0 && rows[last].role === 'user' ? last : -1
+  const starts = []
+  rows.forEach((row, index) => { if (row.role === 'user') starts.push(index) })
+  const exchanges = starts.map((start, k) => ({ start, end: k + 1 < starts.length ? starts[k + 1] : rows.length }))
+  const completed = exchanges.filter(exchange => exchange.start !== pendingIdx)
+  const kept = new Set()
+  if (completed.length < 2) rows.forEach((_, index) => kept.add(index))
+  else for (const exchange of completed.slice(-2)) for (let i = exchange.start; i < exchange.end; i++) kept.add(i)
+  if (pendingIdx >= 0) kept.add(pendingIdx)
+
+  const folded = []
+  const protectedLines = []
+  rows.forEach((row, index) => {
+    if (row.text === '') return
+    if (kept.has(index)) protectedLines.push(`${row.role}: ${row.text}`)
+    else folded.push(foldLine(row.role, row.text))
+  })
+  const protectedText = protectedLines.join('\n')
+  const fixed = byteLength(DIGEST_HEADER) + 1 + DIGEST_MARKER_RESERVE
+  const protectedBytes = protectedLines.reduce((sum, line) => sum + byteLength(line) + 1, 0)
+  if (fixed + protectedBytes > COMPACTION_FOLD_BUDGET) {
+    return [DIGEST_HEADER, DIGEST_OVERSIZE_MARKER, protectedText].join('\n')
+  }
+  const entries = folded.slice()
+  let total = fixed + protectedBytes + entries.reduce((sum, line) => sum + byteLength(line) + 1, 0)
+  let dropped = 0
+  while (total > COMPACTION_FOLD_BUDGET && entries.length > 0) {
+    total -= byteLength(entries.shift()) + 1
+    dropped++
+  }
+  const marker = dropped > 0 ? [`[digest: ${dropped} earlier lines omitted]`] : []
+  return [DIGEST_HEADER, ...marker, ...entries, ...(protectedText === '' ? [] : [protectedText])].join('\n')
+}
+
+// The compaction answer: the bounded digest, or the plain digestChunks one when the
+// bounded helper throws. The signal carries a code only, never message text.
+export function compactionChunks(messages) {
+  const all = messages ?? []
+  const finalLine = () => all.length === 0 ? '' : digestLine(all.at(-1))
+  try {
+    const folded = foldDigest(all.slice(0, -1))
+    const final = finalLine()
+    const text = final === '' ? folded : `${folded}\n${final}`
+    return [
+      { type: 'block-start', index: 0, blockType: 'text' },
+      { type: 'text-delta', index: 0, text },
+      { type: 'block-end', index: 0, block: { type: 'text', text } },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ]
+  } catch {
+    process.emitWarning('omb-w2-1 digest fallback', { code: 'DS_DIGEST_FALLBACK' })
+    return digestChunks(all.slice(0, -1), finalLine())
+  }
 }
 
 // Events a driver (or this adapter) puts on a live Session's queue. Anything else is
@@ -448,7 +533,7 @@ export class LocalAgentAdapter extends LlmAdapter {
       return
     }
     if (options.purpose === 'compaction') {
-      yield* digestChunks(options.messages)
+      yield* compactionChunks(options.messages)
       return
     }
     const sessionId = options.sessionId
