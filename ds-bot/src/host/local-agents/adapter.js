@@ -11,9 +11,8 @@ import { LoopbackMcp } from './mcp.js'
 import { mayReplay } from './resume-safety.js'
 
 export const DEFAULT_CONTEXT_WINDOW = 200_000
-// The replay window when a CLI session is new or its resume failed.
-const REPLAY_MESSAGES = 12
-const REPLAY_BYTES = 24 * 1024
+const BACKGROUND_IMAGE_WINDOW = 12
+const HANDOFF_HISTORY_BYTES = 24 * 1024
 const IDLE_CLOSE_MS = 10 * 60_000
 const APPROVE_TOOL = 'approve_agent_action'
 // A CLI that answers its compaction command first and condenses after (Devin) says
@@ -301,6 +300,7 @@ export class LocalAgentAdapter extends LlmAdapter {
       record,
       cliSessionId: record?.cliSessionId,
       handed: record?.handedId,
+      handedCliSessionId: record?.handedCliSessionId,
       unresolvedMessageIds: record?.unresolvedMessageIds ?? [],
       unresolvedCallIds: record?.unresolvedCallIds ?? [],
       promptHash: record?.promptHash,
@@ -373,6 +373,7 @@ export class LocalAgentAdapter extends LlmAdapter {
       cliSessionId: live.cliSessionId,
       cwd: live.cwd,
       handedId: live.handed,
+      ...(live.handedCliSessionId === undefined ? {} : { handedCliSessionId: live.handedCliSessionId }),
       ...(live.unresolvedCallIds?.length > 0 ? { unresolvedCallIds: live.unresolvedCallIds } : {}),
       ...(live.unresolvedMessageIds?.length > 0 ? { unresolvedMessageIds: live.unresolvedMessageIds } : {}),
       promptHash: live.promptHash,
@@ -491,9 +492,13 @@ export class LocalAgentAdapter extends LlmAdapter {
     if (session !== undefined) session.rolledBack = true
     live.resumeClass = session?.resumeClass ?? 'unknown'
     live.cliSessionId = undefined
+    live.handedSessionAwaitingId = undefined
     live.handed = live.handedBefore
-    if (mayReplay(live.resumeClass)) live.handed = undefined
-    else live.unresolvedMessageIds = [...new Set([...live.unresolvedMessageIds, ...(live.turnMessageIds ?? [])])]
+    live.handedCliSessionId = live.handedCliSessionBefore
+    if (mayReplay(live.resumeClass)) {
+      live.handed = undefined
+      live.handedCliSessionId = undefined
+    } else live.unresolvedMessageIds = [...new Set([...live.unresolvedMessageIds, ...(live.turnMessageIds ?? [])])]
     // A new action must ask again: callbacks and decisions belong to the old turn.
     live.unresolvedCallIds = [...new Set([...live.unresolvedCallIds, ...live.pending.keys()])]
     live.pending.clear()
@@ -541,71 +546,49 @@ export class LocalAgentAdapter extends LlmAdapter {
     const preset = this.deps.presetFor(sessionId)
     const live = await this.liveFor(options, preset)
 
-    // What the request carries past the last handed message. When the marker is
-    // gone the CLI session is stale or new: it gets a replay instead of a delta.
+    // The unresolved ids cover both accepted actions and actions with unknown outcomes.
     const excluded = new Set(live.unresolvedMessageIds)
     const excludedCalls = new Set(live.unresolvedCallIds)
     let unresolved = false
     const messages = (options.messages ?? []).filter(message => {
       if (message.role === 'tool' && excludedCalls.has(message.toolCallId)) return false
-      if (excluded.has(message.id)) { unresolved = true; return false }
+      if (excluded.size > 0 && excluded.has(message.id)) { unresolved = true; return false }
       if (message.role === 'user') unresolved = false
       return !unresolved || message.role === 'system'
     })
     const latestUser = (options.messages ?? []).findLast(message => message.role === 'user')
-    if (latestUser !== undefined && excluded.has(latestUser.id)) {
+    if (latestUser !== undefined && !messages.includes(latestUser)) {
       yield { type: 'finish', reason: { kind: 'stop' } }
       return
     }
-    const at = live.handed === undefined ? -1 : messages.findIndex(message => message.id === live.handed)
-    const fresh = live.cliSessionId === undefined || live.handed === undefined || at === -1
-    const delta = fresh ? [] : messages.slice(at + 1)
+    let at = -1
+    let lookupFailed = false
+    try {
+      if (live.handed !== undefined) at = messages.findIndex(message => message.id === live.handed)
+    } catch {
+      lookupFailed = true
+      this.deps.rt?.warn?.('LOCAL_AGENT_CONTEXT_REBUILD')
+    }
+    const needsRebuild = () => live.handed === undefined || live.handedCliSessionId === undefined
+      || live.handedCliSessionId !== live.cliSessionId || at === -1
+    let fresh = needsRebuild()
+    const currentAt = messages.findLastIndex(message => message.role === 'user' && message.source?.kind !== 'runtime-context')
+    const hasCurrentInput = currentAt > at
+    if ((fresh && (!hasCurrentInput || lookupFailed)) || (!fresh && live.state === 'idle' && at === messages.length - 1)) {
+      yield { type: 'finish', reason: { kind: 'stop' } }
+      return
+    }
+    const inputAt = () => fresh && at === -1 ? currentAt : at + 1
     if (live.state === 'idle') {
       live.handedBefore = live.handed
+      live.handedCliSessionBefore = live.handedCliSessionId
       live.turnMessageIds = []
     }
-    const input = fresh ? messages.slice(Math.max(0, messages.findLastIndex(message => message.role === 'user'))) : delta
-    live.turnMessageIds = [...new Set([...(live.turnMessageIds ?? []), ...input.map(message => message.id).filter(id => id !== undefined)])]
-
-    // Results of the calls the last step emitted answer the suspended CLI calls.
-    // A user message never resolves an approve_agent_action pending: only that
-    // tool's own result may. User text may answer a pending bridged MCP call
-    // whose DSH tool concluded the turn (a question-type card).
-    const settled = []
-    for (const message of delta) {
-      if (message.role !== 'tool') continue
-      const pending = live.pending.get(message.toolCallId)
-      if (pending === undefined) continue
-      live.pending.delete(message.toolCallId)
-      const text = textOf(message.content) || (message.isError ? 'the call failed' : '')
-      pending.resolve({ text, isError: message.isError === true })
-      settled.push({ name: pending.name, text, isError: message.isError === true })
+    const rememberInput = () => {
+      const input = messages.slice(inputAt())
+      live.turnMessageIds = [...new Set([...(live.turnMessageIds ?? []), ...input.map(message => message.id).filter(id => id !== undefined)])]
     }
-    // The loop's runtime-context user messages are context, not input: they
-    // fold into the next prompt or steer, never start a prompt on their own.
-    const contextText = delta
-      .filter(message => message.role === 'user' && message.source?.kind === 'runtime-context')
-      .map(message => textOf(message.content)).filter(text => text !== '').join('\n')
-    const users = delta.filter(message => message.role === 'user' && message.source?.kind !== 'runtime-context')
-    // The first open bridged call that is not an approval may take the user's
-    // next message as its answer; the rest of the input is new.
-    const openCall = [...live.pending.entries()].find(([, entry]) => entry.name !== APPROVE_TOOL)
-    const remaining = []
-    let answered = openCall === undefined
-    for (const message of users) {
-      if (!answered && openCall !== undefined) {
-        const [id, pending] = openCall
-        live.pending.delete(id)
-        const answer = textOf(message.content)
-        pending.resolve({ text: answer })
-        // The CLI may have finished while this call waited; the answer is then a
-        // settled result the turn below has to carry, like a tool result (#1513).
-        settled.push({ name: openCall[1].name, text: answer, isError: false })
-        answered = true
-      } else {
-        remaining.push(message)
-      }
-    }
+    rememberInput()
 
     const system = messages.filter(message => message.role === 'system').map(message => textOf(message.content)).join('\n').trim()
     const promptHash = system === '' ? undefined : createHash('sha256').update(system).digest('hex')
@@ -668,15 +651,76 @@ export class LocalAgentAdapter extends LlmAdapter {
         void pendingId.then((id) => {
           if (id === undefined || live.dead || session.rolledBack === true) return
           live.cliSessionId = id
+          if (live.handedSessionAwaitingId === session) {
+            live.handedCliSessionId = id
+            live.handedSessionAwaitingId = undefined
+          }
           this.deps.saveRecord(sessionId, this.recordOf(live, { cliSessionId: id, cwd, promptHash: live.promptHash ?? promptHash, model: options.model }))
         })
       }
     }
 
+    // Opening a CLI may replace the saved session with a different one.
+    if (!fresh && needsRebuild()) {
+      fresh = true
+      if (!hasCurrentInput) {
+        yield { type: 'finish', reason: { kind: 'stop' } }
+        return
+      }
+      rememberInput()
+    }
+    const contextSessionId = live.cliSessionId
+    const delta = messages.slice(inputAt())
+    // Results of the calls the last step emitted answer the suspended CLI calls.
+    // A user message never resolves an approve_agent_action pending: only that
+    // tool's own result may. User text may answer a pending bridged MCP call
+    // whose DSH tool concluded the turn (a question-type card).
+    const settled = []
+    for (const message of fresh ? [] : delta) {
+      if (message.role !== 'tool') continue
+      const pending = live.pending.get(message.toolCallId)
+      if (pending === undefined) continue
+      live.pending.delete(message.toolCallId)
+      const text = textOf(message.content) || (message.isError ? 'the call failed' : '')
+      pending.resolve({ text, isError: message.isError === true })
+      settled.push({ name: pending.name, text, isError: message.isError === true })
+    }
+    // The loop's runtime-context user messages are context, not input: they
+    // fold into the next prompt or steer, never start a prompt on their own.
+    const contextText = delta
+      .filter(message => message.role === 'user' && message.source?.kind === 'runtime-context')
+      .map(message => textOf(message.content)).filter(text => text !== '').join('\n')
+    const users = delta.filter(message => message.role === 'user' && message.source?.kind !== 'runtime-context')
+    // The first open bridged call that is not an approval may take the user's
+    // next message as its answer; the rest of the input is new.
+    const openCall = [...live.pending.entries()].find(([, entry]) => entry.name !== APPROVE_TOOL)
+    const remaining = []
+    let answered = openCall === undefined
+    for (const message of users) {
+      if (message.source?.kind === 'bot') {
+        remaining.push(message)
+      } else if (!answered && openCall !== undefined && !fresh) {
+        const [id, pending] = openCall
+        live.pending.delete(id)
+        const answer = textOf(message.content)
+        pending.resolve({ text: answer })
+        // The CLI may have finished while this call waited; the answer is then a
+        // settled result the turn below has to carry, like a tool result (#1513).
+        settled.push({ name: openCall[1].name, text: answer, isError: false })
+        answered = true
+      } else {
+        remaining.push(message)
+      }
+    }
+
     const supportsImages = live.spec.kind !== 'acp' || live.engine.supportsImages?.(live.engineSession) !== false
     const resolveImage = block => this.resolveImageBlock(block, { supportsImages, signal: options.signal })
+    const history = fresh ? messages.filter((message, index) => index < inputAt() || message.role !== 'user') : []
+    // The explicit handoff is already the context package of a deliberately new part.
+    const openingPart = freshCli && live.record === undefined && live.handed === undefined && excluded.size === 0
+      && history.some(message => message.source?.handoff === true)
     let promptBlocks = fresh
-      ? await renderReplay(messages, system, resolveImage)
+      ? await renderRebuild(history, system, resolveImage, { contextText, remaining, currentCount: delta.length, openingPart })
       : await renderDelta(contextText, remaining, resolveImage)
     let sentInstructions = live.spec.kind !== 'acp' && freshCli && instructions !== undefined
     // A new CLI session gets its instructions in the open args or the replay;
@@ -729,8 +773,10 @@ export class LocalAgentAdapter extends LlmAdapter {
     // The marker before it is kept: a start that fails before the CLI reads
     // anything must not count that message as delivered.
     const last = messages.at(-1)
-    if (last !== undefined) {
+    if (last?.id !== undefined) {
       live.handed = last.id
+      live.handedCliSessionId = fresh ? live.cliSessionId : contextSessionId
+      live.handedSessionAwaitingId = live.handedCliSessionId === undefined ? live.engineSession : undefined
       this.deps.saveRecord(sessionId, this.recordOf(live, { cwd, promptHash: live.promptHash ?? promptHash, model: options.model }))
     }
 
@@ -1307,36 +1353,46 @@ async function renderDelta(contextText, remaining, resolveImage) {
   return mergeTextBlocks(parts)
 }
 
-// The replay a fresh CLI session stands up on: the system prompt, then the
-// recent messages rendered as text and images, newest first, always with the latest input
-// and the handoff a new part opens with, both word for word.
-async function renderReplay(messages, system, resolveImage) {
-  const picked = []
-  let used = 0
-  const body = (messages ?? []).filter(message => message.role !== 'system')
-  const latest = body.at(-1)
-  let full = false
-  for (const message of [...body].reverse()) {
-    const whole = message === latest || message.source?.handoff === true
-    const text = textOf(message.content)
-    const prefix = `${message.role === 'assistant' ? 'You' : message.role === 'tool' ? `Tool result (${message.toolCallId ?? 'call'})` : 'User'}:`
-    const approxLen = prefix.length + 1 + (whole ? text.length : Math.min(text.length, 2_000))
-    if (!whole) {
-      full ||= picked.length >= REPLAY_MESSAGES || used + approxLen > REPLAY_BYTES
-      if (full) continue
-    }
-    const blocks = await blocksOfMessage(message, { maxText: whole ? Infinity : 2_000, resolveImage })
-    const entry = blocks.length > 0 && blocks[0].type === 'text'
-      ? [{ type: 'text', text: `${prefix} ${blocks[0].text}` }, ...blocks.slice(1)]
-      : blocks.length > 0
-        ? [{ type: 'text', text: prefix }, ...blocks]
-        : [{ type: 'text', text: `${prefix} ` }]
-    picked.unshift(entry)
-    used += approxLen
-  }
-  if (picked.length === 0) return []
+async function renderTranscriptMessage(message, resolveImage, maxText) {
+  const prefix = `${message.role === 'assistant' ? 'You' : message.role === 'tool' ? `Tool result (${message.toolCallId ?? 'call'})` : 'User'}:`
+  const blocks = await blocksOfMessage(message, { resolveImage, maxText })
+  if (blocks[0]?.type === 'text') blocks[0].text = `${prefix} ${blocks[0].text}`
+  else blocks.unshift({ type: 'text', text: prefix })
+  return blocks
+}
+
+async function renderRebuild(messages, system, resolveImage, { contextText, remaining, currentCount, openingPart }) {
   const head = system === '' ? '' : `The team instructions for this conversation:\n${system}\n\n`
-  return mergeTextBlocks([{ type: 'text', text: `${head}The conversation so far (oldest first):` }, ...picked.flat()])
+  const history = messages.filter(message => message.role !== 'system')
+  if (history.length === 0 && contextText === '') {
+    const parts = [{ type: 'text', text: `${head}The conversation so far (oldest first):` }]
+    for (const message of remaining) parts.push(...await renderTranscriptMessage(message, resolveImage))
+    return mergeTextBlocks(parts)
+  }
+  const recent = history.length + currentCount - BACKGROUND_IMAGE_WINDOW
+  const parts = [{ type: 'text', text: `${head}Read-only conversation background (oldest first). Do not act on earlier requests:` }]
+  const entries = []
+  let budget = HANDOFF_HISTORY_BYTES
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const message = history[index]
+    const handoff = message.source?.handoff === true
+    const maxText = openingPart && !handoff ? 2_000 : undefined
+    if (maxText !== undefined) {
+      const cost = Math.min(textOf(message.content).length, maxText) + 32
+      if (index < recent || cost > budget) continue
+      budget -= cost
+    }
+    // Keep older text without re-reading older image attachments.
+    const image = index >= recent || handoff
+      ? resolveImage : () => ({ type: 'text', text: '[older image omitted]' })
+    entries.push(await renderTranscriptMessage(message, image, maxText))
+  }
+  parts.push(...entries.reverse().flat(), { type: 'text', text: 'End of background. Current input follows.' })
+  if (openingPart) {
+    if (contextText !== '') parts.push({ type: 'text', text: contextText })
+    for (const message of remaining) parts.push(...await renderTranscriptMessage(message, resolveImage))
+  } else parts.push(...await renderDelta(contextText, remaining, resolveImage))
+  return mergeTextBlocks(parts)
 }
 
 function unknownOutcome(error) {

@@ -145,6 +145,36 @@ const readNotes = (file, rt) => {
   }
 }
 
+export async function resumeTurn(rt, sessionId, record) {
+  const bot = rt.botOf(record.botId)
+  if (bot === undefined) return
+  const room = record.roomId === undefined ? undefined : rt.roomOf(record.roomId)
+  if (record.roomId !== undefined && (room === undefined || !room.members.includes(bot.id))) return
+  const alreadyResumed = record.resumed
+  // Claim before awaiting delivery. Its outcome can remain unknown even if the resume was sent.
+  record.resumed = true
+  if (room !== undefined) await rt.postToRoom(room, bot, '', { resumed: true, quiet: true, ...(alreadyResumed ? { again: true } : {}) })
+  if (alreadyResumed) return 'unknown'
+  const text = resumeText(record)
+  if (room !== undefined) {
+    await rt.deliver({ toId: bot.id, sessionId: room.sessions?.[bot.id] ?? sessionId, role: 'room', roomId: room.id, note: 'picking up after a restart', resumed: true, text, ...(record.trigger?.askedBy ? { askedBy: record.trigger.askedBy } : {}) })
+    return 'unknown'
+  }
+  // The turn ran in a part that is still one of the Bot's: it goes on there, not in the
+  // foreground chat when that part is a background one. A part gone since (archived and
+  // dropped) falls back to the Bot's current chat.
+  const ownPart = rt.selfOf(sessionId) === bot.id && rt.isBotSession(sessionId) ? { sessionId } : {}
+  const trigger = record.trigger
+  if ((trigger?.role === 'request' || trigger?.role === 'stopped') && trigger.senderSessionId && trigger.audience !== 'user' && rt.botOf(trigger.senderSessionId)) {
+    // The sender still waits for this turn's answer, so it goes on under the same exchange.
+    await rt.deliver({ fromId: trigger.senderSessionId, toId: bot.id, ...ownPart, ...(trigger.senderPart ? { fromPart: trigger.senderPart } : {}), role: trigger.role, ...(trigger.exchangeId ? { exchangeId: trigger.exchangeId } : {}), ...(trigger.senderRoomId ? { fromRoomId: trigger.senderRoomId } : {}), resumed: true, text })
+    return 'unknown'
+  }
+  // A turn that went on with work another Bot asked for still owes that Bot its answer.
+  await rt.deliver({ toId: bot.id, ...ownPart, role: 'resume', resumed: true, text, ...(trigger?.work ? { work: trigger.work } : {}) })
+  return 'unknown'
+}
+
 export function install(rt) {
   const { ctx, home } = rt
   const file = join(home, 'inflight.json')
@@ -293,35 +323,6 @@ export function install(rt) {
   rt.noteApproval = (sessionId, approval) => update(sessionId, record => (record === undefined ? record
     : approval === undefined ? (({ approval: _, ...rest }) => rest)(record) : { ...record, approval }))
 
-  async function resumeTurn(sessionId, record) {
-    const bot = rt.botOf(record.botId)
-    if (bot === undefined) return
-    const text = resumeText(record)
-    if (record.roomId !== undefined) {
-      const room = rt.roomOf(record.roomId)
-      if (room === undefined || !room.members.includes(bot.id)) return
-      await rt.postToRoom(room, bot, '', { resumed: true, quiet: true, ...(record.resumed ? { again: true } : {}) })
-      // A turn already picked up once and cut off again stays stopped: a restart loop
-      // must not run it forever.
-      if (record.resumed) return
-      await rt.deliver({ toId: bot.id, sessionId: room.sessions?.[bot.id] ?? sessionId, role: 'room', roomId: room.id, note: 'picking up after a restart', resumed: true, text, ...(record.trigger?.askedBy ? { askedBy: record.trigger.askedBy } : {}) })
-      return
-    }
-    if (record.resumed) return
-    // The turn ran in a part that is still one of the Bot's: it goes on there, not in the
-    // foreground chat when that part is a background one. A part gone since (archived and
-    // dropped) falls back to the Bot's current chat.
-    const ownPart = rt.selfOf(sessionId) === bot.id && rt.isBotSession(sessionId) ? { sessionId } : {}
-    const trigger = record.trigger
-    if ((trigger?.role === 'request' || trigger?.role === 'stopped') && trigger.senderSessionId && trigger.audience !== 'user' && rt.botOf(trigger.senderSessionId)) {
-      // The sender still waits for this turn's answer, so it goes on under the same exchange.
-      await rt.deliver({ fromId: trigger.senderSessionId, toId: bot.id, ...ownPart, ...(trigger.senderPart ? { fromPart: trigger.senderPart } : {}), role: trigger.role, ...(trigger.exchangeId ? { exchangeId: trigger.exchangeId } : {}), ...(trigger.senderRoomId ? { fromRoomId: trigger.senderRoomId } : {}), resumed: true, text })
-      return
-    }
-    // A turn that went on with work another Bot asked for still owes that Bot its answer.
-    await rt.deliver({ toId: bot.id, ...ownPart, role: 'resume', resumed: true, text, ...(trigger?.work ? { work: trigger.work } : {}) })
-  }
-
   // Where a queued note goes now: its Session if it still is one, else the
   // current Session of its Bot, or of its group when the message went to one.
   const sessionFor = (sessionId, args) => (rt.isBotSession(sessionId) ? sessionId
@@ -419,7 +420,7 @@ export function install(rt) {
     // The turn was cut off before it finished: the work is picked up again, as after
     // a restart that cut it off.
     if (reason === undefined || reason.kind === 'interrupted') {
-      await resumeTurn(sessionId, record)
+      await resumeTurn(rt, sessionId, record)
       return
     }
     if (reason.kind === 'error') {
@@ -516,7 +517,7 @@ export function install(rt) {
     }
     taken = undefined
     for (const [sessionId, record] of cut) {
-      await resumeTurn(sessionId, record).catch(error => rt.warn('ds-bot: picking up the turn of %s failed: %s', sessionId, error))
+      await resumeTurn(rt, sessionId, record).catch(error => rt.warn('ds-bot: picking up the turn of %s failed: %s', sessionId, error))
     }
     // What a group's members were asked for and will not pick up is settled now.
     await rt.settleRoomBatches?.()
