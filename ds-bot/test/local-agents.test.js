@@ -15,7 +15,10 @@ import { cleanEnv, refreshSearchDirs } from '../src/host/local-agents/discover.j
 import { ENGINES, validateCustom, isLocalAgentRoute, cliMode, acpMode } from '../src/host/local-agents/engines.js'
 import { AGENT_BADGES, agentAvatar, badgeOf, isLocalRoute } from '../src/client/agent-routes.js'
 import { INKS } from '../src/client/inks.js'
+import { newMainThread, saveThread } from '../src/host/bot-store.js'
+import { STATE_VERSION } from '../src/host/constants.js'
 import { install as localAgentsInstall } from '../src/host/local-agents/index.js'
+import { install as storeInstall } from '../src/host/store.js'
 import { install as partsInstall } from '../src/host/parts.js'
 import { install as modelsInstall } from '../src/host/models.js'
 import { fakeContext } from './fake-ctx.js'
@@ -78,6 +81,73 @@ async function collect(stream) {
 }
 
 const options = (sessionId, messages, extra = {}) => ({ provider: 'local-acp-fake', model: 'default', sessionId, messages, tools: [{ name: 'message_bot' }], signal: AbortSignal.timeout(60_000), ...extra })
+
+async function threadApprovalAdapter(t, permission, approvalMode, sessionId = 's1') {
+  const ctx = fakeContext()
+  ctx.fiber = { state: 2 }
+  const home = mkdtempSync(join(tmpdir(), 'dsb-thread-approval-'))
+  t.after(async () => {
+    await ctx.dispose()
+    rmSync(home, { recursive: true, force: true })
+  })
+  const statePath = join(home, 'state.json')
+  const bot = { id: 'b1', name: 'Bot', sessionId: 's1', model: 'local-acp-fake/default', permission }
+  const main = newMainThread(bot)
+  const other = { ...main, id: 'b1:other', title: 'Other', sessionId: 's2' }
+  bot.threadIds = [main.id, other.id]
+  const room = { id: 'r1', name: 'Room', named: true, members: [bot.id], admin: bot.id, sessions: { b1: 's-room' }, permission: 'read-only' }
+  writeFileSync(statePath, JSON.stringify({ version: STATE_VERSION, bots: { b1: bot }, threads: { [main.id]: main, [other.id]: other }, rooms: { r1: room } }))
+  const rt = { ctx, home, statePath, teamFolder: () => home, warn: () => {} }
+  storeInstall(rt)
+  await rt.load()
+  if (approvalMode !== undefined) {
+    const { threadId } = rt.bySessionIdFull(sessionId)
+    saveThread(rt.state, { ...rt.threadOf(threadId), approvalMode })
+  }
+  rt.state.localAgents = { custom: [{ id: 'fake', name: 'Fake ACP', command: process.execPath, args: [FIXTURES.acp] }], sessions: {} }
+  localAgentsInstall(rt)
+  return { rt, adapter: ctx.adapters[0].adapter }
+}
+
+test('THREAD-ASK', async (t) => {
+  const { rt, adapter } = await threadApprovalAdapter(t, 'danger-full-access', 'ask')
+  assert.equal(adapter.deps.presetFor('s1'), 'danger-full-access')
+  const messages = [user('m1', 'ask-permission')]
+  const ask = await collect(adapter.stream(options('s1', messages)))
+  assert.equal(ask.calls[0]?.name, 'approve_agent_action')
+  assert.equal(ask.finish?.kind, 'tool-calls')
+  delete rt.state.rooms.r1.permission
+  const inherited = await collect(adapter.stream(options('s-room', messages)))
+  assert.equal(inherited.calls.length, 0)
+  assert.match(inherited.text, /allowed via allow-once/)
+})
+
+test('THREAD-PRESET', async (t) => {
+  const { rt, adapter } = await threadApprovalAdapter(t, 'workspace-write', 'read-only', 's2')
+  assert.equal(adapter.deps.presetFor('s2'), 'read-only')
+  assert.equal(adapter.deps.presetFor('s1'), 'workspace-write')
+  rt.botOf('b1').permission = 'read-only'
+  const thread = rt.threadOf('b1:main')
+  saveThread(rt.state, { ...thread, approvalMode: 'workspace-write' })
+  assert.equal(adapter.deps.presetFor('s1'), 'workspace-write')
+})
+
+test('THREAD-ABSENT', async (t) => {
+  const { rt, adapter } = await threadApprovalAdapter(t, 'danger-full-access')
+  const main = rt.threadOf('b1:main')
+  assert.equal(Object.hasOwn(main, 'approvalMode'), false)
+  assert.equal(adapter.deps.presetFor('s1'), 'danger-full-access')
+  assert.equal(adapter.deps.presetFor('s-room'), 'read-only')
+  assert.equal(adapter.deps.presetFor('unowned'), 'workspace-write')
+  rt.botOf('b1').permission = 'read-only'
+  for (const approvalMode of [undefined, null, 'danger-full-access', 'invalid']) {
+    const row = { ...main, approvalMode }
+    rt.state.threads[main.id] = row
+    assert.equal(adapter.deps.presetFor('s1'), 'read-only')
+    saveThread(rt.state, row)
+    assert.equal(Object.hasOwn(rt.threadOf(main.id), 'approvalMode'), false)
+  }
+})
 
 test('local agents register a saved route while the entry is active', async (t) => {
   await refreshSearchDirs()

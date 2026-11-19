@@ -183,7 +183,7 @@ const RESUME_RETRIED = Symbol('resume retried')
 
 export class LocalAgentAdapter extends LlmAdapter {
   // deps: {rt, findExecutable, spawnEngine(kind,route,engine), record(sessionId),
-  //        saveRecord, dropRecord, presetFor(sessionId), toolsFor(options), signInHint(route),
+  //        saveRecord, dropRecord, presetFor(sessionId), forceAskFor?(sessionId), toolsFor(options), signInHint(route),
   //        usedModels(route)}
   constructor(deps) {
     super()
@@ -996,7 +996,9 @@ export class LocalAgentAdapter extends LlmAdapter {
         case 'permission': {
           // The preset answers what it already decides, also on an agent with no
           // matching mode of its own: full access allows, read-only refuses a change.
-          const answer = presetAnswer(this.deps.presetFor(live.sessionId), event)
+          const answer = presetAnswer(
+            this.deps.presetFor(live.sessionId), event, this.deps.forceAskFor?.(live.sessionId),
+          )
           if (answer !== undefined) { event.reply(answer); break }
           yield* closeBlocks()
           live.state = 'suspended'
@@ -1302,7 +1304,8 @@ const optionOf = (options, kind) => ((options ?? []).find(entry => entry.kind ==
 // What the preset answers without asking: an option id, null to refuse, or
 // undefined to ask the user.
 // Pinned: no new automatic allow path. Only full access allows unasked.
-export function presetAnswer(preset, event) {
+export function presetAnswer(preset, event, forceAsk = false) {
+  if (forceAsk) return undefined
   if (preset === 'danger-full-access') return optionOf(event.options, 'allow')
   if (preset === 'read-only' && event.changes === true) return optionOf(event.options, 'reject') ?? null
   return undefined

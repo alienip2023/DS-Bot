@@ -6,6 +6,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { threadApprovalMode } from '../bot-store.js'
 import { serviceOf } from '../services.js'
 import { splitRef } from '../text.js'
 import { output } from '../tools.js'
@@ -74,6 +75,11 @@ export function install(rt) {
     return { available: supported(), detected: detected(), custom: customView() }
   }
 
+  const approvalModeFor = (sessionId) => {
+    const threadId = rt.bySessionIdFull?.(sessionId)?.threadId
+    return threadApprovalMode(rt.threadOf?.(threadId))
+  }
+
   const adapter = new LocalAgentAdapter({
     rt,
     customAgents,
@@ -92,7 +98,10 @@ export function install(rt) {
       const record = store().sessions[sessionId]
       if (record !== undefined) Object.assign(record, patch)
     },
+    forceAskFor: sessionId => approvalModeFor(sessionId) === 'ask',
     presetFor: (sessionId) => {
+      const mode = approvalModeFor(sessionId)
+      if (mode === 'workspace-write' || mode === 'read-only') return mode
       const bot = rt.botOf(rt.selfOf(sessionId))
       const room = rt.roomOf(rt.groupOwners.get(sessionId)?.roomId)
       return room?.permission ?? bot?.permission ?? 'workspace-write'

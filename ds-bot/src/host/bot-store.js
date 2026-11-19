@@ -86,7 +86,7 @@ export function updateBySessionId(index, botId, oldSessionId, newSessionId) {
  *   id: string, botId: string, title: string, createdAt: number, updatedAt: number,
  *   archived: boolean, model: string | null, effort: string | null, workDir: string | null,
  *   sessionId: string | null, parentThreadId: string | null, parentTurn: number | null,
- *   lastSeq: number, unread: number, running: boolean, queued: number,
+ *   lastSeq: number, unread: number, running: boolean, queued: number, approvalMode?: 'ask' | 'workspace-write' | 'read-only',
  * }} ThreadRecord
  */
 
@@ -137,8 +137,7 @@ export function mainThreadOf(state, botId) {
 }
 
 /**
- * Write one Thread row (insert or replace) into the saved team. The caller owns
- * `bot.threadIds`; like the read helpers, this touches only the Thread table.
+ * Insert or replace a saved Thread row. The caller owns `bot.threadIds`.
  * @param {object} state
  * @param {ThreadRecord} thread
  * @returns {ThreadRecord | undefined}
@@ -146,6 +145,7 @@ export function mainThreadOf(state, botId) {
 export function saveThread(state, thread) {
   if (thread === null || typeof thread !== 'object' || typeof thread.id !== 'string' || thread.id === '') return undefined
   if (state.threads === null || typeof state.threads !== 'object' || Array.isArray(state.threads)) state.threads = {}
+  if (Object.hasOwn(thread, 'approvalMode') && threadApprovalMode(thread) === undefined) delete thread.approvalMode
   state.threads[thread.id] = thread
   return thread
 }
@@ -177,6 +177,12 @@ export function newMainThread(bot, now = Date.now()) {
     running: false,
     queued: 0,
   }
+}
+
+// Missing or unrecognized values inherit the room or Bot permission.
+export function threadApprovalMode(thread) {
+  const mode = thread != null && Object.hasOwn(thread, 'approvalMode') ? thread.approvalMode : undefined
+  return mode === 'ask' || mode === 'workspace-write' || mode === 'read-only' ? mode : undefined
 }
 
 /**
