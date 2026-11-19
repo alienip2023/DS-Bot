@@ -4,6 +4,8 @@
 // (IM chats, the phone app): the request is raced — whichever side answers first wins,
 // and the other card withdraws.
 import { createHash, randomUUID } from 'node:crypto'
+import { join } from 'node:path'
+import { AUDIT_DIR, createAuditWriter } from './approval-audit.js'
 
 const OUTCOMES = Object.freeze({ allow: 'allowed-once', reject: 'rejected' })
 // The three outcome values an approval can settle with; `unavailable` and `expired` are not among them.
@@ -18,8 +20,40 @@ export const approvalFingerprint = (sessionId, tool, callId, at) => createHash('
 
 const stale = (message) => Object.assign(new Error(message), { code: 'bot/stale' })
 
+// Persisted approval results kept in state.json, by fingerprint; the oldest go first.
+export const APPROVAL_RESULTS_MAX = 200
+const table = value => (value !== null && typeof value === 'object' && !Array.isArray(value) ? value : {})
+
 export function install(rt) {
   const { ctx } = rt
+  // Only the host that saves the team writes the audit and the critical state; a host
+  // without a store (unit harnesses) or a read-only one writes neither.
+  const canPersist = () => rt.state !== undefined && typeof rt.save === 'function' && rt.readOnly?.() === undefined
+  const audit = createAuditWriter({
+    dir: typeof rt.home === 'string' && rt.home !== '' ? join(rt.home, AUDIT_DIR) : '',
+    writable: canPersist,
+    warn: (...args) => rt.warn?.(...args),
+  })
+  rt.approvalAudit = audit
+  // The result and the Session's resume position are written with save({required:true}),
+  // which resolves only once state.json holds them (temp file, then rename).
+  const recordResult = (entry, result) => {
+    const state = rt.state
+    const results = { ...table(state.approvalResults) }
+    delete results[entry.fingerprint]
+    results[entry.fingerprint] = { result, at: Date.now(), sessionId: entry.sessionId }
+    const keys = Object.keys(results)
+    for (const key of keys.slice(0, Math.max(0, keys.length - APPROVAL_RESULTS_MAX))) delete results[key]
+    state.approvalResults = results
+    const cursors = { ...table(state.resumeCursor) }
+    const since = rt.turnSince?.(entry.sessionId)
+    cursors[entry.sessionId] = { ...(since !== undefined ? { since } : {}), approval: 'settled', fp: entry.fingerprint }
+    state.resumeCursor = cursors
+  }
+  const persistResult = (entry, result) => {
+    recordResult(entry, result)
+    return rt.save({ required: true })
+  }
   /** @type {Map<string, {id:string, sessionId:string, botId:string, roomId?:string, tool:string, reason:string, detail:{text?:string, code?:string}, at:number, fingerprint:string, answer?:(outcome:string)=>void}>} */
   const pending = new Map()
   const approvalListeners = new Set()
@@ -62,11 +96,17 @@ export function install(rt) {
       return 'cancelled'
     }
     pending.set(id, entry)
+    void audit.append({ ts: at, actor: botId, entry, phase: 'open' })
+    // The open position stays in inflight.json (noteApproval above); state.json takes the
+    // settled one, so opening an approval does not change the team's revision.
     rt.approvalWaiting?.(entry)
     emit('open', { ...entry, answerable: true })
     // Returns the outcome actually given, or undefined when the entry was already
     // settled. If the audit record cannot be cleared the outcome can only be a denial.
-    const settle = (outcome) => {
+    // `marker` is set by the answer path, which has already persisted the result and
+    // written the audit line; any other settlement (abort, DSH's card, cancel) publishes
+    // first and appends its audit line right after.
+    const settle = (outcome, marker, actor = 'host') => {
       if (!pending.has(id)) return undefined
       pending.delete(id)
       let given = outcome
@@ -76,7 +116,10 @@ export function install(rt) {
         rt.warn('ds-bot: approval audit clear failed, denying: %s', error)
         given = outcome === OUTCOMES.allow ? 'cancelled' : outcome
       }
-      emit('settled', { id, outcome: given })
+      if (marker === undefined && !audit.enabled()) marker = 'unaudited'
+      entry.given = given
+      emit('settled', { id, outcome: given, ...(marker !== undefined ? { audit: marker } : {}) })
+      if (entry.audited === undefined) void audit.append({ ts: Date.now(), actor, entry, result: given, phase: 'settled' })
       return given
     }
     if (owner === undefined) {
@@ -88,8 +131,8 @@ export function install(rt) {
       const linked = new AbortController()
       request.signal = linked.signal
       return new Promise((resolve, reject) => {
-        const complete = (outcome) => {
-          const given = settle(outcome)
+        const complete = (outcome, marker, actor) => {
+          const given = settle(outcome, marker, actor)
           if (given === undefined) return
           resolve(given)
           linked.abort()
@@ -101,7 +144,7 @@ export function install(rt) {
         Promise.resolve(next()).then(
           (outcome) => {
             if (!pending.has(id)) return
-            complete(outcome)
+            complete(outcome, undefined, 'card')
           },
           // DSH's answerer threw: close the entry and give the caller the error
           // the way the pre-race code did, instead of hanging forever.
@@ -116,8 +159,8 @@ export function install(rt) {
     }
     rt.yieldRoomTurn?.(sessionId)
     return new Promise((resolve) => {
-      entry.answer = (outcome) => {
-        const given = settle(outcome)
+      entry.answer = (outcome, marker, actor) => {
+        const given = settle(outcome, marker, actor)
         if (given === undefined) return
         resolve(given)
       }
@@ -132,9 +175,18 @@ export function install(rt) {
   // `binding` ({sessionId, fingerprint}) is optional: a caller without one answers the
   // exact open entry id (legacy path). If given, both fields must be present and equal
   // the stored ones, else the approval is stale and the request is left unanswered.
+  //
+  // On the host that saves the team the answer is persisted before it is published:
+  // the result goes to state.json (save({required:true})), then the audit line, and only
+  // then the engine's request resolves and `settled` is emitted; the returned promise
+  // resolves after that. If the save fails the approval settles 'cancelled' and the
+  // promise rejects with the save error. A read-only host (or one without a store)
+  // answers as before, synchronously, and marks the settlement 'unaudited'.
+  // The checks below stay synchronous: an id that is closed or already being settled
+  // throws bot/stale at once, so the first answer wins.
   function answerApproval(id, choice, binding) {
     const entry = pending.get(String(id ?? ''))
-    if (entry?.answer === undefined) throw stale('This approval is no longer open')
+    if (entry?.answer === undefined || entry.settling) throw stale('This approval is no longer open')
     if (binding !== undefined && binding !== null
       && (typeof binding.sessionId !== 'string' || typeof binding.fingerprint !== 'string'
         || binding.sessionId !== entry.sessionId || binding.fingerprint !== entry.fingerprint)) {
@@ -142,7 +194,42 @@ export function install(rt) {
     }
     const outcome = OUTCOMES[choice]
     if (outcome === undefined) throw Object.assign(new Error('Choose allow or reject'), { code: 'bot/invalid' })
-    entry.answer(outcome)
+    if (!canPersist()) {
+      entry.answer(outcome, 'unaudited', 'unknown')
+      return undefined
+    }
+    entry.settling = true
+    const run = (async () => {
+      try {
+        await persistResult(entry, outcome)
+      } catch (error) {
+        // The answer was not saved: the in-memory copy must not hold it either, or a
+        // later save would write an allow that was never published.
+        recordResult(entry, 'cancelled')
+        entry.settling = false
+        entry.answer('cancelled', undefined, 'host')
+        throw error
+      }
+      // Settled meanwhile by another path (an abort): that outcome stands, and the saved
+      // result follows it.
+      if (!pending.has(entry.id)) {
+        if (entry.given !== undefined && entry.given !== outcome) await persistResult(entry, entry.given).catch(() => {})
+        throw stale('This approval is no longer open')
+      }
+      const marker = await audit.append({ ts: Date.now(), actor: 'unknown', entry, result: outcome, phase: 'settled' })
+      // An abort during the append settled it (and wrote its own, later audit line).
+      if (!pending.has(entry.id)) {
+        if (entry.given !== undefined && entry.given !== outcome) await persistResult(entry, entry.given).catch(() => {})
+        throw stale('This approval is no longer open')
+      }
+      entry.audited = true
+      entry.answer(outcome, marker, 'unknown')
+      return outcome
+    })()
+    // IM answers without awaiting; the rejection is still handled there by its caller's
+    // own path, and never left unhandled here.
+    run.catch(() => {})
+    return run
   }
 
   // A group Session that leaves its group has no card left to answer from.

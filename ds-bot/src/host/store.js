@@ -23,7 +23,7 @@ export function install(rt) {
   const { ctx, home, statePath } = rt
 
   /** @type {{version:2, workspaceId?:string, mainBotIds:string[], bots:Record<string,any>, threads:Record<string,any>, privateArchives:any[], rooms:Record<string,any>, agents:Record<string,any>, sections:any[], capabilities:{items:Record<string,any>}, exchanges:any[], exchangeTurns:Record<string,number[]>, revision:number}} */
-  const state = { version: STATE_VERSION, mainBotIds: [], bots: {}, threads: {}, privateArchives: [], rooms: {}, agents: {}, sections: [], capabilities: { items: {} }, exchanges: [], exchangeTurns: {}, works: {}, requests: {}, questions: {}, views: {}, closedCards: {}, prefs: {}, nodeLimits: {}, switching: {}, federation: { version: 1, hubId: null, peersAt: 0, inbox: {}, outbox: {}, seen: {}, seq: 0, allowPeerToMain: false, lastError: null }, memoryFederation: { seq: 0, schemaVersion: 1, nodes: {}, inbox: {} }, revision: 0 }
+  const state = { version: STATE_VERSION, mainBotIds: [], bots: {}, threads: {}, privateArchives: [], rooms: {}, agents: {}, sections: [], capabilities: { items: {} }, exchanges: [], exchangeTurns: {}, works: {}, requests: {}, questions: {}, views: {}, closedCards: {}, prefs: {}, nodeLimits: {}, switching: {}, federation: { version: 1, hubId: null, peersAt: 0, inbox: {}, outbox: {}, seen: {}, seq: 0, allowPeerToMain: false, lastError: null }, memoryFederation: { seq: 0, schemaVersion: 1, nodes: {}, inbox: {} }, approvalResults: {}, resumeCursor: {}, revision: 0 }
   let loaded = null
   let storeReady = false
   let writing = Promise.resolve()
@@ -302,7 +302,7 @@ export function install(rt) {
       state.prefs.theme = LEGACY_THEMES[state.prefs.theme]
       migrated = true
     }
-    if (state.works === null || typeof state.works !== 'object' || Array.isArray(state.works)) state.works = {}
+    for (const key of ['works', 'approvalResults', 'resumeCursor']) if (state[key] === null || typeof state[key] !== 'object' || Array.isArray(state[key])) state[key] = {}
     if (state.requests === null || typeof state.requests !== 'object' || Array.isArray(state.requests)) state.requests = {}
     // Group call batches (groups.js); a batch that is not whole is dropped.
     if (state.roomBatches === null || typeof state.roomBatches !== 'object' || Array.isArray(state.roomBatches)) state.roomBatches = {}

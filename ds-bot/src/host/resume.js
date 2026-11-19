@@ -275,11 +275,20 @@ export function install(rt) {
         const reason = event.data?.reason
         if (reason?.kind === 'aborted' && reason.reason?.kind === 'disposed') break
         update(id, () => undefined)
+        // The turn is over: its saved approval resume position goes with it (coalesced
+        // save; the position only matters while the turn is unfinished).
+        if (rt.readOnly() === undefined && rt.state?.resumeCursor !== null && typeof rt.state?.resumeCursor === 'object' && Object.hasOwn(rt.state.resumeCursor, id)) {
+          rt.state.resumeCursor = { ...rt.state.resumeCursor }
+          delete rt.state.resumeCursor[id]
+          void rt.save?.({ immediate: false })?.catch?.(() => {})
+        }
         break
       }
     }
   })
 
+  // When the Session's unfinished turn started, for the approval resume position.
+  rt.turnSince = sessionId => turns[sessionId]?.since
   // An approval the restart drops is named when the turn is picked up.
   rt.noteApproval = (sessionId, approval) => update(sessionId, record => (record === undefined ? record
     : approval === undefined ? (({ approval: _, ...rest }) => rest)(record) : { ...record, approval }))

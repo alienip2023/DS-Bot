@@ -996,7 +996,7 @@ export function install(rt) {
           await rt.deleteRoom(body.id)
           return ok(view())
         case 'approval-answer':
-          rt.answerApproval(body.id, body.choice, body.binding ?? undefined)
+          await rt.answerApproval(body.id, body.choice, body.binding ?? undefined)
           return ok(true)
         // A stop that fails partway still parks the goal, or it wakes the admin again.
         case 'stop-member-work':
