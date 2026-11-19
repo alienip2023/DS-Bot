@@ -225,7 +225,7 @@ test('U-A3 settled outcomes stay within the existing vocabulary', async (t) => {
 
 test('U-A4 the HTTP result stays ok(true) and API/protocol versions are unchanged', async () => {
   const channel = fs.readFileSync(new URL('../src/host/channel.js', import.meta.url), 'utf8')
-  assert.match(channel, /case 'approval-answer':\n\s+await rt\.answerApproval\(body\.id, body\.choice, body\.binding \?\? undefined\)\n\s+return ok\(true\)/)
+  assert.match(channel, /case 'approval-answer':\n\s+await rt\.answerApproval\(body\.id, body\.choice, body\.binding \?\? undefined, body\.sessionId\)\n\s+return ok\(true\)/)
   const mobile = fs.readFileSync(new URL('../src/host/mobile.js', import.meta.url), 'utf8')
   assert.match(mobile, /API_VERSION = 1\b/)
   assert.match(mobile, /API_MIN = 1\b/)

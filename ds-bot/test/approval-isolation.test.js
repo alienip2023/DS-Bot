@@ -77,7 +77,7 @@ test('3 two answers to one id: first wins, second is bot/stale', async () => {
   const row = rowOf(rt, 'A')
   log.length = 0
   const results = ['allow', 'reject'].map((choice) => {
-    try { rt.answerApproval(row.id, choice); return 'ok' } catch (error) { return error.code }
+    try { rt.answerApproval(row.id, choice, bindingOf(row)); return 'ok' } catch (error) { return error.code }
   })
   assert.deepEqual(results, ['ok', 'bot/stale'])
   assert.equal(await request, 'allowed-once')

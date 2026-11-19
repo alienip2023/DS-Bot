@@ -264,10 +264,9 @@ export function install(rt) {
       },
     }
   }
-  // Sent cards: cardKey → [{ chatKey, messageId, answer? }]. Persisted so a restart
-  // does not send a card twice; an `answer` marks it settled from this side.
+  // Persist sent cards to avoid resending after a restart. An `answer` marks a card settled.
   const cardsOf = async (id) => (await runtimeOf(id)).data
-  const markCard = async (id, cardKey, chatKey, messageId, body) => {
+  const markCard = async (id, cardKey, chatKey, messageId, body, binding) => {
     const data = await cardsOf(id)
     const entries = data.cards[cardKey] ?? []
     const held = entries.find(entry => entry.chatKey === chatKey)
@@ -275,7 +274,7 @@ export function install(rt) {
       held.messageId = messageId ?? held.messageId
       held.text = body ?? held.text
     } else {
-      entries.push({ chatKey, messageId, text: body })
+      entries.push({ chatKey, messageId, text: body, ...binding })
     }
     data.cards[cardKey] = entries
     scheduleWrite(id)
@@ -731,8 +730,13 @@ export function install(rt) {
   const answerApprovalCard = async (conn, chat, cardKey, choice) => {
     const held = openCard(conn, chat.key, cardKey)
     if (held === undefined) return false
+    const { sessionId, fingerprint } = held.entry
+    if (typeof sessionId !== 'string' || sessionId === '' || typeof fingerprint !== 'string' || fingerprint === '') {
+      await sendCardReply(conn, chat, text('stale'))
+      return 'stale'
+    }
     try {
-      rt.answerApproval(held.cardKey.slice(2), choice)
+      rt.answerApproval(held.cardKey.slice(2), choice, { sessionId, fingerprint })
     } catch (error) {
       if (error?.code === 'bot/stale') {
         await sendCardReply(conn, chat, text('stale'))
@@ -894,7 +898,7 @@ export function install(rt) {
     approval: (id) => [{ data: `a:${id}:allow`, label: text('allow') }, { data: `a:${id}:reject`, label: text('reject') }],
   }
 
-  const sendCard = async (conn, cardKey, targets, body, buttons) => {
+  const sendCard = async (conn, cardKey, targets, body, buttons, binding) => {
     const data = await cardsOf(conn.id)
     if (!runners.has(conn.id)) return
     const entries = data.cards[cardKey] ??= []
@@ -902,17 +906,25 @@ export function install(rt) {
     const pending = targets.filter(({ chatKey }) => !recorded.has(chatKey))
     if (pending.length === 0) return
     // Reserve pending chats synchronously before enqueueing so concurrent diffs cannot double-send.
-    for (const { chatKey } of pending) entries.push({ chatKey, messageId: undefined, text: body })
+    for (const { chatKey } of pending) entries.push({ chatKey, messageId: undefined, text: body, ...binding })
     scheduleWrite(conn.id)
     for (const { chatKey, chat } of pending) {
       enqueue(conn, chatKey, {
         chat: { key: chatKey, kind: chat.kind, title: chat.title },
         text: body,
         buttons,
-        after: (sent) => { void markCard(conn.id, cardKey, chatKey, sent?.messageId, body) },
+        after: (sent) => { void markCard(conn.id, cardKey, chatKey, sent?.messageId, body, binding) },
         onDrop: () => unmarkCard(conn.id, cardKey, chatKey),
       })
     }
+  }
+
+  const sendApprovalCard = (origin, entry) => {
+    const { conn, chatKey, chat } = origin
+    const { id, sessionId, fingerprint } = entry
+    const bot = rt.botOf(entry.botId)
+    const buttons = imPlatform(conn.platform)?.buttons === true ? cardButtons.approval(id) : undefined
+    return sendCard(conn, `a:${id}`, [{ chatKey, chat }], cardText.approval(bot?.name ?? '?', entry), buttons, { sessionId, fingerprint })
   }
 
   const diffCards = async () => {
@@ -935,13 +947,9 @@ export function install(rt) {
       }
       // Approvals: one card per open approval id, resent to chats whose earlier send dropped.
       for (const entry of rt.approvalsView?.() ?? []) {
-        const cardKey = `a:${entry.id}`
-        const bot = rt.botOf(entry.botId)
         const origin = originOf(entry.roomId !== undefined ? (rt.roomOf(entry.roomId)?.sessionId ?? entry.roomId) : chatOfBot(entry.botId))
         if (origin === undefined || origin.conn.id !== conn.id) continue
-        const targets = [{ chatKey: origin.chatKey, chat: origin.chat }]
-        const buttons = imPlatform(conn.platform)?.buttons === true ? cardButtons.approval(entry.id) : undefined
-        await sendCard(conn, cardKey, targets, cardText.approval(bot?.name ?? '?', entry), buttons)
+        await sendApprovalCard(origin, entry)
       }
       // Secret requests: text only — the key is typed on the computer or phone.
       for (const [botId, list] of Object.entries(state.secretRequests ?? {})) {
@@ -1525,9 +1533,7 @@ export function install(rt) {
         const sessionId = data.roomId !== undefined ? (rt.roomOf(data.roomId)?.sessionId ?? data.roomId) : chatOfBot(data.botId)
         const origin = originOf(sessionId)
         if (origin === undefined) return
-        const bot = rt.botOf(data.botId)
-        const buttons = imPlatform(origin.conn.platform)?.buttons === true ? cardButtons.approval(data.id) : undefined
-        await sendCard(origin.conn, `a:${data.id}`, [{ chatKey: origin.chatKey, chat: origin.chat }], cardText.approval(bot?.name ?? '?', data), buttons)
+        await sendApprovalCard(origin, data)
       })().catch(error => rt.warn('ds-bot: im approval card failed: %s', error))
       return
     }

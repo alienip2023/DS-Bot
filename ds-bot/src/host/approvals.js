@@ -172,9 +172,8 @@ export function install(rt) {
   const approvalsView = () => [...pending.values()].map(({ answer, ...entry }) => ({ ...entry, answerable: answer !== undefined }))
   const waitsForApproval = sessionId => [...pending.values()].some(entry => entry.sessionId === sessionId)
 
-  // `binding` ({sessionId, fingerprint}) is optional: a caller without one answers the
-  // exact open entry id (legacy path). If given, both fields must be present and equal
-  // the stored ones, else the approval is stale and the request is left unanswered.
+  // A supplied binding must still match the original card. The caller must also name
+  // the owning Session, either through that binding or separately.
   //
   // On the host that saves the team the answer is persisted before it is published:
   // the result goes to state.json (save({required:true})), then the audit line, and only
@@ -184,13 +183,16 @@ export function install(rt) {
   // answers as before, synchronously, and marks the settlement 'unaudited'.
   // The checks below stay synchronous: an id that is closed or already being settled
   // throws bot/stale at once, so the first answer wins.
-  function answerApproval(id, choice, binding) {
+  function answerApproval(id, choice, binding, sessionId = binding?.sessionId) {
     const entry = pending.get(String(id ?? ''))
     if (entry?.answer === undefined || entry.settling) throw stale('This approval is no longer open')
     if (binding !== undefined && binding !== null
       && (typeof binding.sessionId !== 'string' || typeof binding.fingerprint !== 'string'
         || binding.sessionId !== entry.sessionId || binding.fingerprint !== entry.fingerprint)) {
       throw stale('This approval no longer matches the request it was shown for')
+    }
+    if (sessionId !== entry.sessionId) {
+      throw Object.assign(new Error('Only the owning session can answer this approval'), { code: 'bot/forbidden' })
     }
     const outcome = OUTCOMES[choice]
     if (outcome === undefined) throw Object.assign(new Error('Choose allow or reject'), { code: 'bot/invalid' })

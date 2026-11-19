@@ -2057,7 +2057,8 @@ test('approval card: successful allow and reject each edit once with their own l
 test('approval card: stale press, non-IM answer and IM-less session keep prior behavior', async (t) => {
   const { s, fake, order, editCounts, ask, drain, onDisk } = await startApprovalCard(t)
   const { racing, id, press } = await ask()
-  assert.equal(await s.rt.answerApproval(id, 'reject'), 'rejected')
+  const { sessionId, fingerprint } = s.rt.approvalsView().find(entry => entry.id === id)
+  assert.equal(await s.rt.answerApproval(id, 'reject', { sessionId, fingerprint }), 'rejected')
   assert.equal((await racing)[0], 'rejected')
   await drain(1)
   assert.equal(fake.edited.length, 1)
@@ -2071,7 +2072,7 @@ test('approval card: stale press, non-IM answer and IM-less session keep prior b
   const sent = fake.sent.length
   const withoutOrigin = await ask('b')
   assert.equal(withoutOrigin.card, undefined)
-  assert.equal(await s.rt.answerApproval(withoutOrigin.id, 'reject'), 'rejected')
+  assert.equal(await s.rt.answerApproval(withoutOrigin.id, 'reject', { sessionId: 'b', fingerprint: withoutOrigin.fp }), 'rejected')
   assert.equal((await withoutOrigin.racing)[0], 'rejected')
   await s.flush()
   assert.equal(fake.sent.length, sent)

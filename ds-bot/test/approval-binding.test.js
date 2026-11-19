@@ -19,6 +19,7 @@ function harness({ noteApproval } = {}) {
   return { rt, ask, warnings }
 }
 const code = name => error => error.code === name
+const bind = ({ sessionId, fingerprint }) => ({ sessionId, fingerprint })
 
 test('the open entry carries a fingerprint over session, tool, callId and time', () => {
   const { rt, ask } = harness()
@@ -28,13 +29,28 @@ test('the open entry carries a fingerprint over session, tool, callId and time',
   assert.notEqual(entry.fingerprint, approvalFingerprint('sess', 'shell', 'c2', entry.at))
 })
 
-test('a matching binding answers; legacy no-binding answers the exact open id', async () => {
+test('a matching binding answers either choice', async () => {
   const a = harness(); const pa = a.ask(); const [ea] = a.rt.approvalsView()
-  a.rt.answerApproval(ea.id, 'allow', { sessionId: ea.sessionId, fingerprint: ea.fingerprint })
+  a.rt.answerApproval(ea.id, 'allow', bind(ea))
   assert.equal(await pa, 'allowed-once')
   const b = harness(); const pb = b.ask(); const [eb] = b.rt.approvalsView()
-  b.rt.answerApproval(eb.id, 'reject')
+  b.rt.answerApproval(eb.id, 'reject', bind(eb))
   assert.equal(await pb, 'rejected')
+})
+
+test('a foreign caller session cannot answer an open approval', async () => {
+  const { rt, ask } = harness()
+  const request = ask()
+  const [entry] = rt.approvalsView()
+  const binding = bind(entry)
+  assert.throws(
+    () => rt.answerApproval(entry.id, 'allow', binding, 'other'),
+    { code: 'bot/forbidden' },
+    'a foreign session must be forbidden even with the current card binding',
+  )
+  assert.equal(rt.approvalsView()[0]?.answerable, true)
+  rt.answerApproval(entry.id, 'reject', binding)
+  assert.equal(await request, 'rejected')
 })
 
 test('a binding mismatch or a missing binding field is bot/stale and leaves the request open', () => {
@@ -57,8 +73,8 @@ test('a settled, unknown or missing id is bot/stale, with or without binding', a
   const { rt, ask } = harness()
   const promise = ask()
   const [entry] = rt.approvalsView()
-  rt.answerApproval(entry.id, 'reject')
-  await promise
+  rt.answerApproval(entry.id, 'reject', bind(entry))
+  assert.equal(await promise, 'rejected')
   assert.throws(() => rt.answerApproval(entry.id, 'allow'), code('bot/stale'))
   assert.throws(() => rt.answerApproval(entry.id, 'allow', { sessionId: entry.sessionId, fingerprint: entry.fingerprint }), code('bot/stale'))
   assert.throws(() => rt.answerApproval('nope', 'allow'), code('bot/stale'))
@@ -70,7 +86,7 @@ test('answerApproval accepts only allow|reject; other text is bot/invalid and no
   ask()
   const [entry] = rt.approvalsView()
   for (const choice of ['allowed', 'yes', '同意', 'approved', 'ALLOW', undefined, { decision: 'allow' }]) {
-    assert.throws(() => rt.answerApproval(entry.id, choice), code('bot/invalid'))
+    assert.throws(() => rt.answerApproval(entry.id, choice, bind(entry)), code('bot/invalid'))
   }
   assert.equal(rt.approvalsView().length, 1)
 })
@@ -87,7 +103,7 @@ test('an audit clear that throws turns an allow into a denial', async () => {
   const { rt, ask } = harness({ noteApproval: (_s, value) => { calls += 1; if (value === undefined) throw new Error('unreadable') } })
   const promise = ask()
   const [entry] = rt.approvalsView()
-  rt.answerApproval(entry.id, 'allow')
+  rt.answerApproval(entry.id, 'allow', bind(entry))
   assert.equal(await promise, 'cancelled')
   assert.equal(calls, 2)
 })
@@ -148,7 +164,7 @@ test('stale, mismatched, incomplete and invalid answers never settle the request
     () => rt.answerApproval(entry.id, 'allow', { sessionId: entry.sessionId, fingerprint: 'x' }),
     () => rt.answerApproval(entry.id, 'allow', { sessionId: entry.sessionId }),
     () => rt.answerApproval(entry.id, 'allow', {}),
-    () => rt.answerApproval(entry.id, '同意'),
+    () => rt.answerApproval(entry.id, '同意', bind(entry)),
     () => rt.answerApproval('missing-id', 'allow'),
   ]
   for (const attempt of attempts) assert.throws(attempt)

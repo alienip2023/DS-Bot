@@ -121,7 +121,7 @@ test('a group Session\'s approval waits in the team view, frees the round, and t
   assert.equal(value.work.bots.b.roomId, 'r1')
   assert.equal(value.work.bots.b.tool, 'pwsh')
 
-  assert.equal((await host.call('approval-answer', { id: approval.id, choice: 'allow' })).ok, true)
+  assert.equal((await host.call('approval-answer', { id: approval.id, choice: 'allow', binding: { sessionId: approval.sessionId, fingerprint: approval.fingerprint } })).ok, true)
   assert.equal(await outcome, 'allowed-once')
   assert.equal((await host.call('approval-answer', { id: approval.id, choice: 'allow' })).error.code, 'bot/stale')
   assert.deepEqual((await host.call('state', {})).value.work.approvals, [])
@@ -142,7 +142,7 @@ test('an own chat\'s approval races DSH\'s card and is listed while it waits', a
   const outcome = host.askApproval('a', {}, () => new Promise((resolve) => { release = resolve }))
   const [approval] = (await host.call('state', {})).value.work.approvals
   assert.deepEqual([approval.botId, approval.roomId, approval.answerable], ['a', undefined, true])
-  assert.equal((await host.call('approval-answer', { id: approval.id, choice: 'allow' })).ok, true)
+  assert.equal((await host.call('approval-answer', { id: approval.id, choice: 'allow', binding: { sessionId: approval.sessionId, fingerprint: approval.fingerprint } })).ok, true)
   assert.equal(await outcome, 'allowed-once')
   // DSH's card answering late is ignored once DS Bot settled the race.
   release('rejected')
@@ -253,7 +253,7 @@ test('a member that fails after the round moved on shows the failure in the grou
   const outcome = host.askApproval('gb')
   await settle(() => result() !== undefined)
   const [approval] = (await host.call('state', {})).value.work.approvals
-  await host.call('approval-answer', { id: approval.id, choice: 'allow' })
+  await host.call('approval-answer', { id: approval.id, choice: 'allow', binding: { sessionId: approval.sessionId, fingerprint: approval.fingerprint } })
   await outcome
   host.emit('gb', 'turn/end', { turn: 1, reason: { kind: 'error', error: { code: 'RATE_LIMIT', status: 429, message: 'Too many requests' } } })
   await settle(() => host.agentOf('r1').calls.length === 1)

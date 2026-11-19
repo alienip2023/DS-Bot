@@ -1,5 +1,4 @@
-// DS-3: the optional approval binding on the wire. Optional wiring, never enforcement:
-// a missing binding takes the legacy path; a given one is only a stale-card guard.
+// A binding guards against stale cards and can supply the caller's Session.
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -68,13 +67,17 @@ async function openApproval(w, bot) {
   return { request, row }
 }
 
-test('8b host resolution: missing and null binding take the legacy path', async () => {
+test('8b host resolution: missing and null binding require the owner session', async () => {
   for (const extra of [{}, { binding: null }]) {
     const w = threadWorld()
     const bot = await makeBot(w)
     const { request, row } = await openApproval(w, bot)
-    const res = await w.call('approval-answer', { id: row.id, choice: 'allow', ...extra })
-    assert.equal(res.ok, true, JSON.stringify(res))
+    const res = await w.call('approval-answer', { id: row.id, choice: 'reject', ...extra })
+    assert.equal(res.ok, false)
+    assert.equal(res.error.code, 'bot/forbidden')
+    assert.equal(w.rt.approvalsView()[0]?.answerable, true)
+    const good = await w.call('approval-answer', { id: row.id, choice: 'allow', ...extra, sessionId: row.sessionId })
+    assert.equal(good.ok, true, JSON.stringify(good))
     assert.equal(await request, 'allowed-once')
   }
 })
@@ -105,7 +108,7 @@ test('10 client: a host stale reaches the caller as a rejection', async () => {
 })
 
 // The IM start() helper is copied minimally from im.test.js (not imported from a test file).
-test('11 IM answer path still calls rt.answerApproval without a binding', async (t) => {
+test('11 IM answers with the held card binding', async (t) => {
   const home = mkdtempSync(join(tmpdir(), 'dsb-wire-'))
   const { writeFileSync } = await import('node:fs')
   writeFileSync(join(home, 'state.json'), JSON.stringify({
@@ -146,17 +149,15 @@ test('11 IM answer path still calls rt.answerApproval without a binding', async 
   emitEvent('turn/start', { turn: prompts.length })
   emitEvent('user/message', { source: { kind: 'user', rpcId: prompts.at(-1)?.requestId }, content: [{ type: 'text', text: 'from the chat' }] })
   sent.length = 0
-  const racing = Promise.all((ctx.listeners.get('approval/request') ?? []).map(listener => listener(
-    { agent: { id: 'a' }, toolName: 'bash', reason: 'run it', signal: new AbortController().signal }, () => new Promise(() => {}))))
-  await delay(30)
-  const card = sent.at(-1)
-  const id = card.buttons[0].data.split(':')[1]
   const calls = []
   const original = rt.answerApproval
   rt.answerApproval = function (...args) { calls.push(args); return original.apply(this, args) }
+  const racing = Promise.all((ctx.listeners.get('approval/request') ?? []).map(listener => listener(
+    { agent: { id: 'a' }, toolName: 'bash', reason: 'run it', signal: new AbortController().signal }, () => new Promise(() => {}))))
+  await delay(30)
+  const id = sent.at(-1).buttons[0].data.split(':')[1]
+  const { sessionId, fingerprint } = rt.approvalsView().find(row => row.id === id)
   await fake.handlers.onAction({ chat, sender: { id: 'u1', name: 'User u1' }, data: `a:${id}:allow`, messageId: 1 })
   assert.equal((await racing)[0], 'allowed-once')
-  assert.equal(calls.length, 1)
-  assert.deepEqual(calls[0], [id, 'allow'])
-  assert.equal(calls[0].length, 2)
+  assert.deepEqual(calls, [[id, 'allow', { sessionId, fingerprint }]])
 })
