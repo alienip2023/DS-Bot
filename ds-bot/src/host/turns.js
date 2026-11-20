@@ -15,6 +15,8 @@ import { viaOf } from '../shared/im-platforms.js'
 import { reminderText } from './schedules.js'
 import { remoteError } from './joined-prompt.js'
 import { usageChunk } from './usage.js'
+import { classifyLlmFailure } from './failure-policy.js'
+import { detectDeferral } from './deferral-guard.js'
 
 // Failures only the user can fix: a key, a sign-in, a balance. They block the Bot
 // until it is fixed (`bot.blocked`, for the repair card).
@@ -41,8 +43,9 @@ export function turnFailure(error) {
   const rawCode = typeof error?.code === 'string' && error.code !== '' ? error.code : 'UNKNOWN'
   const raw = typeof error?.message === 'string' ? error.message.trim() : ''
   const contentPolicy = rawCode === 'AUTH' && error?.status === 403 && CONTENT_POLICY.test(raw)
-  const code = contentPolicy ? 'CONTENT_POLICY' : rawCode
-  const message = code === 'AUTH' || raw === '' ? '' : cleanText(raw).slice(0, 500)
+  const rateLimited = classifyLlmFailure(error).kind === 'rate_limit'
+  const code = rateLimited ? 'RATE_LIMIT' : contentPolicy ? 'CONTENT_POLICY' : rawCode
+  const message = (rawCode === 'AUTH' && !contentPolicy) || raw === '' ? '' : cleanText(raw).slice(0, 500)
   const requestId = typeof error?.requestId === 'string' && error.requestId !== '' ? error.requestId : requestIdOf(raw)
   return {
     code,
@@ -1326,7 +1329,7 @@ export function install(rt) {
         const wroteCall = failure === undefined && reason?.kind === 'completed' && lastCalled !== true && writesToolCall(lastText)
         const promisedOnly = !wroteCall && failure === undefined && reason?.kind === 'completed'
           && toolCount === 0 && lastCalled !== true && info?.role === 'room'
-          && promisesWork(lastText) && !rt.callsRoomMember?.(id, info, lastText)
+          && promisesWork(lastText) && detectDeferral(lastText) === null && !rt.callsRoomMember?.(id, info, lastText)
         const retry = (wroteCall || promisedOnly) && info?.retried !== true && !(info?.role === 'room' && stoppedRoomTurns.has(info.exchangeId))
         if (retry) {
           if (promisedOnly) {

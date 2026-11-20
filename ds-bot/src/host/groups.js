@@ -17,6 +17,7 @@
 // turn keeps running in its group Session, and what it ends with is posted to the group,
 // where the member that asked for it answers.
 import { randomUUID } from 'node:crypto'
+import { detectDeferral } from './deferral-guard.js'
 import { claimsFor } from './claims.js'
 import { readFileSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
@@ -314,6 +315,9 @@ export function install(rt) {
       case 'missed': return { kind: 'missed', ...who, time }
       case 'admin-passed': return { kind: 'admin-passed', ...who, time }
       case 'paused': return { kind: 'paused', idle: record.idle, ...who, name: bot?.name ?? record.from, count: record.count ?? record.limit, limit: record.limit, names: record.names, time }
+      // The relay uses its existing text-only event row for these notices.
+      case 'deferral':
+      case 'goal-reminder':
       case 'folder': return { kind: 'folder', text: noticeText(record), time }
       case 'goal': {
         const { who: _who, kind: _kind, reason: _reason, seq: _seq, time: _time, about: _about, ...fields } = record
@@ -373,6 +377,10 @@ export function install(rt) {
   const noteFailure = (room, member, failure) => {
     const { code, status, message } = failure
     say(room, { who: 'DS Bot', kind: 'notice', reason: 'failed', names: [member.name], about: member.id, detail: failureLine(failure), code, ...(status ? { status } : {}), message })
+  }
+
+  const noteDeferral = (room, text) => {
+    if (detectDeferral(text) !== null) say(room, { who: 'DS Bot', kind: 'notice', reason: 'deferral', text: '现在做，或写明等什么。' })
   }
 
   // A failed background helper appends a structured notice directly to the group's
@@ -1192,6 +1200,7 @@ export function install(rt) {
         say(room, { who: 'DS Bot', kind: 'notice', reason: 'missed', names: [member.name], about: member.id, minutes: Math.round(ROOM_REPLY_TIMEOUT_MS / 60000) })
       }
     }
+    noteDeferral(room, final)
     // A result the admin asked for reports its goal task; a failed model call puts it back.
     if (slot.status === 'posted' && slot.by === room.admin && final !== undefined) rt.goalTaskReported?.(room.id, member.id)
     if (reply?.failure !== undefined) rt.goalTaskReset?.(room.id, member.id, 'Could not finish: its model call failed')
@@ -1368,6 +1377,7 @@ export function install(rt) {
         ...(post.goal === 'draft' ? {} : { session: true }),
       })
       if (post.batch !== undefined && text !== '') recordResult(post.batch, who, room.seq)
+      if (post.late && !post.progress) noteDeferral(room, post.text)
     }
     await rt.save()
     if (posts.some(userPost)) rt.goalUserMessage?.(room.id)
@@ -1718,6 +1728,7 @@ export function install(rt) {
         const line = [text, ...files.map(fileLine)].filter(Boolean).join('\n')
         say(room, { who: sender.name, botId: sender.id, text: line, ...(files.length > 0 ? { files } : {}), ...(extra.claims === undefined ? {} : { claims: extra.claims }), ...(extra.changes === undefined ? {} : { changes: extra.changes }) })
         if (extra.batch !== undefined && line !== '') recordResult(extra.batch, sender.name, room.seq)
+        if (extra.late && !extra.progress) noteDeferral(room, text)
       }
       callPost(room, running, sender, text, extra)
       if (extra.batchEnd) closeBatch(extra.batch)

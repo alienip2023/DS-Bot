@@ -25,6 +25,8 @@ const FEEDBACK_MAX = 1000
 const EVENT_TEXT_MAX = 300
 const EVENTS_MAX = 50
 const PAST_MAX = 5
+const REMINDER_LIMIT = 3
+const REMINDER_GAP_MS = 60_000
 
 const tooLong = (what, max) => `${what} is too long: at most ${max}.`
 const tooMany = (what, max) => `At most ${max} ${what}.`
@@ -493,6 +495,36 @@ export function install(rt) {
     return block
   }
 
+  async function goalRemind(room, now = Date.now()) {
+    const goal = room.goal
+    if (goal?.status !== 'active' || rt.readOnly() !== undefined) return
+    const count = goal.reminder?.count ?? 0
+    const last = goal.reminder?.at ?? goal.updatedAt
+    if (count >= REMINDER_LIMIT || now - last < REMINDER_GAP_MS) return
+    if (rt.roomActive(room.id) || rt.workingInRoom(room).length > 0 || rt.roomBatchPending(room.id)) return
+    if ((rt.roomInbox.get(room.id)?.length ?? 0) > 0) return
+
+    const stage = goal.stages[goal.current]
+    const owners = new Set(stage?.tasks.filter(task => task.status === 'pending').map(task => task.botId))
+    const names = room.members.filter(id => owners.has(id)).map(id => rt.botOf(id)?.name).filter(Boolean)
+    if (names.length === 0) return
+
+    goal.reminder = { count: count + 1, at: now }
+    rt.logRoom(room, { who: 'DS Bot', kind: 'notice', reason: 'goal-reminder', text: `${names.join(', ')}: you have pending work on the goal "${goal.title}".` })
+    await rt.save()
+  }
+
+  ctx.effect(() => {
+    const timer = setInterval(() => {
+      if (!rt.hasLoaded()) return
+      for (const room of Object.values(rt.state.rooms)) {
+        void goalRemind(room).catch(error => rt.warn('ds-bot: goal reminder in %s failed: %s', room.name, error))
+      }
+    }, REMINDER_GAP_MS)
+    timer.unref()
+    return () => clearInterval(timer)
+  }, 'ds-bot: goal reminders')
+
   // The tool's answer: the ledger as the caller sees it, without the block's tags.
   function goalLedger(room, member) {
     const goal = room.goal
@@ -801,7 +833,7 @@ export function install(rt) {
   }))
 
   Object.assign(rt, {
-    goalBlock, goalLedger, goalDraft, goalControl, goalDrive, goalSettled, goalUserMessage, goalUserStopped,
+    goalBlock, goalRemind, goalLedger, goalDraft, goalControl, goalDrive, goalSettled, goalUserMessage, goalUserStopped,
     goalTaskWorking: (roomId, botId) => mark(roomId, botId, 'pending', 'working'),
     goalTaskReported: (roomId, botId) => mark(roomId, botId, 'working', 'reported'),
     goalTaskReset: (roomId, botId, note) => mark(roomId, botId, 'working', 'pending', note),
