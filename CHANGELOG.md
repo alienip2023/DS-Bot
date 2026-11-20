@@ -4,6 +4,13 @@ All notable changes to DS Bot are listed here. The format follows [Keep a Change
 
 ## [Unreleased]
 
+## [0.3.8-fork.61]
+
+- Codex 引擎未返回实际沙箱或返回结果与请求不符时，插件会停止该轮。
+- 本地 Agent 的审批请求在完全访问预设下也不会自动放行。
+- 重启恢复只重放明确在提示提交前被拒且没有输出的一轮。
+- 一轮运行期间排队的用户消息将文字全文保存到 `thread-queue.json`，预览仍最多显示 120 字，重启后将尚未发送的文字原文重发一次，带图片的消息只还原文字。
+
 ## [0.3.8] - 2026-11-16
 
 ### Added
