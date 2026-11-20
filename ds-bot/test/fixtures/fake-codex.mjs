@@ -22,6 +22,18 @@ const textOnly = process.argv.includes('--text-only')
 const holdCompact = process.argv.includes('--hold-compact')
 const recordAt = process.argv.indexOf('--record')
 const recordPath = recordAt === -1 ? undefined : process.argv[recordAt + 1]
+const resolvedSandboxAt = process.argv.indexOf('--resolved-sandbox')
+const resolvedSandbox = resolvedSandboxAt === -1 ? undefined : JSON.parse(process.argv[resolvedSandboxAt + 1])
+const sandboxTypes = new Map([
+  ['read-only', 'readOnly'],
+  ['workspace-write', 'workspaceWrite'],
+  ['danger-full-access', 'dangerFullAccess'],
+])
+const threadResult = (id, requestedSandbox) => {
+  const type = sandboxTypes.get(requestedSandbox)
+  const sandbox = resolvedSandboxAt === -1 && type !== undefined ? { type } : resolvedSandbox
+  return { thread: { id, ...(sandbox === undefined ? {} : { sandbox }) } }
+}
 const record = (method, params) => {
   if (recordPath !== undefined) appendFileSync(recordPath, `${JSON.stringify({ method, params })}\n`)
 }
@@ -168,7 +180,7 @@ process.stdin.on('data', (chunk) => {
         if (extra !== undefined) { replyError(id, extra); break }
         const thread = { id: `thr-${++nextId}`, params }
         threads.set(thread.id, thread)
-        reply(id, { thread: { id: thread.id } })
+        reply(id, threadResult(thread.id, params.sandbox))
         break
       }
       case 'thread/resume': {
@@ -178,7 +190,7 @@ process.stdin.on('data', (chunk) => {
         const thread = threads.get(params.threadId) ?? { id: params.threadId }
         thread.params = params
         threads.set(thread.id, thread)
-        reply(id, { thread: { id: params.threadId } })
+        reply(id, threadResult(params.threadId, params.sandbox))
         break
       }
       case 'thread/inject_items': reply(id, {}); break

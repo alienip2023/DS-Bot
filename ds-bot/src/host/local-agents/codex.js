@@ -19,6 +19,23 @@ export function resolveSandbox(mode) {
   return resolved
 }
 
+const RESOLVED_SANDBOX_TYPES = new Map([
+  ['read-only', 'readOnly'],
+  ['workspace-write', 'workspaceWrite'],
+  ['danger-full-access', 'dangerFullAccess'],
+])
+
+export function assertResolvedSandbox(requested, reply) {
+  if (requested === undefined || requested === null || requested === '') return
+  const sandbox = reply?.thread?.sandbox
+  if (sandbox === null || typeof sandbox !== 'object' || typeof sandbox.type !== 'string') {
+    throw Object.assign(new Error('Codex did not return its resolved sandbox'), { code: 'bot/sandbox-unverified' })
+  }
+  if (sandbox.type !== RESOLVED_SANDBOX_TYPES.get(requested)) {
+    throw Object.assign(new Error('Codex did not apply the requested sandbox'), { code: 'bot/sandbox-unverified' })
+  }
+}
+
 export class CodexEngine {
   constructor(route, engine, { findExecutable }) {
     this.route = route
@@ -211,16 +228,22 @@ export class CodexEngine {
       ...(mcp !== undefined ? { config: { mcp_servers: { [MCP_SERVER]: { url: mcp.url, http_headers: { Authorization: `Bearer ${mcp.token}` } } } } } : {}),
     }
     if (thread.threadId !== undefined) {
+      let resumed
       try {
         // thread/resume takes the same params, plus the thread id. The instructions it
         // was started with stay: they are not sent again here.
-        await peer.request('thread/resume', { threadId: thread.threadId, ...params }, { timeout: 30_000 })
-        return thread
+        resumed = await peer.request('thread/resume', { threadId: thread.threadId, ...params }, { timeout: 30_000 })
       } catch {
         thread.threadId = undefined
+        resumed = undefined
+      }
+      if (resumed !== undefined) {
+        assertResolvedSandbox(sandbox, resumed)
+        return thread
       }
     }
     const reply = await peer.request('thread/start', { ...params, ...(instructions ? { developerInstructions: instructions } : {}), ...(ephemeral ? { ephemeral: true } : {}) }, { timeout: 60_000 })
+    assertResolvedSandbox(sandbox, reply)
     thread.threadId = reply?.thread?.id ?? reply?.threadId
     return thread
   }
