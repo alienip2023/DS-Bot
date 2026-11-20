@@ -137,7 +137,9 @@ test('recent notes keep the existing inbox deduplication and session migration b
 })
 
 test('queued TTL does not expire interrupted turns or resend deliveries made during startup', async t => {
-  const f = fixture(t, { 'chat-a': [note('expired', old)] }, { 'chat-a': { botId: 'a', since: old } })
+  const f = fixture(t, { 'chat-a': [note('expired', old)] }, {
+    'chat-a': { botId: 'a', since: old, attempted: true, rejected: true, promptSubmitted: false, producedOutput: false },
+  })
   const host = f.start()
   await host.rt.deliver(note('startup', NOW).args)
   await host.recover()

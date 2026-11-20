@@ -146,6 +146,7 @@ test('a group turn cut off by a restart is picked up once, and the group is told
   const home = freshHome(t)
   const first = await start(home)
   await openRoomTurn(t, first)
+  rt.noteFailure({ source: 'prompt', sessionId: 'gb', text: 'prompt rejected' })
   void first.askApproval('gb')
   await settle(() => inflight(home).gb?.approval !== undefined)
   assert.deepEqual([inflight(home).gb.botId, inflight(home).gb.roomId, inflight(home).gb.trigger.role], ['b', 'r1', 'room'])
@@ -186,6 +187,8 @@ test('a request cut off by a restart goes on under the same exchange; own-chat w
   const first = await start(home)
   run(first, 'b', 1, { content: [{ type: 'text', text: '[Message from Chief]\nDraft the plan' }], source: { kind: 'bot', form: 'relay', role: 'request', exchangeId: 'x1', senderName: 'Chief', senderSessionId: 'a', hop: 0 } })
   run(first, 'a', 1, { content: [{ type: 'text', text: 'hello' }], source: { kind: 'user' } })
+  rt.noteFailure({ source: 'prompt', sessionId: 'b', text: 'prompt rejected' })
+  rt.noteFailure({ source: 'prompt', sessionId: 'a', text: 'prompt rejected' })
   await settle(() => inflight(home).b?.trigger !== undefined && inflight(home).a !== undefined)
   await first.stop()
 
@@ -216,6 +219,8 @@ test('a restart picks a background part up in that part, not in the foreground c
   // Writer's own work in one background part, and Chief's request in another.
   run(first, 'bb1', 1, { content: [{ type: 'text', text: 'sort the notes' }], source: { kind: 'user' } })
   run(first, 'bb2', 1, { content: [{ type: 'text', text: '[Message from Chief]\nDraft the plan' }], source: { kind: 'bot', form: 'relay', role: 'request', exchangeId: 'x1', senderName: 'Chief', senderSessionId: 'a', senderPart: 'a', hop: 0 } })
+  rt.noteFailure({ source: 'prompt', sessionId: 'bb1', text: 'prompt rejected' })
+  rt.noteFailure({ source: 'prompt', sessionId: 'bb2', text: 'prompt rejected' })
   await settle(() => inflight(home).bb1 !== undefined && inflight(home).bb2?.trigger !== undefined)
   await first.stop()
 
@@ -235,6 +240,8 @@ test('when only DS Bot restarts, a turn still running or finished meanwhile is n
   const first = await start(home)
   run(first, 'b', 1, { content: [{ type: 'text', text: '[Message from Chief]\nDraft the plan' }], source: { kind: 'bot', form: 'relay', role: 'request', exchangeId: 'x1', senderName: 'Chief', senderSessionId: 'a', hop: 0 } })
   run(first, 'a', 1, { content: [{ type: 'text', text: 'hello' }], source: { kind: 'user' } })
+  rt.noteFailure({ source: 'prompt', sessionId: 'b', text: 'prompt rejected' })
+  rt.noteFailure({ source: 'prompt', sessionId: 'a', text: 'prompt rejected' })
   await settle(() => inflight(home).b?.trigger !== undefined && inflight(home).a !== undefined)
   await first.stop()
 
@@ -574,6 +581,7 @@ test('a turn DSH stops as it shuts down stays noted; one the user stops does not
 })
 
 test('a message a shutdown cancelled is sent again once; one still waiting, taken up or withdrawn is not', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
   const home = freshHome(t)
   const first = await start(home)
   const send = message => first.tool('message_bot', { to: 'Writer', message, when: 'queue' }, 'a')
@@ -589,7 +597,6 @@ test('a message a shutdown cancelled is sent again once; one still waiting, take
   const original = (await first.call('exchange', { a: 'a', b: 'b' })).value.find(entry => entry.id === plan.source.exchangeId)
   await first.stop()
 
-  t.mock.timers.enable({ apis: ['setTimeout'] })
   const second = await start(home)
   // A hard stop keeps the inbox: that message runs when the Session wakes.
   second.agentOf('b').inbox.nextTurn.push(numbers)
@@ -612,6 +619,7 @@ test('a message a shutdown cancelled is sent again once; one still waiting, take
 })
 
 test('a queued request older than the TTL is dropped after a restart, and a recent one is still sent', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
   const home = freshHome(t)
   const first = await start(home)
   await first.tool('message_bot', { to: 'Writer', message: 'Draft the plan', when: 'queue' }, 'a')
@@ -627,7 +635,6 @@ test('a queued request older than the TTL is dropped after a restart, and a rece
   noted.queued.b[1].at = now - 20 * 60 * 1000
   writeFileSync(file, JSON.stringify(noted))
 
-  t.mock.timers.enable({ apis: ['setTimeout'] })
   const warnings = []
   const second = await start(home)
   second.ctx.logger.warn = (...args) => warnings.push(args.join(' '))
@@ -643,13 +650,13 @@ test('a queued request older than the TTL is dropped after a restart, and a rece
 })
 
 test('queued deliveries are kept whole, not cut at fifty', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
   const home = freshHome(t)
   const first = await start(home)
   for (let at = 1; at <= 55; at += 1) await first.tool('message_bot', { to: 'Writer', message: `Task ${at}`, when: 'queue' }, 'a')
   await settle(() => (notes(home).queued.b ?? []).length === 55)
   await first.stop()
 
-  t.mock.timers.enable({ apis: ['setTimeout'] })
   const second = await start(home)
   t.mock.timers.tick(3000)
   await settle(() => second.agentOf('b').calls.length === 55)

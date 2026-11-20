@@ -127,10 +127,17 @@ test('resume-turn-at-most-once', async () => {
     isBotSession: () => true,
     deliver: async args => { deliveries.push(args) },
   }
-  const record = { botId: 'bot', trigger: { role: 'request', senderSessionId: 'peer', exchangeId: 'original', text: 'original action' } }
+  const record = {
+    botId: 'bot',
+    trigger: { role: 'request', senderSessionId: 'peer', exchangeId: 'original', text: 'original action' },
+    attempted: true,
+    rejected: true,
+    promptSubmitted: false,
+    producedOutput: false,
+  }
   const outcomes = await Promise.all([resumeTurn(rt, 's1', record), resumeTurn(rt, 's1', record)])
   assert.equal(deliveries.length, 1, why)
   assert.ok(deliveries[0].resumed)
   assert.doesNotMatch(deliveries[0].text, /original action/)
-  assert.deepEqual(outcomes, ['unknown', 'unknown'])
+  assert.deepEqual(outcomes, ['before-accept', 'unknown'])
 })

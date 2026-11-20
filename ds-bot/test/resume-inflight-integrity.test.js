@@ -154,7 +154,7 @@ test('readOnly host does not rename a corrupt file either', async t => {
 // M6 characterization: the non-room `record.resumed` guard (resume.js, resumeTurn) had no
 // assertion. A turn already picked up once and cut off again is not delivered a second time.
 const { RESUME_DELAY_MS } = await import('../src/host/resume.js')
-for (const [name, resumed, expected] of [['picked up once before: stays stopped', true, 0], ['first time: picked up once', false, 1]]) {
+for (const [name, resumed, expected] of [['picked up once before: stays stopped', true, 0], ['first time without flags: not replayed', false, 0]]) {
   test(`non-room turn ${name} (record.resumed guard)`, async t => {
     t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.UTC(2026, 10, 17) })
     const home = dirOf(t)
