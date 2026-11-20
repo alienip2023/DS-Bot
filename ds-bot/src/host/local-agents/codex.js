@@ -224,7 +224,7 @@ export class CodexEngine {
     const params = {
       cwd,
       ...(model && model !== 'default' ? { model } : {}),
-      ...(sandbox !== undefined ? { sandbox, approvalPolicy: sandbox === 'danger-full-access' ? 'never' : 'on-request' } : {}),
+      ...(sandbox !== undefined ? { sandbox, approvalPolicy: 'on-request' } : {}),
       ...(mcp !== undefined ? { config: { mcp_servers: { [MCP_SERVER]: { url: mcp.url, http_headers: { Authorization: `Bearer ${mcp.token}` } } } } } : {}),
     }
     if (thread.threadId !== undefined) {

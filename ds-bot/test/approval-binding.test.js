@@ -127,9 +127,9 @@ test('text, other decisions and the non-answers never allow', () => {
   assert.ok(isDenyWord('Expired') && !isDenyWord('allow'))
 })
 
-test('presetAnswer: full access allows, read-only refuses a change, everything else asks', () => {
+test('presetAnswer: read-only refuses a change and everything else asks', () => {
   const event = changes => ({ options, changes })
-  assert.equal(presetAnswer('danger-full-access', event(false)), 'a')
+  assert.equal(presetAnswer('danger-full-access', event(false)), undefined)
   assert.equal(presetAnswer('read-only', event(true)), 'r')
   assert.equal(presetAnswer('read-only', { options: [], changes: true }), null)
   for (const [preset, changes] of [['read-only', false], ['workspace-write', true], ['workspace-write', false], [undefined, true], ['unknown', true], ['', false]]) {
@@ -173,10 +173,10 @@ test('stale, mismatched, incomplete and invalid answers never settle the request
   assert.equal(rt.approvalsView().length, 1)
 })
 
-test('presetAnswer asks (undefined) for every non-full-access preset, so no auto-allow reaches the engine reply sink', () => {
+test('presetAnswer asks (undefined) for full access and other presets that do not refuse, so no auto-allow reaches the engine reply sink', () => {
   const replies = []
   const event = { options, changes: true, reply: value => replies.push(value) }
-  for (const preset of ['workspace-write', undefined, null, 'x']) {
+  for (const preset of ['danger-full-access', 'workspace-write', undefined, null, 'x']) {
     const answer = presetAnswer(preset, event)
     if (answer !== undefined) event.reply(answer)
   }
