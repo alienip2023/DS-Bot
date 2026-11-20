@@ -1,40 +1,34 @@
 # Gateway Slice 0 Probe — Tailnet
 
-**Date**: 2026-11-08T09:25:32.471Z
+**Date**: 2026-11-20T23:36:09.285Z
 **Method**: This test uses tailnet plain TCP (100.64.x.x), NOT ssh2 reverse tunnel.
 **Hub IP**: 100.64.0.3 (Mac tailscale0)
 **Tokens**: 200 × 20ms = ~4000ms stream, n=10 median
 
 ## Results
 
-| Metric | Local Baseline | Tailnet (local) | Remote (dshtest-1) | Gate | Result |
-|--------|---------------|-----------------|----------------|------|--------|
-| TTFT (ms) | 0 | 0 | 1 | ≤ baseline + 300ms | ✅ PASS |
-| 200-token total (ms) | 4216 | 4209 | 4235 | ≤ baseline × 1.5 | ✅ PASS |
-| Abort propagation (ms) | — | 1 | — | ≤ 1000ms | ✅ PASS |
-| Token count | 200 | 200 | 200-200 | === 200 | ✅ PASS |
-| Connection est. (ms) | — | 2 | 42 | — | — |
+| Metric | Local Baseline | Tailnet (local) | Remote | Gate | Result |
+|--------|---------------|-----------------|------|------|--------|
+| TTFT (ms) | 0 | 0 | — | ≤ baseline + 300ms | ✅ PASS |
+| 200-token total (ms) | 4335 | 4336 | — | ≤ baseline × 1.5 | ✅ PASS |
+| Abort propagation (ms) | — | 3 | — | ≤ 1000ms | ✅ PASS |
+| Token count | 200 | 200 | — | === 200 | ✅ PASS |
+| Connection est. (ms) | — | 4 | — | — | — |
 
 ## Raw data (sorted)
 
 - Local TTFT: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-- Local total: [4193, 4201, 4203, 4211, 4214, 4216, 4217, 4226, 4234, 4247]
+- Local total: [4313, 4323, 4326, 4328, 4335, 4335, 4336, 4338, 4340, 4356]
 - Local tokens: [200, 200, 200, 200, 200, 200, 200, 200, 200, 200]
-- Tailnet TTFT: [0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
-- Tailnet total: [4187, 4188, 4200, 4208, 4209, 4209, 4215, 4219, 4219, 4223]
+- Tailnet TTFT: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+- Tailnet total: [4324, 4331, 4331, 4334, 4335, 4336, 4342, 4350, 4351, 4352]
 - Tailnet tokens: [200, 200, 200, 200, 200, 200, 200, 200, 200, 200]
-- Conn times: [1, 1, 2, 2, 2, 2, 2, 3, 3, 3]
+- Conn times: [1, 1, 3, 4, 4, 4, 4, 4, 4, 4]
 
 ## Remote verification
 
-Remote node executed via external task; 3 iterations. See docs/evidence/slice0-remote-dshtest-1.txt.
+未测远端
 
-Remote raw output file: docs/evidence/slice0-remote-dshtest-1.txt
-
-Remote raw data:
-```
-[{"ttft":1,"total":4226,"conn":120,"cnt":200},{"ttft":1,"total":4235,"conn":42,"cnt":200},{"ttft":0,"total":4244,"conn":42,"cnt":200}]
-```
 
 
 ## lsof verification

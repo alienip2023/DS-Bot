@@ -473,5 +473,19 @@ export function install(rt) {
     return lines.join('; ')
   }
 
-  Object.assign(rt, { workOf, openWork, closeWork, dropWork, takenWork: taken, lateWork, answerMissed, ownsWork: owns, waitsWork: waits, holdWork: hold, workAsker: askedBy, answerText, upstreamOf, sameWork, forgetBotWork: forgetBot, statusOf, waitingView, settleSubWork, subWorkRun, nameSubWork, abandonWork, abandonedWork: takeAbandoned })
+  // P3: When a Bot enters blocked state, immediately notify any Bot waiting on its work.
+  // The blocking code is safe to share (it's an error category, not credentials).
+  function notifyBlockedDelegators(botId, code) {
+    for (const [id, work] of Object.entries(works())) {
+      if (work.to !== botId) continue
+      const fromName = rt.botOf(work.from)?.name ?? 'A Bot'
+      const toName = rt.botOf(botId)?.name ?? 'a Bot'
+      const text = `[Message from ${toName}]\n${toName} cannot continue: it is blocked (${code}). The work you asked it to do is on hold until the user fixes it.`
+      void rt.deliver({ fromId: botId, toId: work.from, sessionId: rt.chatOf(work.from), role: 'reply', replyTo: id, exchangeId: id, text }).catch(() => {})
+      // Cancel the delegate timeout: the work is on hold, not abandoned.
+      clearDelegateTimer(id)
+    }
+  }
+
+  Object.assign(rt, { workOf, openWork, closeWork, dropWork, takenWork: taken, lateWork, answerMissed, ownsWork: owns, waitsWork: waits, holdWork: hold, workAsker: askedBy, answerText, upstreamOf, sameWork, forgetBotWork: forgetBot, statusOf, waitingView, settleSubWork, subWorkRun, nameSubWork, abandonWork, abandonedWork: takeAbandoned, notifyBlockedDelegators })
 }

@@ -23,7 +23,15 @@ export function applyDirectory(rt, payload, source) {
   rt.hubRooms = (Array.isArray(rooms) ? rooms : [])
     .filter(room => room && typeof room.id === 'string' && room.id.trim() !== '' && typeof room.name === 'string' && Number.isInteger(room.members) && room.members >= 0)
     .slice(0, 100)
-    .map(room => ({ id: room.id, name: room.name.trim().slice(0, 40), members: room.members }))
+    .map(room => ({
+      id: room.id,
+      name: room.name.trim().slice(0, 40),
+      members: room.members,
+      // memberList carries {id, name} pairs so @Name routing works on node bots
+      memberList: Array.isArray(room.memberList)
+        ? room.memberList.filter(e => e && typeof e.id === 'string' && typeof e.name === 'string').slice(0, 64)
+        : [],
+    }))
   const own = serviceOf(rt, 'remote-agent:bot-network')?.nodeId
   const next = {}
   for (const entry of Array.isArray(bots) ? bots : []) {
@@ -94,16 +102,26 @@ function roomListsOf(rt, bots = directoryOf(rt)) {
   for (const room of Object.values(rt.state.rooms ?? {})) {
     if (room.private === true) continue
     const members = room.members ?? []
-    const entry = { id: room.id, name: room.name, members: Object.keys(members).length }
+    // Send member ids + names per node so @Name routing works across nodes.
+    // A member is visible to a node if it has a bot on that node or on the hub.
+    const memberEntries = members
+      .map(id => {
+        const bot = rt.state.bots?.[id]
+        if (!bot || bot.private === true) return null
+        return { id: bot.id, name: bot.name || bot.id, nodeId: nodeOf.get(id) ?? HUB_NODE }
+      })
+      .filter(Boolean)
     const nodes = new Set([HUB_NODE])
-    for (const id of members) {
-      const nodeId = nodeOf.get(id)
-      if (nodeId !== undefined) nodes.add(nodeId)
-    }
+    for (const { nodeId } of memberEntries) if (nodeId !== undefined) nodes.add(nodeId)
     for (const nodeId of nodes) {
       if (!lists.has(nodeId)) lists.set(nodeId, [])
       const rooms = lists.get(nodeId)
-      if (rooms.length < 100) rooms.push(entry)
+      if (rooms.length < 100) rooms.push({
+        id: room.id,
+        name: room.name,
+        members: memberEntries.length,
+        memberList: memberEntries.map(e => ({ id: e.id, name: e.name })),
+      })
     }
   }
   return lists

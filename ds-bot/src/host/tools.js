@@ -139,7 +139,12 @@ export function install(rt) {
       : Object.values(state.bots).some(bot => bot.origin === 'peer')
     if (!online) return ['Hub group chats: unavailable, the hub is offline.']
     if (!rt.hubRooms?.length) return ['Hub group chats: none you can see.']
-    return (rt.hubRooms ?? []).map(room => `- "${room.name}" — ${room.members} members (hub, read-only)`)
+    return (rt.hubRooms ?? []).map(room => {
+      const memberNames = Array.isArray(room.memberList) && room.memberList.length > 0
+        ? room.memberList.map(e => e.name).join(', ')
+        : room.members + ' members'
+      return `- "${room.name}" — ${memberNames} (hub group chat)`
+    })
   }
   // The Bots and group chats list_bots shows: the whole team, one Bot, one group's
   // members, or one Bot that must be in that group.

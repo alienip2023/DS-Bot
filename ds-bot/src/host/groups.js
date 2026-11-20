@@ -1495,6 +1495,20 @@ export function install(rt) {
         } catch (error) {
           rt.warn('ds-bot: goal check in %s failed: %s', room.name, error)
         }
+        // P3 waker: additionally route round/end through planWakes for config-change
+        // and member-failed events that goalDrive doesn't cover.
+        try {
+          const failedMembers = round.failed ?? []
+          for (const memberName of failedMembers) {
+            const member = Object.values(rt.state.bots ?? {}).find(b => b.name === memberName)
+            if (member) {
+              const plans = rt.planWakes?.('member/failed', { room, member, reason: 'turn failed' }) ?? []
+              void rt.executePlanWakes?.(plans)
+            }
+          }
+        } catch (error) {
+          rt.warn('ds-bot: waker in %s failed: %s', room.name, error)
+        }
       }
       await rt.save()
       const rows = groupRows(room.id, round.from, round.to)

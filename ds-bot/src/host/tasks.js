@@ -1,3 +1,6 @@
+// 人才库工具：list_talents / hire_talent (dsh-ai-team 格式兼容)
+import { loadTalentCatalog, filterTalents, talentToCreateBot } from './talent-catalog.js'
+
 // The group task board: what each member is working on in a group, one line apiece.
 // A Bot registers a task when it takes the work and updates it as the work moves; the
 // board is read from the group's own overview and never guessed from the chat. Tasks
@@ -6,8 +9,8 @@ import { randomBytes } from 'node:crypto'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { output } from './tools.js'
 
-export const TASK_STATUSES = ['active', 'review', 'blocked', 'done', 'cancelled']
-const OPEN_STATUSES = ['active', 'review', 'blocked']
+export const TASK_STATUSES = ['active', 'review', 'blocked', 'pending_acceptance', 'done', 'cancelled']
+const OPEN_STATUSES = ['active', 'review', 'blocked', 'pending_acceptance']
 const GOAL_MAX = 200
 const PROGRESS_MAX = 300
 const RESULT_MAX = 2000
@@ -83,7 +86,9 @@ export function install(rt) {
     if (task === undefined) return { error: 'No open task of yours in this group. Name one with its id, or open a task first.' }
     if (!OPEN_STATUSES.includes(task.status)) return { error: 'That task is already finished.' }
     if (task.botId !== botId) return { error: `Task ${task.id} belongs to another member.` }
-    if (status !== undefined && !OPEN_STATUSES.includes(status)) {
+    // pending_acceptance is immutable: the owner must wait for a reviewer.
+    if (task.status === 'pending_acceptance') return { error: 'That task is already finished.' }
+    if (status !== undefined && !['active', 'review', 'blocked'].includes(status)) {
       return { error: `A running task\'s status is ${OPEN_STATUSES.join(', ')}; finish it with complete or cancel.` }
     }
     if (scopes !== undefined) {
@@ -100,18 +105,46 @@ export function install(rt) {
     const task = pickTask(room, id, botId)
     if (task === undefined) return { error: 'No open task of yours in this group.' }
     if (!OPEN_STATUSES.includes(task.status)) return { error: 'That task is already finished.' }
+    if (task.status === 'pending_acceptance') return { error: 'That task is already finished.' }
     if (task.botId !== botId) return { error: `Task ${task.id} belongs to another member.` }
     const text = oneLine(result, RESULT_MAX)
     if (text === '') return { error: 'A finished task needs a result summary.' }
-    task.status = 'done'
+    // Maker-can't-verify gate: completing a task moves it to pending_acceptance,
+    // not done. A different member (QA / reviewer) must accept it.
+    task.status = 'pending_acceptance'
     task.result = text
     task.updatedAt = Date.now()
     return { task }
+  }
+  // Review: a member other than the task's owner accepts or requests changes.
+  // This is the maker-can't-verify hard gate from dsh-ai-team.
+  const review = (room, reviewerId, id, { verdict, reason } = {}) => {
+    const task = tasksOf(room)[String(id ?? '')]
+    if (task === undefined) return { error: 'No such task.' }
+    if (task.status !== 'pending_acceptance') return { error: `Task ${task.id} is not pending acceptance (current: ${task.status}).` }
+    if (task.botId === reviewerId) return { error: 'You cannot accept your own work. Another member reviews it.' }
+    if (verdict === 'accept') {
+      task.status = 'done'
+      task.reviewedBy = reviewerId
+      task.updatedAt = Date.now()
+      return { task }
+    }
+    if (verdict === 'request_changes') {
+      // Rework: push back to in_progress (active) with the reason
+      task.status = 'active'
+      task.reviewedBy = reviewerId
+      const why = oneLine(reason, REASON_MAX)
+      if (why !== '') task.reviewReason = why
+      task.updatedAt = Date.now()
+      return { task }
+    }
+    return { error: 'Verdict must be accept or request_changes.' }
   }
   const cancel = (room, botId, id, reason, isAdmin) => {
     const task = pickTask(room, id, botId)
     if (task === undefined) return { error: 'No open task to cancel.' }
     if (!OPEN_STATUSES.includes(task.status)) return { error: 'That task is already finished.' }
+    if (task.status === 'pending_acceptance') return { error: 'That task is already finished.' }
     if (task.botId !== botId && !isAdmin) return { error: `Task ${task.id} belongs to another member; only its owner, the admin or a Main Bot cancels it.` }
     task.status = 'cancelled'
     const why = oneLine(reason, REASON_MAX)
@@ -149,14 +182,15 @@ export function install(rt) {
     name: 'group_task',
     description: 'Register and move a group chat task: the work one member is doing in the group, so the user can see who is on what without reading the chat. Only a group member registers work, and every change is explicit: open when you take the work, update while it runs, complete with a one-line result, cancel when it stops. The group overview shows the board to the user; the history keeps finished and cancelled tasks. Called outside a group it refuses; inside a group the group is implied. Declaring scopes keeps two members off the same files; a scope another member already holds is refused with their task id.',
     parameters: {
-      action: { type: 'string', required: true, enum: ['open', 'update', 'complete', 'cancel', 'show'], description: 'What to do' },
+      action: { type: 'string', required: true, enum: ['open', 'update', 'complete', 'review', 'cancel', 'show'], description: 'What to do. complete moves a task to pending_acceptance; a different member must review it to mark it done (maker-can\'t-verify rule).' },
       goal: { type: 'string', description: 'open: the task in one line, as the user would say the goal' },
-      id: { type: 'string', description: 'update, complete, cancel: the task id; the caller\'s newest open task when left out' },
+      id: { type: 'string', description: 'update, complete, review, cancel: the task id; the caller\'s newest open task when left out' },
       status: { type: 'string', enum: ['active', 'review', 'blocked'], description: 'update: active while working, review when the result waits for the user, blocked when something stops you' },
       progress: { type: 'string', description: 'update: the latest one-line progress' },
       scopes: { type: 'array', items: { type: 'string' }, description: 'open, update: absolute paths this work will write, so two members do not take the same files; directory scopes cover everything under them' },
       result: { type: 'string', description: 'complete: the result summary the board keeps' },
-      reason: { type: 'string', description: 'cancel: why the task stops' },
+      verdict: { type: 'string', enum: ['accept', 'request_changes'], description: 'review: accept marks the task done; request_changes pushes it back to active with your reason' },
+      reason: { type: 'string', description: 'cancel or review request_changes: why the task stops or needs rework' },
     },
     output,
     async execute(args, exec) {
@@ -173,6 +207,7 @@ export function install(rt) {
         case 'open': result = open(room, self, args.goal, args.scopes); break
         case 'update': result = update(room, self, args.id, { status: args.status, progress: args.progress, scopes: args.scopes }); break
         case 'complete': result = complete(room, self, args.id, args.result); break
+        case 'review': result = review(room, self, args.id, { verdict: args.verdict, reason: args.reason }); break
         case 'cancel': result = cancel(room, self, args.id, args.reason, isAdmin); break
         case 'show': return ledger(room, self)
         default: return `Unknown action ${action}.`
@@ -207,4 +242,52 @@ export function install(rt) {
       return { task }
     },
   })
+
+  // ── 人才库工具 ────────────────────────────────────────────────────────────
+  rt.teamTools.push(defineTool({
+    name: 'list_talents',
+    description: 'Browse the talent catalog (dsh-ai-team format) to find specialists you can hire as new Bots. Returns name, role, duty (lead/qa/executor), description, and category for each talent. Filter with a keyword to narrow results.',
+    parameters: {
+      query: { type: 'string', description: 'Optional keyword to filter by name, role, category, or tags. Leave out to list all.' },
+    },
+    output,
+    async execute(args) {
+      const talents = loadTalentCatalog(rt.dshHome)
+      const filtered = filterTalents(talents, args.query)
+      if (filtered.length === 0) return args.query ? `No talents match "${args.query}".` : 'The talent catalog is empty. Add talents to ~/.dsh/ai-team/catalog/user/talents/<name>/talent.yml.'
+      const lines = filtered.map(t =>
+        `- **${t.name}** (${t.role ?? t.duty ?? '—'}) · ${t.duty ?? ''} · ${t.description ?? ''} ${Array.isArray(t.tags) ? '[' + t.tags.join(', ') + ']' : ''}`.trimEnd()
+      )
+      return `Talent catalog (${filtered.length} found):\n${lines.join('\n')}\n\nUse hire_talent with the exact name to add one to the team.`
+    },
+  }))
+
+  rt.teamTools.push(defineTool({
+    name: 'hire_talent',
+    description: 'Create a new Bot from the talent catalog. The talent\'s personality becomes the core of the Bot\'s instructions — this is what determines how it works. You can override the name and model. Main Bot only.',
+    parameters: {
+      talent: { type: 'string', required: true, description: 'Exact talent name from list_talents.' },
+      name: { type: 'string', description: 'Override the talent\'s default name.' },
+      model: { type: 'string', description: 'Override the talent\'s recommended model. Leave out to use the recommended model or the team default.' },
+    },
+    output,
+    async execute(args, exec) {
+      await rt.load()
+      const self = rt.selfOf(exec.agent?.id)
+      if (!rt.isMain(self)) return 'Only a Main Bot can hire new team members.'
+      const talents = loadTalentCatalog(rt.dshHome)
+      const talent = talents.find(t => String(t.name).toLowerCase() === String(args.talent ?? '').trim().toLowerCase())
+      if (talent === undefined) return `No talent named "${args.talent}". Use list_talents to see available talents.`
+      const params = talentToCreateBot(talent)
+      if (args.name && String(args.name).trim() !== '') params.name = String(args.name).trim()
+      if (args.model && String(args.model).trim() !== '') params.model = String(args.model).trim()
+      if (!params.name) return `Talent "${args.talent}" has no name field. Check the talent.yml file.`
+      try {
+        const bot = await rt.createBot(params)
+        return `Hired ${bot.name} as a ${params.role} (${talent.duty ?? 'executor'}). Their instructions are set from the talent's personality. Use message_bot to introduce them to the team.`
+      } catch (err) {
+        return `Could not hire talent: ${err.message}`
+      }
+    },
+  }))
 }

@@ -609,11 +609,69 @@ export function install(rt) {
   ctx.effect?.(() => () => { closing = true; lifetime.abort() }, 'ds-bot: auxiliary llm retry')
   const assembleLlm = options => assembleLlmStream(ctx, options, { signal: lifetime.signal, backoff: rt.config?.llmRetryBackoff })
 
+  /**
+   * 收到 hub 下发的 MODEL_SYNC 帧后，更新 bot.model/effort 并触发 applyModel。
+   * scope='default'：更新 agentDefaultModel（由 DSH ctx 持有），不改具体 bot。
+   * scope='bot'：只改 sync.botId 指定的 bot。
+   * scope='all'：改全部 managedBy='hub' 的 bot。
+   * 返回实际生效的 botId 列表（scope='default' 时为 []）。
+   *
+   * 注意：为让测试和运行时都能拦截 applyModel，这里通过 rt.applyModel 调用而非
+   * 直接用闭包内的 applyModel。rt.applyModel 在 Object.assign(rt, ...) 后才存在，
+   * 因此本函数只能在 install 完成后调用（runtime 层面自然满足）。
+   */
+  async function applyModelSync(sync) {
+    const { scope, modelRef, effort, botId: targetBotId } = sync
+    const applied = []
+    if (scope === 'default') {
+      // 更新 DSH 的 agentDefaultModel：下次 Bot turn 自动用新 ref。
+      try {
+        const dm = typeof ctx?.get === 'function' ? ctx.get('agentDefaultModel') : undefined
+        if (dm && typeof dm.select === 'function') {
+          const parts = modelRef.split('/')
+          const provider = parts.length >= 2 ? parts[0] : undefined
+          const model = parts.length >= 2 ? parts.slice(1).join('/') : modelRef
+          await dm.select({ provider, model, ...(effort ? { reasoningEffort: effort } : {}) })
+        }
+      } catch (err) {
+        rt.warn('ds-bot: applyModelSync default: %s', err)
+      }
+      return applied
+    }
+    const bots = Object.values(state.bots ?? {}).filter(bot => {
+      if (isShadow(bot)) return false
+      if (scope === 'bot') return bot.id === targetBotId
+      // scope === 'all': only hub-managed bots
+      return bot.managedBy === 'hub'
+    })
+    for (const bot of bots) {
+      const prevModel = bot.model
+      const prevEffort = bot.effort
+      bot.model = modelRef
+      if (effort !== undefined) bot.effort = effort
+      else delete bot.effort
+      try {
+        // rt.applyModel is used here (not the closure) so tests can stub it.
+        await rt.applyModel(bot, { force: true })
+        applied.push(bot.id)
+      } catch (err) {
+        rt.warn('ds-bot: applyModelSync bot %s failed: %s', bot.name, err)
+        // Roll back to previous values so the bot stays in a known state.
+        bot.model = prevModel
+        if (prevEffort !== undefined) bot.effort = prevEffort
+        else delete bot.effort
+      }
+    }
+    if (applied.length > 0) await rt.save().catch(() => {})
+    return applied
+  }
+
   Object.assign(rt, {
     // Work that starts while the host runs can ask whether the host is still there.
     hostClosing: () => llm() === undefined,
     catalog, cachedCatalog: () => answerable(catalogCache.value), cachedDefault: () => pickDefault(catalogCache.value),
     defaultRef, defaultModel, defaultBotModel, defaultEffort, isUsable, resolveModel, desiredModel, reasoningOf, resolveEffort, desiredEffort,
     selectSessionModel, applyModel, applyThreadModel, selectRoomSession, syncRoomSessions, waitForModel, syncModels, routeRefused, dropCatalog, assembleLlm,
+    applyModelSync,
   })
 }

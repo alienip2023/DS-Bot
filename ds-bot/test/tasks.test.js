@@ -95,8 +95,10 @@ test('group_task opens a task and moves it through active, review, blocked and d
   assert.match(await host.tool({ action: 'update', status: 'blocked', progress: 'Waiting for the outline' }), /\(blocked\)/)
   assert.match(await host.tool({ action: 'update', status: 'active' }), /\(active\)/)
 
-  assert.equal(await host.tool({ action: 'complete' }), 'A finished task needs a result summary.')
-  assert.match(await host.tool({ action: 'complete', result: 'Draft delivered' }), /Finished: "Draft delivered"/)
+  // complete moves to pending_acceptance first, then a reviewer accepts
+  assert.match(await host.tool({ action: 'complete', result: 'Draft delivered' }), /pending_acceptance/)
+  // reviewer (ga) accepts — now done
+  assert.match(await host.tool({ action: 'review', id: task.id, verdict: 'accept' }, 'ga'), /done/)
   assert.deepEqual([host.tasks()[0].status, host.tasks()[0].result], ['done', 'Draft delivered'])
   assert.match(await host.tool({ action: 'show' }), /1 finished or cancelled in the history/)
 })
@@ -127,6 +129,9 @@ test('update and complete pick the caller\'s own newest open task when no id is 
   const mine = host.tasks().filter(task => task.botId === 'b')
   assert.deepEqual(mine.map(task => [task.goal, task.progress]), [['First', ''], ['Second', 'on Second']])
   await host.tool({ action: 'complete', result: 'done' }, 'gb')
+  // complete moves to pending_acceptance; different member (ga) reviews and accepts
+  const secondId = host.tasks().filter(task => task.botId === 'b').at(-1).id
+  await host.tool({ action: 'review', id: secondId, verdict: 'accept' }, 'ga')
   assert.deepEqual(host.tasks().filter(task => task.botId === 'b').map(task => task.status), ['active', 'done'])
 })
 
@@ -181,6 +186,11 @@ test('a panel note reaches the task owner as a user message, and both panel acti
 
   // A finished task takes no new note and the message is not posted.
   await host.tool({ action: 'complete', id, result: 'Draft delivered' }, 'gb')
+  // task is now pending_acceptance, not done — panel note still refused on a finished status
+  // accept it via review to push it to done
+  const beforeAccept = host.saved().rooms.r1.tasks[id]
+  assert.equal(beforeAccept.status, 'pending_acceptance')
+  await host.tool({ action: 'review', id, verdict: 'accept' }, 'ga')
   const refused = await host.call('task-note', { roomId: 'r1', id, text: 'Too late' })
   assert.equal(refused.ok, false)
   assert.equal(refused.error.message, 'That task is already finished.')
@@ -201,17 +211,31 @@ test('a panel note reaches the task owner as a user message, and both panel acti
 
 
 test('a finished task is immutable through every Bot action', async () => {
+  // 'cancel' still goes directly to done; 'complete' goes to pending_acceptance first.
+  // Both terminal states are immutable to update/complete/cancel.
   for (const terminal of ['complete', 'cancel']) {
     const host = fakeHost()
     await host.tool({ action: 'open', goal: 'Deliver' }, 'gb')
     const id = host.tasks()[0].id
     await host.tool({ action: terminal, id, result: 'delivered', reason: 'stopped' }, 'gb')
+    // For complete: accept it so it's truly done (testing immutability of pending_acceptance too)
+    if (terminal === 'complete') {
+      await host.tool({ action: 'review', id, verdict: 'accept' }, 'ga')
+    }
     const saved = JSON.stringify(host.tasks())
     for (const action of ['update', 'complete', 'cancel']) {
       assert.equal(await host.tool({ action, id, status: 'active', progress: 'late', result: 'changed' }, 'gb'), 'That task is already finished.')
       assert.equal(JSON.stringify(host.tasks()), saved)
     }
   }
+  // pending_acceptance is also immutable to update/cancel by the original owner
+  const host = fakeHost()
+  await host.tool({ action: 'open', goal: 'Deliver' }, 'gb')
+  const id = host.tasks()[0].id
+  await host.tool({ action: 'complete', id, result: 'delivered' }, 'gb')
+  assert.equal(host.tasks()[0].status, 'pending_acceptance')
+  assert.equal(await host.tool({ action: 'update', id, progress: 'changed' }, 'gb'), 'That task is already finished.')
+  assert.equal(await host.tool({ action: 'complete', id, result: 'changed' }, 'gb'), 'That task is already finished.')
 })
 
 test('finished tasks stay in the board history beyond two hundred deliveries', async () => {

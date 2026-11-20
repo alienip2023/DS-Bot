@@ -70,6 +70,9 @@ import * as rosterJoin from './src/host/roster-join.js'
 import * as goalSkills from './src/host/goal-skills.js'
 import * as localAgents from './src/host/local-agents/index.js'
 import * as botNetwork from './src/host/bot-network.js'
+import * as waker from './src/host/waker.js'
+import * as pmo from './src/host/pmo.js'
+import { loadTalentCatalog, filterTalents, talentToCreateBot } from './src/host/talent-catalog.js'
 
 export { COLORS } from './src/host/constants.js'
 
@@ -80,7 +83,7 @@ export { name, inject } from './src/host/entry.js'
 // install. Listeners run and tools are listed in registration order, so this order holds:
 // usage meters model requests after every listener that rewrites them. privacy checks a
 // call before the hooks of tools do, so a closed call never reaches a card they show.
-export const MODULES = [diagnostics, store, ledger, models, providers, permissions, turns, steer, handoffs, requests, delivery, remoteTasks, workerBridge, rosterJoin, roster, federation, folders, privacy, agents, prompt, timeContext, hostContext, tools, chatIndex, groups, goals, agentCommands, tasks, approvals, resume, memory, memoryFederation, parts, changes, images, avatarLibrary, secrets, connectors, capabilities, learning, schedules, browser, browserPlugins, computer, usage, update, dshUpdate, thinking, threadQueue, mobile, feed, phone, im, channel, remote, joinedTurn, joinedPrompt, threadPrompt, mirrorGuard, joinedCreate, configSource, nodeConfig, joinedPage, officeSkills, goalSkills, localAgents, botNetwork]
+export const MODULES = [diagnostics, store, ledger, models, providers, permissions, turns, steer, handoffs, requests, delivery, remoteTasks, workerBridge, rosterJoin, roster, federation, folders, privacy, agents, prompt, timeContext, hostContext, tools, chatIndex, groups, goals, agentCommands, tasks, approvals, resume, memory, memoryFederation, parts, changes, images, avatarLibrary, secrets, connectors, capabilities, learning, schedules, browser, browserPlugins, computer, usage, update, dshUpdate, thinking, threadQueue, mobile, feed, phone, im, channel, remote, joinedTurn, joinedPrompt, threadPrompt, mirrorGuard, joinedCreate, configSource, nodeConfig, joinedPage, officeSkills, goalSkills, localAgents, botNetwork, waker, pmo]
 
 export function apply(ctx, config = {}) {
   createRuntime(ctx, config)
@@ -111,6 +114,23 @@ export function createRuntime(ctx, config = {}) {
   // A live Agent can be scoped before the last module has added its tools (the memory
   // module starts a load during install): complete the scope now that every tool is in.
   rt.syncScopedTools?.()
+  // P1 模型同步：把 applyModelSync 注册到 cordis ctx，让 AC node 侧（lib/node/index.js）
+  // 能通过 ctx.get('ds-bot:apply-model-sync') 拿到它，从而处理 MODEL_SYNC 帧。
+  // provide 是 cordis 的可选 API，在 DSH 旧版本上可能不存在；用 try/catch 保证不影响启动。
+  try {
+    if (typeof ctx.provide === 'function' && typeof rt.applyModelSync === 'function') {
+      ctx.provide('ds-bot:apply-model-sync', rt.applyModelSync)
+    }
+  } catch {
+    // 注册失败不阻断启动；AC 节点收到 MODEL_SYNC 时会回 'model-sync-no-ds-bot'。
+  }
+  try {
+    if (typeof ctx.provide === 'function' && typeof rt.answerApproval === 'function') {
+      ctx.provide('ds-bot:answer-approval', (approvalId, choice) => rt.answerApproval(approvalId, choice))
+    }
+  } catch {
+    // 注册失败不阻断启动；AC 节点无法转发审批答复时会回退。
+  }
   // dsh can load this plugin again in place, its files replaced while it runs: dsh
   // keeps the turns and child agents it had, while this runtime starts with empty
   // maps. Adopt them now, so Stop, the group view and a late child settle still see

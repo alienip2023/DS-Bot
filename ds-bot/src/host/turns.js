@@ -15,7 +15,7 @@ import { viaOf } from '../shared/im-platforms.js'
 import { reminderText } from './schedules.js'
 import { remoteError } from './joined-prompt.js'
 import { usageChunk } from './usage.js'
-import { classifyLlmFailure } from './failure-policy.js'
+import { classifyLlmFailure, retryDecision, nextRequestAttempt } from './failure-policy.js'
 import { detectDeferral } from './deferral-guard.js'
 
 // Failures only the user can fix: a key, a sign-in, a balance. They block the Bot
@@ -293,6 +293,10 @@ export function install(rt) {
   }
   const retryWrittenCall = (id, info) => retryTurn(id, info, 'your tool call did not run', RETRY_TEXT)
   const retryPromisedWork = (id, info) => retryTurn(id, info, 'you stopped before calling any tool', RETRY_PROMISE_TEXT)
+
+  // Per-session sliding-window failure counts for retryDecision (P3).
+  // Keys are session ids (the `id` parameter, which is a sessionId in this file).
+  const attemptStore = new Map()
 
   /** @type {Map<string, {turn?:number, pending?:any, pendingText?:string, info?:any, texts:string[], opened?:boolean, joined?:{info:any, from:number}[]}>} */
   const live = new Map()
@@ -1315,9 +1319,31 @@ export function install(rt) {
         if (cutOff) noteCutOffTurn(id, { session, wroteNothing, ...(premature ? { outputTokens } : {}) })
         if (failure !== undefined) {
           if (watched) rememberFailure(id, turn, failure, session)
+          // P3: classify the failure and decide retry/fallback/stop deterministically.
+          const classified = classifyLlmFailure(failure)
+          const attemptCount = nextRequestAttempt(attemptStore, id)
+          const bot = rt.botOf(rt.selfOf(id))
+          const fallbacks = Array.isArray(bot?.fallbacks) ? bot.fallbacks : []
+          const decision = retryDecision(classified, { fallback: fallbacks, maxAttempts: 3 }, attemptCount)
+          if (decision.action === 'fallback' && decision.fallbackRef && bot) {
+            // Switch to fallback model for the next turn.
+            const prevModel = bot.model
+            bot.model = decision.fallbackRef
+            void rt.save().catch(() => {})
+            rt.warn?.('ds-bot: %s falling back to %s (%s)', bot.name, decision.fallbackRef, decision.reason)
+            // Trigger a retry turn on the fallback model.
+            void retryTurn(id, info, `the model call failed (${decision.reason}); retrying on ${decision.fallbackRef}`, 'model call failed').catch(error => rt.warn('ds-bot: fallback retry of %s failed: %s', id, error))
+          } else if (decision.action === 'retry' && info?.retried !== true) {
+            // Deterministic retry within the attempt budget.
+            void retryTurn(id, info, `the model call failed (${decision.reason}); please try again`, 'model call failed').catch(error => rt.warn('ds-bot: retry of %s failed: %s', id, error))
+          }
+          // decision.action === 'stop' → fall through to blockBot / normal failure handling
           if (blockBot(id, session, failure) && owner !== undefined && info?.role === 'kickoff') rt.holdKickoffAgain(owner)
+          // P3: notify any Bot waiting on this Bot's delegated work so it doesn't wait forever.
+          if (blockBot(id, session, failure)) rt.notifyBlockedDelegators?.(rt.selfOf(id), failure.code ?? failure.kind)
         } else if (reason?.kind === 'completed') {
           forgetFailure(id)
+          nextRequestAttempt(attemptStore, id, { success: true })
           unblockBot(rt.selfOf(id))
           // A turn the user opened, or the Retry that answers the user.
           if (owner !== undefined && (info === undefined || info.role === 'continue')) rt.userAnswered(owner)

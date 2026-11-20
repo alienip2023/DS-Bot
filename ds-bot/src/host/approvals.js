@@ -241,5 +241,20 @@ export function install(rt) {
     }
   }
 
+  // Relay open/settled events to the AC node when it has registered relay handlers.
+  onApproval((kind, data) => {
+    if (kind === 'open') {
+      const relay = ctx.get?.('dsh-ai-cluster:relay-approval-request', false)
+      if (typeof relay === 'function') {
+        relay({ approvalId: data.id, botId: data.botId, roomId: data.roomId, tool: data.tool, reason: data.reason, detail: data.detail, at: data.at, fingerprint: data.fingerprint })
+      }
+    } else if (kind === 'settled') {
+      const relay = ctx.get?.('dsh-ai-cluster:relay-approval-settled', false)
+      if (typeof relay === 'function') {
+        relay({ approvalId: data.id, outcome: data.outcome })
+      }
+    }
+  })
+
   Object.assign(rt, { approvalsView, waitsForApproval, answerApproval, cancelApprovals, onApproval })
 }

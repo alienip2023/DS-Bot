@@ -8,6 +8,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { GOAL_IDLE_NUDGES, SOURCE_KIND } from './constants.js'
 import { headOf } from './text.js'
 import { output } from './tools.js'
+import { planWakes, executePlanWakes } from './waker.js'
 
 const TITLE_MAX = 80
 const BRIEF_MAX = 2000
@@ -653,7 +654,13 @@ export function install(rt) {
     goal.revision += 1
     goal.updatedAt = Date.now()
     await rt.save()
-    await queueGoalRelay(room, 'nudge', '[Goal check]', 'DS Bot')
+    // P3 waker: use planWakes to route the goal-idle event centrally.
+    const plans = planWakes(rt, 'goal/idle', { room })
+    if (plans.length > 0) {
+      await executePlanWakes(rt, plans)
+    } else {
+      await queueGoalRelay(room, 'nudge', '[Goal check]', 'DS Bot')
+    }
   }
 
   // Member work can outlive the round it grew out of; the round-end check then
