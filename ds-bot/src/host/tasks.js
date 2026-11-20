@@ -13,6 +13,7 @@ const PROGRESS_MAX = 300
 const RESULT_MAX = 2000
 const NOTE_MAX = 500
 const REASON_MAX = 500
+const SCOPES_MAX = 8
 
 const oneLine = (text, max) => String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, max)
 const tasksOf = room => (room.tasks ??= {})
@@ -20,6 +21,27 @@ const listOf = room => Object.values(tasksOf(room)).sort((a, b) => a.startedAt -
 export const openTasksOf = room => listOf(room).filter(task => OPEN_STATUSES.includes(task.status))
 export const pastTasksOf = room => listOf(room).filter(task => !OPEN_STATUSES.includes(task.status))
 const newId = () => `t_${randomBytes(4).toString('hex')}`
+
+export function normalizeScopes(scopes = [], existing = []) {
+  if (!Array.isArray(scopes)) return { error: 'Task scopes must be an array of paths.' }
+  const paths = new Set(existing)
+  for (const scope of scopes) {
+    if (typeof scope !== 'string') return { error: 'Each task scope must be a string.' }
+    const text = scope.trim().replace(/\\/g, '/')
+    if (text === '') continue
+    if (/[*?[\]{}]/.test(text)) return { error: 'Task scopes cannot contain glob characters.' }
+    if (!text.startsWith('/')) return { error: 'Each task scope must be an absolute path starting with /.' }
+    const path = text.replace(/\/+$/, '')
+    if (path === '') return { error: 'The root path / cannot be a task scope.' }
+    paths.add(path)
+  }
+  if (paths.size > SCOPES_MAX) return { error: `A task can declare at most ${SCOPES_MAX} scopes.` }
+  return { scopes: [...paths] }
+}
+
+export function scopesOverlap(a, b) {
+  return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`)
+}
 
 // The task an update names: its id, or the caller's own newest open task when no id is
 // given (the common case: one Bot working on one thing).
@@ -29,21 +51,45 @@ function pickTask(room, id, botId) {
 }
 
 export function install(rt) {
-  const open = (room, botId, goal) => {
+  const owner = task => rt.botOf(task.botId)
+  const checkScopes = (room, botId, scopes, existing) => {
+    const normalized = normalizeScopes(scopes, existing)
+    if (normalized.error !== undefined || normalized.scopes.length === 0) return normalized
+    const conflict = []
+    for (const task of openTasksOf(room)) {
+      if (task.botId === botId) continue
+      for (const held of task.scopes ?? []) {
+        if (normalized.scopes.some(path => scopesOverlap(path, held))) {
+          conflict.push(`- ${task.id} (${owner(task)?.name ?? task.botId}) holds ${JSON.stringify(held)}`)
+        }
+      }
+    }
+    if (conflict.length > 0) return { error: `Task scopes conflict with another member's work:\n${conflict.join('\n')}` }
+    return normalized
+  }
+  const open = (room, botId, goal, scopes) => {
+    const declared = checkScopes(room, botId, scopes)
+    if (declared.error !== undefined) return declared
     const text = oneLine(goal, GOAL_MAX)
     if (text === '') return { error: 'A task needs a one-line goal.' }
     const at = Date.now()
     const task = { id: newId(), botId, goal: text, status: 'active', startedAt: at, updatedAt: at, progress: '' }
+    if (declared.scopes.length > 0) task.scopes = declared.scopes
     tasksOf(room)[task.id] = task
     return { task }
   }
-  const update = (room, botId, id, { status, progress } = {}) => {
+  const update = (room, botId, id, { status, progress, scopes } = {}) => {
     const task = pickTask(room, id, botId)
     if (task === undefined) return { error: 'No open task of yours in this group. Name one with its id, or open a task first.' }
     if (!OPEN_STATUSES.includes(task.status)) return { error: 'That task is already finished.' }
     if (task.botId !== botId) return { error: `Task ${task.id} belongs to another member.` }
     if (status !== undefined && !OPEN_STATUSES.includes(status)) {
       return { error: `A running task\'s status is ${OPEN_STATUSES.join(', ')}; finish it with complete or cancel.` }
+    }
+    if (scopes !== undefined) {
+      const declared = checkScopes(room, botId, scopes, task.scopes)
+      if (declared.error !== undefined) return declared
+      if (declared.scopes.length > 0) task.scopes = declared.scopes
     }
     if (status !== undefined) task.status = status
     if (progress !== undefined) task.progress = oneLine(progress, PROGRESS_MAX)
@@ -82,7 +128,6 @@ export function install(rt) {
     task.updatedAt = Date.now()
     return task
   }
-  const owner = task => rt.botOf(task.botId)
 
   // What the tool answers with: the current board, not only the task it touched.
   const ledger = (room, self) => {
@@ -91,7 +136,8 @@ export function install(rt) {
       const bot = owner(task)
       const mine = task.botId === self ? ' (yours)' : ''
       const progress = task.progress === '' ? '' : `\n  progress: ${task.progress}`
-      return `- ${task.id} · ${bot?.name ?? task.botId} · ${task.status} · ${task.goal}${mine}${progress}`
+      const scopes = task.scopes?.length ? `\n  scopes: ${task.scopes.join(', ')}` : ''
+      return `- ${task.id} · ${bot?.name ?? task.botId} · ${task.status} · ${task.goal}${mine}${progress}${scopes}`
     })
     const past = pastTasksOf(room_)
     const lines = [`Tasks in "${room_.name}"${open.length === 0 ? ': none open.' : ':'}`, ...open]
@@ -101,13 +147,14 @@ export function install(rt) {
 
   rt.teamTools.push(defineTool({
     name: 'group_task',
-    description: 'Register and move a group chat task: the work one member is doing in the group, so the user can see who is on what without reading the chat. Only a group member registers work, and every change is explicit: open when you take the work, update while it runs, complete with a one-line result, cancel when it stops. The group overview shows the board to the user; the history keeps finished and cancelled tasks. Called outside a group it refuses; inside a group the group is implied.',
+    description: 'Register and move a group chat task: the work one member is doing in the group, so the user can see who is on what without reading the chat. Only a group member registers work, and every change is explicit: open when you take the work, update while it runs, complete with a one-line result, cancel when it stops. The group overview shows the board to the user; the history keeps finished and cancelled tasks. Called outside a group it refuses; inside a group the group is implied. Declaring scopes keeps two members off the same files; a scope another member already holds is refused with their task id.',
     parameters: {
       action: { type: 'string', required: true, enum: ['open', 'update', 'complete', 'cancel', 'show'], description: 'What to do' },
       goal: { type: 'string', description: 'open: the task in one line, as the user would say the goal' },
       id: { type: 'string', description: 'update, complete, cancel: the task id; the caller\'s newest open task when left out' },
       status: { type: 'string', enum: ['active', 'review', 'blocked'], description: 'update: active while working, review when the result waits for the user, blocked when something stops you' },
       progress: { type: 'string', description: 'update: the latest one-line progress' },
+      scopes: { type: 'array', items: { type: 'string' }, description: 'open, update: absolute paths this work will write, so two members do not take the same files; directory scopes cover everything under them' },
       result: { type: 'string', description: 'complete: the result summary the board keeps' },
       reason: { type: 'string', description: 'cancel: why the task stops' },
     },
@@ -123,8 +170,8 @@ export function install(rt) {
       const action = String(args.action ?? '')
       let result
       switch (action) {
-        case 'open': result = open(room, self, args.goal); break
-        case 'update': result = update(room, self, args.id, { status: args.status, progress: args.progress }); break
+        case 'open': result = open(room, self, args.goal, args.scopes); break
+        case 'update': result = update(room, self, args.id, { status: args.status, progress: args.progress, scopes: args.scopes }); break
         case 'complete': result = complete(room, self, args.id, args.result); break
         case 'cancel': result = cancel(room, self, args.id, args.reason, isAdmin); break
         case 'show': return ledger(room, self)
