@@ -6,10 +6,10 @@
 // in an in-memory queue. A queued message is only handed to the Session once the turn in
 // front of it ends: the gate arms the Session's `turn/end` listener before it runs the
 // message, so a turn that ends before the listener is up cannot strand the queue.
-//
-// The queue is memory only. A restart drops it: state.json never carries a queue, and a
-// Bot with no running entry has both `running` and `queued` at zero in the thread view.
+// Waiting user text sends survive a restart in thread-queue.json.
 import { randomUUID } from 'node:crypto'
+import { readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { mainThreadId, threadOf } from './bot-store.js'
 
 // A turn the Session accepted but never started (no `turn/start`) would hold the Bot
@@ -110,7 +110,7 @@ export function install(rt) {
     release(entry)
   }
 
-  // A queued message can be withdrawn (Stop, a disposed Session, the caller's signal)
+  // A queued message can be withdrawn (explicit cancel, Session disposal, caller abort)
   // before the turn in front of it ends; then its abort listener must go with it.
   const clearAbort = (entry) => {
     if (entry.onAbort !== undefined) {
@@ -120,8 +120,6 @@ export function install(rt) {
   }
 
   const abortError = () => Object.assign(new Error('This message was cancelled before it started'), { name: 'AbortError', code: 'ABORT_ERR' })
-  const cancelled = entry => { void Promise.resolve().then(() => entry.onCancel?.()).catch(error => rt.warn?.('ds-bot: queued cancellation failed: %s', error)) }
-
   const runningEntryOf = (sessionId) => {
     for (const slot of slots.values()) {
       if (slot.entry !== null && slot.running?.sessionId === sessionId) return slot.entry
@@ -155,6 +153,7 @@ export function install(rt) {
     slot.running = { queueId: entry.queueId, threadId: entry.threadId, sessionId: entry.sessionId, startedAt: Date.now(), kind: entry.kind }
     slot.entry = entry
     entry.startedAt = slot.running.startedAt
+    removePending(entry)
     if (entry.releaseOn === 'turn-end') {
       // Armed before `run`: a Session that starts and ends its turn quickly must still
       // find a listener, and a prompt that is refused must not leave the Bot held.
@@ -198,7 +197,8 @@ export function install(rt) {
    * `{queued: false, queueId}` when it ran now and `{queued: true, queueId, position}`
    * when it waits.
    */
-  async function enqueueThreadTurn(spec) {
+  async function enqueueThreadTurn(spec, restored) {
+    if (restored === undefined && ready !== undefined) await ready
     const run = spec?.run
     if (typeof run !== 'function') throw new Error('enqueueThreadTurn needs run()')
     const signal = spec?.signal
@@ -209,7 +209,7 @@ export function install(rt) {
       return { queued: false }
     }
     const entry = {
-      queueId: randomUUID(),
+      queueId: restored?.queueId ?? randomUUID(),
       botId: owner.botId,
       threadId: owner.threadId,
       sessionId: owner.sessionId,
@@ -220,7 +220,7 @@ export function install(rt) {
       // (followup + flush + record); neither has a local `turn/end` of its own to wait for.
       releaseOn: spec.releaseOn ?? (spec.kind === 'dispatch' || rt.botOf?.(owner.botId)?.origin === 'joined' ? 'run' : 'turn-end'),
       run,
-      enqueuedAt: Date.now(),
+      enqueuedAt: restored?.enqueuedAt ?? Date.now(),
       startedAt: undefined,
       sawStart: false,
       watch: undefined,
@@ -234,6 +234,14 @@ export function install(rt) {
       return { queued: false, queueId: entry.queueId }
     }
     slot.queue.push(entry)
+    // Bot-only actions (e.g. routines) have their own recovery and no explicit send Session.
+    if (path !== undefined && restored === undefined && spec.kind === 'send' && spec.sessionId === owner.sessionId) {
+      const text = spec.text ?? spec.preview
+      if (hasText(text)) {
+        pending.set(entry.queueId, savedItem({ ...entry, text }))
+        persist()
+      }
+    }
     if (signal !== undefined && typeof signal.addEventListener === 'function') {
       entry.onAbort = () => {
         const at = slot.queue.findIndex(candidate => candidate.queueId === entry.queueId)
@@ -248,8 +256,69 @@ export function install(rt) {
   }
 
   /** `sendThreadTurn` is the name the rest of the host calls; same gate. */
-  async function sendThreadTurn(spec) {
-    return await enqueueThreadTurn(spec)
+  async function sendThreadTurn(spec, restored) {
+    return await enqueueThreadTurn(spec, restored)
+  }
+
+  async function restoreQueue() {
+    let file
+    try {
+      file = JSON.parse(readFileSync(path, 'utf8'))
+    } catch (error) {
+      if (error.code !== 'ENOENT') rt.warn?.('ds-bot: could not read thread-queue.json')
+      return
+    }
+    if (file?.version !== QUEUE_VERSION || !Array.isArray(file.items)) {
+      rt.warn?.('ds-bot: invalid thread-queue.json format')
+      return
+    }
+    if (file.items.length === 0) return
+    await rt.load()
+    if (unloaded() || rt.readOnly?.() !== undefined) return
+    const valid = new Map()
+    for (const item of file.items) {
+      const thread = threadOf(rt.state, item?.threadId)
+      if (!hasText(item?.queueId) || !hasText(item.botId) || !hasText(item.sessionId) || typeof item.preview !== 'string' || !hasText(item.text) ||
+          !Number.isFinite(item.enqueuedAt) || valid.has(item.queueId) || thread?.botId !== item.botId ||
+          thread.archived || rt.botOf(item.botId) === undefined || ownerOf(item)?.sessionId !== item.sessionId) {
+        rt.warn?.('ds-bot: skipping invalid or stale thread-queue.json item')
+        continue
+      }
+      valid.set(item.queueId, savedItem(item))
+    }
+    const items = [...valid.values()].sort((a, b) => a.enqueuedAt - b.enqueuedAt)
+    // A plugin reload can leave a Session turn running, even on another Thread of
+    // this Bot. Reserve its slot until turn/end, without replaying the running turn.
+    const botIds = [...new Set(items.map(item => item.botId))]
+    const active = await Promise.all(botIds.map(async botId => {
+      const sessions = new Set(rt.threadsOfBot(botId).map(thread => ownerOf({ threadId: thread.id })?.sessionId).filter(Boolean))
+      const agents = await Promise.all([...sessions].map(async sessionId => ({
+        sessionId, agent: await rt.resolveAgent(sessionId).catch(() => undefined),
+      })))
+      return { botId, agents }
+    }))
+    if (unloaded()) return
+    for (const { botId, agents } of active) {
+      const running = agents.find(({ sessionId, agent }) => !endedDuringRestore.has(sessionId) &&
+        (agent?.status === 'running' || rt.live?.get(sessionId)?.turn !== undefined))
+      if (running === undefined) continue
+      const { sessionId } = running
+      const threadId = rt.bySessionIdFull?.(sessionId)?.threadId ?? mainThreadId(botId)
+      const entry = { queueId: randomUUID(), botId, threadId, sessionId, kind: 'send', startedAt: Date.now(), sawStart: true }
+      const slot = slotOf(botId)
+      slot.entry = entry
+      slot.running = { queueId: entry.queueId, threadId, sessionId, kind: entry.kind, startedAt: entry.startedAt }
+      slot.state = 'running'
+    }
+    for (const item of items) pending.set(item.queueId, item)
+    if (valid.size !== file.items.length) persist()
+    for (const item of items) {
+      const { botId, threadId, sessionId, preview, text } = item
+      void rt.sendThreadTurn({
+        botId, threadId, sessionId, kind: 'send', preview,
+        run: () => rt.sendUser({ sessionId, content: [{ type: 'text', text }] }),
+      }, item).catch(error => rt.warn?.('ds-bot: restored thread queue turn for %s failed: %s', botId, error))
+    }
   }
 
   // What the Bot is running and what waits, for the thread list and the queue panel.
@@ -290,11 +359,11 @@ export function install(rt) {
     return { cancelled: true, remaining: slot.queue.length }
   }
 
-  // A Session that is being stopped or disposed may still have messages waiting behind
-  // it: drop those (and their abort listeners). `release` also lets a running turn go,
-  // for a Session the core has disposed.
+  // Stop ends the running turn and leaves its queue in order. For a disposed Session,
+  // drop its waiting entries and release the running slot because no turn/end will come.
   const dropSession = (sessionId, options = {}) => {
     if (typeof sessionId !== 'string' || sessionId === '') return 0
+    if (options.release !== true && runningEntryOf(sessionId) !== undefined) return 0
     let dropped = 0
     let running
     for (const slot of slots.values()) {
@@ -315,6 +384,10 @@ export function install(rt) {
   ctx.on('session/event', (session, event) => {
     const sessionId = session?.id
     if (typeof sessionId !== 'string' || sessionId === '') return
+    if (ready !== undefined) {
+      if (event?.type === 'turn/end') endedDuringRestore.add(sessionId)
+      if (event?.type === 'turn/start') endedDuringRestore.delete(sessionId)
+    }
     const entry = runningEntryOf(sessionId)
     if (entry === undefined) return
     if (event?.type === 'turn/start') {
@@ -330,6 +403,32 @@ export function install(rt) {
     }
   })
 
+  const path = rt.home === undefined ? undefined : join(rt.home, 'thread-queue.json')
+  const pending = new Map()
+  const endedDuringRestore = new Set()
+  let ready
+  const unloaded = () => ctx.fiber?.uid === null
+
+  function persist() {
+    if (unloaded() || rt.readOnly?.() !== undefined) return
+    try {
+      const temp = `${path}.tmp`
+      writeFileSync(temp, JSON.stringify({ version: QUEUE_VERSION, items: [...pending.values()] }), { mode: 0o600 })
+      renameSync(temp, path)
+    } catch (error) {
+      rt.warn?.('ds-bot: could not save thread-queue.json (%s)', error.code)
+    }
+  }
+
+  function removePending(entry) {
+    if (pending.delete(entry.queueId)) persist()
+  }
+
+  const cancelled = entry => {
+    removePending(entry)
+    void Promise.resolve().then(() => entry.onCancel?.()).catch(error => rt.warn?.('ds-bot: queued cancellation failed: %s', error))
+  }
+
   Object.assign(rt, {
     sendThreadTurn,
     enqueueThreadTurn,
@@ -338,4 +437,19 @@ export function install(rt) {
     dropThreadQueue: forget,
     dropThreadQueueSession: dropSession,
   })
+  if (path !== undefined) {
+    ready = Promise.resolve().then(restoreQueue)
+      .catch(() => rt.warn?.('ds-bot: could not restore thread-queue.json'))
+      .finally(() => {
+        ready = undefined
+        endedDuringRestore.clear()
+      })
+  }
+}
+
+const QUEUE_VERSION = 1
+const hasText = value => typeof value === 'string' && value.trim() !== ''
+
+function savedItem({ queueId, botId, threadId, sessionId, preview, text, enqueuedAt }) {
+  return { queueId, botId, threadId, sessionId, preview, text, enqueuedAt }
 }

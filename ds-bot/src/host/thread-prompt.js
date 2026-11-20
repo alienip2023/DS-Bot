@@ -13,10 +13,10 @@
 import { wrapControllerMethod } from './controller-wrap.js'
 import { joinedBotOfSession, promptText } from './joined-prompt.js'
 
-/** Abort listener bookkeeping lives with the queue entries; only the preview is read here. */
-async function previewOf(request) {
+async function textOf(content) {
   try {
-    return (await promptText(request?.content)).slice(0, 120)
+    // Only text parts can be replayed after a restart.
+    return await promptText(Array.isArray(content) ? content.filter(part => part?.type === 'text') : content)
   } catch {
     // An attachment or an unreadable payload is the prompt's own error to raise.
     return ''
@@ -46,14 +46,15 @@ export function install(rt) {
     if (joinedBotOfSession(rt, request.sessionId) !== undefined) return original.call(this, request, ...rest)
     const thread = rt.threadOf?.(full.threadId)
     if (thread === undefined) return original.call(this, request, ...rest)
-    const preview = await previewOf(request)
+    const text = await textOf(request.content)
     return rt.sendThreadTurn({
       botId: full.botId,
       threadId: full.threadId,
       sessionId: request.sessionId,
       requestId: request?.requestId,
       kind: 'send',
-      preview,
+      preview: text.slice(0, 120),
+      text,
       // A prompt resolves as soon as the Session accepts it, so 'run' would not queue at
       // all; the turn's own end releases the Bot.
       releaseOn: 'turn-end',
