@@ -118,8 +118,8 @@ test('THREAD-ASK', async (t) => {
   assert.equal(ask.finish?.kind, 'tool-calls')
   delete rt.state.rooms.r1.permission
   const inherited = await collect(adapter.stream(options('s-room', messages)))
-  assert.equal(inherited.calls.length, 0)
-  assert.match(inherited.text, /allowed via allow-once/)
+  assert.deepEqual(inherited.calls.map(call => call.name), ['approve_agent_action'])
+  assert.doesNotMatch(inherited.text, /allowed via allow-once/)
 })
 
 test('THREAD-PRESET', async (t) => {
@@ -254,6 +254,30 @@ test('queued calls finish later streams', async (t) => {
   assert.ok(second.finish.kind === 'tool-calls' || /tool said/.test(second.text), JSON.stringify(second))
 })
 
+test('FULL-ASK', async (t) => {
+  const adapter = makeAdapter({ preset: 'danger-full-access' })
+  t.after(() => adapter.dispose())
+  const replies = []
+  let permissionEvents = 0
+  const screenEvent = adapter.screenEvent.bind(adapter)
+  t.mock.method(adapter, 'screenEvent', (live, event) => {
+    if (event.type === 'permission') {
+      permissionEvents++
+      const reply = event.reply
+      event.reply = value => {
+        replies.push(value)
+        return reply(value)
+      }
+    }
+    return screenEvent(live, event)
+  })
+  const ask = await collect(adapter.stream(options('s1', [user('m1', 'ask-permission')])))
+  assert.equal(permissionEvents, 1)
+  assert.deepEqual(replies, [], 'full access replied before an approval card')
+  assert.deepEqual(ask.calls.map(call => call.name), ['approve_agent_action'])
+  assert.equal(ask.finish?.kind, 'tool-calls')
+})
+
 test('a permission prompt bridges to approve_agent_action and fails closed', async (t) => {
   const adapter = makeAdapter()
   t.after(() => adapter.dispose())
@@ -348,11 +372,12 @@ test('routes and modes', () => {
   assert.equal(isLocalAgentRoute('local-acp-custom'), true)
   assert.equal(isLocalAgentRoute('deepseek'), false)
   assert.equal(acpMode('read-only', [{ id: 'ask' }, { id: 'bypass' }]), 'ask')
-  assert.equal(acpMode('danger-full-access', [{ id: 'ask' }, { id: 'bypass' }]), 'bypass')
+  assert.equal(acpMode('danger-full-access', [{ id: 'ask' }, { id: 'bypass' }]), 'ask')
   // Config options name a mode by `value`; an agent without a match keeps its own.
   assert.equal(acpMode('read-only', [{ value: 'agent' }, { value: 'plan' }, { value: 'ask' }]), 'ask')
   assert.equal(acpMode('workspace-write', [{ value: 'agent' }, { value: 'plan' }, { value: 'ask' }]), undefined)
   assert.equal(cliMode('claude', 'workspace-write'), 'acceptEdits')
+  assert.equal(cliMode('claude', 'danger-full-access'), 'default')
   assert.equal(cliMode('acp', 'workspace-write'), undefined)
 })
 
@@ -367,14 +392,14 @@ test('acp: a resumed session that lists no modes keeps the ones its CLI listed',
   assert.match(resumed.text, /mode: agent; refused: 0/)
 })
 
-test('acp: full access allows and read-only refuses a change without a card', async (t) => {
+test('acp: full access asks and read-only refuses a change without a card', async (t) => {
   const full = makeAdapter({ preset: 'danger-full-access', acpArgs: ['--cursor-modes'] })
   const readOnly = makeAdapter({ preset: 'read-only', acpArgs: ['--cursor-modes'] })
   t.after(() => Promise.all([full, readOnly].map(adapter => adapter.dispose())))
   // Cursor has no bypass mode: the preset is kept by DS Bot's own answer.
   const allowed = await collect(full.stream(options('s1', [user('m1', 'ask-permission')])))
-  assert.equal(allowed.calls.length, 0)
-  assert.match(allowed.text, /allowed via allow-once/)
+  assert.deepEqual(allowed.calls.map(call => call.name), ['approve_agent_action'])
+  assert.doesNotMatch(allowed.text, /allowed via allow-once/)
   const refused = await collect(readOnly.stream(options('s1', [user('m1', 'ask-permission')])))
   assert.equal(refused.calls.length, 0)
   assert.match(refused.text, /denied/)
@@ -419,7 +444,8 @@ test('a changed permission preset reopens the local agent for the next turn', as
     assert.match(first.text, /mode: accept-edits/)
     preset = 'danger-full-access'
     const second = await collect(adapter.stream(options('s1', [user('m2', 'show-mode')])))
-    assert.match(second.text, /mode: bypass/)
+    assert.doesNotMatch(second.text, /mode: bypass/)
+    assert.match(second.text, /mode: (?:ask|default)\b/)
   } finally {
     await adapter.dispose()
   }
@@ -442,7 +468,7 @@ test('codex: a changed permission preset resumes the thread with the new sandbox
   const resumed = calls.filter(call => call.method === 'thread/resume')
   assert.equal(resumed.length, 1)
   assert.equal(resumed[0].params.sandbox, 'danger-full-access')
-  assert.equal(resumed[0].params.approvalPolicy, 'never')
+  assert.equal(resumed[0].params.approvalPolicy, 'on-request')
 })
 
 test('probeModels reports the probe session\'s model options plus CLI default', async (t) => {
@@ -470,7 +496,7 @@ test('codex app-server: thread start and resume send the fields Codex reads', as
   for (const [preset, sandbox, approvalPolicy] of [
     ['read-only', 'read-only', 'on-request'],
     ['workspace-write', 'workspace-write', 'on-request'],
-    ['danger-full-access', 'danger-full-access', 'never'],
+    ['danger-full-access', 'danger-full-access', 'on-request'],
   ]) {
     const record = join(mkdtempSync(join(tmpdir(), 'dsb-codex-params-')), 'params.jsonl')
     const records = {}
@@ -1203,7 +1229,7 @@ test('antigravity route, badge, avatar, modes, sign-in hint, and env stripping',
   const listedModes = ['default', 'accept-edits', 'auto', 'plan'].map(id => ({ id }))
   assert.equal(acpMode('read-only', listedModes, spec.modes), 'default')
   assert.equal(acpMode('workspace-write', listedModes, spec.modes), 'accept-edits')
-  assert.equal(acpMode('danger-full-access', listedModes, spec.modes), 'auto')
+  assert.equal(acpMode('danger-full-access', listedModes, spec.modes), 'default')
   assert.equal(isLocalRoute('local-antigravity/gemini-4-carbon'), true)
   assert.deepEqual(badgeOf('local-antigravity'), ['AG', 'sky'])
   assert.match(agentAvatar('local-antigravity').image, /^data:image\/png;base64,/)
@@ -1323,7 +1349,7 @@ test('acp exposes per-model thought_level efforts, maps Antigravity presets, and
   assert.match(modeRead.text, /mode: default; refused: 0/)
   currentPreset = 'danger-full-access'
   const modeAuto = await collect(adapter.stream(options('m0', [user('m1', 'show-mode'), user('m2', 'show-mode'), user('m3', 'show-mode')], { provider: 'local-antigravity', model: 'fake-large' })))
-  assert.match(modeAuto.text, /mode: auto; refused: 0/)
+  assert.match(modeAuto.text, /mode: default; refused: 0/)
 
   const high = await collect(adapter.stream(options('s1', [user('m1', 'show-state')], {
     provider: 'local-antigravity',

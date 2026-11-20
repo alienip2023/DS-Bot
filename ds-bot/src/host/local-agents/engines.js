@@ -26,7 +26,7 @@ const CLIS = {
     modes: {
       'read-only': ['default'],
       'workspace-write': ['accept-edits'],
-      'danger-full-access': ['auto'],
+      'danger-full-access': ['default'],
     },
   },
   'opencode': { name: 'OpenCode', kind: 'acp', command: 'opencode', args: ['acp'], version: ['--version'], signIn: 'opencode auth login' },
@@ -101,7 +101,7 @@ export function validateCustom({ name, command, args }) {
 export const MODES = {
   'read-only': { acp: ['ask', 'plan', 'read-only', 'readonly'], claude: 'plan', codex: 'read-only' },
   'workspace-write': { acp: ['accept-edits', 'accept_edits', 'acceptEdits'], claude: 'acceptEdits', codex: 'workspace-write' },
-  'danger-full-access': { acp: ['bypass', 'bypassPermissions', 'bypass-permissions', 'yolo', 'full-access', 'auto-approve'], claude: 'bypassPermissions', codex: 'danger-full-access' },
+  'danger-full-access': { acp: ['ask', 'default'], claude: 'default', codex: 'danger-full-access' },
 }
 export const acpMode = (preset, advertised, modes) => {
   const wanted = modes?.[preset] ?? MODES[preset]?.acp ?? []

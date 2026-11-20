@@ -1303,10 +1303,8 @@ const optionOf = (options, kind) => ((options ?? []).find(entry => entry.kind ==
 
 // What the preset answers without asking: an option id, null to refuse, or
 // undefined to ask the user.
-// Pinned: no new automatic allow path. Only full access allows unasked.
 export function presetAnswer(preset, event, forceAsk = false) {
   if (forceAsk) return undefined
-  if (preset === 'danger-full-access') return optionOf(event.options, 'allow')
   if (preset === 'read-only' && event.changes === true) return optionOf(event.options, 'reject') ?? null
   return undefined
 }
