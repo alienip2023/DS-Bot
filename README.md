@@ -1,6 +1,6 @@
 # DS Bot
 
-`ds-bot` 是 DeepSeek Harness（DSH）的团队 Bot 插件。本 fork 的版本是 `0.3.8-fork.61`，功能入口在 [ds-bot/index.js](ds-bot/index.js)。每个 Bot 可以在独立会话中工作，也可以通过群聊和 Bot 间消息协作。主 Bot 负责管理团队。
+`ds-bot` 是 DeepSeek Harness（DSH）的团队 Bot 插件。本 fork 的版本是 `0.3.8-fork.62`，功能入口在 [ds-bot/index.js](ds-bot/index.js)。每个 Bot 可以在独立会话中工作，也可以通过群聊和 Bot 间消息协作。主 Bot 负责管理团队。
 
 ## 安装
 

@@ -1,6 +1,6 @@
 # ds-bot
 
-`ds-bot` 是 DeepSeek Harness（DSH）插件，本 fork 的版本是 `0.3.8-fork.61`。插件的 host 入口是仓库内的 `ds-bot/index.js`，由包入口 `plugin.js` 加载。插件在 DSH 会话中运行 Bot，支持主 Bot 管理团队、Bot 间消息和群聊。
+`ds-bot` 是 DeepSeek Harness（DSH）插件，本 fork 的版本是 `0.3.8-fork.62`。插件的 host 入口是仓库内的 `ds-bot/index.js`，由包入口 `plugin.js` 加载。插件在 DSH 会话中运行 Bot，支持主 Bot 管理团队、Bot 间消息和群聊。
 
 ## 安装
 

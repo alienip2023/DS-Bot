@@ -4,6 +4,13 @@ All notable changes to DS Bot are listed here. The format follows [Keep a Change
 
 ## [Unreleased]
 
+## [0.3.8-fork.62]
+
+- LLM 失败先按 429/限流分类，再判断计费；带 quota 字样的限流不再被当成致命错误。
+- Bot 在房间最后一条消息里说「明早」「今晚」这类推迟时，房间会追加一行「现在做，或写明等什么。」，不自动重开回合。
+- 卡住的目标最多补三次提醒，间隔 60 秒，且只在房间空闲时发。
+- 共享技能的来源必须是 `hub:<id>` 或 `node:<id>`，其它写法一律拒绝。
+
 ## [0.3.8-fork.61]
 
 - Codex 引擎未返回实际沙箱或返回结果与请求不符时，插件会停止该轮。
