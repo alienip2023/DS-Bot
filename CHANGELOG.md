@@ -4,6 +4,10 @@ All notable changes to DS Bot are listed here. The format follows [Keep a Change
 
 ## [Unreleased]
 
+## [0.3.8-fork.63]
+
+- 群任务支持声明写入范围（`group_task` 的 `scopes`）：同房间内另一个成员已登记的重叠路径会被拒绝，错误里给出对方任务 id、成员名和占用路径。`update` 是并集语义，冲突时整次不生效。完成或取消后范围自动释放。
+
 ## [0.3.8-fork.62]
 
 - LLM 失败先按 429/限流分类，再判断计费；带 quota 字样的限流不再被当成致命错误。
