@@ -36,6 +36,7 @@ export function sharedSkillSnapshot(rt, { forward = false } = {}) {
 
 // Only the source of a snapshot may replace its imports; a name never grants ownership.
 export function applySharedSkills(rt, source, snapshot, { isActive = () => true } = {}) {
+  if (typeof source !== 'string' || !/^(?:hub|node):\S(?:.*\S)?$/.test(source)) return Promise.resolve(false)
   const run = (writers.get(rt) ?? Promise.resolve()).catch(() => {}).then(() => applySnapshot(rt, source, snapshot, isActive))
   writers.set(rt, run)
   return run.finally(() => { if (writers.get(rt) === run) writers.delete(rt) })
