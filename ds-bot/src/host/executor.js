@@ -456,6 +456,7 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
       } catch (err) {
         if (err?.code === 'E_ABORTED') {
           if (!over) { over = true; mirrorTurnAbort(session, { turn, step, closedTurns }) }
+          for (const groupSessionId of rt.groupSessionsOf?.(bot.id) ?? []) rt.failRoomTurn?.(groupSessionId, { code: 'ABORTED', message: 'stopped' })
           return { ok: false, aborted: true, turnId: prepared.turnId }
         }
         over = true
@@ -464,6 +465,9 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
       }
       over = true
       const mirrorResult = mirrorTurnFinish(session, { turn, step, botText: result.text, botId: bot.id, nodeSeq: result.seq, seenKeys, closedKeys, seenSteps, closedTurns })
+      // Notify group round waiters that the joined bot's turn has produced output.
+      // turns.js does this via session/event which never fires for mirror sessions.
+      for (const groupSessionId of rt.groupSessionsOf?.(bot.id) ?? []) rt.touchRoomTurn?.(groupSessionId)
       return { ok: true, turnId: prepared.turnId, mirrorResult }
     } finally {
       rt.joinedLate.delete(dispose)
