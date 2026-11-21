@@ -15,7 +15,7 @@ import { usageChunk } from './usage.js'
 
 // Failures only the user can fix: a key, a sign-in, a balance. They block the Bot
 // until it is fixed (`bot.blocked`, for the repair card).
-export const BLOCKING_CODES = new Set(['MISSING_CREDENTIAL', 'INVALID_CREDENTIAL', 'AUTH', 'QUOTA', 'ACCOUNT_QUOTA', 'ACCOUNT_SIGN_IN_REQUIRED', 'ACCOUNT_SIGNED_OUT', 'ACCOUNT_TOKEN_INVALID', 'LOCAL_AGENT_MISSING', 'LOCAL_AGENT_SIGNIN', 'LOCAL_AGENT_QUOTA', 'LOCAL_AGENT_EXIT'])
+export const BLOCKING_CODES = new Set(['MISSING_CREDENTIAL', 'INVALID_CREDENTIAL', 'AUTH', 'QUOTA', 'ACCOUNT_QUOTA', 'ACCOUNT_SIGN_IN_REQUIRED', 'ACCOUNT_SIGNED_OUT', 'ACCOUNT_TOKEN_INVALID', 'LOCAL_AGENT_MISSING', 'LOCAL_AGENT_SIGNIN', 'LOCAL_AGENT_QUOTA', 'LOCAL_AGENT_EXIT', 'EMPTY_EFFECTIVE_CHAIN'])
 // The ones a key set outside a turn can fix, and the ones a sign-in can (unblockBots).
 // A balance only a turn that completes shows fixed, as Retry runs one.
 const KEY_CODES = new Set(['MISSING_CREDENTIAL', 'INVALID_CREDENTIAL', 'AUTH'])
@@ -39,7 +39,13 @@ export function turnFailure(error) {
   const raw = typeof error?.message === 'string' ? error.message.trim() : ''
   const contentPolicy = rawCode === 'AUTH' && error?.status === 403 && CONTENT_POLICY.test(raw)
   const code = contentPolicy ? 'CONTENT_POLICY' : rawCode
-  const message = code === 'AUTH' || raw === '' ? '' : cleanText(raw).slice(0, 500)
+  // EMPTY_EFFECTIVE_CHAIN: the FallbacksChain/Auto model route has no configured
+  // rootChain — no provider to delegate to. Point the user at the model config
+  // rather than showing the raw upstream wording.
+  const chainEmpty = code === 'EMPTY_EFFECTIVE_CHAIN'
+  const message = chainEmpty
+    ? '模型路由链为空：请在 设置 → Models 配置主模型（如 deepseek-official/deepseek-v4-pro），或把 Bot 的模型从 Auto 改为具体模型。'
+    : (code === 'AUTH' || raw === '' ? '' : cleanText(raw).slice(0, 500))
   const requestId = typeof error?.requestId === 'string' && error.requestId !== '' ? error.requestId : requestIdOf(raw)
   return {
     code,
