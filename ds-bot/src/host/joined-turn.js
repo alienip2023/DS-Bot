@@ -403,6 +403,18 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
         if (typeof rt.createSession === 'function') {
           const created = await rt.createSession(`${bot.name} · ${roomName || roomId}`, { sessionId })
           if (created !== sessionId) throw new Error('remote group session identity changed')
+          // Write the protected system/message head required by DSH session format v4.
+          // Without it every system-prompt update (systemPromptUpdate: "in-history") corrupts
+          // the log — the same session-head fix applied in mirror.js createMirrorSession.
+          try {
+            const { createSystemMessage } = await import('@deepseek-ai/dsh-llm')
+            const agent = await rt.resolveAgent?.(sessionId)
+            const sess = agent?.session
+            if (sess) {
+              try { sess.append('system/message', createSystemMessage(`[mirror: ${bot.name}]`), { protected: true }) }
+              catch { try { sess.append('system/message', createSystemMessage(`[mirror: ${bot.name}]`)) } catch { /* ignore */ } }
+            }
+          } catch { /* ignore — session will proceed without the head */ }
         }
       } catch (error) {
         bot.remoteGroupSessions = bot.remoteGroupSessions.filter(id => id !== sessionId)

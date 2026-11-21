@@ -1,7 +1,7 @@
 // mirror.js — write remote bot/turn results into a local mirror Session.
 // The session is store-owned; writes go through session.append ONLY.
 // No followup / steer / sendUser / sessionController.prompt.
-import { createUserMessage, createAssistantMessage } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, createAssistantMessage, createSystemMessage } from '@deepseek-ai/dsh-llm'
 import { turnEnd } from './turn-end.js'
 
 const MIRROR_PROVIDER = 'mirror'
@@ -429,6 +429,18 @@ async function createMirrorSession(rt, bot) {
     if (!session) throw new Error('session unavailable')
   } catch (err) {
     throw Object.assign(new Error('mirror session resolve failed: ' + (err?.message ?? err)), { code: 'no-session' })
+  }
+
+  // DSH session format requires the first surface to be a protected system/message head.
+  // Without it every turn that appends a system prompt update corrupts the log
+  // (SessionFormatError: system/message requires a protected first surface head).
+  // Write the head immediately after the bare session is created, before any turn.
+  try {
+    session.append('system/message', createSystemMessage(`[mirror: ${bot.name}]`), { protected: true })
+  } catch {
+    // Some DSH versions accept protected:true; others write without it.
+    // Swallow to let the session proceed — worse than corrupt format is no session.
+    try { session.append('system/message', createSystemMessage(`[mirror: ${bot.name}]`)) } catch { /* ignore */ }
   }
 
   // A roster report can replace the row while create/resolve is awaited. Publish to
