@@ -1138,6 +1138,111 @@ export function install(rt) {
           })
           return ok({ talents })
         }
+        case 'list-templates': {
+          await rt.load()
+          const { loadBotTemplates, filterBotTemplates } = await import('./bot-templates.js')
+          const all = loadBotTemplates(rt.dshHome)
+          const q = typeof body.query === 'string' ? body.query : ''
+          const cat = typeof body.category === 'string' ? body.category : ''
+          let filtered = filterBotTemplates(all, q)
+          if (cat) filtered = filtered.filter(function (t) { return String(t.category || '').toLowerCase() === cat.toLowerCase() })
+          const templates = filtered.map(function (t) {
+            return {
+              id: t.id, name: t.name, role: t.role || '', duty: t.duty || '',
+              category: t.category || '', tags: Array.isArray(t.tags) ? t.tags : [],
+              description: t.description || '', model: t.model || null,
+              denyTools: Array.isArray(t.denyTools) ? t.denyTools : [],
+            }
+          })
+          return ok({ templates })
+        }
+        case 'list-connected-apps': {
+          await rt.load()
+          const botId = typeof body.botId === 'string' ? body.botId : undefined
+          const apps = typeof rt.listConnectedApps === 'function' ? rt.listConnectedApps(botId) : []
+          return ok({ apps })
+        }
+        case 'register-connected-app': {
+          await rt.load()
+          if (typeof rt.state.connectedApps === 'undefined') rt.state.connectedApps = {}
+          const name = String(body.name ?? '').trim()
+          if (!name) return fail('Provide a name', 'bot/invalid')
+          const type = String(body.type ?? 'custom').trim()
+          const id = `ca_${name.toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 32)}_${Date.now().toString(36)}`
+          const now = Date.now()
+          rt.state.connectedApps[id] = { id, botId: null, name, type, label: body.label || undefined, notes: body.notes || undefined, createdAt: now, updatedAt: now }
+          await rt.save()
+          return ok({ app: rt.state.connectedApps[id] })
+        }
+        case 'unregister-connected-app': {
+          await rt.load()
+          const id = String(body.id ?? '').trim()
+          const app = rt.state.connectedApps?.[id]
+          if (!app) return fail('Not found', 'bot/not-found')
+          delete rt.state.connectedApps[id]
+          await rt.save()
+          return ok({ removed: id })
+        }
+        case 'list-task-tokens': {
+          await rt.load()
+          return ok({ available: typeof rt.resolveTaskToken === 'function' })
+        }
+        case 'register-connected-app': {
+          await rt.load()
+          rt.state.connectedApps ??= {}
+          const name = String(body.name ?? '').trim()
+          if (!name) return fail('Provide a name', 'bot/invalid')
+          const type = String(body.type ?? 'custom').trim()
+          const id = `ca_${name.toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 32)}_${Date.now().toString(36)}`
+          const now = Date.now()
+          rt.state.connectedApps[id] = { id, botId: null, name, type, label: body.label || undefined, notes: body.notes || undefined, createdAt: now, updatedAt: now }
+          await rt.save()
+          return ok({ app: rt.state.connectedApps[id] })
+        }
+        case 'unregister-connected-app': {
+          await rt.load()
+          const id = String(body.id ?? '').trim()
+          const app = rt.state.connectedApps?.[id]
+          if (!app) return fail('Not found', 'bot/not-found')
+          delete rt.state.connectedApps[id]
+          await rt.save()
+          return ok({ removed: id })
+        }
+        case 'market-browse': {
+          await rt.load()
+          const { loadBotTemplates, filterBotTemplates } = await import('./bot-templates.js')
+          const all = loadBotTemplates(rt.dshHome)
+          const q = typeof body.query === 'string' ? body.query : ''
+          const cat = typeof body.category === 'string' ? body.category : ''
+          let filtered = filterBotTemplates(all, q)
+          if (cat) filtered = filtered.filter(t => String(t.category || '').toLowerCase() === cat.toLowerCase())
+          const templates = filtered.map(t => ({
+            id: t.id, name: t.name, role: t.role || '', duty: t.duty || '',
+            category: t.category || '', tags: Array.isArray(t.tags) ? t.tags : [],
+            description: t.description || '', model: t.model || null,
+            denyTools: Array.isArray(t.denyTools) ? t.denyTools : [],
+            instructions: t.instructions || '',
+          }))
+          return ok({ templates, total: templates.length, source: 'local' })
+        }
+        case 'market-install': {
+          await rt.load()
+          const tmplId = String(body.id ?? '').trim()
+          if (!tmplId) return fail('Provide a template id', 'bot/invalid')
+          const { loadBotTemplates } = await import('./bot-templates.js')
+          const all = loadBotTemplates(rt.dshHome)
+          const tmpl = all.find(t => t.id === tmplId)
+          if (!tmpl) return fail(`No template with id "${tmplId}"`, 'bot/not-found')
+          const name = String(body.name ?? tmpl.name ?? '').trim()
+          if (!name) return fail('Provide a name', 'bot/invalid')
+          const bot = await rt.createBot({
+            name,
+            role: tmpl.role || '',
+            instructions: tmpl.instructions || tmpl.description || '',
+            model: body.model || tmpl.model || undefined,
+          })
+          return ok({ bot: { id: bot.id, name: bot.name } })
+        }
         case 'learning-answer':
           await rt.load()
           return ok(await rt.learningEndpoint(endpoint, body))

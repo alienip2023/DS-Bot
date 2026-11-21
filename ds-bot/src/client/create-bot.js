@@ -44,6 +44,9 @@ export function CreateBot({ roster, actions, start, brief = '', onBack, canGoBac
   // Remote node selection: '' = this machine, a nodeId = create on that node
   const [targetNodeId, setTargetNodeId] = useState('')
   const [remoteNodes, setRemoteNodes] = useState([])
+  // Bot template library
+  const [templates, setTemplates] = useState([])
+  const templatesLoaded = useRef(false)
   const fileRef = useRef(null)
   const frame = useRef(null)
   // When a remote node is selected, skip the worker-bot form fields entirely.
@@ -66,6 +69,15 @@ export function CreateBot({ roster, actions, start, brief = '', onBack, canGoBac
     }).catch(() => {})
     return () => { cancelled = true }
   }, [])
+  // Load bot template library once on mount.
+  useEffect(() => {
+    if (templatesLoaded.current) return
+    if (typeof actions.listBotTemplates !== 'function') return
+    templatesLoaded.current = true
+    actions.listBotTemplates().then(res => {
+      if (Array.isArray(res?.templates)) setTemplates(res.templates)
+    }).catch(() => {})
+  }, [])
   const fallbackName = freshBotName(roster, t('New Bot'))
   const finalName = name.trim() || fallbackName
   const clash = roster.bots.some(bot => bot.name.toLowerCase() === finalName.toLowerCase())
@@ -83,14 +95,14 @@ export function CreateBot({ roster, actions, start, brief = '', onBack, canGoBac
     try {
       if (isRemoteNode) {
         if (!model) { setError(t('Please select a model')); setBusy(false); return }
-        const result = await actions.createBot({ nodeId: targetNodeId, name: finalName, role: '', model, effort: effort || undefined })
+        const result = await actions.createBot({ nodeId: targetNodeId, name: finalName, role: role.trim(), model, effort: effort || undefined, ...(instructions.trim() ? { instructions: instructions.trim() } : {}) })
         onCreated(result?.value ?? result)
         return
       }
       const extra = botType === 'remote-worker'
         ? { type: 'remote-worker', worker: { hubUrl: hubUrl.trim() || undefined, remotePort: remotePort ? Number(remotePort) : undefined, token: workerToken.trim() || undefined } }
         : {}
-      const bot = await actions.createBot({ ...createPayload({ name: finalName, look, image, model: chosen, effort: local ? undefined : effort, brief, ownLook, sectionId: start?.sectionId }), memoryConfig: { backend: memoryBackend }, ...extra })
+      const bot = await actions.createBot({ ...createPayload({ name: finalName, look, image, model: chosen, effort: local ? undefined : effort, brief, ownLook, sectionId: start?.sectionId }), ...(role.trim() ? { role: role.trim() } : {}), ...(instructions.trim() ? { instructions: instructions.trim() } : {}), memoryConfig: { backend: memoryBackend }, ...extra })
       onCreated(bot)
     } catch (failure) {
       setError(failureText(failure))
@@ -108,6 +120,27 @@ export function CreateBot({ roster, actions, start, brief = '', onBack, canGoBac
   }
   const worn = local && chosen !== '' && !ownLook ? agentAvatar(routeOf(chosen))?.image : undefined
   const previewLook = image ? { ...look, image } : worn ? { ...look, image: worn } : look
+  // Group templates by category for the optgroup selector.
+  const templatesByCategory = templates.reduce((acc, tmpl) => {
+    const cat = tmpl.category || t('Other')
+    ;(acc[cat] ??= []).push(tmpl)
+    return acc
+  }, {})
+  const [role, setRole] = useState(start?.role ?? '')
+  const [instructions, setInstructions] = useState(start?.instructions ?? '')
+  const [templateKey, setTemplateKey] = useState(0)
+  const onPickTemplate = (e) => {
+    const id = e.target.value
+    if (!id) return
+    const tmpl = templates.find(t => t.id === id)
+    if (!tmpl) return
+    if (!name.trim() && tmpl.name) setName(tmpl.name)
+    if (tmpl.role) setRole(String(tmpl.role).slice(0, 24))
+    if (tmpl.instructions || tmpl.description) setInstructions(String(tmpl.instructions || tmpl.description).trim())
+    if (tmpl.model && !model) setModel(tmpl.model)
+    // Reset selector to placeholder after pick.
+    setTemplateKey(k => k + 1)
+  }
   const card = h('div', { className: 'bt-create-card' },
     canRunLocal ? h(RunModeSwitch, { mode, setMode }) : null,
     h('div', { className: 'bt-create-preview' },
@@ -132,6 +165,22 @@ export function CreateBot({ roster, actions, start, brief = '', onBack, canGoBac
     library ? h(AvatarLibraryPanel, { actions, onPick: entry => { setImage(entry.image); setLibrary(false) } }) : null,
     h('label', { className: 'bt-field' },
       h('span', { className: 'bt-field-label' }, t('Name')),
+      templates.length > 0 ? h('select', {
+        key: templateKey,
+        className: 'bt-input', defaultValue: '',
+        onChange: onPickTemplate,
+        'aria-label': t('Pick from template library'),
+        style: { marginBottom: 6 },
+      },
+        h('option', { value: '' }, t('From template library (optional)…')),
+        Object.keys(templatesByCategory).sort().map(cat =>
+          h('optgroup', { key: cat, label: cat },
+            templatesByCategory[cat].map(tmpl =>
+              h('option', { key: tmpl.id, value: tmpl.id }, tmpl.name + (tmpl.role ? ' · ' + tmpl.role : ''))
+            )
+          )
+        )
+      ) : null,
       h('input', {
         className: 'bt-input', autoFocus: !inline, value: name, placeholder: fallbackName, maxLength: 40, 'aria-label': t('Name'),
         onChange: event => setName(event.target.value),
@@ -139,6 +188,13 @@ export function CreateBot({ roster, actions, start, brief = '', onBack, canGoBac
       }),
       problem ? h('span', { className: 'bt-note bt-danger' }, hostText(problem))
         : clash ? h('span', { className: 'bt-note bt-danger' }, t('A Bot named {name} already exists', { name: finalName })) : null),
+    h('label', { className: 'bt-field' },
+      h('span', { className: 'bt-field-label' }, t('Role')),
+      h('input', { className: 'bt-input', value: role, placeholder: t('e.g. Engineer, Planner, Reviewer'), maxLength: 40, 'aria-label': t('Role'), onChange: e => setRole(e.target.value) })),
+    h('label', { className: 'bt-field' },
+      h('span', { className: 'bt-field-label' }, t('Instructions')),
+      h('textarea', { className: 'bt-input', value: instructions, rows: 4, placeholder: t('What this Bot does and how it should behave'), 'aria-label': t('Instructions'), onChange: e => setInstructions(e.target.value) }),
+      h('span', { className: 'bt-note' }, t('Optional. The Bot reads this at the start of every turn.'))),
     local ? h('div', { className: 'bt-field' },
       h('span', { className: 'bt-field-label' }, t('Local agent')),
       h(CliList, { ...localAgents, selected: routeOf(chosen), onPick: pickAgent, actions })) : null,

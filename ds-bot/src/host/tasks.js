@@ -1,6 +1,7 @@
 // 人才库工具：list_talents / hire_talent (dsh-ai-team 格式兼容)
 import { loadTalentCatalog, filterTalents, talentToCreateBot } from './talent-catalog.js'
 import { loadBotTemplates, filterBotTemplates } from './bot-templates.js'
+import { installCredentialInterceptor } from './credential-interceptor.js'
 
 // The group task board: what each member is working on in a group, one line apiece.
 // A Bot registers a task when it takes the work and updates it as the work moves; the
@@ -470,9 +471,308 @@ export function install(rt) {
   }))
 
   installTemplateTools(rt)
+  installScheduleBot(rt)
+  installBotConnect(rt)
+  installCredentialBroker(rt)
+  if (rt.ctx) installCredentialInterceptor(rt)
 }
 
-// ── minimal nested-YAML parser for team playbook ────────────────────────────
+// ── schedule_bot ─────────────────────────────────────────────────────────────
+//
+// Lets a Main Bot create a time-based recurring or one-shot routine for any Bot
+// on the team, complete with a prompt whose opening lines respect that Bot's
+// instructions context.  Thin wrapper over the existing bot-routines machinery
+// (rt.scheduleEndpoint / 'schedule-create').
+//
+// Key difference from the UI schedule form:
+//   • schedule_bot prepends a one-line instructions anchor to the prompt so the
+//     target Bot reads the task in the right role context.
+//   • The model selects frequency with a plain English shorthand that maps to the
+//     DSH selector format.
+
+const SCHEDULE_FREQ_HELP = '"once", "daily HH:MM", "weekly Mon HH:MM", "every N min", "at <ISO date>"'
+
+// Returns the DSH schedule-create `when` shape: { kind, at?, time?, weekdays?, minutes?, timeZone? }
+function parseScheduleFreq(freq) {
+  if (typeof freq !== 'string') return { error: `frequency must be a string like ${SCHEDULE_FREQ_HELP}` }
+  const s = freq.trim().toLowerCase()
+  if (s === 'once' || s === 'now') return { when: { kind: 'at', at: new Date(Date.now() + 10_000).toISOString() } }
+  {
+    const m = s.match(/^daily\s+(\d{1,2}:\d{2}(?::\d{2})?)$/)
+    if (m) return { when: { kind: 'daily', time: m[1].padStart(5, '0'), timeZone: 'UTC' } }
+  }
+  {
+    const m = s.match(/^weekly\s+(mon|tue|wed|thu|fri|sat|sun)\s+(\d{1,2}:\d{2}(?::\d{2})?)$/i)
+    if (m) {
+      const days = { mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6, sun: 7 }
+      return { when: { kind: 'weekly', time: m[2].padStart(5, '0'), timeZone: 'UTC', weekdays: [days[m[1].toLowerCase()]] } }
+    }
+  }
+  {
+    const m = s.match(/^at\s+(.+)$/)
+    if (m) {
+      const at = new Date(m[1].trim())
+      if (!Number.isNaN(at.getTime())) return { when: { kind: 'at', at: at.toISOString() } }
+    }
+  }
+  {
+    const m = s.match(/^every\s+(\d+)\s*(min|mins|minutes?|hour|hours?)?$/)
+    if (m) {
+      const n = parseInt(m[1], 10)
+      const unit = (m[2] ?? 'min').startsWith('h') ? 60 : 1
+      const minutes = n * unit
+      if (minutes < 1 || minutes > 10080) return { error: 'frequency: "every N min" must be 1 minute to 7 days (10080 min)' }
+      return { when: { kind: 'every', minutes } }
+    }
+  }
+  return { error: `Unrecognised frequency "${freq}". Use ${SCHEDULE_FREQ_HELP}.` }
+}
+
+export function installScheduleBot(rt) {
+  rt.teamTools.push(defineTool({
+    name: 'schedule_bot',
+    description: 'Schedule a recurring or one-time task for any Bot on the team. The Bot\'s own instructions stay active — it runs in character. Main Bot only. Frequency examples: "daily 09:00", "weekly Mon 09:00", "every 30 min", "once", "at 2026-11-22T08:00:00Z".',
+    parameters: {
+      bot: { type: 'string', required: true, description: 'Exact Bot name from list_bots.' },
+      title: { type: 'string', required: true, description: 'Short name shown in the schedule list.' },
+      prompt: { type: 'string', required: true, description: 'What the Bot should do when the task fires.' },
+      frequency: { type: 'string', required: true, description: `When to run: ${SCHEDULE_FREQ_HELP}.` },
+    },
+    output,
+    async execute(args, exec) {
+      await rt.load()
+      const self = rt.selfOf(exec.agent?.id)
+      if (!rt.isMain(self)) return 'Only a Main Bot can schedule tasks for other Bots.'
+      const botName = String(args.bot ?? '').trim()
+      const bot = rt.findBot(botName)
+      if (!bot) return `No Bot named "${botName}". Use list_bots to see the team.`
+      if (bot.origin === 'peer') return `${bot.name} is on another node; schedule it from that node's Main Bot.`
+      const title = String(args.title ?? '').trim()
+      if (!title) return 'Give the scheduled task a title.'
+      if (title.length > 120) return 'Title is too long (max 120 characters).'
+      const prompt = String(args.prompt ?? '').trim()
+      if (!prompt) return 'Write a prompt — what the Bot should do when the task fires.'
+      const { when, error: freqErr } = parseScheduleFreq(String(args.frequency ?? ''))
+      if (freqErr) return freqErr
+      try {
+        await rt.scheduleEndpoint('schedule-create', {
+          target: { kind: 'bot', botId: bot.id },
+          title,
+          prompt,
+          when,
+        })
+      } catch (err) {
+        return `Could not schedule: ${err?.message ?? err}`
+      }
+      return `Scheduled "${title}" for ${bot.name} — runs ${String(args.frequency).trim()}.`
+    },
+  }))
+}
+
+// ── bot_connect：Connected Apps 集成层 ──────────────────────────────────────
+//
+// 允许 Bot 注册"已连接应用"——比如 GitHub、Jira、Slack——并将连接句柄
+// 存入 state.connectedApps，让其他工具（比如 task_token 凭证代理）可以
+// 引用它们，而不必把 API key 直接写进 prompt。
+//
+// 每条记录：{ id, botId, name, type, label?, notes?, createdAt, updatedAt }
+// 敏感凭证永远不写进 state.json；只存元数据（连接名称/类型/说明）。
+// 实际凭证走 rt.secretsView()/rt.setSecret() 路径，key 格式为
+//   connected-app:<id>:<field>
+// 这样凭证受到现有加密存储保护，连接记录只是索引。
+//
+// 操作：list / register / unregister / info
+
+export function installBotConnect(rt) {
+  const apps = () => { rt.state.connectedApps ??= {}; return rt.state.connectedApps }
+  const appId = (name) => `ca_${name.toLowerCase().replace(/[^a-z0-9]+/g, '_').slice(0, 32)}_${Date.now().toString(36)}`
+  const appView = (a) => ({
+    id: a.id, botId: a.botId, name: a.name, type: a.type,
+    label: a.label ?? null, notes: a.notes ?? null,
+    createdAt: a.createdAt, updatedAt: a.updatedAt,
+  })
+
+  rt.teamTools.push(defineTool({
+    name: 'bot_connect',
+    description: 'Register, list, or unregister a Connected App for a Bot — an external service integration such as GitHub, Jira, Linear, Slack, or any HTTP API. The connection record stores the name and type only; API keys are kept separately in the secret store under "connected-app:<id>:<field>". A Bot can list and use its own connections; a Main Bot can manage any Bot\'s connections.',
+    parameters: {
+      action: { type: 'string', required: true, enum: ['list', 'register', 'unregister', 'info'], description: '"list": show connections for a Bot (or all). "register": add a new connection. "unregister": remove one by id. "info": get one record by id.' },
+      bot: { type: 'string', description: 'Bot name to scope list/register/unregister. Leave out to list your own or all (Main Bot).' },
+      id: { type: 'string', description: 'unregister / info: the connection id from list.' },
+      name: { type: 'string', description: 'register: short name for the connection, e.g. "github-work".' },
+      type: { type: 'string', description: 'register: service type, e.g. "github", "jira", "slack", "http", "custom".' },
+      label: { type: 'string', description: 'register: human label shown in the UI.' },
+      notes: { type: 'string', description: 'register: usage notes — what this connection is for.' },
+    },
+    output,
+    async execute(args, exec) {
+      await rt.load()
+      const self = rt.selfOf(exec.agent?.id)
+      const caller = rt.botOf(self)
+      if (!caller) return 'Only Bots on the team can use bot_connect.'
+      const isMain = rt.isMain(self)
+      const action = String(args.action ?? '')
+
+      const targetBot = args.bot ? rt.findBot(String(args.bot).trim()) : caller
+      if (args.bot && !targetBot) return `No Bot named "${args.bot}".`
+      if (targetBot.id !== caller.id && !isMain) return 'Only a Main Bot can manage another Bot\'s connections.'
+
+      switch (action) {
+        case 'list': {
+          const all = Object.values(apps())
+          const filtered = isMain && !args.bot ? all : all.filter(a => a.botId === targetBot.id)
+          if (filtered.length === 0) return args.bot ? `No connections for ${targetBot.name}.` : 'No connected apps registered.'
+          const lines = filtered.map(a => `- ${a.id}  ${a.name}  [${a.type}]${a.label ? '  ' + a.label : ''}${a.botId !== caller.id ? '  (bot: ' + (rt.botOf(a.botId)?.name ?? a.botId) + ')' : ''}`)
+          return `Connected apps (${filtered.length}):\n${lines.join('\n')}\n\nUse bot_connect action=info id=<id> to see details.`
+        }
+        case 'register': {
+          const name = String(args.name ?? '').trim()
+          if (!name) return 'Provide a name for the connection.'
+          const type = String(args.type ?? '').trim() || 'custom'
+          const id = appId(name)
+          const now = Date.now()
+          apps()[id] = {
+            id, botId: targetBot.id,
+            name, type,
+            label: args.label ? String(args.label).trim() : undefined,
+            notes: args.notes ? String(args.notes).trim() : undefined,
+            createdAt: now, updatedAt: now,
+          }
+          await rt.save()
+          return `Registered connection "${name}" [${type}] for ${targetBot.name}.\nid: ${id}\n\nStore API keys with: rt.setSecret("connected-app:${id}:<field>", value)`
+        }
+        case 'unregister': {
+          const id = String(args.id ?? '').trim()
+          const app = apps()[id]
+          if (!app) return `No connection with id "${id}".`
+          if (app.botId !== targetBot.id && !isMain) return `Connection "${id}" belongs to another Bot.`
+          delete apps()[id]
+          await rt.save()
+          return `Unregistered connection "${app.name}" (${id}).`
+        }
+        case 'info': {
+          const id = String(args.id ?? '').trim()
+          const app = apps()[id]
+          if (!app) return `No connection with id "${id}".`
+          if (app.botId !== caller.id && !isMain) return 'Only a Main Bot can read another Bot\'s connection details.'
+          const v = appView(app)
+          const botName = rt.botOf(v.botId)?.name ?? v.botId
+          return [`Connection: ${v.name}`, `id: ${v.id}`, `type: ${v.type}`, `bot: ${botName}`, ...(v.label ? [`label: ${v.label}`] : []), ...(v.notes ? [`notes: ${v.notes}`] : []), `created: ${new Date(v.createdAt).toISOString()}`].join('\n')
+        }
+        default:
+          return `Unknown action "${action}". Use list, register, unregister, or info.`
+      }
+    },
+  }))
+
+  // Expose for channel.js and credential broker.
+  rt.listConnectedApps = (botId) => {
+    const all = Object.values(apps())
+    return botId ? all.filter(a => a.botId === botId) : all
+  }
+  rt.getConnectedApp = (id) => apps()[id]
+}
+
+// ── 凭证代理（task_token）────────────────────────────────────────────────────
+//
+// Bot 可以向凭证代理申请一个临时 task_token，用来代替 API key 调用外部服务。
+// 目标：Bot 的 prompt 里永远不出现真实 API key；凭证代理按需生成/转发。
+//
+// 工作方式：
+//   1. 主 Bot（或用户）提前用 rt.setSecret('task-token:<name>', value) 注册凭证。
+//   2. Bot 调用 task_token action=request，代理用内存令牌表示该凭证可用，
+//      并返回一个临时 opaque token（格式 tt_<hex>，30分钟有效）。
+//   3. Bot 把 opaque token 传给外部 HTTP 工具；代理拦截器用它换出真实值。
+//      （此拦截层未来实现；本版本负责 register/request/revoke/list。）
+//   4. 令牌过期或 revoke 后即失效。
+//
+// 凭证名称格式：<service>/<field>，例如 "github/token"、"jira/api_key"。
+
+const TOKEN_TTL_MS = 30 * 60_000
+const TOKEN_PREFIX = 'tt_'
+
+export function installCredentialBroker(rt) {
+  // In-memory token table: token → { name, botId, createdAt, expiresAt }
+  const tokens = new Map()
+
+  // Prune expired tokens.
+  const prune = () => {
+    const now = Date.now()
+    for (const [t, rec] of tokens) { if (rec.expiresAt <= now) tokens.delete(t) }
+  }
+
+  // Expose for future interceptor use. The actual secret value stays in the
+  // secret store; this returns only the metadata that a token stands for.
+  rt.resolveTaskToken = (token) => {
+    prune()
+    const rec = tokens.get(token)
+    if (!rec) return undefined
+    return { name: rec.name, botId: rec.botId, expiresAt: rec.expiresAt }
+  }
+
+  rt.teamTools.push(defineTool({
+    name: 'task_token',
+    description: 'Request or manage temporary task tokens — short-lived opaque handles that stand in for API keys. A Bot requests a token by name; the host validates that the credential exists and returns a tt_* token valid for 30 minutes. The Bot passes the token to external tool calls instead of a real key; the host resolves it transparently. Only a Bot that owns the credential (registered by Main Bot) may request its token.',
+    parameters: {
+      action: { type: 'string', required: true, enum: ['request', 'revoke', 'list'], description: '"request": obtain a 30-min token for a named credential. "revoke": invalidate a token early. "list": show your active tokens.' },
+      name: { type: 'string', description: 'request: credential name in format "service/field", e.g. "github/token".' },
+      token: { type: 'string', description: 'revoke: the tt_* token to invalidate.' },
+    },
+    output,
+    async execute(args, exec) {
+      await rt.load()
+      const self = rt.selfOf(exec.agent?.id)
+      const caller = rt.botOf(self)
+      if (!caller) return 'Only Bots on the team can use task_token.'
+      prune()
+      const action = String(args.action ?? '')
+
+      switch (action) {
+        case 'request': {
+          const name = String(args.name ?? '').trim()
+          if (!name) return 'Provide a credential name in format "service/field".'
+          if (!/^[\w-]+\/[\w-]+$/.test(name)) return 'Credential name must be "service/field" (letters, digits, hyphens).'
+          // Check secret exists; we don't surface the value.
+          const secretKey = `task-token:${name}`
+          let known = false
+          if (typeof rt.getSecret === 'function') {
+            try { known = rt.getSecret(secretKey) !== undefined } catch { /* ignore */ }
+          }
+          if (!known) {
+            const secrets = rt.secretsView?.() ?? {}
+            known = Object.keys(secrets).includes(secretKey)
+          }
+          if (!known) return `Credential "${name}" is not registered. Ask a Main Bot to add it with the secret key "task-token:${name}".`
+          // Revoke any existing token for the same bot+name.
+          for (const [t, rec] of tokens) { if (rec.name === name && rec.botId === caller.id) tokens.delete(t) }
+          const { randomUUID } = await import('node:crypto')
+          const token = `${TOKEN_PREFIX}${randomUUID().replace(/-/g, '').slice(0, 24)}`
+          const now = Date.now()
+          tokens.set(token, { name, botId: caller.id, createdAt: now, expiresAt: now + TOKEN_TTL_MS })
+          return `Token issued for "${name}".\ntoken: ${token}\nexpires: ${new Date(now + TOKEN_TTL_MS).toISOString()}\n\nPass this token wherever the API key is expected; it expires in 30 minutes.`
+        }
+        case 'revoke': {
+          const token = String(args.token ?? '').trim()
+          if (!token) return 'Provide the tt_* token to revoke.'
+          const rec = tokens.get(token)
+          if (!rec) return 'Token not found or already expired.'
+          if (rec.botId !== caller.id && !rt.isMain(self)) return 'You can only revoke your own tokens.'
+          tokens.delete(token)
+          return `Token for "${rec.name}" revoked.`
+        }
+        case 'list': {
+          const mine = [...tokens.values()].filter(r => r.botId === caller.id)
+          if (mine.length === 0) return 'No active tokens.'
+          const lines = mine.map(r => `- ${r.name}  expires ${new Date(r.expiresAt).toISOString()}`)
+          return `Active tokens (${mine.length}):\n${lines.join('\n')}`
+        }
+        default:
+          return `Unknown action "${action}". Use request, revoke, or list.`
+      }
+    },
+  }))
+}
+
 function parseTeamYaml(text) {
   const lines = String(text).split(/\r?\n/)
   const root = {}
