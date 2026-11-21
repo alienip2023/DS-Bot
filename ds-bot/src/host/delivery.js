@@ -207,6 +207,14 @@ export function install(rt) {
       const earlier = state.exchanges.findIndex(other => other.id === exchangeId)
       if (earlier === -1) state.exchanges.push(entry)
       else if (merged) state.exchanges[earlier] = entry
+      // A reply arriving from toId to fromId clears any pending 'working' status
+      // entry for that pair, so the sender's exchange view doesn't accumulate stale
+      // "⟳ working" rows after the reply lands.
+      if (role === 'reply') {
+        const before = state.exchanges.length
+        state.exchanges = state.exchanges.filter(e => !(e.role === 'working' && e.from === toId && e.to === fromId))
+        if (state.exchanges.length !== before) void rt.save().catch(() => {})
+      }
       void rt.save().catch(() => {})
     }
     return exchangeId
