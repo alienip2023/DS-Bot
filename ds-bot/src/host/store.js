@@ -9,6 +9,7 @@ import { replaceFile } from './files.js'
 import { homeLock } from './home-lock.js'
 import { currentColor, headOf, normalize, unquote } from './text.js'
 import { isActiveTask } from './threads.js'
+import { mainThreadId, mainThreadOf, newMainThread, saveThread, threadOf, threadsOfBot, updateBySessionId, updateBySessionIdFull } from './bot-store.js'
 import { AMBIGUOUS_OLD_ROUTES, legacyRoute } from './local-agents/engines.js'
 
 // A table read that sees only the keys the table holds itself. Ids that come from
@@ -20,8 +21,8 @@ export const own = (table, key) => (table != null && Object.hasOwn(table, key) ?
 export function install(rt) {
   const { ctx, home, statePath } = rt
 
-  /** @type {{version:1, workspaceId?:string, mainBotIds:string[], bots:Record<string,any>, privateArchives:any[], rooms:Record<string,any>, agents:Record<string,any>, sections:any[], capabilities:{items:Record<string,any>}, exchanges:any[], exchangeTurns:Record<string,number[]>, revision:number}} */
-  const state = { version: STATE_VERSION, mainBotIds: [], bots: {}, privateArchives: [], rooms: {}, agents: {}, sections: [], capabilities: { items: {} }, exchanges: [], exchangeTurns: {}, works: {}, requests: {}, questions: {}, views: {}, closedCards: {}, prefs: {}, switching: {}, revision: 0 }
+  /** @type {{version:2, workspaceId?:string, mainBotIds:string[], bots:Record<string,any>, threads:Record<string,any>, privateArchives:any[], rooms:Record<string,any>, agents:Record<string,any>, sections:any[], capabilities:{items:Record<string,any>}, exchanges:any[], exchangeTurns:Record<string,number[]>, revision:number}} */
+  const state = { version: STATE_VERSION, mainBotIds: [], bots: {}, threads: {}, privateArchives: [], rooms: {}, agents: {}, sections: [], capabilities: { items: {} }, exchanges: [], exchangeTurns: {}, works: {}, requests: {}, questions: {}, views: {}, closedCards: {}, prefs: {}, nodeLimits: {}, switching: {}, federation: { version: 1, hubId: null, peersAt: 0, inbox: {}, outbox: {}, seen: {}, seq: 0, allowPeerToMain: false, lastError: null }, memoryFederation: { seq: 0, schemaVersion: 1, nodes: {}, inbox: {} }, approvalResults: {}, resumeCursor: {}, revision: 0 }
   let loaded = null
   let storeReady = false
   let writing = Promise.resolve()
@@ -168,6 +169,8 @@ export function install(rt) {
       if (!Array.isArray(room.members)) room.members = []
     }
     if (migrateLocalRoutes(state)) migrated = true
+    if (migrateMemoryFederation(state)) migrated = true
+    if (migrateThreads(state)) migrated = true
     // A team from before several Main Bots were allowed names a single one.
     if (!Array.isArray(state.mainBotIds)) state.mainBotIds = []
     if ('mainBotId' in state) {
@@ -669,6 +672,19 @@ export function install(rt) {
     botOf, roomOf, isMain, chatOf, sessionOfRoom, selfOf, isBotSession,
     chatOwners, taskOwners, groupOwners, roomOwners, pastOwners,
     groupSessionsOf, dropGroupSession, retireGroupSession, findBot, findRooms, isAdminOf,
+    threadOf: id => threadOf(state, id),
+    threadsOfBot: botId => threadsOfBot(state, botId),
+    mainThreadOf: botId => mainThreadOf(state, botId),
+    updateBySessionId: (botId, oldSessionId, newSessionId) => {
+      updateBySessionId(bySessionIdMap, botId, oldSessionId, newSessionId)
+      const threadId = mainThreadOf(state, botId)?.id ?? mainThreadId(botId)
+      updateBySessionIdFull(bySessionIdFullMap, botId, oldSessionId, newSessionId, threadId)
+      const main = threadOf(state, threadId)
+      if (main !== undefined) {
+        main.sessionId = typeof newSessionId === 'string' && newSessionId !== '' ? newSessionId : null
+        main.updatedAt = Date.now()
+      }
+    },
   })
 }
 
@@ -678,6 +694,59 @@ export function install(rt) {
 // ref is also DSH's own OpenCode provider: it moves only for a Bot that ran on
 // the local CLI (a CLI record for one of its Sessions) or on its "CLI default".
 // Returns whether anything changed.
+export function migrateMemoryFederation(state) {
+  let changed = false
+  const value = state.memoryFederation
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    state.memoryFederation = { seq: 0, schemaVersion: 1, nodes: {}, inbox: {} }
+    return true
+  }
+  if (!Number.isInteger(value.seq) || value.seq < 0) { value.seq = 0; changed = true }
+  if (value.schemaVersion !== 1) { value.schemaVersion = 1; changed = true }
+  if (value.nodes === null || typeof value.nodes !== 'object' || Array.isArray(value.nodes)) { value.nodes = {}; changed = true }
+  for (const [nodeId, entry] of Object.entries(value.nodes)) {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) { value.nodes[nodeId] = { lastSeq: 0, sentSeq: 0 }; changed = true; continue }
+    if (!Number.isInteger(entry.lastSeq) || entry.lastSeq < 0) { entry.lastSeq = 0; changed = true }
+    if (!Number.isInteger(entry.sentSeq) || entry.sentSeq < 0) { entry.sentSeq = 0; changed = true }
+  }
+  if (value.inbox === null || typeof value.inbox !== 'object' || Array.isArray(value.inbox)) { value.inbox = {}; changed = true }
+  return changed
+}
+
+// v1 → v2: every Bot gets its default Main thread and bot.threadIds names it.
+export function migrateThreads(state, now = Date.now()) {
+  let changed = false
+  if (state.threads === null || typeof state.threads !== 'object' || Array.isArray(state.threads)) {
+    state.threads = {}
+    changed = true
+  }
+  const savedThreadIds = new Map()
+  for (const row of Object.values(state.threads)) {
+    if (row === null || typeof row !== 'object' || typeof row.botId !== 'string' || typeof row.id !== 'string') continue
+    if (!savedThreadIds.has(row.botId)) savedThreadIds.set(row.botId, [])
+    savedThreadIds.get(row.botId).push(row.id)
+  }
+  for (const bot of Object.values(state.bots ?? {})) {
+    if (bot === null || typeof bot !== 'object' || typeof bot.id !== 'string' || bot.id === '') continue
+    if (bot.origin === 'peer') continue
+    const id = mainThreadId(bot.id)
+    if (threadOf(state, id) === undefined) {
+      saveThread(state, newMainThread(bot, now))
+      changed = true
+    }
+    const extras = (savedThreadIds.get(bot.id) ?? []).filter(threadId => threadId !== id)
+    const listed = Array.isArray(bot.threadIds) ? bot.threadIds.filter(threadId => typeof threadId === 'string' && threadId !== '') : []
+    const next = [id, ...listed.filter(threadId => threadId !== id), ...extras.filter(threadId => !listed.includes(threadId))]
+    if (!Array.isArray(bot.threadIds) || next.length !== bot.threadIds.length || next.some((threadId, index) => threadId !== bot.threadIds[index])) {
+      bot.threadIds = next
+      changed = true
+    }
+  }
+  const version = Number.isInteger(state.version) ? state.version : 1
+  if (version < STATE_VERSION) { state.version = STATE_VERSION; changed = true }
+  return changed
+}
+
 export function migrateLocalRoutes(state) {
   let changed = false
   const ranOn = new Map() // old route -> Session ids the CLI served

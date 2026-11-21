@@ -2,6 +2,7 @@
 // only in its settings or by a Main Bot. The team's first Main Bot has none until the
 // user picks one in its chat. The Session keeps the selection durably.
 import { BlockAssembler, resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
+import { threadsOfBot } from './bot-store.js'
 import { normalize, splitRef } from './text.js'
 import { serviceOf } from './services.js'
 import { ownChatSessions } from './threads.js'
@@ -493,6 +494,16 @@ export function install(rt) {
       if (!force && applied !== undefined && sameSelection(applied, route)) continue
       await selectSessionModel(sessionId, route, { force })
         .catch(error => rt.warn('ds-bot: model for %s in a group not applied: %s', bot.name, error))
+    }
+    // P1 has no Thread-level model: a row whose `model` is null follows the Bot, and a new
+    // Thread Session starts on the Bot's route rather than DSH's profile default.
+    for (const thread of threadsOfBot(state, bot.id)) {
+      if (thread.sessionId === null || thread.sessionId === undefined) continue
+      if (thread.model !== null && thread.model !== undefined) continue
+      const applied = sessionSelections.get(thread.sessionId)
+      if (!force && applied !== undefined && sameSelection(applied, route)) continue
+      await selectSessionModel(thread.sessionId, route)
+        .catch(error => rt.warn('ds-bot: model for %s in a Thread not applied: %s', bot.name, error))
     }
     if (llm() === undefined || !ownChanged) return ref
     bot.appliedModel = ref
