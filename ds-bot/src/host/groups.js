@@ -1503,7 +1503,11 @@ export function install(rt) {
             const member = Object.values(rt.state.bots ?? {}).find(b => b.name === memberName)
             if (member) {
               const plans = rt.planWakes?.('member/failed', { room, member, reason: 'turn failed' }) ?? []
-              void rt.executePlanWakes?.(plans)
+              try {
+                await rt.executePlanWakes?.(plans)
+              } catch (err) {
+                rt.warn?.('ds-bot: waker executePlanWakes failed in %s: %s', room.name, err)
+              }
             }
           }
         } catch (error) {

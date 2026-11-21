@@ -111,8 +111,11 @@ export function install(rt) {
     if (text === '') return { error: 'A finished task needs a result summary.' }
     // Maker-can't-verify gate: completing a task moves it to pending_acceptance,
     // not done. A different member (QA / reviewer) must accept it.
+    // Scopes are released here so other members can take the same files
+    // while the task awaits review.
     task.status = 'pending_acceptance'
     task.result = text
+    task.scopes = []
     task.updatedAt = Date.now()
     return { task }
   }

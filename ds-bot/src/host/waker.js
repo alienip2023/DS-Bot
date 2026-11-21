@@ -206,5 +206,8 @@ export async function executePlanWakes(rt, plans, delivered = new Set()) {
 }
 
 export function install(rt) {
-  Object.assign(rt, { planWakes: (eventType, eventData) => planWakes(rt, eventType, eventData), executePlanWakes })
+  Object.assign(rt, {
+    planWakes: (eventType, eventData) => planWakes(rt, eventType, eventData),
+    executePlanWakes: (plans, delivered) => executePlanWakes(rt, plans, delivered),
+  })
 }

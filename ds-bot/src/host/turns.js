@@ -1320,12 +1320,15 @@ export function install(rt) {
         if (failure !== undefined) {
           if (watched) rememberFailure(id, turn, failure, session)
           // P3: classify the failure and decide retry/fallback/stop deterministically.
+          // Skip retry/fallback for joined bot-to-bot requests: the join path sends
+          // its own failure notice directly, so a retry would double-deliver.
+          const isJoinedRequest = expectsReply(info) && !answersUser(info)
           const classified = classifyLlmFailure(failure)
           const attemptCount = nextRequestAttempt(attemptStore, id)
           const bot = rt.botOf(rt.selfOf(id))
           const fallbacks = Array.isArray(bot?.fallbacks) ? bot.fallbacks : []
           const decision = retryDecision(classified, { fallback: fallbacks, maxAttempts: 3 }, attemptCount)
-          if (decision.action === 'fallback' && decision.fallbackRef && bot) {
+          if (!isJoinedRequest && decision.action === 'fallback' && decision.fallbackRef && bot) {
             // Switch to fallback model for the next turn.
             const prevModel = bot.model
             bot.model = decision.fallbackRef
@@ -1333,7 +1336,7 @@ export function install(rt) {
             rt.warn?.('ds-bot: %s falling back to %s (%s)', bot.name, decision.fallbackRef, decision.reason)
             // Trigger a retry turn on the fallback model.
             void retryTurn(id, info, `the model call failed (${decision.reason}); retrying on ${decision.fallbackRef}`, 'model call failed').catch(error => rt.warn('ds-bot: fallback retry of %s failed: %s', id, error))
-          } else if (decision.action === 'retry' && info?.retried !== true) {
+          } else if (!isJoinedRequest && decision.action === 'retry' && info?.retried !== true) {
             // Deterministic retry within the attempt budget.
             void retryTurn(id, info, `the model call failed (${decision.reason}); please try again`, 'model call failed').catch(error => rt.warn('ds-bot: retry of %s failed: %s', id, error))
           }

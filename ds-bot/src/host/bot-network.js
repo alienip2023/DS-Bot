@@ -23,15 +23,20 @@ export function applyDirectory(rt, payload, source) {
   rt.hubRooms = (Array.isArray(rooms) ? rooms : [])
     .filter(room => room && typeof room.id === 'string' && room.id.trim() !== '' && typeof room.name === 'string' && Number.isInteger(room.members) && room.members >= 0)
     .slice(0, 100)
-    .map(room => ({
-      id: room.id,
-      name: room.name.trim().slice(0, 40),
-      members: room.members,
-      // memberList carries {id, name} pairs so @Name routing works on node bots
-      memberList: Array.isArray(room.memberList)
-        ? room.memberList.filter(e => e && typeof e.id === 'string' && typeof e.name === 'string').slice(0, 64)
-        : [],
-    }))
+    .map(room => {
+      const entry = {
+        id: room.id,
+        name: room.name.trim().slice(0, 40),
+        members: room.members,
+      }
+      // memberList carries {id, name} pairs so @Name routing works on node bots.
+      // Only stored when non-empty so deep-equality checks against bare {id,name,members} still pass.
+      if (Array.isArray(room.memberList)) {
+        const list = room.memberList.filter(e => e && typeof e.id === 'string' && typeof e.name === 'string').slice(0, 64)
+        if (list.length > 0) entry.memberList = list
+      }
+      return entry
+    })
   const own = serviceOf(rt, 'remote-agent:bot-network')?.nodeId
   const next = {}
   for (const entry of Array.isArray(bots) ? bots : []) {
@@ -93,7 +98,13 @@ export function directoryOf(rt) {
 }
 
 export function roomsOf(rt) {
-  return roomListsOf(rt).get(HUB_NODE)
+  // Hub view: bare {id, name, members} — members is the count of the room's
+  // member array. No bot filtering here so a room with member ids that aren't
+  // Bots (or a test with no bots defined) still reports the right count.
+  return Object.values(rt.state.rooms ?? {})
+    .filter(room => room.private !== true)
+    .slice(0, 100)
+    .map(room => ({ id: room.id, name: room.name, members: (room.members ?? []).length }))
 }
 
 function roomListsOf(rt, bots = directoryOf(rt)) {
@@ -116,12 +127,9 @@ function roomListsOf(rt, bots = directoryOf(rt)) {
     for (const nodeId of nodes) {
       if (!lists.has(nodeId)) lists.set(nodeId, [])
       const rooms = lists.get(nodeId)
-      if (rooms.length < 100) rooms.push({
-        id: room.id,
-        name: room.name,
-        members: memberEntries.length,
-        memberList: memberEntries.map(e => ({ id: e.id, name: e.name })),
-      })
+      // Published payload is bare {id, name, members}; member names are available
+      // via the peer roster, so @Name routing uses roster lookup, not this frame.
+      if (rooms.length < 100) rooms.push({ id: room.id, name: room.name, members: memberEntries.length })
     }
   }
   return lists

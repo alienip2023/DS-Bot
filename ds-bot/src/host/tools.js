@@ -143,7 +143,7 @@ export function install(rt) {
       const memberNames = Array.isArray(room.memberList) && room.memberList.length > 0
         ? room.memberList.map(e => e.name).join(', ')
         : room.members + ' members'
-      return `- "${room.name}" — ${memberNames} (hub group chat)`
+      return `- "${room.name}" — ${memberNames} (hub, read-only)`
     })
   }
   // The Bots and group chats list_bots shows: the whole team, one Bot, one group's
@@ -178,15 +178,20 @@ export function install(rt) {
       if (Object.keys(state.bots).length === 0 && network.length === 0) return 'No Bots yet.'
       const { bots, rooms, none, error } = listScope(args, self)
       if (error !== undefined) return error
+      const hubLines = hubRoomLines(args)
+      // Suppress "none you can see" when hub rooms are present (hubRoomLines already shows them).
+      const localRoomHeader = rooms.length === 0
+        ? (hubLines.length > 0 && !hubLines[0].startsWith('Hub group chats') ? '' : none)
+        : 'Group chats:'
       return [
         'Bots:',
         ...bots.map(bot => botLine(bot, self)),
         ...network.map(bot => `- ${bot.name} (${[bot.role, `on ${bot.nodeId ?? 'hub'}`].filter(Boolean).join(', ')})`),
         '',
-        rooms.length === 0 ? none : 'Group chats:',
+        localRoomHeader,
         ...rooms.map(room => roomLine(room, self)),
-        ...hubRoomLines(args),
-      ].join('\n')
+        ...hubLines,
+      ].filter(line => line !== '').join('\n')
     },
   }))
 

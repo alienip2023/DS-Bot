@@ -654,13 +654,11 @@ export function install(rt) {
     goal.revision += 1
     goal.updatedAt = Date.now()
     await rt.save()
-    // P3 waker: use planWakes to route the goal-idle event centrally.
-    const plans = planWakes(rt, 'goal/idle', { room })
-    if (plans.length > 0) {
-      await executePlanWakes(rt, plans)
-    } else {
-      await queueGoalRelay(room, 'nudge', '[Goal check]', 'DS Bot')
-    }
+    // The goal nudge must go through queueGoalRelay: it produces the
+    // source.role === 'goal' post the round picks up as a [Goal check].
+    // planWakes('goal/idle') is a separate deliver channel and must not
+    // replace this path.
+    await queueGoalRelay(room, 'nudge', '[Goal check]', 'DS Bot')
   }
 
   // Member work can outlive the round it grew out of; the round-end check then

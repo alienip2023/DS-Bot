@@ -204,13 +204,17 @@ test('legacy records without scopes can be shown and can acquire scopes by updat
 })
 
 test('completing or cancelling a task releases its declared scopes and preserves the record', async () => {
-  for (const [args, status] of [[{ action: 'complete', result: 'Delivered' }, 'done'], [{ action: 'cancel' }, 'cancelled']]) {
+  // complete routes through pending_acceptance (maker-can't-verify rule); scopes are cleared there.
+  for (const [args, status, expectedScopes] of [
+    [{ action: 'complete', result: 'Delivered' }, 'pending_acceptance', []],
+    [{ action: 'cancel' }, 'cancelled', ['/x/draft']],
+  ]) {
     const host = fakeHost()
     await host.open(['/x/draft'], 'ga')
     const [task] = Object.values(host.room.tasks)
     await host.tool(args, 'ga')
     assert.equal(task.status, status)
-    assert.deepEqual(task.scopes, ['/x/draft'])
+    assert.deepEqual(task.scopes ?? [], expectedScopes)
     assert.match(await host.open(['/x/draft']), /^Opened /)
   }
 })
