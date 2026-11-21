@@ -1818,7 +1818,6 @@ const ZH = {
   'Succeeded': '成功',
   'Last run: {status}': '上次运行：{status}',
   'Remote tasks': '远程任务',
-  'Completed': '已完成',
   'Node offline': '节点离线',
   '{count} lines': '{count} 行',
   '{count}s': '{count} 秒',

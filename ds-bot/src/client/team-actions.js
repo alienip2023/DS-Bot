@@ -358,9 +358,6 @@ export function teamActions({ call, after, partFor, roster, ui, live, cards, hel
     }),
     closeApproval: () => ui.set(state => (state.approvalOpen ? { ...state, approvalOpen: null } : state)),
     // Values go out in these requests and never come back in a response.
-    listConnectedApps: () => call('list-connected-apps', {}),
-    registerConnectedApp: payload => after(call('register-connected-app', payload)),
-    unregisterConnectedApp: id => after(call('unregister-connected-app', { id })),
     listSecrets: () => call('state', {}),
     setSecret: (key, value) => after(call('secret-set', { key, value })),
     deleteSecret: key => after(call('secret-delete', { key })),
