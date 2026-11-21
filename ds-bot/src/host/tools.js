@@ -1451,17 +1451,15 @@ export function install(rt) {
     }
   })
 
-  // agent/turn-stopping: cancel any pending joined-turn waiters for the
-  // stopping agent so they do not block indefinitely. serial, no next().
-  ctx.on('agent/turn-stopping', ({ agent }) => {
+  // agent/turn-stopping: cancel pending joined-turn waiters ONLY when the
+  // turn was externally aborted (Stop button / agent disposal), not on
+  // normal turn completion. signal.aborted is true only for forced stops.
+  ctx.on('agent/turn-stopping', ({ agent, signal }) => {
     try {
+      if (!signal?.aborted) return  // normal turn end — do NOT abort waiters
       const sessionId = agent?.session?.id
-      if (!sessionId || typeof rt.settleJoinedTurn !== 'function') return
-      // rt.pendingJoinedTurns is the internal Map set up in joined-turn.js;
-      // we ask it to settle all waiters keyed to this session with an abort error.
-      if (typeof rt.abortJoinedTurnsForSession === 'function') {
-        rt.abortJoinedTurnsForSession(sessionId)
-      }
+      if (!sessionId || typeof rt.abortJoinedTurnsForSession !== 'function') return
+      rt.abortJoinedTurnsForSession(sessionId)
     } catch { /* never block agent disposal */ }
   })
 
