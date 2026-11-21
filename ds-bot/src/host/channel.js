@@ -1128,6 +1128,16 @@ export function install(rt) {
         case 'memory-hub-forget':
           await rt.load()
           return ok(await rt.memoryHubEndpoint(endpoint, body))
+        case 'list-talents': {
+          await rt.load()
+          const { loadTalentCatalog, filterTalents } = await import('./talent-catalog.js')
+          const all = loadTalentCatalog(rt.dshHome)
+          const q = typeof body.query === 'string' ? body.query : ''
+          const talents = filterTalents(all, q).map(function (t) {
+            return { name: t.name, role: t.role || t.duty || '', duty: t.duty || '', category: t.category || '', tags: Array.isArray(t.tags) ? t.tags : [] }
+          })
+          return ok({ talents })
+        }
         case 'learning-answer':
           await rt.load()
           return ok(await rt.learningEndpoint(endpoint, body))
