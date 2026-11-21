@@ -1322,7 +1322,9 @@ export function install(rt) {
           // P3: classify the failure and decide retry/fallback/stop deterministically.
           // Skip retry/fallback for joined bot-to-bot requests: the join path sends
           // its own failure notice directly, so a retry would double-deliver.
-          const isJoinedRequest = expectsReply(info) && !answersUser(info)
+          // Guard info !== undefined: turns without an info (background, goal-driven,
+          // scheduled wake) must not throw when checking expectsReply.
+          const isJoinedRequest = info !== undefined && expectsReply(info) && !answersUser(info)
           const classified = classifyLlmFailure(failure)
           const attemptCount = nextRequestAttempt(attemptStore, id)
           const bot = rt.botOf(rt.selfOf(id))

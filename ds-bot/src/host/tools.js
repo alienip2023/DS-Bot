@@ -181,8 +181,10 @@ export function install(rt) {
       const hubLines = hubRoomLines(args)
       // Suppress "none you can see" when hub rooms are present (hubRoomLines already shows them).
       const localRoomHeader = rooms.length === 0
-        ? (hubLines.length > 0 && !hubLines[0].startsWith('Hub group chats') ? '' : none)
+        ? (hubLines.length > 0 && !hubLines[0].startsWith('Hub group chats') ? null : none)
         : 'Group chats:'
+      // Build the output preserving the blank separator line between Bots and Group chats.
+      // Filter only null/undefined, not empty strings, so the separator '' survives.
       return [
         'Bots:',
         ...bots.map(bot => botLine(bot, self)),
@@ -191,7 +193,7 @@ export function install(rt) {
         localRoomHeader,
         ...rooms.map(room => roomLine(room, self)),
         ...hubLines,
-      ].filter(line => line !== '').join('\n')
+      ].filter(line => line !== null && line !== undefined).join('\n')
     },
   }))
 
