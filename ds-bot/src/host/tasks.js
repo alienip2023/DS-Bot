@@ -283,11 +283,12 @@ export function install(rt) {
 
   rt.teamTools.push(defineTool({
     name: 'hire_talent',
-    description: 'Create a new Bot from the talent catalog. The talent\'s personality becomes the core of the Bot\'s instructions — this is what determines how it works. You can override the name and model. Main Bot only.',
+    description: 'Create a new Bot from the talent catalog. The talent\'s personality becomes the core of the Bot\'s instructions — this is what determines how it works. You can override the name and model, and optionally create it on a connected node machine. Main Bot only.',
     parameters: {
       talent: { type: 'string', required: true, description: 'Exact talent name from list_talents.' },
       name: { type: 'string', description: 'Override the talent\'s default name.' },
       model: { type: 'string', description: 'Override the talent\'s recommended model. Leave out to use the recommended model or the team default.' },
+      node: { type: 'string', description: 'Node name or nodeId to create the Bot on that machine instead of the hub. Use list_bots to see connected nodes.' },
     },
     output,
     async execute(args, exec) {
@@ -302,6 +303,36 @@ export function install(rt) {
       if (args.model && String(args.model).trim() !== '') params.model = String(args.model).trim()
       if (!params.name) return `Talent "${args.talent}" has no name field. Check the talent.yml file.`
       try {
+        // ── Node-side creation ───────────────────────────────────────────────
+        const nodeArg = typeof args.node === 'string' ? args.node.trim() : ''
+        if (nodeArg !== '') {
+          if (typeof rt.createBotOnNode !== 'function') return 'Bot creation on a node is not available right now.'
+          let resolvedNodeId = nodeArg
+          try {
+            const registry = rt.ctx?.get?.('remote-agent:registry')
+            if (registry && typeof registry.onlineNodes === 'function') {
+              const online = registry.onlineNodes()
+              const match = online.find(n =>
+                n.nodeId === nodeArg ||
+                (typeof n.name === 'string' && n.name.toLowerCase() === nodeArg.toLowerCase()) ||
+                (typeof n.hostname === 'string' && n.hostname.toLowerCase() === nodeArg.toLowerCase())
+              )
+              if (match) resolvedNodeId = match.nodeId
+              else return `No connected node named "${nodeArg}". Use list_bots to see connected nodes.`
+            }
+          } catch { /* pass nodeArg as-is */ }
+          const result = await rt.createBotOnNode({
+            nodeId: resolvedNodeId,
+            name: params.name,
+            role: params.role ?? '',
+            modelRef: params.model ?? null,
+            instructions: params.instructions ?? null,
+          })
+          if (!result?.ok) return `Could not create Bot on node "${nodeArg}": ${result?.error ?? 'unknown error'}`
+          await rt.save()
+          return `Hired ${params.name} as a ${params.role ?? talent.duty ?? 'executor'} on node "${nodeArg}". Use message_bot to introduce them to the team.`
+        }
+        // ── Hub-side creation (original path) ───────────────────────────────
         const bot = await rt.createBot(params)
         return `Hired ${bot.name} as a ${params.role} (${talent.duty ?? 'executor'}). Their instructions are set from the talent's personality. Use message_bot to introduce them to the team.`
       } catch (err) {

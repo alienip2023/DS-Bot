@@ -571,11 +571,12 @@ export function install(rt) {
 
   rt.teamTools.push(defineTool({
     name: 'create_bot',
-    description: 'Main Bot only. Create a new Bot on the user\'s team. It appears in the sidebar and greets the user.',
+    description: 'Main Bot only. Create a new Bot on the user\'s team. It appears in the sidebar and greets the user. Pass node to create it directly on a connected node machine.',
     parameters: {
       name: { type: 'string', required: true, description: 'Short display name, e.g. "Researcher" or "Editor"' },
       role: { type: 'string', required: true, description: 'Two-to-four character role label shown under the name' },
       instructions: { type: 'string', required: true, description: 'What this Bot is responsible for and how it should work' },
+      node: { type: 'string', description: 'Node name or nodeId to create the Bot on that machine instead of the hub. Use list_bots to see connected node names.' },
       brief: { type: 'string', description: 'Why the user wants it, passed to the new Bot as its first context' },
       model: { type: 'string', description: 'Model the Bot runs on, as provider/model or a model id. Only when the user names one; otherwise the team default model from DS Bot settings, or the model you run on.' },
       effort: { type: 'string', description: 'Thinking level for the model, as list_bot_models shows it. Only when the user names one.' },
@@ -596,13 +597,43 @@ export function install(rt) {
       if (workerErr) return workerErr
       if (workerRole() !== 'worker' && !rt.isMain(rt.selfOf(exec.agent?.id))) return 'Only the Main Bot can create Bots. Ask the Main Bot instead.'
       try {
+        // ── Node-side creation: create the Bot directly on a named node ──────
+        const nodeArg = typeof args.node === 'string' ? args.node.trim() : ''
+        if (nodeArg !== '') {
+          if (typeof rt.createBotOnNode !== 'function') return 'Bot creation on a node is not available right now.'
+          // Resolve node name or nodeId to an actual nodeId via the registry.
+          let resolvedNodeId = nodeArg
+          try {
+            const registry = rt.ctx?.get?.('remote-agent:registry')
+            if (registry && typeof registry.onlineNodes === 'function') {
+              const online = registry.onlineNodes()
+              const match = online.find(n =>
+                n.nodeId === nodeArg ||
+                (typeof n.name === 'string' && n.name.toLowerCase() === nodeArg.toLowerCase()) ||
+                (typeof n.hostname === 'string' && n.hostname.toLowerCase() === nodeArg.toLowerCase())
+              )
+              if (match) resolvedNodeId = match.nodeId
+              else return `No connected node named "${nodeArg}". Use list_bots to see connected nodes.`
+            }
+          } catch { /* registry unavailable: pass nodeArg as-is */ }
+          const result = await rt.createBotOnNode({
+            nodeId: resolvedNodeId,
+            name: String(args.name ?? '').trim(),
+            role: typeof args.role === 'string' ? args.role.trim() : '',
+            modelRef: args.model ? String(args.model).trim() : null,
+            effort: args.effort ? String(args.effort).trim() : null,
+            workDir: args.work_dir ? await rt.cleanWorkDir(args.work_dir) : null,
+            instructions: args.instructions ?? null,
+          })
+          if (!result?.ok) return `Could not create Bot on node "${nodeArg}": ${result?.error ?? 'unknown error'}`
+          await rt.save()
+          return `Created ${String(args.name).trim()} on node "${nodeArg}". It is now available on that machine.`
+        }
+        // ── Hub-side creation (original path) ─────────────────────────────
         const avatar = args.avatar ? await readAvatar(String(args.avatar), { baseDir: rt.sessionFolder?.(exec.agent?.session ?? exec.agent), isData: rt.inData }) : undefined
         const workDir = args.work_dir ? await rt.cleanWorkDir(args.work_dir) : undefined
         const name = String(args.name ?? '').trim()
         await rt.approveFolder(exec, { path: workDir, who: { en: `the new Bot ${name}`, zh: `新 Bot ${name} ` } })
-        // Without a named model the team's default applies; without one the new Bot
-        // takes its creator's: the DSH default may be a provider that has no key, and
-        // then the new Bot fails on its first reply.
         const creator = callerBot(exec)
         const served = new Set((await rt.catalog()).filter(entry => entry.needsKey !== true && rt.isLocalAgentRef?.(entry.ref) !== true).map(entry => entry.ref))
         const fallback = [state.prefs.defaultBotModel, creator?.model].find(ref => ref && served.has(ref))
