@@ -373,6 +373,9 @@ export function install(rt) {
         ...(open.length > 0 ? { openParts: open } : {}),
         ...(botTasks.length > 0 ? { tasks: botTasks } : {}),
         ...(kickoff && !peer ? { waiting: true } : {}),
+        // A joined/remote-worker Bot has no local Agent so rt.live never reports it
+        // as running. Expose `running` here so the UI shows it working like a local Bot.
+        ...(rt.joinedInFlight?.has(bot.id) ? { running: true } : {}),
         // `engine` is the Bot's local-agent route, present only on abots.
         ...(rt.localAgentBadge?.(bot.model ?? bot.appliedModel) !== undefined ? { engine: rt.localAgentBadge(bot.model ?? bot.appliedModel) } : {}),
         ...(tail ? { lastAt: tail.lastAt, preview: tail.preview } : {}),
