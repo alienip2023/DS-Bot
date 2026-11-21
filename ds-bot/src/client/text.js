@@ -398,6 +398,9 @@ export const isRelayContext = (data) => {
   const source = data?.source
   if (source === null || typeof source !== 'object' || source.kind !== 'bot' || source.handoff === true) return false
   if (source.deferred === true || source.resumed === true || source.retried === true) return false
+  // A Bot-to-Bot relay destined for a joined (node) Bot is an internal dispatch:
+  // it surfaces on the sender's page as a relay context line, not as a user bubble.
+  if (source.joinedAsync === true) return false
   return RELAY_ROLES.has(source.role) && typeof source.senderSessionId === 'string'
 }
 

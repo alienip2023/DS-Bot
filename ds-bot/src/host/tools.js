@@ -449,9 +449,14 @@ export function install(rt) {
             throw error
           }
           const machine = target.worker?.hostname ?? 'its machine'
+          // Write a "working" notice into the sender's own exchange view so the sender
+          // sees an immediate status line rather than silence while the node processes.
+          const workingNote = `⟳ ${target.name} is working on the task…`
+          rt.state.exchanges ??= []
+          rt.state.exchanges.push({ id: randomUUID(), from: sender.id, to: target.id, text: workingNote, role: 'working', time: Date.now() })
           const note = toUser
             ? `It will answer the user there; nothing comes back to you.`
-            : `Its reply will arrive later as a new message; do not wait for it.`
+            : `${target.name} is working on it. Its reply will arrive as a new message; do not wait for it.`
           return `Delivered to ${target.name} on ${machine}. ${note}`
         }
         // The part of the sender's own chat this request comes from: its answer goes back
