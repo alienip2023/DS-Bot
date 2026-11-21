@@ -110,17 +110,31 @@ export function install(rt) {
     // with the same acknowledgement and never sent to the node twice.
     if (hasPromptRequest(session, request.requestId)) return { accepted: true }
 
+    // Queue user messages while a Bot-to-Bot turn or page turn is in flight, so the
+    // user is never blocked from sending. The queued prompt runs when the current
+    // turn ends (executor.js releases the in-flight claim; the mirror writer wakes
+    // its waiters). This matches how local Bots behave: the message is accepted and
+    // the Bot reads it after its current work.
+    const tryStart = () => startPageTurn({
+      rt, bot, text, requestId: request.requestId, session, state: mirrorStateOf(rt, bot.id, session),
+      tracker: rt.turnTracker,
+      timeoutMs: rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS,
+    })
+
     try {
-      // A Bot-to-Bot exchange may be writing this Session right now; it finishes first, so the
-      // page turn never takes a turn someone else has open.
       await waitForJoinedMirror(rt, bot.id, rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS)
-      startPageTurn({
-        rt, bot, text, requestId: request.requestId, session, state: mirrorStateOf(rt, bot.id, session),
-        tracker: rt.turnTracker,
-        timeoutMs: rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS,
-      })
+      tryStart()
     } catch (error) {
-      if (error?.code === 'E_BUSY') throw await remoteError('session/agent-busy', BUSY, { reason: 'JOINED_TURN_IN_FLIGHT' })
+      if (error?.code === 'E_BUSY') {
+        // A Bot-to-Bot turn is still open after the wait timed out: queue the user
+        // message so it runs when the mirror writer drains. The page shows the
+        // message immediately (accepted: true), and the node processes it next.
+        if (!rt.joinedUserQueue) rt.joinedUserQueue = new Map()
+        const queue = rt.joinedUserQueue.get(bot.id) ?? []
+        queue.push({ text, requestId: request.requestId, session, state: mirrorStateOf(rt, bot.id, session) })
+        rt.joinedUserQueue.set(bot.id, queue)
+        return { accepted: true }
+      }
       throw await remoteError('session/agent-unavailable', `无法送达节点：${failureText(error)}`, { reason: `JOINED_NODE_${error?.code ?? 'ERROR'}` })
     }
     // The user's message is on the page; the node's answer (or the failure) follows there.

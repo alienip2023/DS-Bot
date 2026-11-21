@@ -324,12 +324,24 @@ function armLateReply({ rt, bot, session, state, prepared }) {
 
 export function flushLateReplies(rt, botId) {
   const queued = rt.joinedLateQueue?.get(botId)
-  if (!queued || queued.length === 0) return
-  // Woken by the Bot-to-Bot writer closing a turn: another queued exchange may have opened the
-  // next turn in the same drain, so re-check both writers instead of writing blindly.
-  if (rt.joinedInFlight?.has(botId) || mirrorTurnOpen(rt, botId)) return
-  rt.joinedLateQueue.delete(botId)
-  for (const write of queued) write()
+  if (queued && queued.length > 0) {
+    if (rt.joinedInFlight?.has(botId) || mirrorTurnOpen(rt, botId)) return
+    rt.joinedLateQueue.delete(botId)
+    for (const write of queued) write()
+  }
+  // Drain queued user messages: when a Bot-to-Bot turn closes and no page turn is
+  // in flight, the next user prompt waiting in the queue starts as a page turn.
+  const userQueue = rt.joinedUserQueue?.get(botId)
+  if (userQueue && userQueue.length > 0 && !rt.joinedInFlight?.has(botId) && !mirrorTurnOpen(rt, botId)) {
+    rt.joinedUserQueue.delete(botId)
+    for (const item of userQueue) {
+      try {
+        startPageTurn({ rt, bot: rt.botOf(botId), text: item.text, requestId: item.requestId, session: item.session, state: item.state ?? {}, tracker: rt.turnTracker, timeoutMs: rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS })
+      } catch (err) {
+        rt.warn?.('ds-bot: queued user prompt for %s could not start: %s', botId, err?.message ?? err)
+      }
+    }
+  }
 }
 
 /**
