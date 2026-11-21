@@ -1677,4 +1677,222 @@ export function install(rt) {
     }
   }
   Object.assign(rt, { pickRoom, hideBotUnusedTools, syncScopedTools, refreshBotTools, addTeamTool, removeTeamTool, reapplyToolMasks })
+
+  // ── burst_task：并行分割执行（对标 openmausbot burst mode）──────────────
+  //
+  // 把一个目标拆成 N 个子任务，并行派给远程节点 Bot，等全部完成（或超时），
+  // 合并结果后一次回复。模型只需一次调用，不用自己记住 taskId 再逐个轮询。
+  rt.teamTools.push(defineTool({
+    name: 'burst_task',
+    description: 'Split a goal into N parallel subtasks, dispatch them to Worker Bots across nodes simultaneously, and return one combined result when all finish (or timeout). Use for independent sub-parts of a larger task — much faster than calling message_bot N times and waiting sequentially.',
+    parameters: {
+      bot: { type: 'string', required: true, description: 'Name of the Worker Bot to dispatch all subtasks to.' },
+      subtasks: {
+        type: 'array', required: true,
+        description: 'Array of subtask prompts. Each becomes one remote task dispatched in parallel. 2-10 subtasks recommended.',
+        items: { type: 'string' },
+      },
+      timeoutMs: { type: 'number', description: 'Total timeout in milliseconds. Default 10 minutes. Max 60 minutes.' },
+    },
+    output,
+    async execute(args, exec) {
+      await rt.load()
+      const self = rt.selfOf(exec.agent?.id)
+      const botName = String(args.bot ?? '').trim()
+      const subtasks = Array.isArray(args.subtasks) ? args.subtasks.filter(s => typeof s === 'string' && s.trim() !== '') : []
+      const timeoutMs = Math.min(Math.max(Number(args.timeoutMs) || 10 * 60_000, 1_000), 60 * 60_000)
+
+      if (subtasks.length < 2) return 'burst_task needs at least 2 subtasks. For a single task, use message_bot.'
+      if (subtasks.length > 20) return 'burst_task supports at most 20 subtasks. Split further or call burst_task again.'
+
+      const bot = rt.findBot(botName)
+      if (!bot) return `No Bot named "${botName}". Use list_bots to see your team.`
+      if (bot.type !== 'remote-worker') return `"${botName}" is not a Worker Bot. burst_task only dispatches to remote-worker Bots on node machines.`
+
+      // Resolve the hub dispatch tool (same as handleRemoteTurn uses internally).
+      const tools = (() => {
+        try {
+          const t = ctx.get?.('tools')
+          if (!t) return undefined
+          const dispatch = t.get?.('remote_task') ?? t.get?.('cluster_task')
+          const status = t.get?.('remote_status') ?? t.get?.('cluster_status')
+          const handoff = t.get?.('remote_handoff') ?? t.get?.('cluster_handoff')
+          if (!dispatch) return undefined
+          return { dispatch, status, handoff }
+        } catch { return undefined }
+      })()
+      if (!tools) return 'Cluster tools are not available. Make sure AI Unified (dsh-ai-cluster) is running in hub mode.'
+
+      // Resolve target node.
+      const node = typeof rt.pickWorkerNode === 'function' ? rt.pickWorkerNode(bot.worker ?? {}) : null
+      if (!node) return `Worker Bot "${botName}" has no available node (all offline or not configured).`
+
+      const nodeId = node.nodeId
+      const deadline = Date.now() + timeoutMs
+
+      // Dispatch all subtasks in parallel; each is a Promise that resolves to
+      // { subtask, ok, text } — settled, never rejects (use allSettled semantics).
+      const dispatchOne = async (subtask, idx) => {
+        const taskId = randomUUID()
+        try {
+          const dispatchArgs = tools.dispatch.name === 'cluster_task'
+            ? { goal: subtask, node: nodeId, mode: 'agent', timeoutMs: Math.min(timeoutMs, 30 * 60_000) }
+            : { nodeId, taskId, prompt: subtask, mode: 'agent' }
+          const result = await tools.dispatch.execute(dispatchArgs, exec)
+          if (result?.isError) return { subtask: `[${idx}] ${subtask.slice(0, 80)}`, ok: false, text: `dispatch failed: ${result.value ?? 'unknown'}` }
+          // For cluster_task the taskId is in result.value.taskId
+          const tid = result?.value?.taskId ?? taskId
+          // Poll for completion using status tool if available.
+          if (tools.status && tools.handoff) {
+            const remaining = deadline - Date.now()
+            if (remaining <= 0) return { subtask, ok: false, text: 'timeout before poll started' }
+            const pollDeadline = Date.now() + remaining
+            while (Date.now() < pollDeadline) {
+              await new Promise(r => setTimeout(r, 3000))
+              const sr = await tools.status.execute(tools.status.name === 'cluster_status' ? { taskId: tid } : { nodeId, taskId: tid }, exec)
+              const s = sr?.value?.status ?? sr?.value
+              const statusStr = typeof s === 'string' ? s.toUpperCase() : s?.status
+              if (statusStr === 'COMPLETED' || statusStr === 'FAILED' || statusStr === 'ABORTED' || statusStr === 'INTERRUPTED' || statusStr === 'REJECTED') {
+                let summary = ''
+                try {
+                  const hr = await tools.handoff.execute(tools.handoff.name === 'cluster_handoff' ? { taskId: tid } : { nodeId, taskId: tid }, exec)
+                  summary = hr?.value?.text ?? hr?.value?.handoff?.summary ?? sr?.value?.summary ?? '(no summary)'
+                } catch { summary = sr?.value?.summary ?? '(handoff unavailable)' }
+                return { subtask: `[${idx}] ${subtask.slice(0, 80)}`, ok: statusStr === 'COMPLETED', text: summary }
+              }
+            }
+            return { subtask: `[${idx}] ${subtask.slice(0, 80)}`, ok: false, text: 'timed out waiting for completion' }
+          }
+          return { subtask: `[${idx}] ${subtask.slice(0, 80)}`, ok: true, text: result?.value?.text ?? result?.value ?? 'dispatched (no status polling available)' }
+        } catch (err) {
+          return { subtask: `[${idx}] ${subtask.slice(0, 80)}`, ok: false, text: err?.message ?? String(err) }
+        }
+      }
+
+      const results = await Promise.allSettled(subtasks.map((s, i) => dispatchOne(s, i)))
+      const settled = results.map(r => r.status === 'fulfilled' ? r.value : { subtask: '(unknown)', ok: false, text: r.reason?.message ?? 'rejected' })
+
+      const succeeded = settled.filter(r => r.ok).length
+      const failed = settled.length - succeeded
+      const lines = [
+        `Burst complete: ${succeeded}/${settled.length} subtasks succeeded (${failed} failed).`,
+        '',
+        ...settled.map(r => `${r.ok ? '✓' : '✗'} ${r.subtask}\n   ${r.text}`),
+      ]
+      return lines.join('\n')
+    },
+  }))
+
+  // ── team_health：全团队健康一览（对标 openmausbot /api/cloud/box 探针）──
+  //
+  // 遍历所有 Worker Bot → 对各自的 node 调 cluster_selfcheck，聚合报告。
+  rt.teamTools.push(defineTool({
+    name: 'team_health',
+    description: 'Run a health check across the entire team: for every Worker Bot, probe its node readiness, queue depth, model availability, and online status. Returns a compact dashboard. Main Bot only.',
+    isConcurrencySafe: true,
+    parameters: {
+      node: { type: 'string', description: 'Check only one node (by name or id). Omit to check all.' },
+    },
+    output,
+    async execute(args, exec) {
+      await rt.load()
+      const self = rt.selfOf(exec.agent?.id)
+      if (!rt.isMain(self)) return 'Only the Main Bot can run a full team health check.'
+
+      // Gather all remote-worker Bots.
+      const allBots = Object.values(rt.state.bots ?? {}).filter(b => b.type === 'remote-worker')
+      if (allBots.length === 0) return 'No Worker Bots on the team. Create one with create_from_template or hire_talent first.'
+
+      // Resolve hub tools.
+      const selfcheckTool = (() => {
+        try {
+          const t = ctx.get?.('tools')
+          return t?.get?.('cluster_selfcheck') ?? t?.get?.('remote_selfcheck')
+        } catch { return undefined }
+      })()
+      const registry = (() => { try { return ctx.get?.('remote-agent:registry') } catch { return undefined } })()
+
+      // Group bots by their target node.
+      const nodeMap = new Map() // nodeId → [{ bot, nodeRec }]
+      for (const bot of allBots) {
+        const worker = bot.worker ?? {}
+        const nodes = Array.isArray(worker.nodes) && worker.nodes.length > 0
+          ? worker.nodes
+          : worker.nodeId ? [{ nodeId: worker.nodeId }] : []
+        for (const n of nodes) {
+          if (!n?.nodeId) continue
+          if (args.node) {
+            const want = String(args.node).trim().toLowerCase()
+            if (n.nodeId.toLowerCase() !== want &&
+                String(bot.name).toLowerCase() !== want &&
+                String(n.nodeId).toLowerCase() !== want) continue
+          }
+          if (!nodeMap.has(n.nodeId)) nodeMap.set(n.nodeId, { bots: [], rec: null })
+          nodeMap.get(n.nodeId).bots.push(bot)
+        }
+      }
+
+      if (nodeMap.size === 0) {
+        if (args.node) return `No Worker Bot targets node "${args.node}". Use list_bots to see Worker Bots and their nodes.`
+        return 'No Worker Bots have a configured node. Use create_bot or hire_talent with a node parameter.'
+      }
+
+      // For each node, check health.
+      const nodeResults = []
+      for (const [nodeId, { bots }] of nodeMap) {
+        let online = false
+        let queue = null
+        let model = null
+        let os = null
+        let checkError = null
+
+        // Try registry first (instant, no RPC).
+        if (registry && typeof registry.onlineNodes === 'function') {
+          try {
+            const rec = registry.onlineNodes().find(n => n.nodeId === nodeId)
+            if (rec) {
+              online = rec.online !== false
+              queue = rec.queue ?? null
+              model = rec.defaultModel?.model ?? null
+              os = `${rec.os ?? '?'}/${rec.arch ?? '?'}`
+            }
+          } catch { /* fall through to selfcheck */ }
+        }
+
+        // Deep probe via selfcheck tool if available.
+        if (selfcheckTool && typeof selfcheckTool.execute === 'function') {
+          try {
+            const scArgs = selfcheckTool.name === 'cluster_selfcheck' ? { node: nodeId, purpose: 'agent' } : { nodeId }
+            const sc = await selfcheckTool.execute(scArgs, exec)
+            if (!sc?.isError) {
+              const v = sc?.value ?? sc
+              if (v?.verdict) checkError = v.verdict === 'blocked' ? `selfcheck blocked: ${(v.blockingFailures ?? []).map(f => f.id).join(', ')}` : null
+              if (v?.runnerKind) model = model ?? v.runnerKind
+            }
+          } catch (err) {
+            checkError = err?.message ?? 'selfcheck failed'
+          }
+        }
+
+        nodeResults.push({ nodeId, online, os, queue, model, checkError, bots: bots.map(b => b.name) })
+      }
+
+      // Format report.
+      const lines = ['Team Health Dashboard', '═'.repeat(40)]
+      for (const n of nodeResults) {
+        const status = n.online ? (n.checkError ? '⚠ blocked' : '✅ ready') : '✗ offline'
+        lines.push('')
+        lines.push(`Node ${n.nodeId}  [${status}]  ${n.os ?? ''}`)
+        if (n.model) lines.push(`  model: ${n.model}`)
+        if (n.queue) lines.push(`  queue: ${n.queue.running}/${n.queue.maxConcurrent} running, ${n.queue.queued} queued${n.queue.starved ? ' ⚠ STARVED' : ''}`)
+        if (n.checkError) lines.push(`  issue: ${n.checkError}`)
+        lines.push(`  bots: ${n.bots.join(', ')}`)
+      }
+      const totalBots = nodeResults.reduce((s, n) => s + n.bots.length, 0)
+      const ready = nodeResults.filter(n => n.online && !n.checkError).length
+      lines.push('')
+      lines.push(`${ready}/${nodeResults.length} nodes ready · ${totalBots} Worker Bots total`)
+      return lines.join('\n')
+    },
+  }))
 }
