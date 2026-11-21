@@ -1,5 +1,6 @@
 // 人才库工具：list_talents / hire_talent (dsh-ai-team 格式兼容)
 import { loadTalentCatalog, filterTalents, talentToCreateBot } from './talent-catalog.js'
+import { loadBotTemplates, filterBotTemplates } from './bot-templates.js'
 
 // The group task board: what each member is working on in a group, one line apiece.
 // A Bot registers a task when it takes the work and updates it as the work moves; the
@@ -467,6 +468,8 @@ export function install(rt) {
       return `Team import complete:\n\n${results.join('\n')}`
     },
   }))
+
+  installTemplateTools(rt)
 }
 
 // ── minimal nested-YAML parser for team playbook ────────────────────────────
@@ -548,4 +551,111 @@ function parseTeamYaml(text) {
     }
   }
   return root
+}
+
+// ── list_templates + create_from_template 工具 ───────────────────────────────
+
+export function installTemplateTools(rt) {
+  rt.teamTools.push(defineTool({
+    name: 'list_templates',
+    description: 'Browse the bot template library — 30+ ready-made roles inspired by dsh-ai-team, oh-my-dsh-slim and openmausbot (planner, implementer, reviewer triangle, orchestrator+specialists, engineers, QA, ops, data, etc.). Filter by keyword.',
+    isConcurrencySafe: true,
+    parameters: {
+      query: { type: 'string', description: 'Optional keyword to filter by name, role, category, tags, or description.' },
+      category: { type: 'string', description: 'Filter by category: 工程, 运维, 数据, 产品, 写作, 管理, 研究' },
+    },
+    output,
+    async execute(args) {
+      await rt.load()
+      const all = loadBotTemplates(rt.dshHome)
+      let filtered = filterBotTemplates(all, args.query)
+      if (args.category) {
+        const cat = String(args.category).trim()
+        filtered = filtered.filter(t => String(t.category ?? '').toLowerCase() === cat.toLowerCase())
+      }
+      if (filtered.length === 0) return 'No templates matched. Try without filters to see all.'
+      const lines = [`Bot templates (${filtered.length} found):\n`]
+      const byCategory = new Map()
+      for (const t of filtered) {
+        const cat = t.category ?? '其他'
+        if (!byCategory.has(cat)) byCategory.set(cat, [])
+        byCategory.get(cat).push(t)
+      }
+      for (const [cat, templates] of byCategory) {
+        lines.push(`── ${cat} ──`)
+        for (const t of templates) {
+          const duty = t.duty ? ` [${t.duty}]` : ''
+          const tags = Array.isArray(t.tags) && t.tags.length > 0 ? `  tags: ${t.tags.slice(0, 4).join(', ')}` : ''
+          lines.push(`  ${t.id}  "${t.name}" · ${t.role}${duty}`)
+          lines.push(`    ${t.description}${tags}`)
+        }
+        lines.push('')
+      }
+      lines.push('Use create_from_template with the exact id to create a Bot.')
+      return lines.join('\n')
+    },
+  }))
+
+  rt.teamTools.push(defineTool({
+    name: 'create_from_template',
+    description: 'Create a Bot from a template in the template library. Fast alternative to create_bot: picks up name, role, instructions and duty from the template. Main Bot only.',
+    parameters: {
+      template: { type: 'string', required: true, description: 'Exact template id from list_templates.' },
+      name: { type: 'string', description: 'Override the template\'s default name.' },
+      model: { type: 'string', description: 'Model to run on (provider/model). Leave out to use team default.' },
+      node: { type: 'string', description: 'Node name or nodeId to create the Bot on that node machine.' },
+    },
+    output,
+    async execute(args, exec) {
+      await rt.load()
+      const self = rt.selfOf(exec.agent?.id)
+      if (!rt.isMain(self)) return 'Only a Main Bot can create Bots from templates.'
+      const all = loadBotTemplates(rt.dshHome)
+      const tmpl = all.find(t => t.id === String(args.template ?? '').trim())
+      if (!tmpl) return `No template with id "${args.template}". Use list_templates to see available ids.`
+      const name = String(args.name ?? tmpl.name ?? '').trim()
+      if (!name) return `Template "${args.template}" has no name field.`
+      const existing = rt.findBot(name)
+      if (existing) return `A Bot named "${name}" already exists. Pass a different name to override.`
+      try {
+        const nodeArg = typeof args.node === 'string' ? args.node.trim() : ''
+        if (nodeArg !== '') {
+          if (typeof rt.createBotOnNode !== 'function') return 'Bot creation on a node is not available right now.'
+          let resolvedNodeId = nodeArg
+          try {
+            const registry = rt.ctx?.get?.('remote-agent:registry')
+            if (registry && typeof registry.onlineNodes === 'function') {
+              const online = registry.onlineNodes()
+              const match = online.find(n =>
+                n.nodeId === nodeArg ||
+                (typeof n.name === 'string' && n.name.toLowerCase() === nodeArg.toLowerCase()) ||
+                (typeof n.hostname === 'string' && n.hostname.toLowerCase() === nodeArg.toLowerCase())
+              )
+              if (match) resolvedNodeId = match.nodeId
+              else return `No connected node named "${nodeArg}". Use list_bots to see connected nodes.`
+            }
+          } catch { /* pass nodeArg as-is */ }
+          const result = await rt.createBotOnNode({
+            nodeId: resolvedNodeId,
+            name,
+            role: String(tmpl.role ?? '').slice(0, 24),
+            modelRef: args.model ? String(args.model).trim() : null,
+            instructions: String(tmpl.instructions ?? '').trim(),
+          })
+          if (!result?.ok) return `Could not create Bot on node "${nodeArg}": ${result?.error ?? 'unknown error'}`
+          await rt.save()
+          return `Created ${name} (${tmpl.role}) from template "${tmpl.id}" on node "${nodeArg}".`
+        }
+        const bot = await rt.createBot({
+          name,
+          role: String(tmpl.role ?? '').slice(0, 24),
+          instructions: String(tmpl.instructions ?? '').trim(),
+          model: args.model ?? tmpl.model ?? undefined,
+        })
+        return `Created ${bot.name} (${tmpl.role}) from template "${tmpl.id}". ${tmpl.duty ? `Duty: ${tmpl.duty}.` : ''} Use message_bot to introduce them to the team.`
+      } catch (err) {
+        return `Could not create Bot from template: ${err.message}`
+      }
+    },
+  }))
 }
