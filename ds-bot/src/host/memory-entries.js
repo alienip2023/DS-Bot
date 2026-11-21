@@ -6,9 +6,38 @@ import { createHash, randomBytes } from 'node:crypto'
 // every request of a conversation, so its size is what a scope may always have in view;
 // the user can change these three (prefs.memoryLimits). A topic is read whole in one
 // bot_recall. An entry holds one fact.
-export const MEMORY_LIMITS = { entry: 300, group: 12_000, bot: 8_000, team: 4_000, topic: 16_000, topics: 40 }
+export const MEMORY_LIMITS = { entry: 300, group: 12_000, bot: 8_000, team: 4_000, topic: 16_000, topics: 40, snapshot: 32_000 }
 // What one MEMORY.md may take of the model's window, however large the size is set.
 export const WINDOW_SHARE = 0.02
+
+// fitSnapshot helpers. SNAPSHOT_RANK controls which sections are kept first when
+// the total exceeds the limit: team and node context before per-bot sections.
+export const SNAPSHOT_TRUNCATED = 'snapshot/truncated'
+const SNAPSHOT_RANK = { team: 0, node: 1, bot: 2 }
+
+function cutSection(text, limit) {
+  if (text.length <= limit) return { text, truncated: false }
+  const cut = text.lastIndexOf('\n', limit)
+  return { text: cut > limit * 0.5 ? text.slice(0, cut) : text.slice(0, limit), truncated: true }
+}
+
+// Fit a snapshot's sections within `limit` characters. Sections are ordered by
+// SNAPSHOT_RANK (team first, then node, then bots) so the most important context
+// survives when space is tight. Returns { sections, truncated? }.
+export function fitSnapshot(sections, limit = MEMORY_LIMITS.snapshot) {
+  const ordered = [...sections].sort((a, b) => (SNAPSHOT_RANK[a.kind] ?? 9) - (SNAPSHOT_RANK[b.kind] ?? 9))
+  let budget = limit
+  let anyTruncated = false
+  const result = []
+  for (const section of ordered) {
+    if (budget <= 0) { anyTruncated = true; break }
+    const { text, truncated } = cutSection(section.text, budget)
+    budget -= text.length
+    if (truncated) anyTruncated = true
+    result.push(truncated ? { ...section, text, truncated: true } : { ...section, text })
+  }
+  return { sections: result, ...(anyTruncated ? { truncated: true } : {}) }
+}
 
 export const MAIN = 'MEMORY.md'
 // Where the team's entries wait for whoever needs them. MEMORY.md is for what every Bot

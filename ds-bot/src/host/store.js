@@ -4,7 +4,7 @@
 import { copyFileSync, mkdirSync, readFileSync, statSync } from 'node:fs'
 import { mkdir, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { LEGACY_THEMES, MAX_EXCHANGES, ROOM_MODES, SECTION_COLORS, SECTION_NAME_MAX, TEXT_KEPT } from './constants.js'
+import { LEGACY_THEMES, MAX_EXCHANGES, ROOM_MODES, SECTION_COLORS, SECTION_NAME_MAX, STATE_VERSION, TEXT_KEPT } from './constants.js'
 import { replaceFile } from './files.js'
 import { homeLock } from './home-lock.js'
 import { currentColor, headOf, normalize, unquote } from './text.js'
@@ -21,7 +21,7 @@ export function install(rt) {
   const { ctx, home, statePath } = rt
 
   /** @type {{version:1, workspaceId?:string, mainBotIds:string[], bots:Record<string,any>, privateArchives:any[], rooms:Record<string,any>, agents:Record<string,any>, sections:any[], capabilities:{items:Record<string,any>}, exchanges:any[], exchangeTurns:Record<string,number[]>, revision:number}} */
-  const state = { version: 1, mainBotIds: [], bots: {}, privateArchives: [], rooms: {}, agents: {}, sections: [], capabilities: { items: {} }, exchanges: [], exchangeTurns: {}, works: {}, requests: {}, questions: {}, views: {}, closedCards: {}, prefs: {}, switching: {}, revision: 0 }
+  const state = { version: STATE_VERSION, mainBotIds: [], bots: {}, privateArchives: [], rooms: {}, agents: {}, sections: [], capabilities: { items: {} }, exchanges: [], exchangeTurns: {}, works: {}, requests: {}, questions: {}, views: {}, closedCards: {}, prefs: {}, switching: {}, revision: 0 }
   let loaded = null
   let storeReady = false
   let writing = Promise.resolve()
@@ -102,7 +102,7 @@ export function install(rt) {
       }
       return undefined
     }
-    if (parsed?.version === 1) {
+    if (parsed?.version === 1 || parsed?.version === STATE_VERSION) {
       stuck = undefined
       return parsed
     }

@@ -36,6 +36,7 @@
     "src/host/",
     "src/shared/",
     "src/office/",
+    "src/gateway/",
     "client.js",
     "link.js",
     "office.js",
