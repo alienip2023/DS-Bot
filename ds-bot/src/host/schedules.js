@@ -9,7 +9,7 @@
 // accept that target kind. Session targets keep the compatibility paths below.
 
 import { installBotRoutines } from './bot-routines.js'
-
+import { installWebhookServer, generateWebhookId, generateWebhookToken } from './webhook-server.js'
 import { threadCurrentOfPart, threadOfPart } from './threads.js'
 
 const MAX_TITLE = 120
@@ -97,6 +97,29 @@ export function install(rt) {
   const { ctx } = rt
   const routines = installBotRoutines(rt)
   let service = null
+
+  // Webhook server: start it and expose webhook delivery to the webhook-server module.
+  installWebhookServer(rt)
+  // Deliver a webhook's prompt to the target Bot or group chat Session.
+  rt.webhookDeliver = async ({ botId, roomId, prompt, payload }) => {
+    const target = botId !== undefined ? rt.botOf(botId) : undefined
+    const room = roomId !== undefined ? rt.roomOf(roomId) : undefined
+    if (target === undefined && room === undefined) throw invalid('No such Bot or group chat')
+    const sessionId = target !== undefined ? rt.chatOf(target.id) : rt.sessionOfRoom(room)
+    if (sessionId === undefined) throw invalid('The target has no active Session')
+    // Send the prompt as a user message to the target Session, the same way a scheduled
+    // task does. DSH's schedule service is the delivery path; without it, deliver direct.
+    if (service !== null && typeof service.send === 'function') {
+      await service.send({ sessionId, prompt })
+      return
+    }
+    // Fallback: inject via the turn pipeline if available.
+    if (typeof rt.deliverUserMessage === 'function') {
+      await rt.deliverUserMessage(sessionId, prompt, { source: 'webhook', payload })
+      return
+    }
+    throw invalid('Automation tasks are off in DSH; cannot deliver webhook')
+  }
 
   const attach = (sub) => {
     const own = sub.schedule
@@ -232,6 +255,60 @@ export function install(rt) {
         return schedulesView()
       }
       throw invalid('The task just changed. Try again.')
+    },
+    async webhooks() {
+      const out = []
+      for (const [id, webhook] of Object.entries(rt.state.webhooks ?? {})) {
+        if (!webhook || typeof webhook !== 'object') continue
+        out.push({
+          id, botId: webhook.botId, roomId: webhook.roomId,
+          title: webhook.title ?? '', prompt: webhook.prompt ?? '',
+          disabled: webhook.disabled === true,
+          fireCount: webhook.fireCount ?? 0, lastFiredAt: webhook.lastFiredAt,
+          createdAt: webhook.createdAt,
+          url: rt.webhookPort() ? `http://127.0.0.1:${rt.webhookPort()}/webhook/${id}` : undefined,
+        })
+      }
+      return { available: rt.webhookPort() !== null, port: rt.webhookPort(), webhooks: out }
+    },
+    async 'webhook-create'(body) {
+      const bot = rt.botOf(body.target?.kind === 'bot' ? body.target.botId : body.target)
+      const room = rt.roomOf(body.target)
+      if (bot === undefined && room === undefined) throw invalid('No such Bot or group chat')
+      const title = String(body.title ?? '').trim()
+      const prompt = String(body.prompt ?? '').trim()
+      if (title === '') throw invalid('Give the webhook a name')
+      if (prompt === '') throw invalid('Say what the webhook should send')
+      const id = generateWebhookId()
+      const secret = generateWebhookToken()
+      const now = Date.now()
+      rt.state.webhooks ??= {}
+      rt.state.webhooks[id] = {
+        id, title, prompt,
+        botId: bot?.id, roomId: room?.id,
+        secret, createdAt: now, fireCount: 0, lastFiredAt: null,
+      }
+      await rt.save()
+      await rt.syncWebhookServer?.()
+      const url = rt.webhookPort() ? `http://127.0.0.1:${rt.webhookPort()}/webhook/${id}` : undefined
+      return { webhook: { id, title, secret, url, createdAt: now } }
+    },
+    async 'webhook-delete'(body) {
+      const id = String(body.id ?? '').trim()
+      if (!rt.state.webhooks?.[id]) throw invalid('No such webhook')
+      delete rt.state.webhooks[id]
+      await rt.save()
+      await rt.syncWebhookServer?.()
+      return { removed: id }
+    },
+    async 'webhook-pause'(body) {
+      const id = String(body.id ?? '').trim()
+      const webhook = rt.state.webhooks?.[id]
+      if (!webhook) throw invalid('No such webhook')
+      webhook.disabled = body.active !== true
+      await rt.save()
+      await rt.syncWebhookServer?.()
+      return { webhook: { id, disabled: webhook.disabled } }
     },
   }
 
