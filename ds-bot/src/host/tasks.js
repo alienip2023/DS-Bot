@@ -266,6 +266,7 @@ export function install(rt) {
   rt.teamTools.push(defineTool({
     name: 'list_talents',
     description: 'Browse the talent catalog (dsh-ai-team format) to find specialists you can hire as new Bots. Returns name, role, duty (lead/qa/executor), description, and category for each talent. Filter with a keyword to narrow results.',
+    isConcurrencySafe: true,
     parameters: {
       query: { type: 'string', description: 'Optional keyword to filter by name, role, category, or tags. Leave out to list all.' },
     },

@@ -378,6 +378,7 @@ export function remoteGroupSession(roomId, botId) {
 // its late window as well, otherwise the node itself would discard the eventual answer.
 export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS + JOINED_LATE_WINDOW_MS } = {}) {
   const pending = new Map()
+  const pendingBySession = new Map()
   const creating = new Map()
   async function groupSessionFor(bot, roomId, roomName) {
     const sessionId = remoteGroupSession(roomId, bot.id)
@@ -407,10 +408,29 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
     const waiter = pending.get(exchangeId)
     if (!waiter) return false
     pending.delete(exchangeId)
+    if (waiter.sessionId) {
+      const bySession = pendingBySession.get(waiter.sessionId)
+      bySession?.delete(exchangeId)
+    }
     clearTimeout(waiter.timer)
     if (error) waiter.reject(error)
     else waiter.resolve(typeof text === 'string' ? text : '')
     return true
+  }
+  // Abort all joined-turn waiters that belong to a given bot session.
+  // Called from agent/turn-stopping so callers don't hang indefinitely.
+  rt.abortJoinedTurnsForSession = (sessionId) => {
+    const ids = pendingBySession.get(sessionId)
+    if (!ids || ids.size === 0) return
+    const abortErr = Object.assign(new Error('agent-turn-stopped'), { code: 'agent-turn-stopped' })
+    for (const exchangeId of [...ids]) {
+      const waiter = pending.get(exchangeId)
+      if (!waiter) continue
+      pending.delete(exchangeId)
+      clearTimeout(waiter.timer)
+      waiter.reject(abortErr)
+    }
+    pendingBySession.delete(sessionId)
   }
   return async function acceptJoinedTurn(turn) {
     const remoteBotId = trimmed(turn?.remoteBotId)
@@ -423,10 +443,15 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
     const done = new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(exchangeId)
+        const bySession = pendingBySession.get(bot.id)
+        bySession?.delete(exchangeId)
         reject(Object.assign(new Error('joined-turn-timeout'), { code: 'joined-turn-timeout' }))
       }, timeoutMs)
       timer.unref?.()
-      pending.set(exchangeId, { resolve, reject, timer })
+      pending.set(exchangeId, { resolve, reject, timer, sessionId: bot.id })
+      let bySession = pendingBySession.get(bot.id)
+      if (!bySession) { bySession = new Set(); pendingBySession.set(bot.id, bySession) }
+      bySession.add(exchangeId)
     })
     try {
       // sendUser creates a real user bubble in chatPage (not an event entry).

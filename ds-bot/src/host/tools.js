@@ -166,6 +166,7 @@ export function install(rt) {
   rt.teamTools.push(defineTool({
     name: 'list_bots',
     description: 'List every Bot on the user\'s team with its role, what it does and what it is doing right now, and the group chats you can see. Give bot or group to list only that Bot or that group\'s members; with both, the Bot must be in the group.',
+    isConcurrencySafe: true,
     parameters: {
       bot: { type: 'string', description: 'Exact name of one Bot to list, with the group chats you can see that it is in' },
       group: { type: 'string', description: 'Exact group chat name: list only its members and that group' },
@@ -200,6 +201,7 @@ export function install(rt) {
   rt.teamTools.push(defineTool({
     name: 'list_remote_tasks',
     description: 'List remote tasks with their node, goal, elapsed time, status and result line count.',
+    isConcurrencySafe: true,
     parameters: {
       limit: { type: 'integer', description: 'Maximum number of tasks to list (default 20)' },
     },
@@ -747,6 +749,7 @@ export function install(rt) {
   rt.teamTools.push(defineTool({
     name: 'list_bot_models',
     description: 'List the models a Bot can run on, as provider/model refs for create_bot and update_bot. A model in use also lists the thinking levels it serves.',
+    isConcurrencySafe: true,
     parameters: {},
     output,
     async execute() {
@@ -1446,6 +1449,20 @@ export function install(rt) {
     } catch (error) {
       rt.warn('ds-bot: hiding %s on agent/created failed: %s', HIDDEN_TOOLS.join(', '), error)
     }
+  })
+
+  // agent/turn-stopping: cancel any pending joined-turn waiters for the
+  // stopping agent so they do not block indefinitely. serial, no next().
+  ctx.on('agent/turn-stopping', ({ agent }) => {
+    try {
+      const sessionId = agent?.session?.id
+      if (!sessionId || typeof rt.settleJoinedTurn !== 'function') return
+      // rt.pendingJoinedTurns is the internal Map set up in joined-turn.js;
+      // we ask it to settle all waiters keyed to this session with an abort error.
+      if (typeof rt.abortJoinedTurnsForSession === 'function') {
+        rt.abortJoinedTurnsForSession(sessionId)
+      }
+    } catch { /* never block agent disposal */ }
   })
 
   // A live Agent the creation path missed — after a restart, agent/created may
