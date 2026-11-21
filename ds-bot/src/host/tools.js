@@ -520,6 +520,13 @@ export function install(rt) {
             : working
               ? `Queued for ${target.name}: it reads your message after its current work. Its reply will arrive later as a new message; do not wait for it.`
               : `Delivered to ${target.name}. Its reply will arrive later as a new message; do not wait for it.`
+        // Write a "working" notice for local Bot targets too, so the sender sees the same
+        // immediate status line whether the target is local or on a node.
+        if (!toUser) {
+          const workingNote = `⟳ ${target.name} is working on the task…`
+          rt.state.exchanges ??= []
+          rt.state.exchanges.push({ id: randomUUID(), from: sender.id, to: target.id, text: workingNote, role: 'working', time: Date.now() })
+        }
         const asker = rt.ownsWork(sender.id, work) ? rt.botOf(state.works[work].from)?.name : undefined
         const notes = [
           joins ? `${target.name} had not read your earlier message yet, so this one was added to it, and it answers both at once.` : '',
