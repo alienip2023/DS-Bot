@@ -429,6 +429,13 @@ export function install(rt) {
     const bot = rt.botOf(botId)
     const own = bot === undefined ? [chat] : ownChatSessions(bot)
     const sessions = [...new Set([...own, ...(rt.groupSessionsOf?.(botId) ?? [])])]
+
+    // A joined (node) Bot's mirror Session has no local Agent, so rt.live is never
+    // set for it. Check joinedInFlight directly so statusOf reports "working" rather
+    // than "idle" while a page turn is in flight to the node.
+    if (rt.joinedInFlight?.has(botId)) {
+      return 'working in its own chat (on its node)'
+    }
     const place = sessionId => {
       const room = rt.roomOf(rt.groupOwners.get(sessionId)?.roomId)
       if (room) return `in group "${room.name}"`

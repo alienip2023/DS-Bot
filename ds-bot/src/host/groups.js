@@ -41,6 +41,20 @@ const ROOM_FIRST_LOOK = 12
 const ROOM_DELTA_MAX = 24
 const ROOM_EARLIER_MAX = 8
 
+// A joined (node) Bot's mirror Session has no local Agent, so rt.live is never
+// set for it. Use this helper everywhere we need to know if a Session's Bot
+// is running, so joined Bots are treated identically to local Bots.
+const sessionLiveTurn = (rt, sessionId) => {
+  if (rt.live.get(sessionId)?.turn !== undefined) return true
+  // For a joined bot: check joinedInFlight by the Bot that owns this session.
+  if (rt.joinedInFlight?.size > 0) {
+    const owner = rt.chatOwners?.get(sessionId) ?? rt.groupOwners?.get(sessionId)?.botId
+    const botId = typeof owner === 'string' ? owner : owner?.botId
+    if (botId !== undefined && rt.joinedInFlight.has(botId)) return true
+  }
+  return false
+}
+
 // Short ack/thanks/closing phrases with no new content, used by the 0-tool idle loop guard.
 const IDLE_ACK_WORDS = "收到|好的|好|明白|明白了|了解|了解了|没问题|谢谢|多谢|感谢|辛苦了|辛苦|不客气|不用谢|完毕|完成|好嘞|行|ok|okay|got\\s+it|understood|noted|thanks|thank\\s+you|you\\s+are\\s+welcome|you're\\s+welcome|welcome|np|no\\s+problem|roger|ack|done|all\\s+good|sounds\\s+good"
 // A status post: a member saying it has nothing to do right now. It carries no new
@@ -952,6 +966,8 @@ export function install(rt) {
     const bot = rt.botOf(id)
     if (bot === undefined) return []
     if (entry?.turn !== undefined) return [{ bot, since: entry.since ?? Date.now() }]
+    // Joined bots have no entry in rt.live; check joinedInFlight directly.
+    if (rt.joinedInFlight?.has(id)) return [{ bot, since: Date.now() }]
     if ((sessionId !== undefined && rt.hasSubagents?.(sessionId)) || rt.hasRoomTasks?.(room.id, id) === true) {
       const workSince = rt.roomWorkView?.()?.[room.id]?.find(item => item.botId === id)?.since
       return [{ bot, since: workSince ?? Date.now() }]
@@ -988,7 +1004,7 @@ export function install(rt) {
   // in a round, or a message on its way to the member's group Session that no turn took up yet.
   const activeInRoom = (room, botId) => {
     const sessionId = room.sessions?.[botId]
-    if (sessionId !== undefined && (rt.live.get(sessionId)?.turn !== undefined || rt.hasSubagents?.(sessionId) === true)) return true
+    if (sessionId !== undefined && (sessionLiveTurn(rt, sessionId) || rt.hasSubagents?.(sessionId) === true)) return true
     if (rt.hasRoomTasks?.(room.id, botId) === true) return true
     if (sessionId !== undefined && (rt.unreadOf?.(sessionId)?.length ?? 0) > 0) return true
     return [...rt.roomProgress.values()].some(round => round.roomId === room.id
@@ -1177,7 +1193,7 @@ export function install(rt) {
     // delivery lands: a delivery that failed leaves the member where it was.
     const seenAt = room.seq
     // Checked before the delivery, which may start the turn at once.
-    const busy = rt.live.get(sessionId)?.turn !== undefined || rt.hasSubagents?.(sessionId) === true
+    const busy = sessionLiveTurn(rt, sessionId) || rt.hasSubagents?.(sessionId) === true
     const done = new Promise((resolve) => {
       let timer
       let grace
@@ -2293,7 +2309,7 @@ export function install(rt) {
   // member once. Per group Session.
   const held = new Map()
   ctx.effect(() => () => { for (const entry of held.values()) clearTimeout(entry.timer) }, 'ds-bot: group step lines')
-  const stepKey = (sessionId, info) => `${info?.exchangeId ?? ''}:${rt.live?.get(sessionId)?.turn ?? ''}`
+  const stepKey = (sessionId, info) => `${info?.exchangeId ?? ''}:${rt.live?.get(sessionId)?.turn ?? ''}:${rt.joinedInFlight?.has(rt.chatOwners?.get(sessionId) ?? '') ? '1' : '0'}`
   const flushSteps = (sessionId) => {
     const entry = held.get(sessionId)
     clearTimeout(entry.timer)
@@ -2365,15 +2381,21 @@ export function install(rt) {
     const room = rt.roomOf(roomId)
     const member = rt.botOf(botId)
     const sessionId = rt.own(room?.sessions, botId)
-    const turnRunning = sessionId !== undefined && rt.live.get(sessionId)?.turn !== undefined
+    const turnRunning = sessionId !== undefined && (sessionLiveTurn(rt, sessionId) || rt.joinedInFlight?.has(botId) === true)
     const subRunning = sessionId !== undefined && rt.hasSubagents?.(sessionId) === true
     const taskRunning = rt.hasRoomTasks?.(roomId, botId) === true
     if (room === undefined || member === undefined || (!turnRunning && !subRunning && !taskRunning)) return false
     if (sessionId !== undefined) await rt.stopSubagents?.(sessionId)
     if (taskRunning) await rt.stopMemberRoomTasks?.(roomId, botId, 'stopped in group')
     if (turnRunning && sessionId !== undefined) {
-      const agent = await rt.resolveAgent(sessionId)
-      agent.cancel({ kind: 'user' })
+      // For a joined (node) bot, stop the page turn via the joined-turn mechanism.
+      // For a local bot, cancel the agent normally.
+      if (rt.joinedInFlight?.has(botId)) {
+        rt.stopJoinedTurn?.(botId)
+      } else {
+        const agent = await rt.resolveAgent(sessionId)
+        agent.cancel({ kind: 'user' })
+      }
     }
     dropMemberFromBatch(room, botId)
     rt.goalTaskReset?.(roomId, botId, 'Stopped by the user')
