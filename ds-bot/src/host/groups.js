@@ -2118,6 +2118,13 @@ export function install(rt) {
     if (opener.member) return at(found)
     if (found.length > 0 && !all) return at(found)
     if (!all && room.mode === 'admin' && admin) return at([admin])
+    // Auto routing: when no member is @mentioned and the room has a designated responder,
+    // route the message to that bot alone instead of calling everyone.
+    // The responder is set by the admin with the set_responder tool, or via room settings.
+    if (!all && room.responder) {
+      const responder = members.find(bot => bot.id === room.responder)
+      if (responder) return at([responder])
+    }
     const speakers = admin ? [admin, ...members.filter(bot => bot !== admin)] : members
     return { speakers, ordered: !all && speakers.length > 1 }
   }

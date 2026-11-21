@@ -7,7 +7,7 @@ import {
   ensureMirrorSession, hasPromptRequest, mirrorStateOf,
 } from './mirror.js'
 import { classify } from './msg-classes.js'
-import { beginJoinedMirror, closeJoinedMirror, markJoinedMirrorPending } from './joined-mirror-writer.js'
+import { beginJoinedMirror, closeJoinedMirror, markJoinedMirrorPending, mirrorTurnOpen } from './joined-mirror-writer.js'
 
 export const BRIDGE_DOWN_TEXT = '副机仍在执行，桥已断'
 // What the sender is told when its exchange was settled by a stop, not by the node going away.

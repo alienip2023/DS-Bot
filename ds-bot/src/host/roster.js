@@ -930,6 +930,18 @@ export function install(rt) {
       room.mode = patch.mode
       changes.push(patch.mode === 'admin' ? 'plain messages now go to the admin first' : 'every member now replies in turn')
     }
+    // Auto routing: a designated responder receives messages no member is @mentioned in.
+    if (patch.responder !== undefined) {
+      const cleared = patch.responder === null || patch.responder === ''
+      const target = cleared ? undefined : liveBot(patch.responder)
+      if (cleared) {
+        if (room.responder !== undefined) { delete room.responder; changes.push('cleared the auto-responder') }
+      } else if (target && target.id !== room.responder) {
+        if (!room.members.includes(target.id)) throw new Error(`${target.name} is not a member of this group chat`)
+        room.responder = target.id
+        changes.push(`unaddressed messages now go to ${target.name}`)
+      }
+    }
     if (notice !== undefined && notice !== (room.notice ?? '')) {
       room.notice = notice
       changes.push(notice ? 'updated the notice' : 'cleared the notice')

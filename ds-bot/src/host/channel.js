@@ -946,6 +946,7 @@ export function install(rt) {
             permission: body.permission,
             section: body.section,
             sectionId: body.sectionId,
+            responder: body.responder,
           })
           return ok({ room: view().rooms.find(entry => entry.id === room.id), changes })
         }
