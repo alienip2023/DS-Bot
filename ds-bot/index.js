@@ -18,7 +18,6 @@ import * as privacy from './src/host/privacy.js'
 import * as agents from './src/host/agents.js'
 import * as prompt from './src/host/prompt.js'
 import * as timeContext from './src/host/time-context.js'
-import * as hostContext from './src/host/host-context.js'
 import * as tools from './src/host/tools.js'
 import * as chatIndex from './src/host/chat-index.js'
 import * as groups from './src/host/groups.js'
@@ -29,8 +28,8 @@ import * as tasks from './src/host/tasks.js'
 import * as approvals from './src/host/approvals.js'
 import * as resume from './src/host/resume.js'
 import * as memory from './src/host/memory.js'
-import * as memoryFederation from './src/host/memory-federation.js'
 import * as parts from './src/host/parts.js'
+import * as botTasks from './src/host/bot-tasks.js'
 import * as changes from './src/host/changes.js'
 import * as images from './src/host/images.js'
 import * as avatarLibrary from './src/host/avatar-library.js'
@@ -46,33 +45,19 @@ import * as usage from './src/host/usage.js'
 import * as update from './src/host/update.js'
 import * as dshUpdate from './src/host/dsh-update.js'
 import * as thinking from './src/host/thinking.js'
-import * as threadQueue from './src/host/thread-queue.js'
-import * as channel from './src/host/channel.js'
-import * as joinedTurn from './src/host/joined-turn.js'
-import * as joinedPrompt from './src/host/joined-prompt.js'
-import * as threadPrompt from './src/host/thread-prompt.js'
-import * as mirrorGuard from './src/host/mirror-guard.js'
-import { joinedTimeoutFrom } from './src/host/joined-turn.js'
-import * as joinedCreate from './src/host/joined-create.js'
-import * as configSource from './src/host/config-source.js'
-import * as nodeConfig from './src/host/node-config.js'
-import * as joinedPage from './src/host/joined-page.js'
 import * as phone from './src/host/phone.js'
+import * as mcpServer from './src/host/mcp-server.js'
+import * as channel from './src/host/channel.js'
 import * as remote from './src/host/remote.js'
 import * as mobile from './src/host/mobile.js'
-import * as federation from './src/host/federation.js'
 import * as feed from './src/host/feed.js'
 import * as im from './src/host/im/index.js'
 import * as officeSkills from './src/host/office-skills.js'
-import * as workerBridge from './src/host/worker-bridge.js'
-import * as remoteTasks from './src/host/remote-tasks.js'
-import * as rosterJoin from './src/host/roster-join.js'
 import * as goalSkills from './src/host/goal-skills.js'
+import * as issueReport from './src/host/issue-report.js'
+import * as manualSkills from './src/host/manual-skills.js'
 import * as localAgents from './src/host/local-agents/index.js'
-import * as botNetwork from './src/host/bot-network.js'
-import * as waker from './src/host/waker.js'
-import * as pmo from './src/host/pmo.js'
-import { loadTalentCatalog, filterTalents, talentToCreateBot } from './src/host/talent-catalog.js'
+import * as deepseekServices from './src/host/deepseek-services.js'
 
 export { COLORS } from './src/host/constants.js'
 
@@ -83,7 +68,7 @@ export { name, inject } from './src/host/entry.js'
 // install. Listeners run and tools are listed in registration order, so this order holds:
 // usage meters model requests after every listener that rewrites them. privacy checks a
 // call before the hooks of tools do, so a closed call never reaches a card they show.
-export const MODULES = [diagnostics, store, ledger, models, providers, permissions, turns, steer, handoffs, requests, delivery, remoteTasks, workerBridge, rosterJoin, roster, federation, folders, privacy, agents, prompt, timeContext, hostContext, tools, chatIndex, groups, goals, agentCommands, tasks, approvals, resume, memory, memoryFederation, parts, changes, images, avatarLibrary, secrets, connectors, capabilities, learning, schedules, browser, browserPlugins, computer, usage, update, dshUpdate, thinking, threadQueue, mobile, feed, phone, im, channel, remote, joinedTurn, joinedPrompt, threadPrompt, mirrorGuard, joinedCreate, configSource, nodeConfig, joinedPage, officeSkills, goalSkills, localAgents, botNetwork, waker, pmo]
+const MODULES = [diagnostics, store, ledger, models, providers, permissions, turns, steer, handoffs, requests, delivery, roster, folders, privacy, agents, prompt, timeContext, tools, issueReport, deepseekServices, chatIndex, groups, goals, agentCommands, tasks, approvals, resume, memory, parts, botTasks, changes, images, avatarLibrary, secrets, connectors, capabilities, learning, schedules, browser, browserPlugins, computer, usage, update, dshUpdate, thinking, mobile, feed, phone, mcpServer, im, channel, remote, officeSkills, goalSkills, manualSkills, localAgents]
 
 export function apply(ctx, config = {}) {
   createRuntime(ctx, config)
@@ -106,31 +91,10 @@ export function createRuntime(ctx, config = {}) {
       mainRole: config.mainRole ?? 'Chief of Staff',
     },
   }
-  // On by default; `features.botHome: false` is the kill switch for the takeover of a joined Bot's page input.
-  rt.botHomeEnabled = config.features?.botHome !== false
-  // How long a joined Bot's turn waits for the node (config.joinedTurnTimeoutMs, default 10 minutes).
-  rt.joinedTurnTimeoutMs = joinedTimeoutFrom(config.joinedTurnTimeoutMs)
   for (const module of MODULES) module.install(rt)
   // A live Agent can be scoped before the last module has added its tools (the memory
   // module starts a load during install): complete the scope now that every tool is in.
   rt.syncScopedTools?.()
-  // P1 模型同步：把 applyModelSync 注册到 cordis ctx，让 AC node 侧（lib/node/index.js）
-  // 能通过 ctx.get('ds-bot:apply-model-sync') 拿到它，从而处理 MODEL_SYNC 帧。
-  // provide 是 cordis 的可选 API，在 DSH 旧版本上可能不存在；用 try/catch 保证不影响启动。
-  try {
-    if (typeof ctx.provide === 'function' && typeof rt.applyModelSync === 'function') {
-      ctx.provide('ds-bot:apply-model-sync', rt.applyModelSync)
-    }
-  } catch {
-    // 注册失败不阻断启动；AC 节点收到 MODEL_SYNC 时会回 'model-sync-no-ds-bot'。
-  }
-  try {
-    if (typeof ctx.provide === 'function' && typeof rt.answerApproval === 'function') {
-      ctx.provide('ds-bot:answer-approval', (approvalId, choice) => rt.answerApproval(approvalId, choice))
-    }
-  } catch {
-    // 注册失败不阻断启动；AC 节点无法转发审批答复时会回退。
-  }
   // dsh can load this plugin again in place, its files replaced while it runs: dsh
   // keeps the turns and child agents it had, while this runtime starts with empty
   // maps. Adopt them now, so Stop, the group view and a late child settle still see

@@ -2,20 +2,11 @@
 import { randomUUID } from 'node:crypto'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { HISTORY_TIMEOUT_MS, LONG_HEAD, MESSAGE_INLINE_MAX, READ_LINE_MAX, SOURCE_KIND, TEXT_KEPT, TEXT_SHOW_MAX } from './constants.js'
-import { joinedShadow, refuseJoinedDispatch } from './roster-join.js'
 import { headOf, textOf } from './text.js'
-import { sendToPeer } from './bot-network.js'
-import { classify } from './msg-classes.js'
-
-// For remote dispatch, control is local, an answer is refused, everything else is work.
-// An answer is not new work: never dispatch it to another machine.
-const ANSWER_ROLES = new Set(['reply', 'report'])
+import { sameConversation } from './threads.js'
 
 export function install(rt) {
   const { ctx, state } = rt
-  const visibleTurns = new WeakMap()
-  let disposed = false
-  ctx.effect?.(() => () => { disposed = true }, 'ds-bot: visible delivery turns')
 
   const resolveAgent = async (sessionId) => {
     const resolved = await ctx.sessionController.resolveAgent(sessionId)
@@ -31,6 +22,7 @@ export function install(rt) {
     if (abandoned) return `[Waiting given up · ${fromName} did not hand back this work; go on with the work it was for${goesOn}]`
     if (deferred && role === 'reply') return `[Reply from ${fromName} · you read it during your last task; go on with the work it is for now${goesOn}]`
     if (deferred && role === 'report') return `[Group chat "${roomName}" · replies to your post · you read them during your last task; go on with the work they are for now${goesOn}]`
+    if (deferred && role === 'task-report') return `[Background task report · you read it during your last task; go on with the work it is for now${goesOn}]`
     if (deferred && role !== 'room') return `[Message from ${fromName} · you read it during your last task; answer it now]`
     if (retried && role !== 'room') return '[Your last reply wrote a tool call as text, so nothing ran]'
     if (resumed && role === 'resume') return '[DeepSeek Harness restarted while you were working]'
@@ -47,6 +39,9 @@ export function install(rt) {
     // the header stays neutral about who changed the profile.
     if (role === 'update') return '[Your profile was updated — follow the latest version]'
     if (role === 'secret') return '[Secret card]'
+    if (role === 'task') return `[Background task · ${note}]`
+    if (role === 'task-followup') return `[Follow-up from your own chat · ${note}]`
+    if (role === 'task-report') return `[Background task report · ${note}${goesOn}]`
     if (audience === 'user') return `[Message from ${fromName} · the user sees your reply here]`
     return `[Message from ${fromName}]`
   }
@@ -63,19 +58,63 @@ export function install(rt) {
     .map(entry => ({ ...entry, delivered: true })))
   // A message shows the text its delivery carried: the last record of its id written before
   // a delivery mark. A merged request whose replacement never went out keeps the text that did.
-  function pairMessages(a, b) {
+  function pairRecords(a, b) {
     const written = new Map()
     const shown = new Map()
+    const marks = []
     for (const record of rt.ledger.records(pairBook(a, b))) {
       if (record.event === 'delivered') {
         if (written.has(record.id)) shown.set(record.id, written.get(record.id))
+        marks.push(record)
       } else if (record.event === undefined) {
         written.set(record.id, record)
         if (record.delivered === true) shown.set(record.id, record)
       }
     }
-    return [...shown.values()]
+    return { written, shown, marks }
   }
+  const pairMessages = (a, b) => [...pairRecords(a, b).shown.values()]
+
+  function deliveredReplyOf(fromId, toId, replyTo) {
+    if (typeof fromId !== 'string' || fromId === '' || typeof replyTo !== 'string' || replyTo === '') return undefined
+    if (typeof toId === 'string' && toId !== '') {
+      if (rt.botOf(fromId) === undefined || rt.botOf(toId) === undefined) {
+        return (state.exchanges ?? []).findLast(entry => entry.from === fromId && entry.to === toId && entry.role === 'reply' && entry.replyTo === replyTo)
+      }
+      return pairMessages(fromId, toId).findLast(record => record.from === fromId && record.to === toId && record.role === 'reply' && record.replyTo === replyTo)
+    }
+    if (rt.botOf(fromId) !== undefined) {
+      for (const otherId of Object.keys(state.bots ?? {})) {
+        if (otherId === fromId) continue
+        const found = pairMessages(fromId, otherId).findLast(record => record.from === fromId && record.to === otherId && record.role === 'reply' && record.replyTo === replyTo)
+        if (found !== undefined) return found
+      }
+    }
+    return (state.exchanges ?? []).findLast(entry => entry.from === fromId && entry.role === 'reply' && entry.replyTo === replyTo)
+  }
+
+  const wasReplyDelivered = (fromId, toId, replyTo) => deliveredReplyOf(fromId, toId, replyTo) !== undefined
+
+  function deliveredFailuresOf(fromId, toId, requestId, targetSessionId, parentWork) {
+    if (typeof fromId !== 'string' || typeof toId !== 'string' || typeof requestId !== 'string' || requestId === '') return []
+    if (rt.botOf(fromId) === undefined || rt.botOf(toId) === undefined) return []
+    const wantedWork = typeof parentWork === 'string' && parentWork !== '' ? parentWork : undefined
+    const { written, marks } = pairRecords(fromId, toId)
+    const matches = []
+    for (const mark of marks) {
+      if (mark.failureRequestId !== requestId) continue
+      const markWork = typeof mark.work === 'string' && mark.work !== '' ? mark.work : undefined
+      if (markWork !== wantedWork) continue
+      const message = written.get(mark.id)
+      if (message?.from === fromId && message?.to === toId && sameConversation(state, toId, mark.sessionId, targetSessionId)) {
+        matches.push({ id: mark.id, replyTo: message.replyTo, work: markWork, sessionId: mark.sessionId })
+      }
+    }
+    return matches
+  }
+
+  const wasFailureRequestDelivered = (fromId, toId, requestId, targetSessionId, parentWork) =>
+    deliveredFailuresOf(fromId, toId, requestId, targetSessionId, parentWork).length > 0
 
   // `sessionId` defaults to the recipient's own chat; group turns name its group Session.
   // `deferred`: a request the Bot already read mid-turn, handed back to answer in a
@@ -91,51 +130,10 @@ export function install(rt) {
   // result that came back goes on with. `merged`: a request that takes in an earlier
   // one its recipient had not read, under that one's exchange. `fromPart`: the Session
   // of the sending Bot, which a reply comes back to when that is a background part.
-  async function deliver({ fromId, fromName: senderName, toId, sessionId, text, role, replyTo, roomId, audience, note, exchangeId = randomUUID(), steer = false, deferred = false, resumed = false, retried = false, resent = false, merged = false, abandoned = false, recordExchange = true, askedBy, fromRoomId, fromPart, images = [], files = [], length, work, joinedTurn = false, joinedAsync = false, wait = false, stopped = false }) {
+  async function deliver({ fromId, fromName: senderName, toId, sessionId, text, role, replyTo, roomId, audience, note, exchangeId = randomUUID(), steer = false, deferred = false, resumed = false, retried = false, resent = false, merged = false, abandoned = false, recordExchange = true, askedBy, fromRoomId, fromPart, images = [], files = [], length, work, taskId, imOrigin, failureRequestId }) {
     const from = rt.botOf(fromId)
     const to = rt.botOf(toId)
     if (to === undefined) throw new Error(`Unknown Bot ${toId}`)
-    // Joined members have no local model turn to settle the group's waiter.
-    // Route their result through the same collection/late-reply path as local members.
-    if (role === 'reply' && roomId && joinedShadow(from) && rt.roomOf?.(roomId)) {
-      const waiter = rt.roomWaiters?.get(replyTo)
-      if (waiter) waiter.resolve(text)
-      else await rt.lateRoomReply?.(rt.roomOf(roomId).sessions?.[fromId], { role: 'room', roomId, exchangeId: replyTo }, text)
-      return exchangeId
-    }
-    // On disk before it goes out: a message the book could not keep is not sent, so none is
-    // delivered with no record of it. A resend keeps the record it has; only a merged request
-    // replaces it with its added text. A joined turn leaves this machine before it reaches a
-    // Session, so it is booked here too (below) — a restart after the send still owes it.
-    const book = fromId !== undefined && from !== undefined && recordExchange && EXCHANGE_ROLES.has(role) && !deferred && !resumed && !retried ? pairBook(fromId, toId) : undefined
-    const writeBook = async () => {
-      if (book === undefined) return
-      if (!merged && rt.ledger.records(book).some(record => record.event === undefined && record.id === exchangeId)) return
-      rt.ledger.append(book, { id: exchangeId, from: fromId, to: toId, role, text, time: Date.now(), ...(length !== undefined ? { length, files } : {}), ...(replyTo ? { replyTo } : {}), ...(audience === 'user' ? { audience } : {}), ...(roomId ? { roomId } : {}) })
-      await rt.ledger.written(book)
-    }
-    // A joined shadow is visible in the sidebar. Step 2 sends the turn to that
-    // remote Bot. If the handler is not installed, keep the step-1 refusal and
-    // do not fall through to a local session or handleRemoteTurn.
-    const refused = refuseJoinedDispatch(to)
-    if (refused) {
-      if (!ANSWER_ROLES.has(role) && classify(role) !== 'control' && typeof rt.handleJoinedTurn === 'function') {
-        await writeBook()
-        // joinedAsync remains accepted for older callers; only wait:true opts out of deferral.
-        return rt.handleJoinedTurn({ fromId, toId, text, role, exchangeId, replyTo, work, ...(roomId ? { roomId, roomName: rt.roomOf?.(roomId)?.name } : {}), defer: wait !== true, ...(joinedAsync ? { joinedAsync: true } : {}), ...(stopped === true ? { stopped: true } : {}) })
-      }
-      return refused
-    }
-    // A peer row is another machine's Bot: the hub carries the message, and it never
-    // falls through to a local Session.
-    if (to.origin === 'peer') return sendToPeer(rt, { fromId, toId, text, exchangeId })
-    // Worker Bot routing: dispatch to the remote hub instead of a local Session turn.
-    // Answers and lifecycle controls keep the local delivery path.
-    if (to.type === 'remote-worker'
-      && rt.handleRemoteTurn !== undefined
-      && !ANSWER_ROLES.has(role) && classify(role) !== 'control') {
-      return rt.handleRemoteTurn({ fromId, toId, text, role, exchangeId, replyTo, work })
-    }
     const fromName = senderName ?? from?.name ?? 'You'
     const room = rt.roomOf(roomId)
     const asker = work === undefined ? undefined : rt.botOf(state.works?.[work]?.from)?.name
@@ -147,6 +145,8 @@ export function install(rt) {
       exchangeId,
       senderName: fromName,
       ...(work ? { work } : {}),
+      ...(taskId ? { taskId } : {}),
+      ...(imOrigin ? { imOrigin } : {}),
       ...(fromId ? { senderSessionId: fromId } : {}),
       ...(fromPart ? { senderPart: fromPart } : {}),
       ...(replyTo ? { replyTo } : {}),
@@ -157,13 +157,21 @@ export function install(rt) {
       ...(retried ? { retried: true } : {}),
       ...(askedBy ? { askedBy } : {}),
       ...(fromRoomId ? { senderRoomId: fromRoomId } : {}),
-      ...(joinedTurn ? { joinedTurn: true } : {}),
       ...(abandoned ? { abandoned: true } : {}),
     }
     const targetSessionId = sessionId ?? rt.chatOf(toId)
-    await writeBook()
+    // On disk before it goes out: a message the book could not keep is not sent, so none is
+    // delivered with no record of it. A resend keeps the record it has; only a merged request
+    // replaces it with its added text.
+    const book = fromId !== undefined && from !== undefined && recordExchange && EXCHANGE_ROLES.has(role) && !deferred && !resumed && !retried ? pairBook(fromId, toId) : undefined
+    if (book !== undefined && (merged || !rt.ledger.records(book).some(record => record.event === undefined && record.id === exchangeId))) {
+      rt.ledger.append(book, { id: exchangeId, from: fromId, to: toId, role, text, time: Date.now(), ...(length !== undefined ? { length, files } : {}), ...(replyTo ? { replyTo } : {}), ...(audience === 'user' ? { audience } : {}), ...(roomId ? { roomId } : {}) })
+      await rt.ledger.written(book)
+    }
     await rt.ensureCapabilities(targetSessionId)
     const agent = await resolveAgent(targetSessionId)
+    // A steered message cuts into a running turn at its next step; a follow-up
+    // queues for the next turn (see turns.js for how each is routed).
     const message = createUserMessage({
       content: [
         { type: 'text', text: `${headerFor(role, fromName, room?.name, audience, note, deferred, { resumed, retried, resent, abandoned, asker })}\n${text}` },
@@ -172,76 +180,33 @@ export function install(rt) {
       ],
       source,
     })
-    // A message no Bot of the team sent keeps the record it had before the ledger.
-    // Recorded once the message is in the Session: an earlier record would show
-    // a failed delivery as delivered. The whole text is in its file, or in the
-    // Session it goes to; exchangeText reads it back there. Resends keep any
-    // existing record; only a merged request replaces it with its added text.
-    const recordExchangeEntry = () => {
-      if (!(recordExchange && EXCHANGE_ROLES.has(role) && !deferred && !resumed && !retried)) return
+    if (steer) agent.steer(message)
+    else agent.followup(message)
+    await ctx.sessions.flush(agent.session)
+    if (book !== undefined) {
+      rt.ledger.append(book, {
+        event: 'delivered',
+        id: exchangeId,
+        sessionId: targetSessionId,
+        time: Date.now(),
+        ...(typeof failureRequestId === 'string' && failureRequestId !== '' ? { failureRequestId } : {}),
+        ...(typeof work === 'string' && work !== '' ? { work } : {}),
+      })
+      // The message went out either way; a mark that is lost only hides it from the dialog.
+      await rt.ledger.written(book).catch(() => {})
+    } else if (recordExchange && EXCHANGE_ROLES.has(role) && !deferred && !resumed && !retried) {
+      // A message no Bot of the team sent keeps the record it had before the ledger.
+      // Recorded once the message is in the Session: an earlier record would show
+      // a failed delivery as delivered. The whole text is in its file, or in the
+      // Session it goes to; exchangeText reads it back there. Resends keep any
+      // existing record; only a merged request replaces it with its added text.
       const kept = headOf(text, TEXT_KEPT)
       const whole = length !== undefined ? { length, files } : kept.length < text.length ? { length: text.length, sessionId: targetSessionId } : {}
       const entry = { id: exchangeId, from: fromId, to: toId, text: kept, ...whole, role, time: Date.now(), ...(replyTo ? { replyTo } : {}), ...(audience === 'user' ? { audience } : {}) }
       const earlier = state.exchanges.findIndex(other => other.id === exchangeId)
       if (earlier === -1) state.exchanges.push(entry)
       else if (merged) state.exchanges[earlier] = entry
-      void rt.save({ immediate: true }).catch(() => {})
-    }
-    // The book holds the text already; its mark says the message went out. A mark
-    // that is lost only hides it from the dialog.
-    const markDelivered = async () => {
-      rt.ledger.append(book, { event: 'delivered', id: exchangeId, sessionId: targetSessionId, time: Date.now() })
-      await rt.ledger.written(book).catch(() => {})
-    }
-    const visible = classify(role) === 'visible' && typeof agent.session?.append === 'function'
-    if (visible) {
-      // The chat projector renders user sources verbatim; relay sources show only an
-      // exchange link. Keep the relay metadata on the wake that owns the next turn.
-      agent.session.append('user/message', { ...message, source: { ...source, kind: 'user' } }, { surfaceOp: 'append' })
-      await ctx.sessions.flush(agent.session)
-    }
-    const send = async () => {
-      if (visible) {
-        // The content is already in model history. An empty, deferred relay wakes the
-        // agent without rendering or admitting that content a second time. Never wait
-        // for the sender's active turn here: it may itself be awaiting this delivery.
-        const wake = createUserMessage({ content: [], source: { ...source, deferred: true } })
-        const previous = visibleTurns.get(agent) ?? Promise.resolve()
-        const pending = previous.catch(() => {}).then(async () => {
-          await agent.whenIdle()
-          if (disposed) return
-          agent.followup(wake)
-          await agent.whenIdle()
-          await ctx.sessions.flush(agent.session)
-        })
-        visibleTurns.set(agent, pending)
-        void pending.catch(error => rt.warn('ds-bot: visible delivery turn failed: %s', error)).finally(() => {
-          if (visibleTurns.get(agent) === pending) visibleTurns.delete(agent)
-        })
-      } else if (steer) agent.steer(message)
-      else agent.followup(message)
-      await ctx.sessions.flush(agent.session)
-      if (book !== undefined) await markDelivered()
-      else recordExchangeEntry()
-    }
-    // Steering bypasses the serial gate; visible input still waits for its own turn.
-    if (steer) {
-      await send()
-      return exchangeId
-    }
-    // Visible input is already on the timeline; the serial gate orders its wake
-    // behind the Bot's current turn (thread-model §4.5).
-    const run = async () => {
-      await send()
-    }
-    if (typeof rt.sendThreadTurn === 'function') {
-      // The Session decides the Bot; a group's own Session has no Bot and stays ungated.
-      const full = rt.bySessionIdFull?.(targetSessionId)
-      const bot = full === undefined ? (targetSessionId === rt.chatOf(toId) ? to : undefined) : undefined
-      const threadId = full?.threadId ?? (bot === undefined ? undefined : rt.mainThreadOf?.(bot.id)?.id)
-      await rt.sendThreadTurn({ botId: full?.botId ?? bot?.id, threadId, sessionId: targetSessionId, kind: 'dispatch', preview: text, run })
-    } else {
-      await run()
+      void rt.save().catch(() => {})
     }
     return exchangeId
   }
@@ -286,8 +251,8 @@ export function install(rt) {
     }
   }
 
-  // The text of a stored file, up to what the dialogs show.
-  async function fileText(file) {
+  // The text of a stored file, limited to what the dialogs show by default.
+  async function fileText(file, maxLength = TEXT_SHOW_MAX) {
     const attachments = ctx.get?.('attachments')
     if (attachments === undefined) return undefined
     const decoder = new TextDecoder()
@@ -295,7 +260,7 @@ export function install(rt) {
     try {
       for await (const chunk of attachments.readFileStream(file, AbortSignal.timeout(HISTORY_TIMEOUT_MS))) {
         text += decoder.decode(chunk, { stream: true })
-        if (text.length > TEXT_SHOW_MAX) return { text: headOf(text, TEXT_SHOW_MAX), whole: false }
+        if (text.length > maxLength) return { text: headOf(text, maxLength), whole: false }
       }
     } catch (error) {
       rt.warn('ds-bot: file %s not read: %s', file?.name, error)
@@ -305,51 +270,6 @@ export function install(rt) {
     return { text, whole: true }
   }
 
-
-  // ── Worker Bot reply helpers (Subtask B) ──────────────────────────────────
-  // deliverHandoff: formats a remote_handoff result as a Bot reply and delivers it.
-  // deliverProgress: sends a live progress note as an intermediate message.
-
-  rt.deliverHandoff = async function deliverHandoff(sessionId, { exchangeId, fromId, toId, work, handoffResult }) {
-    try {
-      let text
-      if (handoffResult?.isError) {
-        text = `[远程任务失败: ${handoffResult.value ?? 'unknown error'}]`
-      } else {
-        const h = handoffResult?.value
-        const status = h?.status ?? '已结束'
-        const exit = typeof h?.exit?.code === 'number' ? ` (exit ${h.exit.code})` : ''
-        const summary = typeof h?.summary?.text === 'string' && h.summary.text.trim() !== ''
-          ? `\n\n${h.summary.text.trim()}`
-          : ''
-        text = `[任务 ${status}${exit}]${summary}`
-      }
-      const long = await rt.attachLong?.(text, 'handoff.txt')
-      void rt.deliver?.({
-        fromId, toId,
-        text: long?.text ?? text,
-        ...(long?.files?.length ? { files: long.files, length: long.length } : {}),
-        role: 'reply',
-        replyTo: exchangeId,
-        ...(work ? { work } : {}),
-      }).catch(err => rt.warn('ds-bot: deliverHandoff failed: %s', err))
-    } catch (err) {
-      rt.warn('ds-bot: deliverHandoff error: %s', err)
-    }
-  }
-
-  rt.deliverProgress = async function deliverProgress(sessionId, { fromId, toId, text }) {
-    try {
-      if (!text || !fromId || !toId) return
-      void rt.deliver?.({
-        fromId, toId,
-        text: `[进度] ${text}`,
-        role: 'reply',
-      }).catch(err => rt.warn('ds-bot: deliverProgress failed: %s', err))
-    } catch (err) {
-      rt.warn('ds-bot: deliverProgress error: %s', err)
-    }
-  }
   const exchangesOf = (a, b) => pairMessages(a, b).map((record) => {
     const kept = headOf(record.text ?? '', TEXT_KEPT)
     const { delivered: _delivered, ...rest } = record
@@ -363,5 +283,5 @@ export function install(rt) {
     return { ...record, ledger: true }
   }
 
-  Object.assign(rt, { resolveAgent, deliver, exchangeText, attachLong, fileText, exchangesOf, exchangeOf })
+  Object.assign(rt, { resolveAgent, deliver, exchangeText, attachLong, fileText, exchangesOf, exchangeOf, deliveredReplyOf, wasReplyDelivered, deliveredFailuresOf, wasFailureRequestDelivered })
 }

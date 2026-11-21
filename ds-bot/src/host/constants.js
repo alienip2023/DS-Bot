@@ -132,3 +132,8 @@ export const DELEGATE_TIMEOUT_MS = 30 * 60 * 1_000   // 30 minutes
 // 一个 Bot 的记忆后端可选项。'auto' 是默认值：这台机器装了 dsh-mneme 就用它，
 // 没装就用 ds-bot 自己的文件记忆。别的值一律不算后端。
 export const MEMORY_BACKENDS = ['auto', 'mneme', 'file', 'federation', 'none']
+
+// Added by upstream v0.3.9: background-job settings.
+export const BACKGROUND_WAIT_MS = 5_000
+export const BACKGROUND_AFTER_MAX_SEC = 600
+export const HISTORY_SCAN_PAGES = 10

@@ -6,21 +6,16 @@ import { randomUUID } from 'node:crypto'
 import { carrierKeyOf } from '@deepseek-ai/dsh-scope'
 import { HANDOFF_ACK, LATE_ANSWER, MESSAGE_INLINE_MAX, REFERENCE_KIND, REPLY_KIND, SOURCE_KIND, STEER_CUT } from './constants.js'
 import { cleanText } from './diagnostics.js'
-import { wrapControllerMethod } from './controller-wrap.js'
-import { joinedShadow } from './roster-join.js'
 import { absoluteLinks } from './links.js'
 import { splitRef, textOf } from './text.js'
-import { threadCurrentOfPart } from './threads.js'
+import { sameConversation, threadCurrentOfPart } from './threads.js'
 import { viaOf } from '../shared/im-platforms.js'
 import { reminderText } from './schedules.js'
-import { remoteError } from './joined-prompt.js'
 import { usageChunk } from './usage.js'
-import { classifyLlmFailure, retryDecision, nextRequestAttempt } from './failure-policy.js'
-import { detectDeferral } from './deferral-guard.js'
 
 // Failures only the user can fix: a key, a sign-in, a balance. They block the Bot
 // until it is fixed (`bot.blocked`, for the repair card).
-export const BLOCKING_CODES = new Set(['MISSING_CREDENTIAL', 'INVALID_CREDENTIAL', 'AUTH', 'QUOTA', 'ACCOUNT_QUOTA', 'ACCOUNT_SIGN_IN_REQUIRED', 'ACCOUNT_SIGNED_OUT', 'ACCOUNT_TOKEN_INVALID', 'LOCAL_AGENT_MISSING', 'LOCAL_AGENT_SIGNIN', 'LOCAL_AGENT_QUOTA', 'LOCAL_AGENT_EXIT', 'E_BOT_MODEL_UNAVAILABLE', 'E_BOT_MODEL_NO_KEY', 'E_BOT_EFFORT_UNAVAILABLE'])
+export const BLOCKING_CODES = new Set(['MISSING_CREDENTIAL', 'INVALID_CREDENTIAL', 'AUTH', 'QUOTA', 'ACCOUNT_QUOTA', 'ACCOUNT_SIGN_IN_REQUIRED', 'ACCOUNT_SIGNED_OUT', 'ACCOUNT_TOKEN_INVALID', 'LOCAL_AGENT_MISSING', 'LOCAL_AGENT_SIGNIN', 'LOCAL_AGENT_QUOTA', 'LOCAL_AGENT_EXIT'])
 // The ones a key set outside a turn can fix, and the ones a sign-in can (unblockBots).
 // A balance only a turn that completes shows fixed, as Retry runs one.
 const KEY_CODES = new Set(['MISSING_CREDENTIAL', 'INVALID_CREDENTIAL', 'AUTH'])
@@ -43,9 +38,8 @@ export function turnFailure(error) {
   const rawCode = typeof error?.code === 'string' && error.code !== '' ? error.code : 'UNKNOWN'
   const raw = typeof error?.message === 'string' ? error.message.trim() : ''
   const contentPolicy = rawCode === 'AUTH' && error?.status === 403 && CONTENT_POLICY.test(raw)
-  const rateLimited = classifyLlmFailure(error).kind === 'rate_limit'
-  const code = rateLimited ? 'RATE_LIMIT' : contentPolicy ? 'CONTENT_POLICY' : rawCode
-  const message = (rawCode === 'AUTH' && !contentPolicy) || raw === '' ? '' : cleanText(raw).slice(0, 500)
+  const code = contentPolicy ? 'CONTENT_POLICY' : rawCode
+  const message = code === 'AUTH' || raw === '' ? '' : cleanText(raw).slice(0, 500)
   const requestId = typeof error?.requestId === 'string' && error.requestId !== '' ? error.requestId : requestIdOf(raw)
   return {
     code,
@@ -57,10 +51,60 @@ export function turnFailure(error) {
 
 export const failureLine = failure => `${failure.code}${failure.status ? ` ${failure.status}` : ''}${failure.message ? `: ${failure.message.slice(0, 200)}` : ''}`
 
+const MAX_REPLY_GUARDS = 1000
+const replyGuards = new WeakMap()
+
+const guardsOf = (rt) => {
+  let guards = replyGuards.get(rt)
+  if (guards === undefined) {
+    guards = { exchanges: new Set(), failureRequests: [], turnFailures: [] }
+    replyGuards.set(rt, guards)
+  }
+  return guards
+}
+
+const pushLimited = (list, item) => {
+  list.push(item)
+  if (list.length > MAX_REPLY_GUARDS) list.shift()
+}
+
+const removeItem = (list, item) => {
+  const at = list.indexOf(item)
+  if (at !== -1) list.splice(at, 1)
+}
+
+// The live parent work a child work hangs under, matching closeWork's lookup.
+const liveParentOf = (rt, exchangeId) => {
+  if (typeof exchangeId !== 'string' || exchangeId === '') return undefined
+  const works = rt.state?.works
+  const parent = works?.[exchangeId]?.parent
+  return parent !== undefined && parent !== exchangeId && works?.[parent] !== undefined ? parent : undefined
+}
+
+// Coalescing a second child's failure into an earlier delivery for the same parent work
+// is safe only while that earlier delivery is still pending in parent.open; once the
+// caller has already consumed it and parked the parent, suppressing this child would
+// leave the parent idle with no continuation.
+const parentCoveredBy = (rt, parentWork, primaryExchangeId) => {
+  if (parentWork === undefined) return true
+  if (typeof primaryExchangeId !== 'string' || primaryExchangeId === '') return false
+  return rt.state?.works?.[parentWork]?.open?.includes(primaryExchangeId) === true
+}
+
+function dropSuppressedWork(rt, exchangeId, name, text) {
+  if (typeof exchangeId !== 'string' || exchangeId === '') return
+  if (typeof rt.dropWork === 'function') {
+    rt.dropWork(exchangeId)
+    return
+  }
+  const parent = rt.closeWork?.(exchangeId, name, text)
+  if (parent !== undefined) rt.takenWork?.(parent, exchangeId)
+}
+
 // The reply a sender waits for, sent the way a finished turn sends it: the work it was
 // for closes, and the answer goes up to the Bot that asked. `id` is the Session the
 // answer comes from; `source` is the trigger the turn answered.
-export function answerSender(rt, id, source, text, long) {
+export function answerSender(rt, id, source, text, long, options = {}) {
   const back = rt.roomOf(source.senderRoomId)?.sessions?.[source.senderSessionId]
   // The asking Bot may have written from a background part of its own chat: its reply
   // goes back to that part's thread, not to the part the user is reading. When the part
@@ -68,8 +112,55 @@ export function answerSender(rt, id, source, text, long) {
   const asker = source.senderPart === undefined ? undefined : rt.botOf(source.senderSessionId)
   const part = back === undefined && asker !== undefined ? threadCurrentOfPart(asker, source.senderPart) : undefined
   const target = back ?? part
-  const name = rt.botOf(rt.selfOf(id))?.name ?? 'The other Bot'
+  const fromId = rt.selfOf(id)
+  const toId = source.senderSessionId
+  const targetSessionId = target ?? rt.chatOf?.(toId) ?? toId
+  const name = rt.botOf(fromId)?.name ?? 'The other Bot'
+  const guards = guardsOf(rt)
+  const exchangeKey = typeof source.exchangeId === 'string' && source.exchangeId !== ''
+    ? `${fromId ?? ''}\0${toId ?? ''}\0${source.exchangeId}`
+    : undefined
+  const deliveredReply = rt.deliveredReplyOf?.(fromId, toId, source.exchangeId)
+  const alreadySent = deliveredReply !== undefined
+    || (rt.deliveredReplyOf === undefined && rt.wasReplyDelivered?.(fromId, toId, source.exchangeId) === true)
+  if ((exchangeKey !== undefined && guards.exchanges.has(exchangeKey)) || alreadySent) {
+    if (typeof source.exchangeId === 'string' && source.exchangeId !== '') {
+      rt.closeWork?.(source.exchangeId, name, deliveredReply?.text || text)
+    }
+    return false
+  }
+  const failureRequestId = typeof options?.failure?.requestId === 'string' && options.failure.requestId !== ''
+    ? options.failure.requestId
+    : undefined
+  const dedupKey = typeof options?.dedupKey === 'string' && options.dedupKey !== '' ? options.dedupKey : undefined
+  const ownParent = liveParentOf(rt, source.exchangeId)
+  const matchSameScope = entry => entry.fromId === fromId && entry.toId === toId
+    && entry.work === ownParent
+    && sameConversation(rt.state, toId, entry.targetSessionId, targetSessionId)
+    && parentCoveredBy(rt, ownParent, entry.exchangeId)
+  const matchedReq = failureRequestId === undefined ? undefined
+    : guards.failureRequests.findLast(entry => entry.requestId === failureRequestId && matchSameScope(entry))
+  const matchedTurn = dedupKey === undefined ? undefined
+    : guards.turnFailures.findLast(entry => entry.dedupKey === dedupKey && matchSameScope(entry))
+  const matchedInMemory = matchedReq !== undefined || matchedTurn !== undefined
+  const matchedLedger = matchedInMemory || failureRequestId === undefined ? undefined
+    : (rt.deliveredFailuresOf?.(fromId, toId, failureRequestId, targetSessionId, ownParent) ?? [])
+        .findLast(entry => parentCoveredBy(rt, ownParent, entry.replyTo))
+  if (matchedInMemory || matchedLedger !== undefined) {
+    dropSuppressedWork(rt, source.exchangeId, name, text)
+    return false
+  }
   const work = rt.closeWork?.(source.exchangeId, name, text)
+  if (exchangeKey !== undefined) {
+    guards.exchanges.add(exchangeKey)
+    if (guards.exchanges.size > MAX_REPLY_GUARDS) guards.exchanges.delete(guards.exchanges.values().next().value)
+  }
+  const failureEntry = failureRequestId === undefined ? undefined
+    : { fromId, toId, targetSessionId, requestId: failureRequestId, work, exchangeId: source.exchangeId }
+  if (failureEntry !== undefined) pushLimited(guards.failureRequests, failureEntry)
+  const turnEntry = dedupKey === undefined ? undefined
+    : { fromId, toId, targetSessionId, dedupKey, work, exchangeId: source.exchangeId }
+  if (turnEntry !== undefined) pushLimited(guards.turnFailures, turnEntry)
   // A reply that arrives after the user gave up the wait is a late answer: it closes
   // nothing, opens nothing, and says on it that the wait was already over.
   const late = work === undefined ? rt.abandonedWork?.(source.exchangeId) : undefined
@@ -78,8 +169,8 @@ export function answerSender(rt, id, source, text, long) {
   const length = long === undefined ? undefined : late === undefined ? long.length : (long.length ?? text.length) + marker.length
   const exchangeId = randomUUID()
   void rt.deliver({
-    fromId: rt.selfOf(id),
-    toId: source.senderSessionId,
+    fromId,
+    toId,
     ...(target ? { sessionId: target } : {}),
     text: body,
     ...(length === undefined ? {} : { files: long.files, length }),
@@ -87,6 +178,7 @@ export function answerSender(rt, id, source, text, long) {
     replyTo: source.exchangeId,
     exchangeId,
     ...(work ? { work } : {}),
+    ...(failureRequestId === undefined ? {} : { failureRequestId }),
   }).catch((error) => {
     rt.warn('ds-bot: reply delivery failed: %s', error)
     // The reply never reached the asker: its note goes — the notice below carries
@@ -97,16 +189,23 @@ export function answerSender(rt, id, source, text, long) {
     rt.answerMissed?.(source.exchangeId)
     const said = `${name} could not send its reply to you (${failureLine(turnFailure(error))}); what it had answered:\n`
     void rt.deliver({
-      fromId: rt.selfOf(id),
-      toId: source.senderSessionId,
+      fromId,
+      toId,
       ...(target ? { sessionId: target } : {}),
       text: `${said}${long?.text ?? text}`,
       ...(long?.length === undefined ? {} : { files: long.files, length: said.length + long.length }),
       role: 'reply',
       replyTo: source.exchangeId,
       ...(work ? { work } : {}),
-    }).catch(again => rt.warn('ds-bot: reply failure notice not delivered: %s', again))
+      ...(failureRequestId === undefined ? {} : { failureRequestId }),
+    }).catch((again) => {
+      rt.warn('ds-bot: reply failure notice not delivered: %s', again)
+      if (exchangeKey !== undefined) guards.exchanges.delete(exchangeKey)
+      if (failureEntry !== undefined) removeItem(guards.failureRequests, failureEntry)
+      if (turnEntry !== undefined) removeItem(guards.turnFailures, turnEntry)
+    })
   })
+  return true
 }
 
 // A group's own Session never reaches a model, so the snapshot DSH prepared there
@@ -199,74 +298,6 @@ export function prematureCutOff(usage, route) {
 const PROMISED_WORK = /(?:^(?:收到|好的|明白|好|行|没问题|了解)[，,、。.!！：\s]*(?:我(?:现在|这就|先|马上|立刻|去|来)?(?:开始|着手|去|来|准备)?(?:排查|检查|调查|查看|看看|搜索|搜一下|分析|处理|执行|运行|跑一下|修改|修复|实现|编写|整理|验证|测试|读一下|翻一下)(?!过了|过(?:[，,。.!！、；;\s]|$)|完了|完毕|好了)|(?:现在|马上|立刻)?(?:开始|着手)(?:执行|处理|排查|检查|调查|干活|开工)(?!过了|过(?:[，,。.!！、；;\s]|$)|完了|完毕|好了)|开工(?:[。！!，,\s]|$))|^(?:开工(?:[。！!，,\s]|$)|我(?:现在|这就|先|马上|立刻)(?:开始|着手|去)(?:排查|检查|调查|查看|搜索|分析|处理|执行|运行|修改|修复|实现|编写|整理|验证|测试)(?!过了|过(?:[，,。.!！、；;\s]|$)|完了|完毕|好了))|\b(?:(?:i\s+will|i'll|let\s+me|going\s+to)\s+(?:start|begin|check|look\s+into|investigate|search|run|inspect|read|fix|implement|work\s+on)\b|(?:starting|beginning)\s+(?:the\s+)?(?:investigation|check|search|work|execution|analysis)\b|^on\s+it[,.\s!]+(?:i'll|i\s+will|let\s+me|starting|checking)\b))/i
 export const promisesWork = text => typeof text === 'string' && text.trim().length <= 240 && PROMISED_WORK.test(text.trim())
 
-/**
- * DSH's prompt admission wraps any unexpected failure as 'session/agent-busy' and keeps the real
- * cause in details.reason, which the window never shows and the log never saw (#424). For a
- * Session this team owns, the reason is written to the diagnostics and put into the error the
- * user reads. Exported so the install/dispose can be run on a real cordis context in tests.
- */
-// A Bot the main manages runs on the model and the thinking level the main chose. A
-// Session can still hold a ref the main no longer serves — the catalog changed while the
-// node was offline, or the provider lost its key — and DSH would then answer NO_ADAPTER or
-// the local key card, which says nothing about the main. Every prompt of such a Bot is
-// checked first, so private chats, Threads and group Sessions all refuse before a model
-// call and the turn reports the code the repair card is for.
-// The main chose a thinking level this machine's model does not serve. DSH would run the
-// turn at the model's default level without saying so, so the prompt is refused here
-// instead: the composer shows the message and keeps the draft. A model or a key the main
-// chose is not refused here -- that failure has to come from a turn, where the repair card
-// can show it (see managedFailure below).
-async function refuseManagedEffort(rt, sessionId) {
-  if (typeof sessionId !== 'string' || sessionId === '') return
-  let bot
-  try {
-    const self = typeof rt.selfOf === 'function' ? rt.selfOf(sessionId) : sessionId
-    bot = rt.botOf?.(self ?? sessionId)
-  } catch { return }
-  if (bot === undefined || bot.managedBy !== 'hub' || bot.origin === 'joined') return
-  if (bot.effort === undefined || bot.effort === null) return
-  let ref
-  try { ref = await rt.desiredModel?.(bot) } catch { return }
-  if (ref === undefined) return
-  let supported = true
-  try { await rt.desiredEffort?.(bot, ref) } catch { supported = false }
-  if (supported) return
-  throw await remoteError('E_BOT_EFFORT_UNAVAILABLE', `The thinking level ${bot.effort} is not available for ${ref} on this machine. Change it on the main.`, { reason: 'MANAGED_EFFORT_UNAVAILABLE' })
-}
-
-export function installPromptReasons(rt, placeOf) {
-  const { ctx } = rt
-  wrapControllerMethod(ctx, ctx.sessionController, 'prompt', prompt => async function (request, ...rest) {
-    await refuseManagedEffort(rt, request?.sessionId)
-    try {
-      return await prompt.call(this, request, ...rest)
-    } catch (error) {
-      const id = request?.sessionId
-      if (id === undefined || (rt.roomOf(id) === undefined && !rt.isBotSession(id))) throw error
-      // The reason can name local paths or carry tokens, so the same cleaning the
-      // diagnostics get applies before it reaches the client.
-      const reason = typeof error?.details?.reason === 'string' && error.details.reason !== ''
-        ? cleanText(error.details.reason, { redact: rt.redactSecrets })
-        : undefined
-      rt.noteFailure({
-        source: 'prompt',
-        text: `prompt rejected for ${placeOf(id)}${reason === undefined ? '' : `: ${reason}`}`,
-        code: error?.code,
-        where: placeOf(id),
-        sessionId: id,
-      })
-      // The gateway passes a RemoteError's code and details on as they are, but
-      // wraps a fresh plain Error as 'gateway/internal': the reason is written on
-      // the rejection itself, keeping its identity.
-      if (reason !== undefined) {
-        error.message = `${error?.message ?? 'prompt rejected'} — ${reason}`
-        error.details = { ...error.details, reason }
-      }
-      throw error
-    }
-  }, 'ds-bot: prompt rejection reasons')
-}
-
 export function install(rt) {
   const { ctx, state } = rt
 
@@ -293,10 +324,6 @@ export function install(rt) {
   }
   const retryWrittenCall = (id, info) => retryTurn(id, info, 'your tool call did not run', RETRY_TEXT)
   const retryPromisedWork = (id, info) => retryTurn(id, info, 'you stopped before calling any tool', RETRY_PROMISE_TEXT)
-
-  // Per-session sliding-window failure counts for retryDecision (P3).
-  // Keys are session ids (the `id` parameter, which is a sessionId in this file).
-  const attemptStore = new Map()
 
   /** @type {Map<string, {turn?:number, pending?:any, pendingText?:string, info?:any, texts:string[], opened?:boolean, joined?:{info:any, from:number}[]}>} */
   const live = new Map()
@@ -442,15 +469,30 @@ export function install(rt) {
         continue
       }
       if (typeof sessionId !== 'string' || !known(sessionId)) continue
-      // A joined Bot's mirror Session has no turn of this machine: its page turn lives in the page-turn tracker,
-      // and an Agent reported running on it is not work to adopt (it would show the shadow as working for good).
-      if (joinedShadow(rt.botOf(rt.selfOf(sessionId) ?? sessionId))) continue
       const entry = liveOf(sessionId)
       if (entry.turn !== undefined) continue
       entry.turn = RECOVERED_TURN
       // Its input was consumed before the reload; a later request joins this turn.
       entry.opened = true
       entry.since ??= Date.now()
+      // Restore routing info for an adopted `bot-handoff` task so its completion
+      // still delivers the real reply (including async `attachLong` for >20k outputs).
+      const adoptedTask = rt.taskBySession?.(sessionId)?.task
+      if (adoptedTask?.origin === 'bot-handoff' && adoptedTask.exchangeId !== undefined && rt.ownsWork?.(rt.selfOf(sessionId), adoptedTask.exchangeId)) {
+        const asker = rt.workAsker?.(adoptedTask.exchangeId)
+        if (asker !== undefined) {
+          entry.info = asker
+          if (entry.texts.length === 0 && typeof agent.session?.snapshotEvents === 'function') {
+            const events = agent.session.snapshotEvents()
+            const startAt = events.findLastIndex(ev => ev?.type === 'turn/start')
+            for (const ev of events.slice(startAt + 1)) {
+              if (ev?.type !== 'assistant/message') continue
+              const said = textOf(ev.data?.message?.content).trim()
+              if (said !== '' && said !== HANDOFF_ACK) entry.texts.push(absoluteLinks(said, rt.sessionFolder?.(agent.session)))
+            }
+          }
+        }
+      }
       setActivity(sessionId, 'thinking')
     }
   }
@@ -461,6 +503,10 @@ export function install(rt) {
   async function stopRoomTurn(sessionId, exchangeId) {
     rememberStopped(stoppedRoomTurns, exchangeId)
     await stopSubagents(sessionId)
+    const groupOwner = rt.groupOwners.get(sessionId)
+    if (groupOwner !== undefined) {
+      await rt.stopMemberRoomTasks?.(groupOwner.roomId, groupOwner.botId, 'group round stopped')
+    }
     const agent = await rt.resolveAgent(sessionId).catch(() => undefined)
     if (agent === undefined) return
     const entry = live.get(sessionId)
@@ -473,12 +519,30 @@ export function install(rt) {
     }
   }
 
+  // Per DSH Agent, the turn one of its Sessions is running, for the phone.
+  const agentWorkView = () => {
+    const agents = {}
+    for (const [id, entry] of live) {
+      const agent = entry.turn === undefined ? undefined : rt.agentOf?.(id)
+      if (agent !== undefined) agents[agent.id] = { since: entry.since, ...doingOf(entry) }
+    }
+    return agents
+  }
+
+  // The phone's Stop for a DSH Agent: end the running turn of each of its Sessions.
+  async function stopAgent(agentId) {
+    await rt.load()
+    const running = (rt.agentById?.(agentId)?.sessions ?? []).filter(id => live.get(id)?.turn !== undefined)
+    for (const sessionId of running) {
+      const agent = await rt.resolveAgent(sessionId).catch(() => undefined)
+      agent?.cancel?.({ kind: 'user' })
+    }
+    return running.length > 0
+  }
+
   // The phone's Stop for a Bot's own-chat turn: the same cancel the group's
   // member stop uses — end the running turn and any subagents it spawned.
   async function stopChat(botId) {
-    // A joined Bot's page turn is a wait for the node, not a local Agent turn: Stop ends the wait
-    // (joined-prompt.js; false when this Bot has no page turn in flight).
-    if (rt.stopJoinedTurn?.(botId) === true) return true
     await rt.load()
     const sessionId = rt.chatOf(botId)
     if (sessionId === undefined) return false
@@ -575,7 +639,8 @@ export function install(rt) {
   // reply in its Session there while it is still a member. A sender that asked for it
   // while working on another Bot's request goes on with that work when it reads it.
   // `long`: the text as attachLong sends it, when it went as a file.
-  const tellSender = (id, source, text, long) => answerSender(rt, id, source, text, long)
+  let turnEndSeq = 0
+  const tellSender = (id, source, text, long, options) => answerSender(rt, id, source, text, long, options)
 
   // Runs before a deleted Bot leaves the team. Its Sessions stop with it, and the
   // turn/end that follows is no longer the team's, so their activity and turn records go
@@ -614,16 +679,20 @@ export function install(rt) {
       entry.joined = info.joined.filter(item => item?.info !== undefined && item.info !== null)
     }
     if (rt.groupOwners.has(sessionId)) return
-    if ((expectsReply(info) && !answersUser(info)) || info.role === 'room' || (info.role === 'handoff' && info.resume !== true)) {
+    const work = rt.workOf?.(info)
+    const internalWork = !answersUser(info) && rt.ownsWork?.(rt.selfOf(sessionId), work)
+      && rt.workAsker(work)?.senderSessionId !== undefined
+    if (internalWork || (expectsReply(info) && !answersUser(info)) || info.role === 'room' || (info.role === 'handoff' && info.resume !== true)) {
       markExchangeTurn(sessionId, entry.turn)
     }
   }
 
   // Activity is tracked per Session; a Bot's mascot shows its own chat's, else a group's.
+  // Background tasks keep their own status in bot.tasks and never overwrite the foreground mascot.
   const activityView = () => {
     const merged = {}
     for (const [id, value] of Object.entries(activity)) {
-      if (!rt.groupOwners.has(id)) merged[rt.chatOwners.get(id) ?? id] = value
+      if (!rt.groupOwners.has(id) && !rt.taskOwners?.has(id)) merged[rt.chatOwners.get(id) ?? id] = value
     }
     for (const [id, value] of Object.entries(activity)) {
       const owner = rt.groupOwners.get(id)
@@ -670,7 +739,7 @@ export function install(rt) {
   const workView = () => {
     const bots = {}
     for (const [id, entry] of live) {
-      if (entry.turn === undefined) continue
+      if (entry.turn === undefined || rt.taskOwners?.has(id)) continue
       const owner = rt.groupOwners.get(id)
       const botId = owner?.botId ?? rt.chatOwners.get(id)
       if (botId === undefined || (owner !== undefined && bots[botId] !== undefined)) continue
@@ -725,6 +794,9 @@ export function install(rt) {
       const sub = owner !== undefined ? subagentDoingOf(id) : undefined
       if (sub !== undefined) add(owner.roomId, owner.botId, sub)
     }
+    for (const item of rt.activeRoomTasks?.() ?? []) {
+      add(item.roomId, item.botId, { since: item.task.startedAt, tool: 'task', ...(item.task.title ? { note: item.task.title.slice(0, 120) } : {}) })
+    }
     for (const job of rt.switchJobs()) {
       // `self`: the group's own Session moves; the group's activity row names it.
       if (job.roomId !== undefined) add(job.roomId, job.botId, { since: job.since, switching: true, ...(job.folder === true ? { folder: true } : {}), ...(job.botId === undefined ? { self: true } : {}) })
@@ -745,28 +817,9 @@ export function install(rt) {
 
   // Where a Session speaks, for the diagnostics log.
   const placeOf = (id) => {
-    const room = rt.roomOf(rt.groupOwners.get(id)?.roomId) ?? rt.roomOf(id)
+    const room = rt.roomOf(rt.groupOwners.get(id)?.roomId ?? rt.taskOwners?.get(id)?.roomId) ?? rt.roomOf(id)
     return room ? `group "${room.name}"` : 'own chat'
   }
-  // DSH names the route that failed; the repair card of a Bot the main manages speaks the
-  // main's codes. Such a Bot runs here on the model and the key the main chose, so a route
-  // failure is that choice's own outcome and the code alone decides the card. Reading the
-  // catalog here would also fail the first turn after a start, when nothing is listed yet;
-  // it is never listed and never waited for. A local Bot, a local agent route and a failure
-  // already coded E_BOT_MODEL_NO_KEY keep what DSH raised. HOSTED_ENGINE_ROUTE means the
-  // route is not a model endpoint at all: the main's model cannot run there either, so the
-  // card speaks the same code — while the route marking below still reads the raw code.
-  const MANAGED_ROUTE_CODES = new Map([['NO_ADAPTER', 'E_BOT_MODEL_UNAVAILABLE'], ['MISSING_CREDENTIAL', 'E_BOT_MODEL_NO_KEY'], ['HOSTED_ENGINE_ROUTE', 'E_BOT_MODEL_UNAVAILABLE']])
-  const managedFailure = (id, failure) => {
-    if (failure === undefined) return failure
-    const code = MANAGED_ROUTE_CODES.get(failure.code)
-    if (code === undefined) return failure
-    const bot = rt.botOf(rt.selfOf(id))
-    if (bot === undefined || bot.managedBy !== 'hub' || bot.origin === 'joined') return failure
-    if (rt.isLocalAgentRef?.(bot.model) === true) return failure
-    return { ...failure, code }
-  }
-
   const noteTurnFailure = (id, failure) => {
     rt.noteFailure({
       source: 'turn',
@@ -932,6 +985,12 @@ export function install(rt) {
     const id = session?.id
     if (id === undefined) return
     const switchedEnd = event.type === 'turn/end' && live.get(id)?.switched === true && rt.pastOwners?.has(id)
+    // A DSH Agent's plain Session is only watched for its running turn, for the phone's Stop.
+    if (rt.agentOf?.(id) !== undefined && !rt.isBotSession(id)) {
+      if (event.type === 'turn/start') Object.assign(liveOf(id), { turn: event.data?.turn, since: event.time ?? Date.now() })
+      else if (event.type === 'turn/end' && live.delete(id)) setActivity(id, undefined)
+      return
+    }
     if (!rt.isBotSession(id) && !rt.roomOf(id) && !switchedEnd) {
       // A deleted Bot's Session can still be ending its turn; nothing of it stays.
       if (live.delete(id)) setActivity(id, undefined)
@@ -977,12 +1036,13 @@ export function install(rt) {
         entry.shown = 0
         entry.step = undefined
         entry.info = undefined
-        entry.userRpcId = undefined
         entry.toolCount = 0
         entry.usage = undefined
         entry.suppressedSubagent = false
         // A turn turned away before its first step may end without a turn/end.
         entry.switched = false
+        entry.lastSwitched = false
+        entry.retrying = false
         entry.answers = false
         entry.opened = false
         entry.joined = []
@@ -1022,6 +1082,9 @@ export function install(rt) {
         break
       case 'user/message': {
         const source = event.data?.source
+        // Pure context notice injected before the user's message on a newly forked foreground;
+        // must not open/claim the turn or pollute entry.info (so userAnswered stays intact).
+        if (source?.kind === SOURCE_KIND && source.role === 'task-handoff') break
         if (source?.kind === 'subagent-settled' || source?.kind === 'agent-message') {
           const childId = typeof source.senderSessionId === 'string' ? source.senderSessionId : undefined
           // Only settlement ends a child's turn; an intermediate `agent-message` keeps the
@@ -1045,10 +1108,6 @@ export function install(rt) {
           }
         } else if (source?.kind === 'user' || source?.kind === SOURCE_KIND) {
           stoppedSubagentParents.delete(id)
-        }
-        // Record rpcId for joined-turn settle: sendUser({requestId}) lands on source as rpcId.
-        if (source?.kind === 'user' && typeof source.rpcId === 'string' && source.rpcId !== '') {
-          entry.userRpcId = source.rpcId
         }
         // A result that came back counts as taken once a turn reads it.
         if (source?.kind === SOURCE_KIND && source.work !== undefined && source.replyTo !== undefined) rt.takenWork?.(source.work, source.replyTo)
@@ -1103,6 +1162,7 @@ export function install(rt) {
             ...(source.batch ? { batch: source.batch } : {}),
             ...(source.batchEnd ? { batchEnd: true } : {}),
             ...(source.fromRoomId ? { fromRoomId: source.fromRoomId } : {}),
+            ...(source.fromPart ? { fromPart: source.fromPart } : {}),
             // A post written into a running round already carries its log seq, or true
             // when its event needed none; the relay must not write it again.
             ...(source.logged !== undefined ? { logged: source.logged } : {}),
@@ -1173,7 +1233,7 @@ export function install(rt) {
             queueRoomMessage(rt.roomOf(id).id, { text: textOf(event.data.content), ...(images.length > 0 ? { images } : {}), ...(files.length > 0 ? { files } : {}), ...(viaOf(source) ? { via: viaOf(source) } : {}) })
           }
           const own = rt.chatOwners.get(id)
-          if (own !== undefined) rt.userWrote(own)
+          if (own !== undefined && !rt.taskOwners?.has(id)) rt.userWrote(own)
           // Any user message answers or supersedes the open question card and view card.
           let dropped = false
           if (state.questions[id] !== undefined) {
@@ -1251,6 +1311,7 @@ export function install(rt) {
         // turn is settled from the Session's log, is not one (resume.js does that).
         const watched = entry.turn !== undefined
         const turn = entry.turn
+        const since = entry.since
         entry.turn = undefined
         entry.info = undefined
         entry.texts = []
@@ -1259,6 +1320,7 @@ export function install(rt) {
         entry.toolCount = 0
         entry.suppressedSubagent = false
         entry.switched = false
+        entry.lastSwitched = switched
         entry.joined = []
         entry.since = undefined
         entry.steeredAt = undefined
@@ -1269,7 +1331,10 @@ export function install(rt) {
         entry.usage = undefined
         const later = entry.later ?? []
         entry.later = []
-        if (steerCut || suppressedSubagent) break
+        if (steerCut || suppressedSubagent) {
+          rt.dropRoomStepEcho?.(id)
+          break
+        }
         for (const result of later) {
           const targetSessionId = laterTarget(id)
           if (targetSessionId === undefined && (rt.groupOwners.has(id) || rt.pastOwners?.has(id))) continue
@@ -1284,27 +1349,28 @@ export function install(rt) {
             replyTo: result.info.replyTo,
             work: result.info.work,
             ...(result.info.roomId ? { roomId: result.info.roomId } : {}),
+            ...(result.info.taskId ? { taskId: result.info.taskId } : {}),
+            ...(result.info.imOrigin ? { imOrigin: result.info.imOrigin } : {}),
             deferred: true,
           }).catch(error => rt.warn('ds-bot: handing back a result failed: %s', error))
         }
         const reason = event.data?.reason
-        // Keep the code DSH raised before the card's mapping: a managed Bot maps
-        // HOSTED_ENGINE_ROUTE to E_BOT_MODEL_UNAVAILABLE, and deciding whether to mark the
-        // route from the mapped code would stop marking it — the next turn would then be a
-        // plain route failure again instead of the refusal it is.
-        const raw = reason?.kind === 'error' && !switched ? turnFailure(reason.error) : undefined
-        const failure = raw === undefined ? undefined : managedFailure(id, raw)
+        const failure = reason?.kind === 'error' && !switched ? turnFailure(reason.error) : undefined
         if (failure !== undefined) noteTurnFailure(id, failure)
         // A route that is not a model endpoint refuses every generation; the failed
         // Session's own request names it, so it is refused everywhere from now on.
-        if (raw?.code === 'HOSTED_ENGINE_ROUTE') {
+        if (failure?.code === 'HOSTED_ENGINE_ROUTE') {
           const config = session.requestHeader?.()?.config
           const ref = config?.provider && config?.model ? `${config.provider}/${config.model}` : undefined
           if (ref !== undefined) void rt.routeRefused(ref, rt.botOf(rt.selfOf(id))).catch(error => rt.warn('ds-bot: %s still failing: %s', ref, error))
         }
         const held = rt.groupOwners.has(id) ? rt.takeRoomSteps?.(id) ?? '' : ''
-        if (switched) break
+        if (switched) {
+          rt.dropRoomStepEcho?.(id)
+          break
+        }
         const owner = rt.chatOwners.get(id)
+        const groupOwner = rt.groupOwners.get(id)
         // A turn cut off at the output limit is not a finish: whoever reads its answer
         // is told, and the diagnostics record it. Nothing written at all, twice in a
         // row, is what a route over the window it really has leaves behind, and the
@@ -1319,39 +1385,16 @@ export function install(rt) {
         if (cutOff) noteCutOffTurn(id, { session, wroteNothing, ...(premature ? { outputTokens } : {}) })
         if (failure !== undefined) {
           if (watched) rememberFailure(id, turn, failure, session)
-          // P3: classify the failure and decide retry/fallback/stop deterministically.
-          // Skip retry/fallback for joined bot-to-bot requests: the join path sends
-          // its own failure notice directly, so a retry would double-deliver.
-          // Guard info !== undefined: turns without an info (background, goal-driven,
-          // scheduled wake) must not throw when checking expectsReply.
-          const isJoinedRequest = info !== undefined && expectsReply(info) && !answersUser(info)
-          const classified = classifyLlmFailure(failure)
-          const attemptCount = nextRequestAttempt(attemptStore, id)
-          const bot = rt.botOf(rt.selfOf(id))
-          const fallbacks = Array.isArray(bot?.fallbacks) ? bot.fallbacks : []
-          const decision = retryDecision(classified, { fallback: fallbacks, maxAttempts: 3 }, attemptCount)
-          if (!isJoinedRequest && decision.action === 'fallback' && decision.fallbackRef && bot) {
-            // Switch to fallback model for the next turn.
-            const prevModel = bot.model
-            bot.model = decision.fallbackRef
-            void rt.save().catch(() => {})
-            rt.warn?.('ds-bot: %s falling back to %s (%s)', bot.name, decision.fallbackRef, decision.reason)
-            // Trigger a retry turn on the fallback model.
-            void retryTurn(id, info, `the model call failed (${decision.reason}); retrying on ${decision.fallbackRef}`, 'model call failed').catch(error => rt.warn('ds-bot: fallback retry of %s failed: %s', id, error))
-          } else if (!isJoinedRequest && decision.action === 'retry' && info?.retried !== true) {
-            // Deterministic retry within the attempt budget.
-            void retryTurn(id, info, `the model call failed (${decision.reason}); please try again`, 'model call failed').catch(error => rt.warn('ds-bot: retry of %s failed: %s', id, error))
-          }
-          // decision.action === 'stop' → fall through to blockBot / normal failure handling
           if (blockBot(id, session, failure) && owner !== undefined && info?.role === 'kickoff') rt.holdKickoffAgain(owner)
-          // P3: notify any Bot waiting on this Bot's delegated work so it doesn't wait forever.
-          if (blockBot(id, session, failure)) rt.notifyBlockedDelegators?.(rt.selfOf(id), failure.code ?? failure.kind)
+          if (groupOwner !== undefined) rt.blockTasks?.(groupOwner.roomId, groupOwner.botId, { cause: 'failed', code: failure.code, ...(failure.status ? { status: failure.status } : {}) })
         } else if (reason?.kind === 'completed') {
           forgetFailure(id)
-          nextRequestAttempt(attemptStore, id, { success: true })
           unblockBot(rt.selfOf(id))
+          // A turn picked up after a restart that did not touch its tasks leaves them in doubt.
+          if (groupOwner !== undefined && info?.resumed === true) rt.blockTasks?.(groupOwner.roomId, groupOwner.botId, { cause: 'restarted' }, since)
+          else if (groupOwner !== undefined) rt.unblockTasks?.(groupOwner.roomId, groupOwner.botId)
           // A turn the user opened, or the Retry that answers the user.
-          if (owner !== undefined && (info === undefined || info.role === 'continue')) rt.userAnswered(owner)
+          if (owner !== undefined && !rt.taskOwners?.has(id) && (info === undefined || info.role === 'continue')) rt.userAnswered(owner)
         }
         // A model that writes its tool call as text ends the turn as if it were done,
         // though nothing ran. It gets one more turn on the same trigger, so a waiting
@@ -1360,8 +1403,9 @@ export function install(rt) {
         const wroteCall = failure === undefined && reason?.kind === 'completed' && lastCalled !== true && writesToolCall(lastText)
         const promisedOnly = !wroteCall && failure === undefined && reason?.kind === 'completed'
           && toolCount === 0 && lastCalled !== true && info?.role === 'room'
-          && promisesWork(lastText) && detectDeferral(lastText) === null && !rt.callsRoomMember?.(id, info, lastText)
+          && promisesWork(lastText) && !rt.callsRoomMember?.(id, info, lastText)
         const retry = (wroteCall || promisedOnly) && info?.retried !== true && !(info?.role === 'room' && stoppedRoomTurns.has(info.exchangeId))
+        entry.retrying = retry
         if (retry) {
           if (promisedOnly) {
             const opening = stripWrittenCalls(lastText ?? '')
@@ -1381,19 +1425,29 @@ export function install(rt) {
           if (cutOff) return reply === '' && wroteText ? CUT_OFF_NOTE : cutOffText(reply)
           return reply
         }
-        const groupReply = () => rt.withRoomSteps?.(held, replyText()) ?? replyText()
+        let echoed = false
+        const groupReply = () => {
+          echoed = true
+          return rt.withRoomSteps?.(id, held, replyText()) ?? replyText()
+        }
         // Whoever the turn answers gets the same three-way rule: a failure notice,
         // the turn's text (or a stopped-before-answer line), or nothing.
         const name = rt.botOf(rt.selfOf(id))?.name ?? 'The other Bot'
+        const turnEndToken = ++turnEndSeq
+        const turnDedupKey = failure !== undefined
+          ? `${turnEndToken}:error:${failure.requestId ?? failure.code}`
+          : reason?.kind === 'aborted'
+            ? `${turnEndToken}:aborted`
+            : undefined
         const answer = (source, reply) => {
           if (!expectsReply(source) || answersUser(source)) return
           if (failure !== undefined) {
             // The sender was told a reply comes later; without this it would wait forever.
-            tellSender(id, source, `${name} could not answer your message: its model call failed (${failureLine(failure)}). Tell the user if it matters; do not retry right away.`)
+            tellSender(id, source, `${name} could not answer your message: its model call failed (${failureLine(failure)}). Tell the user if it matters; do not retry right away.`, undefined, { failure, dedupKey: turnDedupKey })
           } else if (reply !== '' || reason?.kind === 'aborted') {
             // A turn stopped before it could answer still owes the sender a line,
             // or it would wait forever for a reply that never comes.
-            tellSender(id, source, reply !== '' ? reply : `${name} was stopped before it could answer your message.`)
+            tellSender(id, source, reply !== '' ? reply : `${name} was stopped before it could answer your message.`, undefined, reply === '' && turnDedupKey !== undefined ? { dedupKey: turnDedupKey } : undefined)
           }
         }
         // Work a Bot asked for, also when what came back for it opens the turn: while
@@ -1431,17 +1485,8 @@ export function install(rt) {
           const inRound = failure !== undefined && info === undefined && rt.failRoomTurn?.(id, failure) === true
           if (failure !== undefined) { if (!inRound) void rt.lateRoomFailure?.(id, info ?? {}, failure) }
           else if (reason?.kind !== 'aborted') void rt.lateRoomReply?.(id, info ?? {}, groupReply(), { shown, toolCount })
-        } else if (!retry && (info !== undefined || entry.userRpcId !== undefined)) {
-          // Try to settle a joined-turn waiter (bot/turn from a remote hub).
-          // sendUser({requestId}) lands as source.rpcId; deliver({exchangeId}) lands as source.exchangeId.
-          // When user/message arrives after turn/start (prompt mode:'queue'), entry.info is
-          // undefined but entry.userRpcId was recorded from source.rpcId.
-          const joinInfo = info ?? (entry.userRpcId ? { rpcId: entry.userRpcId } : undefined)
-          const reply = failure !== undefined
-            ? `${name} could not answer your message: its model call failed (${failureLine(failure)}).`
-            : replyText()
-          const settled = settleJoinForTurn(rt, joinInfo, reply, failure)
-          if (!settled && info !== undefined) finish(info, replyText())
+        } else if (!retry && info !== undefined) {
+          finish(info, replyText())
         }
         for (const request of joined) {
           if (request.info.role === 'room' && stoppedRoomTurns.delete(request.info.exchangeId)) continue
@@ -1466,6 +1511,8 @@ export function install(rt) {
             deferred: true,
           }).catch(error => rt.warn('ds-bot: deferred request delivery failed: %s', error))
         }
+        // A retry keeps the line it just showed, so its own final can still fold into it.
+        if (!echoed && !retry) rt.dropRoomStepEcho?.(id)
         if (rt.groupOwners.has(id)) void rt.goalSettled?.(rt.roomOf(rt.groupOwners.get(id).roomId)).catch(error => rt.warn('ds-bot: goal settle in %s failed: %s', id, error))
         break
       }
@@ -1504,45 +1551,46 @@ export function install(rt) {
     if (entry?.turn !== undefined) entry.cut = { texts: entry.texts.length }
   }
 
-  installPromptReasons(rt, placeOf)
-
-  Object.assign(rt, { live, liveOf, roomWaiters, roomProgress, roomInbox, activityView, workView, roomWorkView, turnsView, steeredView, callDetail, doingOf, stopRoomTurn, stopChat, releaseBot, unblockBots, resumeBot, markSteerCut, hasSubagents, stopSubagents, adoptLiveWork })
-
-  // ── Worker Bot 路由（Phase4 融合）────────────────────────────────────────
-  // 拦截发往 remote-worker 类型 Bot 的 deliver 调用，转交 worker-bridge 处理。
-  // 仅处理 role:'request' 的上行消息；其他 role（reply/room/continue 等）不拦截。
-  const _origDeliver = rt.deliver
-  if (typeof _origDeliver === 'function') {
-    rt.deliver = async function deliverWithRemoteWorker(msg, ...rest) {
+  // DSH's prompt admission wraps any unexpected failure as 'session/agent-busy' and
+  // keeps the real cause in details.reason, which the window never shows and the log
+  // never saw (#424). For a Session this team owns, the reason is written to the
+  // diagnostics and put into the error the user reads.
+  const prompt = ctx.sessionController?.prompt
+  if (typeof prompt === 'function') {
+    const controller = ctx.sessionController
+    const admitted = async function (request, ...rest) {
       try {
-        const { toId, role, text, fromId, exchangeId, replyTo, work } = msg ?? {}
-        if (role === 'request' && typeof toId === 'string' && toId !== '') {
-          const bot = rt.botOf(toId)
-          if (bot?.origin === 'joined' && bot?.worker?.home === 'remote') {
-            if (typeof rt.handleJoinedTurn === 'function') {
-              return rt.handleJoinedTurn({ fromId, toId, text: text ?? '', role, exchangeId, replyTo, work })
-            }
-            return { ok: false, error: 'joined shadow cannot dispatch' }
-          }
-          if (bot?.type === 'remote-worker' && typeof rt.handleRemoteTurn === 'function') {
-            return rt.handleRemoteTurn({ fromId, toId, text: text ?? '', role, exchangeId, replyTo, work })
-          }
+        return await prompt.call(this, request, ...rest)
+      } catch (error) {
+        const id = request?.sessionId
+        if (id === undefined || (rt.roomOf(id) === undefined && !rt.isBotSession(id))) throw error
+        // The reason can name local paths or carry tokens, so the same cleaning the
+        // diagnostics get applies before it reaches the client.
+        const reason = typeof error?.details?.reason === 'string' && error.details.reason !== ''
+          ? cleanText(error.details.reason, { redact: rt.redactSecrets })
+          : undefined
+        rt.noteFailure({
+          source: 'prompt',
+          text: `prompt rejected for ${placeOf(id)}${reason === undefined ? '' : `: ${reason}`}`,
+          code: error?.code,
+          where: placeOf(id),
+          sessionId: id,
+        })
+        // The gateway passes a RemoteError's code and details on as they are, but
+        // wraps a fresh plain Error as 'gateway/internal': the reason is written on
+        // the rejection itself, keeping its identity.
+        if (reason !== undefined) {
+          error.message = `${error?.message ?? 'prompt rejected'} — ${reason}`
+          error.details = { ...error.details, reason }
         }
-      } catch (err) {
-        rt.warn?.('ds-bot: remote-worker route check failed: %s', err)
+        throw error
       }
-      return _origDeliver.call(this, msg, ...rest)
     }
+    ctx.effect(() => {
+      controller.prompt = admitted
+      return () => { if (controller.prompt === admitted) controller.prompt = prompt }
+    }, 'ds-bot: prompt rejection reasons')
   }
-}
 
-// ── Testable settle helper ────────────────────────────────────────────────────
-// sendUser({requestId}) lands on source as rpcId (dsh-api-session-controller:749).
-// deliver({exchangeId}) lands as exchangeId. requestId is kept as a fallback.
-// Returns true when a pending waiter was found and settled, false otherwise.
-export function settleJoinForTurn(rt, info, reply, failure) {
-  if (typeof rt?.settleJoinedTurn !== 'function') return false
-  const id = info?.rpcId ?? info?.requestId ?? info?.exchangeId
-  if (typeof id !== 'string' || id === '') return false
-  return rt.settleJoinedTurn(id, reply, failure) === true
+  Object.assign(rt, { live, liveOf, roomWaiters, roomProgress, roomInbox, activityView, workView, agentWorkView, roomWorkView, turnsView, steeredView, callDetail, doingOf, stopRoomTurn, stopChat, stopAgent, releaseBot, unblockBots, resumeBot, markSteerCut, clearActivity: id => setActivity(id, undefined), hasSubagents, stopSubagents, adoptLiveWork })
 }

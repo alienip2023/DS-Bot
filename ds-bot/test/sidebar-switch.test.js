@@ -17,7 +17,7 @@ const { JSDOM } = createRequire(join(process.env.DSH_HARNESS ?? join(PLUGIN, '..
 // fixtures retain refs across commits and run their layout effects after each render.
 const { outputFiles } = await build({
   stdin: {
-    contents: "export { SHELL_CSS } from './src/client/styles.js'\nexport { SIDEBAR_CSS, TeamSidebar, PluginsButton } from './src/client/sidebar.js'\nexport { dshCollapsed, installFrameWatch } from './src/client/frame-watch.js'",
+    contents: "export { SHELL_CSS } from './src/client/styles.js'\nexport { SIDEBAR_CSS, TeamSidebar, PluginsButton } from './src/client/sidebar.js'\nexport { dshCollapsed, installFrameWatch, sidebarTrackWidth, chatRoom } from './src/client/frame-watch.js'",
     resolveDir: PLUGIN,
   },
   bundle: true, format: 'cjs', platform: 'browser', write: false, logLevel: 'silent',
@@ -28,8 +28,6 @@ let refIndex = 0
 let renderStates
 let stateIndex = 0
 let scheduleStateRender
-let renderLayoutDeps
-let layoutIndex = 0
 let layoutEffects
 const react = {
   createContext: (initial) => { const ctx = { value: initial }; ctx.Provider = ({ value, children }) => { ctx.value = value; return children }; return ctx },
@@ -37,16 +35,7 @@ const react = {
   useCallback: fn => fn,
   useSyncExternalStore: (subscribe, getSnapshot) => getSnapshot(),
   createElement: (type, props, ...children) => ({ type, props: { ...props, children } }), Fragment: Symbol('Fragment'),
-  useEffect() {},
-  useLayoutEffect: (effect, deps) => {
-    if (renderLayoutDeps) {
-      const index = layoutIndex++
-      const before = renderLayoutDeps[index]
-      renderLayoutDeps[index] = deps
-      if (before && deps && deps.length === before.length && deps.every((value, i) => Object.is(value, before[i]))) return
-    }
-    layoutEffects?.push(effect)
-  },
+  useEffect() {}, useLayoutEffect: effect => layoutEffects?.push(effect),
   useState: (initial) => {
     if (!renderStates) return [initial, () => {}]
     const states = renderStates
@@ -71,7 +60,7 @@ const sandbox = {
   window: viewport,
 }
 runInNewContext(outputFiles[0].text, sandbox)
-const { SHELL_CSS, SIDEBAR_CSS, TeamSidebar, PluginsButton, dshCollapsed, installFrameWatch } = module.exports
+const { SHELL_CSS, SIDEBAR_CSS, TeamSidebar, PluginsButton, dshCollapsed, installFrameWatch, sidebarTrackWidth, chatRoom } = module.exports
 
 function navigationSidebar(wide, { leftDrawer = false } = {}) {
   const calls = []
@@ -413,8 +402,8 @@ function collapsedGridRules() {
   const frames = []
   const visit = (rules, media = []) => {
     for (const rule of rules) {
-      if (rule.selectorText?.includes('[data-sidebar-collapsed][data-rightbar-collapsed]'))
-        frames.push({ grid: rule.style.getPropertyValue('grid-template-columns'), media })
+      if (rule.selectorText?.includes('[data-sidebar-collapsed][data-rightbar-collapsed]') && rule.style.getPropertyValue('grid-template-columns'))
+        frames.push({ selector: rule.selectorText, grid: rule.style.getPropertyValue('grid-template-columns'), media, rule })
       if (rule.cssRules?.length)
         visit(rule.cssRules, rule.media ? [...media, rule.media.mediaText] : media)
     }
@@ -424,17 +413,73 @@ function collapsedGridRules() {
 }
 
 test('the wide shell\'s collapsed sidebar keeps no track while its right column is closed', () => {
-  const frames = collapsedGridRules()
+  const frames = collapsedGridRules().filter(rule => !rule.selector.includes('.bt-head'))
   assert.equal(frames.length, 1)
   assert.match(frames[0].grid, /^0px\s+minmax\(0,\s*1fr\)\s+0px$/)
 })
 
 // A narrow host may place the conversation in its first track instead of its second.
 test('the collapsed shell grid override leaves layouts below 1024px to the host', () => {
-  const frames = collapsedGridRules()
+  const frames = collapsedGridRules().filter(rule => !rule.selector.includes('.bt-head'))
   assert.equal(frames.length, 1)
   assert.ok(frames[0].media.some(query => /^\(min-width:\s*1024px\)$/.test(query)),
     'the zero-width first track must not override a narrow host layout')
+})
+
+test('a narrow Bot conversation keeps an explicit track and leaves expanded host panels alone', () => {
+  const frames = collapsedGridRules().filter(frame => frame.media.includes('(max-width:1023px)'))
+  assert.equal(frames.length, 1)
+  const { rule } = frames[0]
+  assert.match(frames[0].grid, /^0px\s+minmax\(0,\s*1fr\)\s+0px$/)
+  assert.equal(rule.style.getPropertyPriority('grid-template-columns'), 'important')
+  const { document } = new JSDOM('<div class="x_frame" data-sidebar-collapsed data-rightbar-collapsed><div class="x_centerCol"><div class="bt-head"></div></div></div>').window
+  const frame = document.querySelector('.x_frame')
+  assert.ok(frame.matches(rule.selectorText))
+  for (const attribute of ['data-sidebar-collapsed', 'data-rightbar-collapsed']) {
+    frame.removeAttribute(attribute)
+    assert.equal(frame.matches(rule.selectorText), false)
+    frame.setAttribute(attribute, '')
+  }
+  const columnRule = [...rule.parentRule.cssRules].find(candidate => candidate.selectorText?.endsWith(`>[class*="_centerCol"]`))
+  assert.ok(columnRule, 'the narrow center column rule must exist')
+  assert.ok(document.querySelector('.x_centerCol').matches(columnRule.selectorText))
+  assert.equal(columnRule.style.getPropertyValue('grid-column'), '2')
+  assert.equal(columnRule.style.getPropertyValue('width'), 'auto')
+  for (const property of ['grid-column', 'width'])
+    assert.equal(columnRule.style.getPropertyPriority(property), 'important')
+  document.querySelector('.bt-head').remove()
+  assert.equal(frame.matches(rule.selectorText), false)
+})
+
+test('the narrow Bot grid yields when either shell track opens', () => {
+  const frames = collapsedGridRules().filter(rule => rule.selector.includes('.bt-head'))
+  assert.equal(frames.length, 1)
+  assert.ok(frames[0].media.some(query => /max-width:\s*1023px/.test(query)))
+  const { document } = new JSDOM('<div class="x_frame" data-sidebar-collapsed data-rightbar-collapsed><div class="x_centerCol"><div class="bt-head"></div></div></div>').window
+  const frame = document.querySelector('.x_frame')
+  assert.equal(frame.matches(frames[0].selector), true)
+  for (const attr of ['data-sidebar-collapsed', 'data-rightbar-collapsed']) {
+    frame.removeAttribute(attr)
+    assert.equal(frame.matches(frames[0].selector), false)
+    frame.setAttribute(attr, '')
+  }
+  document.querySelector('.bt-head').remove()
+  assert.equal(frame.matches(frames[0].selector), false)
+})
+
+test('rail control enlargement leaves short screens compact', () => {
+  const { document } = new JSDOM('<style></style>').window
+  document.querySelector('style').textContent = SHELL_CSS
+  const queries = []
+  const visit = (rules, media = []) => {
+    for (const rule of rules) {
+      if (rule.selectorText?.includes('.bt-rail-top .bt-round') && rule.style?.width === '56px') queries.push(media)
+      if (rule.cssRules) visit(rule.cssRules, rule.media ? [...media, rule.media.mediaText] : media)
+    }
+  }
+  visit(document.querySelector('style').sheet.cssRules)
+  assert.equal(queries.length, 1)
+  assert.ok(queries[0].some(query => /max-width:\s*600px/.test(query) && /min-height:\s*501px/.test(query)))
 })
 
 test('the column\'s top row hides it, on the rail too, and its edge is a drag grip', () => {
@@ -610,6 +655,7 @@ async function edgeDrag({ start, reduced = false }, run) {
       settle: ms => new Promise(resolve => setTimeout(resolve, ms)),
     })
   } finally {
+    document.head.replaceChildren() // Detach cached style owners with this fixture.
     for (const name of Object.keys(globals)) delete sandbox[name]
     delete viewport.matchMedia
   }
@@ -717,15 +763,8 @@ for (const wide of [true, false]) {
 async function withDom(html, run) {
   const dom = new JSDOM(html)
   const { document, MutationObserver } = dom.window
-  const timers = new Set()
   const globals = {
-    document, MutationObserver, performance,
-    setTimeout: (next, ms) => {
-      const timer = setTimeout(() => { timers.delete(timer); next() }, ms)
-      timers.add(timer)
-      return timer
-    },
-    clearTimeout,
+    document, MutationObserver, performance, setTimeout, clearTimeout,
     requestAnimationFrame: next => setTimeout(next, 0), cancelAnimationFrame: clearTimeout,
     CSS: { escape: value => value },
   }
@@ -733,13 +772,45 @@ async function withDom(html, run) {
   Object.assign(viewport, { addEventListener: dom.window.addEventListener.bind(dom.window), removeEventListener: dom.window.removeEventListener.bind(dom.window) })
   try { return await run(dom.window) }
   finally {
-    for (const timer of timers) clearTimeout(timer)
-    dom.window.close()
+    document.head.replaceChildren() // Detach cached style owners with this fixture.
     for (const name of Object.keys(globals)) delete sandbox[name]
     delete viewport.addEventListener
     delete viewport.removeEventListener
   }
 }
+
+test('chat margins own auto width until both overrides are released', async () => {
+  await withDom('<!doctype html><body><div class="x_centerCol"></div></body>', ({ document }) => {
+    chatRoom.setLeft(88)
+    const style = document.querySelector('style[data-dsh-bot="chat-room"]').sheet.cssRules[0].style // Legacy style-owner attribute.
+    assert.equal(style.getPropertyValue('width'), 'auto')
+    chatRoom.setRight(320)
+    chatRoom.setLeft(null)
+    assert.equal(style.getPropertyValue('width'), 'auto')
+    chatRoom.setRight(null)
+    assert.equal(style.getPropertyValue('width'), '')
+    chatRoom.setLeft(0)
+    assert.equal(style.getPropertyValue('width'), 'auto')
+    chatRoom.setLeft(null)
+    assert.equal(style.getPropertyValue('width'), '')
+  })
+})
+
+test('an overlay sidebar strip does not reserve a grid track', async () => {
+  await withDom('<!doctype html><body><div class="x_sidebarCol"></div></body>', async ({ document, getComputedStyle }) => {
+    const column = document.querySelector('.x_sidebarCol')
+    column.getBoundingClientRect = () => ({ width: 52, right: 52 })
+    sandbox.getComputedStyle = getComputedStyle
+    try {
+      for (const position of ['absolute', 'fixed']) {
+        column.style.position = position
+        assert.equal(sidebarTrackWidth(), 0)
+      }
+      column.style.position = 'relative'
+      assert.equal(sidebarTrackWidth(), 52)
+    } finally { delete sandbox.getComputedStyle }
+  })
+})
 
 // 公开#1618: DSH Desktop wraps _sidebarCol in <aside class="dshDesktopSidebarSurface">
 // inside <div class="dshDesktopFrame" data-sidebar-collapsed>, whereas DSH Web puts
@@ -786,10 +857,6 @@ test('TeamSidebar collapses DSH Desktop sidebar once without entering a 300ms to
     const states = []
     const cleanups = []
     let toggles = 0
-    let lapses = 0
-    const layoutDeps = []
-    const scheduleTimer = sandbox.setTimeout
-    sandbox.setTimeout = (next, ms) => scheduleTimer(() => { if (ms === 300) lapses += 1; next() }, ms)
     let scheduled = false
     const frame = createSource({ viewport: 1280, sidebarWidth: 280, collapsedWidth: 0, collapsed: false })
     const stopWatch = installFrameWatch(frame)
@@ -808,8 +875,6 @@ test('TeamSidebar collapses DSH Desktop sidebar once without entering a 300ms to
       refIndex = 0
       renderStates = states
       stateIndex = 0
-      renderLayoutDeps = layoutDeps
-      layoutIndex = 0
       layoutEffects = []
       scheduleStateRender = () => {
         if (scheduled || disposed) return
@@ -825,7 +890,6 @@ test('TeamSidebar collapses DSH Desktop sidebar once without entering a 300ms to
       })
       renderRefs = undefined
       renderStates = undefined
-      renderLayoutDeps = undefined
       scheduleStateRender = undefined
       const effects = layoutEffects
       layoutEffects = undefined
@@ -838,82 +902,7 @@ test('TeamSidebar collapses DSH Desktop sidebar once without entering a 300ms to
     try {
       render()
       await new Promise(resolve => setTimeout(resolve, 750))
-      assert.equal(toggles, 1, 'only one collapse request')
-      assert.equal(lapses, 0, 'acknowledged collapse cancels the request timer')
-      assert.equal(frameEl.hasAttribute('data-sidebar-collapsed'), true)
-      assert.equal(document.documentElement.hasAttribute('data-bt-collapsing'), false)
-    } finally {
-      disposed = true
-      offFrame()
-      stopWatch()
-      for (const off of cleanups) off()
-      document.documentElement.removeAttribute('data-bt-collapsing')
-    }
-  })
-})
-
-test('TeamSidebar acknowledges frame collapse while wide stays false', async () => {
-  await withDom('<!doctype html><body><div class="dshDesktopFrame"><aside class="dshDesktopSidebarSurface"><div class="dshDesktopUpstreamSidebar dshDesktop_sidebarCol"></div></aside><div class="dshDesktop_centerCol"></div></div></body>', async ({ document }) => {
-    viewport.innerWidth = 1280
-    const frameEl = document.querySelector('.dshDesktopFrame')
-    const refs = []
-    const states = []
-    const cleanups = []
-    let toggles = 0
-    let lapses = 0
-    const layoutDeps = []
-    const scheduleTimer = sandbox.setTimeout
-    sandbox.setTimeout = (next, ms) => scheduleTimer(() => { if (ms === 300) lapses += 1; next() }, ms)
-    let scheduled = false
-    const frame = createSource({ viewport: 1280, sidebarWidth: 280, collapsedWidth: 0, collapsed: false })
-    const stopWatch = installFrameWatch(frame)
-    const roster = { bots: [], rooms: [], agents: [], byId: {}, ready: true }
-    const actions = {
-      toggleSidebar() {
-        toggles += 1
-        if (frameEl.hasAttribute('data-sidebar-collapsed')) frameEl.removeAttribute('data-sidebar-collapsed')
-        else frameEl.setAttribute('data-sidebar-collapsed', '')
-      },
-    }
-    let disposed = false
-    const render = () => {
-      if (disposed) return
-      renderRefs = refs
-      refIndex = 0
-      renderStates = states
-      stateIndex = 0
-      renderLayoutDeps = layoutDeps
-      layoutIndex = 0
-      layoutEffects = []
-      scheduleStateRender = () => {
-        if (scheduled || disposed) return
-        scheduled = true
-        queueMicrotask(() => { scheduled = false; render() })
-      }
-      const snap = frame.getSnapshot()
-      TeamSidebar({
-        wide: false, actions,
-        useRoster: pick => pick(roster), useUi: pick => pick({ unread: {} }), useRegistry: pick => pick({}),
-        useSessions: pick => pick({ ids: [], byId: {} }), useUpdate: () => ({}),
-        useFrame: pick => pick(snap),
-      })
-      renderRefs = undefined
-      renderStates = undefined
-      renderLayoutDeps = undefined
-      scheduleStateRender = undefined
-      const effects = layoutEffects
-      layoutEffects = undefined
-      for (const effect of effects) {
-        const off = effect()
-        if (typeof off === 'function') cleanups.push(off)
-      }
-    }
-    const offFrame = frame.subscribe(() => queueMicrotask(render))
-    try {
-      render()
-      await new Promise(resolve => setTimeout(resolve, 750))
-      assert.equal(toggles, 1, 'only one collapse request')
-      assert.equal(lapses, 0, 'acknowledged collapse cancels the request timer')
+      assert.equal(toggles, 1)
       assert.equal(frameEl.hasAttribute('data-sidebar-collapsed'), true)
       assert.equal(document.documentElement.hasAttribute('data-bt-collapsing'), false)
     } finally {

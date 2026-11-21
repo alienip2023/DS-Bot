@@ -8,28 +8,20 @@ import { PlusIcon, SearchIcon, SidebarIcon, GaugeIcon, ClockIcon, GearIcon, PinM
 import { lookOf, MAIN_LOOK } from './characters.js'
 import { botState, BotMark, BotAvatar, RoomAvatar } from './mark.js'
 import { AgentBadge } from './agent-badge.js'
+import { SidebarTaskPill, taskCountsOf } from './bot-tasks.js'
 import { reducedMotion } from './activity-row.js'
 import { Shimmer, workPhrase } from './cells.js'
 import { SPRING_GLIDE, SPRING_POP, SPRING_SHAPE, SPRING_TAP, stepMenuFocus, useLinger, useViewport, viewBottom } from './motion.js'
-import { joinedMachineLabel } from './joined-machine-label.js'
 import { hostText, t } from './i18n.js'
 import { clientErrors } from './diagnostics.js'
 import { showsDshRow } from './dsh-offer.js'
 import { quietly } from './diagnostics.js'
 import { frameLayout, dragColumn, RAIL_WIDTH, FALLBACK_SIDEBAR_WIDTH, userSidebarToggle } from './frame-layout.js'
 import { chatRoom, dshCollapsed } from './frame-watch.js'
-import { botRowClick, remoteHomeOf } from './row-actions.js'
-import { threadsStore } from './threads.js'
-import { sortThreads, canCreateThread } from './thread-target.js'
+import { useEscape } from './overlay-hooks.js'
 
 // -------------------------------------------------------------------------
 // Sidebar
-
-// Which Bots have their Thread list open. Module state on purpose: it must survive a
-// roster refresh without writing a preference to disk. A row that becomes active opens
-// on its own, so switching Threads keeps the list in view.
-const openThreadBots = new Set()
-const MAIN_THREAD_TITLE = 'Main'
 
 // Manual "Mark as Unread" lasts until the conversation is opened again.
 function useMarkedUnread(id, active, marked, actions) {
@@ -49,41 +41,13 @@ const nameIfCut = (event) => {
   else row.removeAttribute('title')
 }
 
-// DSH Desktop 0.13.2's main process pops a native menu on webContents
-// "context-menu" and ignores the event object. React onContextMenu is the
-// path fork.8 already lost: it runs too late, and the native menu covers it.
-// Electron 44.7.0 (the Desktop framework version) does not emit that main
-// process event if the page calls preventDefault on the DOM contextmenu
-// event. pointerdown button 2 is not that event, so it still reaches the row.
-// Both listeners are native and capturing, and they open the same menu as ⋮.
-export function openAtPointer(event, openMenu, menu) {
-  const right = event.button === 2 || event.type === 'contextmenu'
-  if (!right) return false
-  event.preventDefault()
-  event.stopPropagation()
-  const payload = typeof menu === 'function' ? menu() : menu
-  openMenu({ ...payload, x: event.clientX, y: event.clientY })
-  return true
+// Whether an approval waits for the user: for a Bot, in its own chat; for a group,
+// from any of its members in that group (both DSH tool approvals and computer-use asks).
+const useApproval = (useWork, useComputer, matchApproval, matchAsk) => {
+  const tool = useWork ? useWork(work => (work.approvals ?? []).some(matchApproval)) : false
+  const app = useComputer ? useComputer(comp => Object.values(comp?.asks ?? {}).some(matchAsk)) : false
+  return tool || app
 }
-
-function bindPointerMenu(openMenu, menu) {
-  return (node) => {
-    if (node == null) return
-    const previous = node.__btPointerMenu
-    if (previous) {
-      node.removeEventListener('pointerdown', previous, true)
-      node.removeEventListener('contextmenu', previous, true)
-    }
-    const run = (event) => { openAtPointer(event, openMenu, menu) }
-    node.__btPointerMenu = run
-    node.addEventListener('pointerdown', run, true)
-    node.addEventListener('contextmenu', run, true)
-  }
-}
-
-// Whether an approval waits for the user: for a Bot, in any of its Sessions; for a group,
-// from any of its members there.
-const useApproval = (useWork, match) => (useWork ? useWork(work => (work.approvals ?? []).some(match)) : false)
 
 // Work running in group Sessions, as "botId|tool" keys so a row redraws only when it
 // changes: the groups one Bot works in, or the members at work in one group.
@@ -102,71 +66,7 @@ const waitingFor = (roster, waits) => {
   return names.length === 0 ? '' : t('Waiting for {names}', { names: names.join(t(' and ')) })
 }
 
-// One Thread of a local Bot. A joined Bot has only its Main row for now; it opens the
-// Bot's home page, not a plain Session (the node's Session is not opened here yet).
-export function ThreadRow({ thread, bot, actions, useSessionRetainInfo, index, botActive }) {
-  const joined = bot.origin === 'joined' && bot.worker?.home === 'remote'
-  // A local Bot's Main Thread has no Session of its own; its Bot chat is the one shown.
-  const sessionId = thread.isMain === true ? (bot.sessionId ?? bot.id) : thread.sessionId
-  const active = useSessionRetainInfo(sessionId, info => (info?.retainedBy?.mainView ?? 0) > 0) || (thread.isMain === true && botActive === true)
-  return h('button', {
-    type: 'button', className: 'bt-agent-sub-row', 'aria-current': active ? 'page' : undefined,
-    style: { '--i': index }, title: thread.title,
-    onClick: () => {
-      openThreadBots.add(bot.id)
-      if (joined) { actions.openJoinedHome(bot.id); return }
-      actions.openThread(bot.id, thread.id)
-    },
-  }, h('span', { className: 'bt-agent-sub-title' }, thread.title))
-}
-
-// The Thread list a Bot row expands to: new Thread first, then Main, then the rest in
-// creation order. Archived Threads are not drawn; they still count against the limit.
-export function ThreadList({ bot, threads, status, actions, useSessionRetainInfo, botActive, onRetry }) {
-  const joined = bot.origin === 'joined' && bot.worker?.home === 'remote'
-  const all = Array.isArray(threads) ? threads : []
-  const visible = sortThreads(all.filter(thread => thread?.archived !== true))
-  const list = visible.length > 0 ? visible : [{
-    id: `${bot.id}:main`, botId: bot.id, title: MAIN_THREAD_TITLE, createdAt: bot.createdAt ?? 0,
-    archived: false, sessionId: typeof bot.sessionId === 'string' && bot.sessionId !== '' ? bot.sessionId : null, isMain: true,
-  }]
-  const canCreate = !joined && canCreateThread(all)
-  const create = async () => {
-    if (!canCreate) return
-    try {
-      const result = await actions.createThread(bot.id)
-      if (result?.thread?.id !== undefined) {
-        openThreadBots.add(bot.id)
-        // Through the row, so a blank Thread Session is admitted to the client list first;
-        // opening it straight from the Host's id finds nothing to open.
-        await actions.openThread(bot.id, result.thread.id)
-      } else if (result?.sessionId !== undefined && result?.sessionId !== null) {
-        openThreadBots.add(bot.id)
-        actions.openAgentSession(result.sessionId)
-      }
-    } catch (error) {
-      actions.reportError(error, 'thread-create')
-    }
-  }
-  return h(Fragment, null,
-    !joined ? h('button', {
-      type: 'button', className: 'bt-agent-sub-row bt-agent-new', style: { '--i': 0 },
-      title: canCreate ? undefined : t('Thread limit reached'),
-      disabled: canCreate ? undefined : true,
-      onClick: () => { void create() },
-    }, h(PlusIcon), h('span', { className: 'bt-agent-sub-title' }, t('New thread'))) : null,
-    list.map((thread, index) => h(ThreadRow, {
-      key: thread.id, thread, bot, actions, useSessionRetainInfo, botActive, index: index + 1,
-    })),
-    status === 'error'
-      ? h('button', {
-        type: 'button', className: 'bt-agent-sub-row bt-agent-new',
-        onClick: () => { void onRetry?.() },
-      }, h('span', { className: 'bt-agent-sub-title' }, t('Could not load threads. Retry')))
-      : null)
-}
-
-function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessionRetainInfo, useActivity, useWork, wide, marked, onDragStart }) {
+function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessionRetainInfo, useActivity, useWork, useComputer, wide, marked, onDragStart }) {
   const id = bot.id
   const part = currentPart(bot)
   const preview = useSessions(list => previewOf(list, part, roster.exchangeTurns[part]))
@@ -176,111 +76,61 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
   useMarkedUnread(id, active, marked, actions)
   const main = isMainOf(roster, id)
   const tile = roster.mainBotId === id
-  const approval = useApproval(useWork, entry => entry.botId === id)
+  const approval = useApproval(useWork, useComputer, entry => entry.roomId === undefined && entry.botId === id, ask => ask.roomId === undefined && ask.botId === id)
   const alert = roster.questions?.[part] !== undefined || approval
   const doing = useActivity(map => map[id])
   // Work in a group runs in a Session of its own, so the Bot's chat stays idle meanwhile.
   const groups = useGroupWork(useWork, rooms => Object.entries(rooms).flatMap(([roomId, entries]) => entries.filter(entry => entry.botId === id).map(entry => ({ id: roomId, ...doingOf(entry) }))))
   const away = !running && groups.length > 0
-  const state = botState(running || away, doing, alert)
+  // Group approvals live on the group's row and header island, not on the Bot's
+  // own DM avatar (#1623).
+  const dmDoing = doing === 'alert' && !approval ? undefined : doing
+  const state = botState(running || away, dmDoing, alert)
   // A Bot running in its own chat previews what it is doing, like a group's row.
   const runningLine = running && doing ? doingLine(doing) : null
   const awayLine = away ? workLine(roster.roomsById[groups[0].id]?.name ?? t('a group chat'), groups[0], groups.length - 1) : null
   const waitsRaw = useWork ? useWork(work => JSON.stringify(work.waiting?.[id] ?? null)) : 'null'
   const waits = useMemo(() => JSON.parse(waitsRaw), [waitsRaw])
   const waitsFor = state === 'waiting' ? waitingFor(roster, waits) : ''
-  const threadSlot = useSyncExternalStore(threadsStore.subscribe, () => threadsStore.slot(id))
-  const [, bumpThreads] = useState(0)
-  const openThreads = openThreadBots.has(id) || active
-  useEffect(() => {
-    if (wide && openThreads) void actions.loadThreads?.(id)
-  }, [wide, openThreads, id])
-  const toggleThreads = (event) => {
-    event.preventDefault()
-    event.stopPropagation()
-    if (openThreadBots.has(id)) openThreadBots.delete(id)
-    else openThreadBots.add(id)
-    bumpThreads(value => value + 1)
-  }
   if (bot.hidden && !active && !main) return null
-  const openMenuBtn = (event) => {
+  const onContextMenu = (event) => {
     event.preventDefault()
-    event.stopPropagation()
-    const rect = event.currentTarget.getBoundingClientRect()
-    actions.openMenu({ kind: 'bot', id, x: rect.left, y: rect.bottom })
+    actions.openMenu({ kind: 'bot', id, x: event.clientX, y: event.clientY })
   }
   const pinned = bot.pinned === true && !tile
-  const joined = bot.origin === 'joined' && bot.worker?.home === 'remote'
-  const remoteHome = remoteHomeOf(bot)
-  // Another machine's Bot, mirrored read-only: it has no local Session to open.
-  const peer = bot.origin === 'peer' && bot.worker?.home === 'hub'
-  const machine = joined
-    ? [joinedMachineLabel(bot.worker, t), bot.worker.online === false ? '离线' : ''].filter(Boolean).join(' · ')
-    : peer
-      ? [bot.worker?.hostname || bot.worker?.nodeId || '', bot.worker?.online === false ? '离线' : '在线'].filter(Boolean).join(' · ')
-      : ''
-  const label = [bot.name, machine, main ? t('Main Bot') : '', pinned ? t('Pinned') : '', running || away ? t('Working') : '', waitsFor, approval ? t('Waiting for your approval') : alert ? t('Waiting for your answer') : '', unread ? t('Unread activity') : ''].filter(Boolean).join(', ')
+  const taskCounts = taskCountsOf({ bot })
+  const openTasks = () => { actions.openSession(id); actions.openTaskDeck?.(id) }
+  const label = [bot.name, main ? t('Main Bot') : '', pinned ? t('Pinned') : '', running || away ? t('Working') : '', taskCounts.active > 0 ? t('{count} background tasks running', { count: taskCounts.active }) : '', waitsFor, approval ? t('Waiting for your approval') : alert ? t('Waiting for your answer') : '', unread ? t('Unread activity') : ''].filter(Boolean).join(', ')
   if (tile && wide) {
-    return h('div', { className: 'bt-tile-wrap', ref: bindPointerMenu(actions.openMenu, () => ({ kind: 'bot', id })) }, h('button', {
+    return h('div', { className: 'bt-tile-wrap' }, h('button', {
       type: 'button', className: 'bt-tile', 'aria-label': label, 'aria-current': active ? 'page' : undefined,
-      'data-bot-id': id, title: preview || bot.name, onClick: () => actions.openSession(id),
+      'data-bot-id': id, title: preview || bot.name, onClick: () => actions.openSession(id), onContextMenu,
     },
     h(BotAvatar, { bot, size: 60, state, main: true }),
     h('span', { className: 'bt-tile-name' }, bot.name),
     bot.role ? h('span', { className: 'bt-chip' }, bot.role) : null,
-    h('button', {
-      type: 'button', 'aria-label': t('More actions'), title: t('More actions'),
-      className: 'bt-ctx-btn',
-      style: { position: 'absolute', top: 2, right: 2, background: 'none', border: 'none', cursor: 'pointer', fontSize: '1em', padding: '0 4px', lineHeight: 1 },
-      onClick: openMenuBtn,
-    }, '⋮')))
+    h(SidebarTaskPill, { active: taskCounts.active, waitingApproval: taskCounts.waitingApproval, onClick: openTasks })))
   }
-  const row = h('button', {
+  return h('button', {
     type: 'button', className: 'bt-row', 'aria-label': label, 'aria-current': active ? 'page' : undefined,
     'data-bot-id': id, title: wide ? undefined : bot.name,
-    ref: peer ? undefined : bindPointerMenu(actions.openMenu, () => ({ kind: 'bot', id })),
-    draggable: wide && !tile && !peer && onDragStart ? true : undefined,
-    onDragStart: wide && !tile && !peer && onDragStart ? event => onDragStart(event, id) : undefined,
-    onMouseEnter: wide ? nameIfCut : undefined,
-    onClick: () => (peer ? actions.notice?.(t('This Bot runs on another machine and is read-only here')) : botRowClick(remoteHome, id, actions)),
+    draggable: wide && !tile && onDragStart ? true : undefined,
+    onDragStart: wide && !tile && onDragStart ? event => onDragStart(event, id) : undefined,
+    onMouseEnter: wide ? nameIfCut : undefined, onClick: () => actions.openSession(id), onContextMenu,
   },
   h(BotAvatar, { bot, size: wide ? 36 : 44, state, main }),
   pinned && !wide ? h(PinMark) : null,
   wide ? h('span', { className: 'bt-row-body' },
-    h('span', { className: 'bt-row-name' }, h('span', { className: 'bt-row-title' }, bot.name), bot.engine ? h(AgentBadge, { engine: bot.engine }) : null, pinned ? h(PinMark) : null),
-    machine ? h('span', { className: 'bt-row-preview', 'data-machine': bot.worker.hostname || bot.worker.nodeId || '' }, machine)
-      : runningLine ? h('span', { className: 'bt-row-preview' }, runningLine)
+    h('span', { className: 'bt-row-name' }, h('span', { className: 'bt-row-title' }, bot.name), bot.engine ? h(AgentBadge, { engine: bot.engine }) : null, pinned ? h(PinMark) : null, h(SidebarTaskPill, { active: taskCounts.active, waitingApproval: taskCounts.waitingApproval, onClick: openTasks })),
+    runningLine ? h('span', { className: 'bt-row-preview' }, runningLine)
       : awayLine ? h('span', { className: 'bt-row-preview' }, awayLine)
         : waitsFor ? h('span', { className: 'bt-row-preview' }, waitsFor)
           : preview ? h('span', { className: 'bt-row-preview' }, preview) : null) : null,
   wide && unread && !active ? h('span', { className: 'bt-unread', 'aria-hidden': true })
-    : !wide && !active && (alert || unread) ? h('span', { className: `bt-dot${alert ? ' bt-dot-wait' : ''}`, 'aria-hidden': true }) : null,
-  wide && !peer ? h('button', {
-    type: 'button', 'aria-label': t('Threads'), title: t('Threads'),
-    className: 'bt-ctx-btn bt-thread-toggle',
-    'aria-expanded': openThreads ? 'true' : 'false',
-    style: { background: 'none', border: 'none', cursor: 'pointer', padding: '2px 4px', lineHeight: 1, flexShrink: 0, display: 'inline-flex' },
-    onClick: toggleThreads,
-  }, h(ChevronRightIcon)) : null,
-  wide && !peer ? h('button', {
-    type: 'button', 'aria-label': t('More actions'), title: t('More actions'),
-    className: 'bt-ctx-btn',
-    style: { background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.1em', padding: '2px 6px', lineHeight: 1, flexShrink: 0 },
-    onClick: openMenuBtn,
-  }, '⋮') : null)
-  if (!wide) return row
-  // A shadow has no Threads on this machine: no expandable list, no create button.
-  if (peer) return row
-  return h('div', { className: 'bt-bot', onMouseEnter: row.props.onMouseEnter }, row,
-    h('div', { className: 'bt-agent-sub', 'data-open': openThreads || undefined },
-      h('div', { className: 'bt-agent-sub-in' },
-        h(ThreadList, {
-          bot, threads: threadSlot.threads, status: threadSlot.status, actions, useSessionRetainInfo,
-          botActive: active, onRetry: () => actions.loadThreads?.(id, true),
-        }))))
+    : !wide && !active && (alert || unread) ? h('span', { className: `bt-dot${alert ? ' bt-dot-wait' : ''}`, 'aria-hidden': true }) : null)
 }
 
-function RoomRow({ room, roster, actions, useSessions, useSessionStatus, useSessionRetainInfo, useWork, wide, marked, onDragStart }) {
+function RoomRow({ room, roster, actions, useSessions, useSessionStatus, useSessionRetainInfo, useWork, useComputer, wide, marked, onDragStart }) {
   const id = room.id
   // The group's own Session is a chain of parts; the row shows the current one.
   const sessionId = room.sessionId ?? id
@@ -289,13 +139,15 @@ function RoomRow({ room, roster, actions, useSessions, useSessionStatus, useSess
   const active = useSessionRetainInfo(sessionId, info => (info?.retainedBy?.mainView ?? 0) > 0)
   const unread = useSessionStatus(map => map.get(sessionId)?.completionUnread === true) || (marked && !active)
   useMarkedUnread(id, active, marked, actions)
-  const approval = useApproval(useWork, entry => entry.roomId === id)
+  const approval = useApproval(useWork, useComputer, entry => entry.roomId === id, ask => ask.roomId === id)
   const members = useGroupWork(useWork, rooms => (rooms[id] ?? []).filter(entry => entry.botId !== undefined).map(entry => ({ id: entry.botId, ...doingOf(entry) })))
   const first = roster.byId[members[0]?.id]
   const workingLine = first ? workLine(first.name, members[0], members.length - 1) : null
   if (room.hidden && !active) return null
   const pinned = room.pinned === true
-  const label = [room.name, pinned ? t('Pinned') : '', members.length > 0 ? t('Working') : '', approval ? t('Waiting for your approval') : ''].filter(Boolean).join(', ')
+  const taskCounts = taskCountsOf({ room, roster })
+  const openTasks = () => { actions.openSession(id); actions.openTaskDeck?.(id) }
+  const label = [room.name, pinned ? t('Pinned') : '', members.length > 0 ? t('Working') : '', taskCounts.active > 0 ? t('{count} background tasks running', { count: taskCounts.active }) : '', approval ? t('Waiting for your approval') : ''].filter(Boolean).join(', ')
   return h('button', {
     type: 'button', className: 'bt-row', 'aria-label': label, 'aria-current': active ? 'page' : undefined,
     'data-room-id': id, title: wide ? undefined : room.name,
@@ -307,7 +159,7 @@ function RoomRow({ room, roster, actions, useSessions, useSessionStatus, useSess
   h(RoomAvatar, { room, roster, size: wide ? 36 : 44 }),
   pinned && !wide ? h(PinMark) : null,
   wide ? h('span', { className: 'bt-row-body' },
-    h('span', { className: 'bt-row-name' }, h('span', { className: 'bt-row-title' }, room.name), pinned ? h(PinMark) : null),
+    h('span', { className: 'bt-row-name' }, h('span', { className: 'bt-row-title' }, room.name), pinned ? h(PinMark) : null, h(SidebarTaskPill, { active: taskCounts.active, waitingApproval: taskCounts.waitingApproval, onClick: openTasks })),
     workingLine ? h('span', { className: 'bt-row-preview' }, workingLine) : preview ? h('span', { className: 'bt-row-preview' }, preview) : null) : null,
   wide && approval && !active ? h('span', { className: 'bt-unread bt-unread-wait', 'aria-hidden': true })
     : wide && unread && !active ? h('span', { className: 'bt-unread', 'aria-hidden': true })
@@ -432,7 +284,7 @@ function renderSidebarEntry(entry, rowProps, markedUnread, onDragStart) {
 }
 
 function SectionBlock({ section, entries, rowProps, markedUnread, renaming, dropTarget, onDragStart, onDragOverSec, onDropSec }) {
-  const { roster, actions, useSessions, useSessionStatus, useWork, wide } = rowProps
+  const { roster, actions, useSessions, useSessionStatus, useWork, useComputer, wide } = rowProps
   const input = useRef(null)
   useLayoutEffect(() => {
     if (!renaming) return
@@ -477,16 +329,21 @@ function SectionBlock({ section, entries, rowProps, markedUnread, renaming, drop
   const workBits = useWork ? useWork(work => {
     const botIds = new Set(entries.filter(e => e.kind === 'bot').map(e => e.item.id))
     const roomIds = new Set(entries.filter(e => e.kind === 'room').map(e => e.item.id))
-    const approval = (work.approvals ?? []).some(a => botIds.has(a.botId) || roomIds.has(a.roomId))
+    const approval = (work.approvals ?? []).some(a => (a.roomId === undefined && botIds.has(a.botId)) || roomIds.has(a.roomId))
     const roomWorking = Object.entries(work.rooms ?? {}).some(([rId, list]) => (
       (roomIds.has(rId) && list.some(e => e.botId !== undefined)) || list.some(e => botIds.has(e.botId))
     ))
     return `${approval ? 1 : 0}|${roomWorking ? 1 : 0}`
   }) : '0|0'
+  const hasComputerAsk = useComputer ? useComputer(comp => {
+    const botIds = new Set(entries.filter(e => e.kind === 'bot').map(e => e.item.id))
+    const roomIds = new Set(entries.filter(e => e.kind === 'room').map(e => e.item.id))
+    return Object.values(comp?.asks ?? {}).some(ask => (ask.roomId === undefined && botIds.has(ask.botId)) || roomIds.has(ask.roomId))
+  }) : false
   const parsedStatuses = JSON.parse(statusBits)
   const [hasApproval, hasRoomWork] = workBits.split('|').map(v => v === '1')
   const hasQuestion = entries.some(entry => entry.kind === 'bot' && roster.questions?.[currentPart(entry.item)] !== undefined)
-  const hasAlert = hasQuestion || hasApproval
+  const hasAlert = hasQuestion || hasApproval || hasComputerAsk
   const hasWorking = hasRoomWork || parsedStatuses.some(([, run]) => run === 1)
   const hasUnread = parsedStatuses.some(([id, , unread]) => unread === 1 && id !== activeSession)
     || entries.some(entry => markedUnread[entry.item.id] === true && entry !== activeEntry)
@@ -685,25 +542,14 @@ export function TeamSidebar(props) {
   })
   const order = useMemo(() => {
     const stamps = JSON.parse(updated)
-    const botEntries = roster.bots
-      .filter(bot => bot.id !== roster.mainBotId && bot.origin !== 'peer')
-      .map(bot => ({ kind: 'bot', item: bot, at: stamps[currentPart(bot)] ?? bot.createdAt }))
-    const roomEntries = roster.rooms.map(room => ({ kind: 'room', item: room, at: stamps[room.id] ?? room.createdAt }))
-    const agentEntries = (roster.agents ?? []).map(agent => ({ kind: 'agent', item: agent, at: Math.max(0, ...agent.sessions.map(id => stamps[id] ?? 0)) || agent.createdAt }))
-    return [...botEntries, ...roomEntries, ...agentEntries].sort((a, b) =>
-      Number(Boolean(b.item.pinned)) - Number(Boolean(a.item.pinned)) || b.at - a.at
-    )
+    const entries = [
+      ...roster.bots.filter(bot => bot.id !== roster.mainBotId).map(bot => ({ kind: 'bot', item: bot, at: stamps[currentPart(bot)] ?? bot.createdAt })),
+      ...roster.rooms.map(room => ({ kind: 'room', item: room, at: stamps[currentPart(room)] ?? room.createdAt })),
+      // The Agent sorts by its most recent Session, falling back to when it was added.
+      ...(roster.agents ?? []).map(agent => ({ kind: 'agent', item: agent, at: Math.max(0, ...agent.sessions.map(id => stamps[id] ?? 0)) || agent.createdAt })),
+    ]
+    return entries.sort((a, b) => Number(Boolean(b.item.pinned)) - Number(Boolean(a.item.pinned)) || b.at - a.at)
   }, [roster, updated])
-  // Another machine's Bots, read-only, grouped by the node they live on.
-  const peerGroups = useMemo(() => {
-    const byNode = new Map()
-    for (const bot of roster.bots.filter(bot => bot.origin === 'peer')) {
-      const node = bot.homeNodeId ?? bot.worker?.nodeId ?? ''
-      if (!byNode.has(node)) byNode.set(node, [])
-      byNode.get(node).push(bot)
-    }
-    return [...byNode.entries()].sort(([a], [b]) => a.localeCompare(b))
-  }, [roster])
   const sections = roster.sections ?? []
   const sectionSet = useMemo(() => new Set(sections.map(sec => sec.id)), [sections])
   const ungrouped = useMemo(
@@ -909,20 +755,15 @@ export function TeamSidebar(props) {
   }, [wide, frameSnap.viewport, frameSnap.collapsed, lapsed])
 
   // The drawer closes on a row pick, on Escape and on a press outside it.
+  useEscape(() => actions.setLeftDrawer?.(false), mode === 'drawer')
   useEffect(() => {
     if (mode !== 'drawer') return undefined
     const onDown = (event) => {
       if (event.target instanceof Element && event.target.closest('.bt-leftcol')) return
       actions.setLeftDrawer?.(false)
     }
-    const onKey = (event) => {
-      if (event.key !== 'Escape') return
-      event.stopPropagation()
-      actions.setLeftDrawer?.(false)
-    }
     window.addEventListener('mousedown', onDown)
-    window.addEventListener('keydown', onKey, true)
-    return () => { window.removeEventListener('mousedown', onDown); window.removeEventListener('keydown', onKey, true) }
+    return () => { window.removeEventListener('mousedown', onDown) }
   }, [mode])
 
   const navigate = (open, id) => {
@@ -933,12 +774,11 @@ export function TeamSidebar(props) {
   const rowActions = {
     ...actions,
     openSession: id => navigate(actions.openSession, id),
-    openJoinedHome: id => navigate(actions.openJoinedHome, id),
     openAgent: id => navigate(actions.openAgent, id),
     openAgentSession: id => navigate(actions.openAgentSession, id),
     newAgentSession: id => navigate(actions.newAgentSession, id),
   }
-  const rowProps = { roster, actions: rowActions, useSessions, useUi, useSessionStatus: props.useSessionStatus, useSessionRetainInfo: props.useSessionRetainInfo, useActivity: props.useActivity, useWork: props.useWork, wide: wideContent }
+  const rowProps = { roster, actions: rowActions, useSessions, useUi, useSessionStatus: props.useSessionStatus, useSessionRetainInfo: props.useSessionRetainInfo, useActivity: props.useActivity, useWork: props.useWork, useComputer: props.useComputer, wide: wideContent }
   // Typing while the sidebar has focus starts a search.
   const typeToSearch = (event) => {
     if (event.defaultPrevented || event.key.length !== 1 || event.key === ' ' || event.metaKey || event.ctrlKey || event.altKey || event.nativeEvent.isComposing) return
@@ -996,7 +836,6 @@ export function TeamSidebar(props) {
       onDragLeave: (event) => { if (!event.currentTarget.contains(event.relatedTarget)) setDropTarget(null) },
     },
       wideContent ? (main ? h(BotRow, { ...rowProps, bot: main, marked: markedUnread[main.id] === true }) : roster.ready ? null : bootFailed ? h(BootFailed, { actions }) : h('div', { className: 'bt-hint' }, t('Setting up your Main Bot…'))) : null,
-      wideContent && peerGroups.length > 0 ? h('div', { className: 'bt-hint bt-group-head', 'data-group': 'local' }, t('This machine')) : null,
       sections.length > 0 && wideContent
         ? h('div', {
             className: 'bt-sec-ungrouped',
@@ -1006,11 +845,6 @@ export function TeamSidebar(props) {
             onDrop: event => onDropSec(event, null),
           }, ungrouped.map(entry => renderSidebarEntry(entry, rowProps, markedUnread, onDragStart)))
         : ungrouped.map(entry => renderSidebarEntry(entry, rowProps, markedUnread, onDragStart)),
-      wideContent && peerGroups.length > 0 ? h('div', { className: 'bt-peer-groups', 'data-group': 'other-machines' },
-        h('div', { className: 'bt-hint bt-group-head' }, t('Other machines')),
-        peerGroups.map(([node, bots]) => h('div', { key: node, className: 'bt-peer-node', 'data-node': node },
-          h('div', { className: 'bt-hint bt-peer-node-name' }, node === 'hub' ? 'hub' : node),
-          bots.map(bot => h(BotRow, { ...rowProps, key: bot.id, bot, marked: false }))))) : null,
       sections.map(section => h(SectionBlock, {
         key: section.id,
         section,
@@ -1022,8 +856,7 @@ export function TeamSidebar(props) {
         onDragStart,
         onDragOverSec,
         onDropSec,
-      })),
-    ),
+      }))),
     foot)
   return h(Fragment, null,
     h(TitleToggle, { hidden: mode === 'hidden', onToggle }),
@@ -1048,7 +881,7 @@ function UpdateButton({ useUpdate, actions }) {
       if (event.target instanceof Element && (event.target.closest('.bt-update-pop') || button.current?.contains(event.target))) return
       setOpen(false)
     }
-    const onKey = (event) => { if (event.key === 'Escape') { event.stopPropagation(); setOpen(false); button.current?.focus() } }
+    const onKey = (event) => { if (event.key === 'Escape' && !event.isComposing && event.keyCode !== 229) { event.stopPropagation(); setOpen(false); button.current?.focus() } }
     window.addEventListener('mousedown', onDown)
     window.addEventListener('keydown', onKey, true)
     return () => { window.removeEventListener('mousedown', onDown); window.removeEventListener('keydown', onKey, true) }
@@ -1173,7 +1006,7 @@ export function AccountLauncher({ seat = true, settingsOpen, actions }) {
     }
     const onKey = (event) => {
       if (stepMenuFocus(menuRef.current, event, button.current)) return
-      if (event.key === 'Escape') { event.stopPropagation(); setOpen(false); button.current?.focus() }
+      if (event.key === 'Escape' && !event.isComposing && event.keyCode !== 229) { event.stopPropagation(); setOpen(false); button.current?.focus() }
     }
     window.addEventListener('mousedown', onDown)
     window.addEventListener('keydown', onKey, true)
@@ -1363,7 +1196,7 @@ function glideOnto(mark, from) {
 // The view always lands on a Bot rather than an empty New Session page.
 // When a Bot's chat moves on to a fresh part, the shell clears the view of the part
 // it archived; the chat then goes on in the Bot's current part instead.
-export function useLandOnMainBot(roster, useSessions, actions) {
+function useLandOnMainBot(roster, useSessions, actions) {
   const mainView = useSessions((list) => {
     const row = Object.values(list.byId).find(session => (session?.retainedBy?.mainView ?? 0) > 0)
     return row ? `${row.id}|${row.blank ? 1 : 0}` : ''
@@ -1386,40 +1219,14 @@ export function useLandOnMainBot(roster, useSessions, actions) {
       if ((room.sessionId ?? room.id) !== id) actions.openSession(room.id)
       return undefined
     }
-    // A Thread Session is one of a Bot's team conversations: it is a destination of
-    // its own, blank until its first turn included. Without this a new Thread opened
-    // from its row landed straight back on the Main Bot page.
-    if (id !== '' && actions.threadBotOfSession?.(id) !== undefined) {
-      lastBot.current = null
-      return undefined
-    }
     // A DSH Agent Session, blank or not, is a real destination: it stays.
     if (id !== '' && ((actions.isAgentSession?.(id) ?? roster.agentOf[id] !== undefined) || blank !== '1')) {
       lastBot.current = null
       return undefined
     }
-    // A Thread page this plugin saved is still waiting to be restored: the restore
-    // pass owns the decision, so the landing check must not go home first — not on an
-    // empty main view, and not on the blank Session the core's own restore left
-    // behind. It is asked again when the timer fires, in case the page is gone.
-    if (actions.hasThreadPage?.() === true) return undefined
-    // Nothing here knows the Session: after a reload or a restart the Thread cache is
-    // empty, so the Host is asked before the view goes home. A question that could not
-    // be asked is not an answer — the view stays rather than bouncing on a guess.
     const last = lastBot.current
-    const home = () => actions.landOn(roster.mainBotId, last)
-    const ask = id === '' ? undefined : actions.threadOwnerOf
-    let live = true
-    const timer = setTimeout(() => {
-      if (actions.hasThreadPage?.() === true) return
-      if (typeof ask !== 'function') { home(); return }
-      Promise.resolve(ask(id)).then((owner) => {
-        if (!live || owner === undefined) return
-        if (owner !== null) return
-        home()
-      }, () => {})
-    }, last ? 0 : 400)
-    return () => { live = false; clearTimeout(timer) }
+    const timer = setTimeout(() => actions.landOn(roster.mainBotId, last), last ? 0 : 400)
+    return () => clearTimeout(timer)
   }, [mainView, roster])
 }
 
@@ -1478,7 +1285,7 @@ export function BrandName() {
 // FooterAccount only shows when the seat went to no one. The shell's footer classes
 // are CSS-module names, so they match on their stems.
 export const SIDEBAR_CSS = `
-.bt-confirm{width:260px;max-width:72vw;padding:10px 12px 12px;display:flex;flex-direction:column;gap:10px}
+.bt-confirm{width:100%;max-width:260px;box-sizing:border-box;padding:10px 12px 12px;display:flex;flex-direction:column;gap:10px}
 .bt-confirm-text{margin:0;font-size:13px;line-height:19px;color:var(--bt-ink-2)}
 .bt-confirm-error{margin:0;font-size:12px;line-height:17px;color:var(--bt-danger);overflow-wrap:anywhere}
 .bt-confirm-row{display:flex;justify-content:flex-end;gap:8px}
@@ -1525,7 +1332,7 @@ export const SIDEBAR_CSS = `
 
 /* The DSH Agent row and its expanding Session list. The black whale is the
    harness's own mark, so the row reads as "plain dsh" next to the Bot marks. */
-.bt-agent-ava{flex:none;width:36px;height:36px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;background:var(--bt-hover);color:var(--bt-ink)}
+.bt-agent-ava{flex:none;width:36px;height:36px;border-radius:50%;corner-shape:round;display:inline-flex;align-items:center;justify-content:center;background:var(--bt-hover);color:var(--bt-ink)}
 .bt-agent-ava.bt-run{animation:bt-agent-pulse 1.4s ease-in-out infinite}
 @keyframes bt-agent-pulse{0%,100%{opacity:1}50%{opacity:.55}}
 .bt-agent-sub{display:grid;grid-template-rows:0fr;transition:grid-template-rows ${SPRING_SHAPE.duration}ms ${SPRING_SHAPE.easing}}
@@ -1540,12 +1347,6 @@ export const SIDEBAR_CSS = `
 .bt-agent-sub-time{flex:none;font-size:11px;color:var(--bt-ink-3)}
 .bt-agent-new{color:var(--bt-ink-3)}
 .bt-agent-new svg{width:14px;height:14px;flex:none}
-.bt-agent-new:disabled{opacity:.45;cursor:default}
-.bt-agent-new:disabled:hover{background:none;color:var(--bt-ink-3)}
-/* A Bot row and the Thread list under it share one block, like the DSH Agent row. */
-.bt-bot{display:flex;flex-direction:column}
-.bt-thread-toggle svg{width:14px;height:14px;transition:transform .15s ease}
-.bt-thread-toggle[aria-expanded=true] svg{transform:rotate(90deg)}
 .bt-agent-edit{padding:3px 10px 3px 4px}
 .bt-agent-edit input{width:100%;border:0;border-radius:6px;background:var(--bt-hover);color:var(--bt-ink);font:inherit;font-size:13px;line-height:20px;padding:2px 8px;outline:none;box-shadow:inset 0 0 0 .5px var(--bt-line-2)}
 .bt-agent-sub[data-open] .bt-agent-sub-row{animation:bt-agent-row-in .24s ease both;animation-delay:calc(var(--i, 0)*30ms)}
@@ -1568,12 +1369,11 @@ export const SIDEBAR_CSS = `
 .bt-sec[data-collapsed=false] .bt-sec-chev{transform:rotate(90deg)}
 .bt-sec-chev svg{width:12px;height:12px}
 .bt-sec-dot{width:6px;height:6px;border-radius:50%;corner-shape:round;flex:none}
-.bt-group-head{font-weight:600;margin:8px 0 2px}.bt-peer-node-name{opacity:.7;margin:4px 0 2px}
 .bt-sec-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:0 1 auto}
 .bt-sec-count{font-size:11px;line-height:16px;font-weight:500;color:var(--bt-ink-3);font-variant-numeric:tabular-nums;flex:none}
-.bt-sec-head-wrap:hover .bt-sec-count-hide{display:none}
+.bt-sec-head-wrap:is(:hover,:focus-within) .bt-sec-count-hide{display:none}
 .bt-sec-tail{margin-left:auto;display:inline-flex;align-items:center;gap:6px;flex:none}
-.bt-sec-head-wrap:hover .bt-sec-tail{padding-right:44px}
+.bt-sec-head-wrap:is(:hover,:focus-within) .bt-sec-tail{padding-right:44px}
 .bt-sec-pile{display:inline-flex;align-items:center;animation:bt-sec-pile-in ${SPRING_POP.duration}ms ${SPRING_POP.easing}}
 @keyframes bt-sec-pile-in{from{opacity:0;transform:translateX(6px) scale(.82)}to{opacity:1;transform:none}}
 .bt-sec-pile-item{display:inline-flex;border-radius:50%;corner-shape:round;background:var(--bt-sidebar);box-shadow:0 0 0 1.5px var(--bt-sidebar)}
@@ -1583,9 +1383,10 @@ export const SIDEBAR_CSS = `
 .bt-sec-status[data-kind=working]{background:var(--bt-green);box-shadow:0 0 0 2px color-mix(in srgb,var(--bt-green) 22%,transparent)}
 .bt-sec-status[data-kind=alert]{width:12px;height:12px;background:var(--bt-accent);color:var(--bt-accent-ink);font-size:8.5px;line-height:12px;font-weight:600;display:inline-flex;align-items:center;justify-content:center}
 .bt-sec-status[data-kind=unread]{background:var(--bt-accent)}
-.bt-sec-acts{position:absolute;right:4px;top:50%;transform:translateY(-50%);display:none;align-items:center;gap:2px}
-.bt-sec-head-wrap:hover .bt-sec-acts,.bt-sec-acts:focus-within{display:inline-flex}
-.bt-sec-act{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--bt-ink-3);cursor:pointer;transition:background-color .12s ease,color .12s ease,transform ${SPRING_TAP.duration}ms ${SPRING_TAP.easing}}
+.bt-sec-acts{position:absolute;right:4px;top:50%;transform:translateY(-50%);display:inline-flex;align-items:center;gap:2px;opacity:0;pointer-events:none;transition:opacity .12s ease}
+.bt-sec-head-wrap:is(:hover,:focus-within) .bt-sec-acts{opacity:1;pointer-events:auto}
+.bt-sec-act{position:relative;display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--bt-ink-3);cursor:pointer;transition:background-color .12s ease,color .12s ease,transform ${SPRING_TAP.duration}ms ${SPRING_TAP.easing}}
+.bt-sec-act::after{content:"";position:absolute;inset:-4px}
 .bt-sec-act:hover{background:var(--bt-active);color:var(--bt-ink)}
 .bt-sec-act:active{transform:scale(.9)}
 .bt-sec-act:focus-visible{outline:2px solid var(--bt-accent);outline-offset:-2px}
@@ -1616,5 +1417,5 @@ export const SIDEBAR_CSS = `
 .bt-menu-color-dot:focus-visible{outline:2px solid var(--bt-accent);outline-offset:2px}
 .bt-sec-add-menu{max-width:260px}
 .bt-sec-add-list{display:flex;flex-direction:column;gap:2px;max-height:240px;overflow-y:auto}
-@media (prefers-reduced-motion:reduce){.bt-sec-body,.bt-sec-chev,.bt-sec-act,.bt-rail-folder{transition:none}.bt-sec-pile{animation:none}}
+@media (prefers-reduced-motion:reduce){.bt-sec-body,.bt-sec-chev,.bt-sec-act,.bt-rail-folder{transition:none}.bt-sec-pile,.bt-agent-ava.bt-run{animation:none}}
 `

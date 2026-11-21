@@ -7,7 +7,6 @@ import { KeyIcon, MaskedInput } from './secret-card.js'
 import { SPRING_POP, SPRING_SHAPE, SPRING_TAP, spring, stepMenuFocus, useLinger, useViewport, viewBottom } from './motion.js'
 import { hostText, t } from './i18n.js'
 import { isLocalRoute, modelsFor, routeOf } from './agent-routes.js'
-import { isJoinedRemote } from './joined-errors.js'
 
 const MENU_EXIT_MS = 120
 
@@ -41,10 +40,8 @@ export function modelOf(bot, roster) {
   const ref = bot.model ?? bot.appliedModel
   if (!ref) return undefined
   const served = servedOf(roster, ref)
-  // `roster.labels` (a remote Bot's picker): names for models this list cannot serve but the main knows, so they are not shown by their raw ref.
-  const known = served ?? roster.labels?.[ref]
   const [provider, ...rest] = ref.split('/')
-  return { ref, name: known === undefined ? rest.join('/') : nameOf(known), provider: known?.providerName ?? provider, served: served !== undefined }
+  return { ref, name: served === undefined ? rest.join('/') : nameOf(served), provider: served?.providerName ?? provider, served: served !== undefined }
 }
 
 // The thinking levels of one model, `{efforts, defaultEffort?}` or undefined when it
@@ -65,16 +62,6 @@ function useEfforts(served, ref, actions) {
     return () => { live = false }
   }, [ref, served?.reasoning !== undefined, actions])
   return served?.reasoning ?? fetched
-}
-
-// The rows of the Thinking section: a Default row that clears the Bot's pick, then every
-// level the model serves.
-export function effortRows(reasoning) {
-  if (reasoning?.efforts === undefined || reasoning.efforts.length === 0) return []
-  return [
-    { effort: undefined, label: t('Default') },
-    ...reasoning.efforts.map(effort => ({ effort: effort.id, label: effort.name })),
-  ]
 }
 
 // The stops along the thinking-level slider: when the model names its default level,
@@ -315,42 +302,31 @@ const NO_MANUAL = {}
 // the new opening number then reads the default again instead of the old choices.
 export const manualFor = (state, opening) => (state.opening === opening ? state.manual : NO_MANUAL)
 
-export function ModelRows({ roster, current, onPick, filtering = false, opening = 0 }) {
-  const groups = groupModels(roster.models)
+// A free-text query over the model list. Every token must match part of the
+// name, ref, provider id or provider display name; groups left empty are dropped
+// so the menu never shows a bare provider heading. Exported for the tests.
+export function filterModelGroups(models, query) {
+  const tokens = typeof query === 'string' ? query.trim().toLowerCase().split(/\s+/).filter(Boolean) : []
+  const groups = groupModels(models)
+  if (tokens.length === 0) return groups
+  return groups.map(([provider, list]) => [provider, list.filter((model) => {
+    // nameOf carries the display label, including a translated CLI default;
+    // the catalog fields keep the raw searchable values behind it.
+    const hay = `${model.name ?? ''} ${nameOf(model) ?? ''} ${model.ref ?? ''} ${model.provider ?? ''} ${model.providerName ?? ''}`.toLowerCase()
+    return tokens.every(token => hay.includes(token))
+  })]).filter(([, list]) => list.length > 0)
+}
+
+export function ModelRows({ roster, current, onPick, query = '', filtering = false, opening = 0 }) {
+  const trimmed = typeof query === 'string' ? query.trim() : ''
+  const groups = filterModelGroups(roster.models, trimmed)
   const [state, setState] = useState({ opening, manual: NO_MANUAL })
+  if (groups.length === 0) return h('div', { className: 'bt-model-none', role: 'status' }, t('No matching models.'))
   const manual = manualFor(state, opening)
   return h(ModelGroupList, {
-    groups, current, currentId: currentGroupId(groups, current), defaultModel: roster.defaultModel, onPick, filtering, manual,
+    groups, current, currentId: currentGroupId(groups, current), defaultModel: roster.defaultModel, onPick, filtering: filtering || trimmed.length > 0, manual,
     onToggle: (id, open) => setState(previous => ({ opening, manual: toggledGroup(manualFor(previous, opening), id, open) })),
   })
-}
-
-// What the pick does: close the menu, then hand the ref to `onPick`, or save it to the Bot.
-export function makePick({ bot, current, actions, run, onPick, close }) {
-  return (ref) => {
-    close()
-    if (onPick) onPick(ref)
-    else if (ref !== current || !bot.model) void run(actions.updateBot(bot.id, { model: ref }))
-  }
-}
-
-// The menu body (no hooks, so it renders on its own): an optional notice, the pickable models grouped
-// by provider, then `unavailable` — models the picker's source lists but the Bot's host cannot run
-// (a remote Bot's node has not synced them). Those are greyed out and cannot be picked; each row
-// says why in `reason`.
-export function ModelChoices({ roster, current, onPick, unavailable = [], notice, opening = 0, bare = false }) {
-  const models = roster.models ?? []
-  return h(Fragment, null,
-    notice ? h('div', { className: 'bt-model-notice', role: 'note' }, notice) : null,
-    models.length > 0 ? h(ModelRows, { roster, current, onPick, opening })
-      : (unavailable.length > 0 || bare ? null : h('div', { className: 'bt-model-none' }, t('No models are set up in DeepSeek Harness yet.'))),
-    unavailable.length > 0 ? h('div', { className: 'bt-model-group', role: 'presentation' }, t('Not synced to the node yet')) : null,
-    unavailable.map(model => h('button', {
-      key: `off:${model.ref}`, type: 'button', role: 'menuitem', className: 'bt-model-off', disabled: true, 'aria-disabled': true,
-      title: model.reason,
-    },
-    h('span', { className: 'bt-menu-label' }, model.name),
-    h('span', { className: 'bt-menu-hint' }, model.reason))))
 }
 
 export const Caret = () => h('svg', { className: 'bt-model-caret', width: 12, height: 12, viewBox: '0 0 20 20', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true }, h('path', { d: 'M5.5 8l4.5 4.5L14.5 8' }))
@@ -373,7 +349,7 @@ export function useAnchoredMenu() {
     }
     const onKey = (event) => {
       if (stepMenuFocus(menu.current, event, button.current)) return
-      if (event.key === 'Escape') { event.stopPropagation(); close(); button.current?.focus() }
+      if (event.key === 'Escape' && !event.isComposing && event.keyCode !== 229) { event.stopPropagation(); close(); button.current?.focus() }
     }
     const onScroll = (event) => { if (!menu.current?.contains(event.target)) close() }
     window.addEventListener('mousedown', onDown)
@@ -414,7 +390,7 @@ export function useInlineMenu() {
     const onDown = (event) => { if (!root.current?.contains(event.target)) close() }
     const onKey = (event) => {
       if (stepMenuFocus(menu.current, event, button.current)) return
-      if (event.key === 'Escape') { event.stopPropagation(); close(); button.current?.focus() }
+      if (event.key === 'Escape' && !event.isComposing && event.keyCode !== 229) { event.stopPropagation(); close(); button.current?.focus() }
     }
     window.addEventListener('mousedown', onDown)
     window.addEventListener('keydown', onKey, true)
@@ -458,14 +434,11 @@ export function useAgentModels(actions) {
 }
 
 // What the model picker reads from the Bot and the roster; the popup and the inline form share it.
-function useModelPicker({ bot, roster, actions, run, onPick, onPickEffort, withEfforts, unavailable, notice, availabilityKnown = true }) {
+function useModelPicker({ bot, roster, actions, run, onPick, onPickEffort, withEfforts }) {
   const [reading, readModels] = useAgentModels(actions)
   const shown = modelOf(bot, roster)
   const current = bot.model ?? bot.appliedModel
-  // A remote Bot's list is the node's catalog as reported, whatever the names in it: the local-agent routing below
-  // (this machine's CLI list, the filter by route) is about agents on THIS machine.
-  const remote = isJoinedRemote(bot)
-  const local = !remote && isLocalRoute(current)
+  const local = isLocalRoute(current)
   const served = servedOf(roster, current)
   const reasoning = useEfforts(served, withEfforts ? current : undefined, actions)
   // The level the Bot runs on: its pick when the model serves it, else the model's own.
@@ -477,15 +450,17 @@ function useModelPicker({ bot, roster, actions, run, onPick, onPickEffort, withE
   // Each opening is a new number, so the rows start from the current model again even
   // when the previous menu is still playing its exit animation under a quick reopen.
   const [opening, setOpening] = useState(0)
-  const models = remote ? (roster.models ?? []) : modelsFor(roster.models, current)
+  const [query, setQuery] = useState('')
+  const models = modelsFor(roster.models, current)
   return {
-    bot, roster, shown, current, local, reasoning, picked, effortLabel, models, opening, reading, withEfforts, unavailable, notice, availabilityKnown,
+    bot, roster, shown, current, local, reasoning, picked, effortLabel, models, opening, query, setQuery, reading, withEfforts,
     manage: local ? undefined : manageModels(actions),
     hasEfforts: withEfforts && effortStops(reasoning).length > 0,
     // DSH settings can change the list at any time, so opening asks again.
     opened: () => {
       if (local) readModels(routeOf(current))
       else void actions?.refreshModels?.()
+      setQuery('')
       setOpening(count => count + 1)
     },
     choose: (ref) => {
@@ -499,23 +474,42 @@ function useModelPicker({ bot, roster, actions, run, onPick, onPickEffort, withE
 
 // The trigger shows the model name over its provider.
 const modelTrigger = (picker, { wide, button, isOpen, onClick }) => {
-  const { shown, models, withEfforts, effortLabel, availabilityKnown } = picker
-  const missing = availabilityKnown && shown !== undefined && !shown.served && models.length > 0
+  const { shown, models, withEfforts, effortLabel } = picker
   return h('button', {
     ref: button, type: 'button', className: 'bt-model-trigger', 'data-wide': wide || undefined,
     'aria-haspopup': 'menu', 'aria-expanded': isOpen, 'aria-label': t('Model: {model}', { model: shown?.name ?? t('none') }),
-    'data-missing': missing ? '' : undefined, onClick,
+    'data-missing': shown !== undefined && !shown.served && models.length > 0 ? '' : undefined, onClick,
   },
   h('span', { className: 'bt-model-copy' },
     h('span', { className: 'bt-model-name' }, shown?.name ?? t('Choose a model')),
-    shown ? h('span', { className: 'bt-model-provider' }, !missing
+    shown ? h('span', { className: 'bt-model-provider' }, shown.served || models.length === 0
       ? (!withEfforts || effortLabel === undefined ? shown.provider : `${shown.provider} · ${effortLabel}`)
       : t('{provider} · not available', { provider: shown.provider })) : null),
   h(Caret))
 }
 
-const modelScroll = ({ roster, models, current, local, reading, opening, unavailable, notice }, pick) => h('div', { className: 'bt-model-scroll' },
-  h(ModelChoices, { roster: { ...roster, models }, current, onPick: pick, opening, unavailable, notice, bare: local }),
+// The query box sits inside the menu and takes focus on open, so the arrow keys are
+// handed from it to the rows. The input stands in for the trigger in stepMenuFocus: on
+// the input the step starts from before the first row and lands on the first (or, going
+// up, the last) menuitemradio, matching how the trigger behaves. Escape is left to
+// bubble so the menu's window handler closes it from the input too.
+const modelSearch = ({ models, query, setQuery }, menu) => {
+  const field = useRef(null)
+  return models.length > 0 ? h('div', { className: 'bt-model-search', role: 'presentation' },
+    h('input', {
+      ref: field, type: 'search', className: 'bt-input bt-model-search-input',
+      placeholder: t('Search models…'), 'aria-label': t('Search models'),
+      value: query, autoFocus: true, autoComplete: 'off', spellCheck: false,
+      onChange: event => setQuery(event.target.value),
+      onKeyDown: event => {
+        if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) stepMenuFocus(menu.current, event, field.current)
+      },
+    })) : null
+}
+
+const modelScroll = ({ roster, models, current, local, reading, opening, query }, pick) => h('div', { className: 'bt-model-scroll' },
+  models.length > 0 ? h(ModelRows, { roster: { ...roster, models }, current, onPick: pick, query, opening })
+    : local ? null : h('div', { className: 'bt-model-none' }, t('No models are set up in DeepSeek Harness yet.')),
   reading ? h('div', { className: 'bt-model-none' }, t('Reading models…')) : null)
 
 const manageButton = (manage, close) => h('button', { type: 'button', role: 'menuitem', onClick: () => { close(); manage() } },
@@ -532,9 +526,9 @@ export function ModelMenu(props) {
 }
 
 // A Thinking section at the foot of the menu lists the levels of the shown model when it has them.
-function PopupModelMenu({ bot, roster, actions, run, wide = false, onPick, onPickEffort, withEfforts = true, unavailable, notice, availabilityKnown = true }) {
+function PopupModelMenu({ bot, roster, actions, run, wide = false, onPick, onPickEffort, withEfforts = true }) {
   const { isOpen, shownPlace, leaving, button, menu, open, close } = useAnchoredMenu()
-  const picker = useModelPicker({ bot, roster, actions, run, onPick, onPickEffort, withEfforts, unavailable, notice, availabilityKnown })
+  const picker = useModelPicker({ bot, roster, actions, run, onPick, onPickEffort, withEfforts })
   const { manage, hasEfforts } = picker
   const toggle = () => {
     if (isOpen) { close(); return }
@@ -548,6 +542,7 @@ function PopupModelMenu({ bot, roster, actions, run, wide = false, onPick, onPic
   return h(Fragment, null,
     modelTrigger(picker, { wide, button, isOpen, onClick: toggle }),
     shownPlace ? createPortal(h('div', { ref: menu, className: `bt-menu bt-model-menu${shownPlace.bottom !== undefined ? ' bt-menu-up' : ''}`, role: 'menu', 'aria-label': modelMenuLabel(bot), style: shownPlace, 'data-leaving': leaving || undefined },
+      modelSearch(picker, menu),
       modelScroll(picker, pick),
       hasEfforts || manage ? h('div', { className: 'bt-model-foot' },
         hasEfforts ? h(EffortBar, { reasoning: picker.reasoning, current: picker.picked, onPick: picker.chooseEffort }) : null,
@@ -557,9 +552,9 @@ function PopupModelMenu({ bot, roster, actions, run, wide = false, onPick, onPic
 
 // The list opens under the trigger and pushes what follows it down; the Thinking slider
 // stays under the trigger, or under the list while it is open.
-function InlineModelMenu({ bot, roster, actions, run, wide = false, onPick, onPickEffort, withEfforts = true, unavailable, notice, availabilityKnown = true }) {
+function InlineModelMenu({ bot, roster, actions, run, wide = false, onPick, onPickEffort, withEfforts = true }) {
   const { isOpen, root, button, menu, open, close } = useInlineMenu()
-  const picker = useModelPicker({ bot, roster, actions, run, onPick, onPickEffort, withEfforts, unavailable, notice, availabilityKnown })
+  const picker = useModelPicker({ bot, roster, actions, run, onPick, onPickEffort, withEfforts })
   const { manage, hasEfforts } = picker
   const toggle = () => {
     if (isOpen) { close(); return }
@@ -575,6 +570,7 @@ function InlineModelMenu({ bot, roster, actions, run, wide = false, onPick, onPi
     modelTrigger(picker, { wide, button, isOpen, onClick: toggle }),
     h(Collapse, { open: isOpen },
       h('div', { ref: menu, className: 'bt-menu bt-model-menu bt-model-inline-menu', role: 'menu', 'aria-label': modelMenuLabel(bot) },
+        modelSearch(picker, menu),
         modelScroll(picker, pick),
         manage ? h('div', { className: 'bt-model-foot' }, manageButton(manage, close)) : null)),
     h(Collapse, { open: hasEfforts },
@@ -590,7 +586,7 @@ export function ModelChoiceDock({ sessionId, useRoster, actions }) {
   const [error, setError] = useState('')
   const shown = Boolean(bot) && currentPart(bot) === sessionId && roster.ready
   useEffect(() => { if (shown) void actions.refreshModels?.() }, [shown, sessionId])
-  if (!bot || currentPart(bot) !== sessionId || !roster.ready || isJoinedRemote(bot)) return null
+  if (!bot || currentPart(bot) !== sessionId || !roster.ready) return null
   // A local agent that is gone gets the repair card; picking a model here would change what it runs on.
   if (isLocalRoute(bot.model)) return null
   const models = modelsFor(roster.models)
@@ -599,13 +595,9 @@ export function ModelChoiceDock({ sessionId, useRoster, actions }) {
   const lost = bot.model ? !models.some(model => model.ref === bot.model) : false
   // An unknown catalog (none listed) cannot tell a lost model from a slow provider.
   if (bot.model && (!lost || models.length === 0)) return null
-  // A Bot the main manages does not pick its model here: a local pick would silently
-  // diverge from the row the main shows (§49). The dock only says where the change
-  // belongs, with nothing focusable to pick — keyboard included.
-  const managedLost = lost && bot.managedBy === 'hub'
   // The missing key is taken here, through the host.
-  const keyFor = managedLost ? undefined : usable.length === 0 && actions.setProviderKey ? models.find(model => model.needsKey) : undefined
-  const manage = managedLost ? undefined : manageModels(actions)
+  const keyFor = usable.length === 0 && actions.setProviderKey ? models.find(model => model.needsKey) : undefined
+  const manage = manageModels(actions)
   const pick = (ref) => {
     setBusy(ref)
     setError('')
@@ -614,18 +606,14 @@ export function ModelChoiceDock({ sessionId, useRoster, actions }) {
       .finally(() => setBusy(''))
   }
   // The pick reads as the Bot's own first message, with the choices as replies under it.
-  const text = managedLost
-    ? t('{model} is not available anymore. Change it on the main.', { model: bot.model.split('/').slice(1).join('/') })
-    : lost
+  const text = lost
     ? t('{model} is not available anymore. Pick another model for me.', { model: bot.model.split('/').slice(1).join('/') })
     : keyFor
       ? t("Hi, I'm {name}. I need a {provider} API key before I can start.", { name: bot.name, provider: keyFor.providerName ?? keyFor.provider })
       : usable.length === 0
         ? t("Hi, I'm {name}. I don't have a model yet. How do you want to set one up?", { name: bot.name })
         : t("Hi, I'm {name}. Pick a model for me first. You can change it later in my details.", { name: bot.name })
-  const choices = managedLost
-    ? []
-    : usable.length === 0
+  const choices = usable.length === 0
     ? setupChoices(actions).map(([label, run]) => h('button', { key: label, type: 'button', className: 'bt-model-chip', onClick: run }, label))
     : [
         ...groupModels(usable).map(([provider, list]) => h('div', { key: list[0].provider ?? provider, className: 'bt-model-choice-group', role: 'group', 'aria-label': provider },
@@ -646,9 +634,7 @@ export function ModelChoiceDock({ sessionId, useRoster, actions }) {
           h('div', { className: 'bt-bubble' }, text)))),
     keyFor
       ? h(ModelKeyCard, { key: keyFor.provider, model: keyFor, actions })
-      : choices.length > 0
-        ? h('div', { className: 'bt-model-chips', role: 'group', 'aria-label': t('Choose a model') }, choices)
-        : null,
+      : h('div', { className: 'bt-model-chips', role: 'group', 'aria-label': t('Choose a model') }, choices),
     error ? h('div', { className: 'bt-secret-error bt-model-error', role: 'alert' }, error) : null)
 }
 
@@ -734,6 +720,11 @@ export const MODEL_CSS = `
 .bt-model-trigger[aria-expanded=true] .bt-model-caret{transform:rotate(180deg)}
 .bt-model-menu{overflow-y:auto;scrollbar-width:thin}
 .bt-model-menu:not(.bt-folder-menu){padding:0;overflow:hidden;display:flex;flex-direction:column;gap:0}
+.bt-model-search{flex:none;display:flex;padding:6px 6px 4px;border-bottom:.5px solid var(--bt-line-2)}
+.bt-model-search-input{flex:1 1 auto;width:100%;box-sizing:border-box;height:28px;padding:4px 8px;border:0;border-radius:6px;background:var(--bt-hover);color:var(--bt-ink);font:inherit;font-size:12px;line-height:18px;outline:0}
+.bt-model-search-input:focus-visible{box-shadow:inset 0 0 0 1px var(--bt-accent)}
+.bt-model-search-input::placeholder{color:var(--bt-ink-3)}
+.bt-model-search-input::-webkit-search-cancel-button{cursor:pointer}
 .bt-model-scroll{flex:1 1 auto;min-height:0;overflow-y:auto;scrollbar-width:thin;overscroll-behavior:contain;padding:6px;display:flex;flex-direction:column;gap:2px}
 .bt-model-foot{flex:none;display:flex;flex-direction:column;gap:2px;padding:4px 6px 6px;border-top:.5px solid var(--bt-line-2)}
 .bt-model-inline{display:flex;flex-direction:column;min-width:0}
@@ -782,9 +773,6 @@ menus use, with the menu item's hover, focus ring and a caret that points at the
 .bt-model-tick{flex:none;width:16px;height:16px;display:inline-flex;color:var(--bt-ink-2)}
 .bt-model-tick svg{animation:bt-check-pop ${SPRING_POP.duration}ms ${SPRING_POP.easing} 60ms backwards}
 .bt-model-none{padding:8px;font-size:13px;line-height:18px;color:var(--bt-ink-2)}
-.bt-model-notice{padding:6px 8px 4px;font-size:12px;line-height:16px;color:var(--bt-ink-2)}
-.bt-model-off{opacity:.55;cursor:not-allowed}
-.bt-model-off .bt-menu-hint{white-space:normal;text-align:right}
 /* DSH centers the message column inside its scroll padding, which can sit a few px off this dock's center; the side shadows keep the band over the column's edges. */
 .bt-model-dock{width:100%;max-width:var(--dsh-chat-content-width,748px);margin:0 auto;display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:0 0 10px;box-sizing:border-box;background:var(--bt-main);box-shadow:-12px 0 0 var(--bt-main),12px 0 0 var(--bt-main);animation:bt-model-in ${SPRING_POP.duration}ms ${SPRING_POP.easing} backwards}
 /* The scroll box clips at its padding edge, so 3px of padding keeps the chips' focus rings visible; the negative margins cancel it so the chips stay in place. */
@@ -792,7 +780,7 @@ menus use, with the menu item's hover, focus ring and a caret that points at the
 .bt-model-choice-group{display:flex;flex-direction:column;gap:6px;width:100%;min-width:0}
 .bt-model-choice-provider{padding-top:4px;font-size:12px;line-height:16px;font-weight:500;color:var(--bt-ink-2);overflow-wrap:anywhere}
 .bt-model-choice-chips{display:flex;flex-wrap:wrap;gap:6px}
-.bt-model-chip{display:inline-flex;align-items:center;gap:6px;min-height:30px;padding:5px 12px;border:.5px solid var(--bt-line-2);border-radius:999px;background:var(--bt-surface,transparent);color:var(--bt-ink);font:inherit;font-size:13px;line-height:18px;cursor:pointer;transition:background-color .12s ease,border-color .12s ease}
+.bt-model-chip{display:inline-flex;align-items:center;gap:6px;min-height:30px;padding:5px 12px;border:.5px solid var(--bt-line-2);border-radius:999px;background:var(--bt-card);color:var(--bt-ink);font:inherit;font-size:13px;line-height:18px;cursor:pointer;transition:background-color .12s ease,border-color .12s ease}
 .bt-model-chip:hover:not(:disabled){background:var(--bt-hover)}
 .bt-model-chip:focus-visible{outline:2px solid var(--bt-accent);outline-offset:1px}
 .bt-model-chip-quiet{color:var(--bt-ink-2)}

@@ -1,16 +1,14 @@
 // Store: the saved team (state.json), its migrations, the lock that keeps a second dsh
 // host on the same data from writing it, and the indexes that map a Session to the Bot
 // or group chat it belongs to.
-import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
+import { copyFileSync, mkdirSync, readFileSync, statSync } from 'node:fs'
 import { mkdir, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { LEGACY_THEMES, MAX_EXCHANGES, ROOM_MODES, SECTION_COLORS, SECTION_NAME_MAX, STATE_V1_BACKUP, STATE_VERSION, TEXT_KEPT } from './constants.js'
+import { LEGACY_THEMES, MAX_EXCHANGES, ROOM_MODES, SECTION_COLORS, SECTION_NAME_MAX, TEXT_KEPT } from './constants.js'
 import { replaceFile } from './files.js'
 import { homeLock } from './home-lock.js'
 import { currentColor, headOf, normalize, unquote } from './text.js'
-import { mainThreadId, mainThreadOf, newMainThread, saveThread, threadOf, threadsOfBot, updateBySessionId, updateBySessionIdFull } from './bot-store.js'
-import { ensureFederationState, migrateFederation } from './federation.js'
-import { joinedShadow } from './roster-join.js'
+import { isActiveTask } from './threads.js'
 import { AMBIGUOUS_OLD_ROUTES, legacyRoute } from './local-agents/engines.js'
 
 // A table read that sees only the keys the table holds itself. Ids that come from
@@ -22,27 +20,15 @@ export const own = (table, key) => (table != null && Object.hasOwn(table, key) ?
 export function install(rt) {
   const { ctx, home, statePath } = rt
 
-  /** @type {{version:2, workspaceId?:string, mainBotIds:string[], bots:Record<string,any>, threads:Record<string,any>, privateArchives:any[], rooms:Record<string,any>, agents:Record<string,any>, sections:any[], capabilities:{items:Record<string,any>}, exchanges:any[], exchangeTurns:Record<string,number[]>, revision:number}} */
-  const state = { version: STATE_VERSION, mainBotIds: [], bots: {}, threads: {}, privateArchives: [], rooms: {}, agents: {}, sections: [], capabilities: { items: {} }, exchanges: [], exchangeTurns: {}, works: {}, requests: {}, questions: {}, views: {}, closedCards: {}, prefs: {}, nodeLimits: {}, switching: {}, federation: { version: 1, hubId: null, peersAt: 0, inbox: {}, outbox: {}, seen: {}, seq: 0, allowPeerToMain: false, lastError: null }, memoryFederation: { seq: 0, schemaVersion: 1, nodes: {}, inbox: {} }, approvalResults: {}, resumeCursor: {}, revision: 0 }
+  /** @type {{version:1, workspaceId?:string, mainBotIds:string[], bots:Record<string,any>, privateArchives:any[], rooms:Record<string,any>, agents:Record<string,any>, sections:any[], capabilities:{items:Record<string,any>}, exchanges:any[], exchangeTurns:Record<string,number[]>, revision:number}} */
+  const state = { version: 1, mainBotIds: [], bots: {}, privateArchives: [], rooms: {}, agents: {}, sections: [], capabilities: { items: {} }, exchanges: [], exchangeTurns: {}, works: {}, requests: {}, questions: {}, views: {}, closedCards: {}, prefs: {}, switching: {}, revision: 0 }
   let loaded = null
   let storeReady = false
   let writing = Promise.resolve()
-  let savedSnapshot
-  let deferred = false
-  let saveTimer
-  const cancelSaveTimer = () => {
-    clearTimeout(saveTimer)
-    saveTimer = undefined
-  }
   const { warn } = rt
   const sessionIdOf = id => (typeof id === 'string' && id !== '' ? id : undefined)
 
-  // A peer row the hub's directory put here lives in memory for this session only: it
-  // names a hub and a home node, and is never written, so a restart cannot revive it.
-  const sessionPeer = bot => bot?.origin === 'peer' && typeof bot.homeNodeId === 'string' && typeof bot.hubId === 'string'
-  const serialize = () => JSON.stringify(state, (key, value) => key === 'bots' && value === state.bots
-    ? Object.fromEntries(Object.entries(value).filter(([, bot]) => !sessionPeer(bot))) : value)
-  const EMPTY = serialize()
+  const EMPTY = JSON.stringify(state)
   // The other dsh host that holds state.lock while this one only reads (see home-lock.js);
   // undefined while this host may write.
   let holder
@@ -84,17 +70,6 @@ export function install(rt) {
     return `The Bot team in ${home} is open in another dsh (Web or Desktop, ${where}). This window shows the team but cannot change it; close the other one and reload.`
   }
 
-  // Before the v1 → v2 migration changes the file's shape, keep the v1 file once. A first
-  // upgrade copies; later loads find the backup and leave it as it was.
-  const backupV1 = () => {
-    const backup = `${statePath}${STATE_V1_BACKUP}`
-    try {
-      if (!existsSync(backup)) copyFileSync(statePath, backup)
-    } catch (error) {
-      warn('ds-bot: could not keep the v1 Bot team as %s: %s', backup, error)
-    }
-  }
-
   // Synchronous on purpose: the saved team and the session indexes built from it
   // exist before the first tool or shell env call can resolve a Session.
   const readFileState = () => {
@@ -127,7 +102,7 @@ export function install(rt) {
       }
       return undefined
     }
-    if (parsed?.version === 1 || parsed?.version === STATE_VERSION) {
+    if (parsed?.version === 1) {
       stuck = undefined
       return parsed
     }
@@ -138,26 +113,16 @@ export function install(rt) {
   // Fill `state` from the saved file and bring an older team up to date. Returns the
   // groups whose Session titles still need the new name.
   const adopt = (parsed) => {
-    cancelSaveTimer()
-    deferred = false
-    savedSnapshot = undefined
     lockEpoch += 1
     const hadCapabilities = parsed !== null && parsed !== undefined && Object.hasOwn(parsed, 'capabilities')
     for (const key of Object.keys(state)) delete state[key]
     Object.assign(state, JSON.parse(EMPTY), parsed ?? {})
     state.prefs ??= {}
-    // Per-node task concurrency (hub → node/config): absent or corrupt means none set.
-    if (state.nodeLimits === null || typeof state.nodeLimits !== 'object' || Array.isArray(state.nodeLimits)) state.nodeLimits = {}
-    // Set by the groups → sections migration below; declared before the first use of
-    // `migrated` because that expression may read it.
-    let groupsMigrated = false
     // Teams saved before the DSH Agent existed carry no `agents`; corrupt values reset.
     if (state.agents === null || typeof state.agents !== 'object' || Array.isArray(state.agents)) state.agents = {}
     // `computer` is the computer-use switch; absent or corrupt means off.
     if (state.computer === null || typeof state.computer !== 'object' || Array.isArray(state.computer)) state.computer = {}
-    let migrated = !hadCapabilities || groupsMigrated
-    if (migrateMemoryFederation(state)) migrated = true
-    if (ensureFederationState(state)) migrated = true
+    let migrated = !hadCapabilities
     if (state.capabilities === null || typeof state.capabilities !== 'object' || Array.isArray(state.capabilities)) {
       state.capabilities = { items: {} }
       migrated = true
@@ -193,11 +158,6 @@ export function install(rt) {
         migrated = true
       }
     }
-    if (migrateFederation(state)) migrated = true
-    const savedVersion = parsed?.version
-    if (migrateThreads(state)) migrated = true
-    // Keep the v1 team file once, beside it, before the migrated shape is saved.
-    if (savedVersion === 1) backupV1()
     for (const [id, room] of Object.entries(state.rooms)) {
       if (!room || typeof room !== 'object' || Array.isArray(room)) {
         delete state.rooms[id]
@@ -229,57 +189,6 @@ export function install(rt) {
           ...(SECTION_COLORS.includes(sec.color) ? { color: sec.color } : {}),
         }))
     }
-    // One-time migration of this fork's custom Bot groups (state.groups) into upstream's
-    // sections model: groups with members become sections in their saved order, and their
-    // members move in by sectionId. Empty or corrupt groups leave nothing behind, and the
-    // old field (plus the per-Bot groupId) is dropped so it can never come back.
-    if (state.groups !== undefined) {
-      groupsMigrated = true
-      const groups = state.groups !== null && typeof state.groups === 'object' && !Array.isArray(state.groups)
-        ? Object.values(state.groups).filter(group => group !== null && typeof group === 'object' && Array.isArray(group.botIds) && group.botIds.length > 0)
-        : []
-      groups.sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
-      const used = new Set(state.sections.map(sec => sec.id))
-      for (const group of groups) {
-        let id = typeof group.id === 'string' && group.id !== '' && !used.has(group.id) ? group.id : 'section'
-        while (used.has(id)) id = `${id}-1`
-        used.add(id)
-        const name = (typeof group.name === 'string' && group.name.trim() ? group.name.trim() : 'Section').slice(0, SECTION_NAME_MAX)
-        state.sections.push({
-          id,
-          name,
-          ...(group.collapsed === true ? { collapsed: true } : {}),
-          ...(SECTION_COLORS.includes(group.color) ? { color: group.color } : {}),
-        })
-        for (const botId of group.botIds) {
-          if (state.bots[botId] !== undefined) state.bots[botId].sectionId = id
-        }
-      }
-      delete state.groups
-      for (const bot of Object.values(state.bots)) delete bot.groupId
-    }
-    // The migration above runs after `migrated` was first computed, and a canonical v2 team
-    // reaches this point with every other flag already true on disk: without this line the
-    // sections would live in memory only until some later save.
-    if (groupsMigrated) migrated = true
-    // One-time cleanup of the dropped node-inventory feature: its switch, its error slot and
-    // the read-only rows that mirrored Bots on another machine. A node row never had a
-    // Session or a Thread here, but a team saved while the feature was on can still carry the
-    // switch and its rows, so those go with any Thread still filed under them.
-    const nodeRows = Object.keys(state.bots).filter(id => state.bots[id]?.origin === 'node')
-    const hadNodeSwitch = Object.hasOwn(state.prefs ?? {}, 'nodeInventory') || Object.hasOwn(state, 'nodeInventory')
-    if (nodeRows.length > 0 || hadNodeSwitch) {
-      for (const id of nodeRows) {
-        delete state.bots[id]
-        for (const [threadId, thread] of Object.entries(state.threads ?? {})) {
-          if (thread?.botId === id) delete state.threads[threadId]
-        }
-      }
-      if (state.prefs !== null && typeof state.prefs === 'object') delete state.prefs.nodeInventory
-      delete state.nodeInventory
-      state.mainBotIds = state.mainBotIds.filter(id => state.bots[id] !== undefined)
-      migrated = true
-    }
     const sectionIds = new Set(state.sections.map(sec => sec.id))
     for (const entry of [...Object.values(state.bots), ...Object.values(state.rooms), ...Object.values(state.agents)]) {
       if (entry.sectionId !== undefined && (typeof entry.sectionId !== 'string' || !sectionIds.has(entry.sectionId) || entry.id === state.mainBotIds[0])) {
@@ -302,7 +211,7 @@ export function install(rt) {
       state.prefs.theme = LEGACY_THEMES[state.prefs.theme]
       migrated = true
     }
-    for (const key of ['works', 'approvalResults', 'resumeCursor']) if (state[key] === null || typeof state[key] !== 'object' || Array.isArray(state[key])) state[key] = {}
+    if (state.works === null || typeof state.works !== 'object' || Array.isArray(state.works)) state.works = {}
     if (state.requests === null || typeof state.requests !== 'object' || Array.isArray(state.requests)) state.requests = {}
     // Group call batches (groups.js); a batch that is not whole is dropped.
     if (state.roomBatches === null || typeof state.roomBatches !== 'object' || Array.isArray(state.roomBatches)) state.roomBatches = {}
@@ -379,15 +288,18 @@ export function install(rt) {
     const stale = Object.values(state.rooms).filter(room => !room.named && room.name !== rt.autoRoomName(room.members))
     for (const room of stale) room.name = rt.autoRoomName(room.members)
     indexSessions()
-    if (!migrated && stale.length === 0 && parsed !== undefined) savedSnapshot = serialize()
     return { migrated: migrated || stale.length > 0, stale }
   }
 
   const hasLoaded = () => storeReady
+  const notifyStoreSync = () => {
+    rt.onStoreSync?.()
+    rt.syncDeepseekTools?.()
+  }
   const syncReadOnly = () => {
     if (storeReady && adopting === undefined && (stuck !== undefined || holder !== undefined) && stamp() !== seen) {
       adopt(readFileState())
-      rt.onStoreSync?.()
+      notifyStoreSync()
     }
   }
 
@@ -396,7 +308,7 @@ export function install(rt) {
     if (holder !== undefined) warn('ds-bot: %s', readOnly())
     const { migrated, stale } = adopt(readFileState())
     storeReady = true
-    rt.onStoreSync?.()
+    notifyStoreSync()
     if (holder !== undefined) return
     if (migrated && stuck === undefined) {
       // A failed write must not poison `loaded`: the migrated state stays in
@@ -422,13 +334,14 @@ export function install(rt) {
       if (stamp() !== seen) {
         const aside = `${statePath}.replaced-${Date.now()}`
         try {
-          await writeFile(aside, serialize())
+          await writeFile(aside, JSON.stringify(state))
           warn('ds-bot: %s changed while no host held the team; it is adopted and this host\'s state is kept as %s', statePath, aside)
         } catch (error) {
           warn('ds-bot: %s changed while no host held the team; it is adopted, and this host\'s state is lost because it could not be kept aside: %s', statePath, error)
         }
       }
       adopt(readFileState())
+      notifyStoreSync()
     })
     writing = run.catch(() => {})
     const tracked = run.finally(() => { if (adopting === tracked) adopting = undefined })
@@ -456,7 +369,7 @@ export function install(rt) {
         warn('ds-bot: the other dsh has closed; this one now saves the Bot team')
         warnedReadOnly = false
         adopt(readFileState())
-        rt.onStoreSync?.()
+        notifyStoreSync()
         return
       }
     } else if (!lockBroken && !lock.owns()) {
@@ -467,18 +380,18 @@ export function install(rt) {
       if (lockBroken) return
       if (holder === undefined) {
         await reclaimHeld()
-        rt.onStoreSync?.()
+        notifyStoreSync()
         return
       }
       warn('ds-bot: %s', readOnly())
     }
     if (adopting !== undefined) {
       await adopting
-      rt.onStoreSync?.()
+      notifyStoreSync()
       return
     }
     if ((stuck !== undefined || holder !== undefined) && stamp() !== seen) adopt(readFileState())
-    rt.onStoreSync?.()
+    notifyStoreSync()
   }
 
   const warnReadOnly = () => {
@@ -506,7 +419,9 @@ export function install(rt) {
     return warnReadOnly()
   }
 
-  const writeState = ({ required = false, force = false } = {}) => {
+  const save = ({ required = false } = {}) => {
+    if (stopped) return required ? Promise.reject(new Error('The Bot team cannot be saved after this host stopped.')) : writing
+    indexSessions()
     // A reading host keeps the file's revision, so its window does not skip the next change.
     if (!writable()) return required ? Promise.reject(new Error(`This host cannot save the Bot team: ${readOnly()}`)) : writing
     const run = writing.then(async () => {
@@ -520,6 +435,9 @@ export function install(rt) {
       // The snapshot is taken here, so a save made while an adopt was pending
       // writes the adopted state, not the stale one it had.
       const epoch = lockEpoch
+      state.revision += 1
+      state.exchanges = state.exchanges.slice(-MAX_EXCHANGES)
+      const snapshot = JSON.stringify(state)
       const temp = `${statePath}.${process.pid}.tmp`
       try {
         await mkdir(home, { recursive: true })
@@ -539,15 +457,10 @@ export function install(rt) {
           }
         }
         ensureLock()
-        state.exchanges = state.exchanges.slice(-MAX_EXCHANGES)
-        if (!force && stamp() !== '' && serialize() === savedSnapshot) return
-        state.revision += 1
-        const snapshot = serialize()
         await writeFile(temp, snapshot, 'utf8')
         ensureLock()
         await replaceFile(temp, statePath, ensureLock)
         seen = stamp()
-        savedSnapshot = snapshot
         rt.capabilitiesStateSaved?.()
         for (const listener of savedListeners) {
           try { listener() } catch (error) { warn('ds-bot: saved listener failed: %s', error) }
@@ -564,48 +477,9 @@ export function install(rt) {
     })
   }
 
-  // Only liveness updates opt into the bounded window. Existing callers retain
-  // their durability contract: awaiting save() still waits for the file replace.
-  // `force` also notifies revision-based views of data kept outside state.json.
-  const save = ({ immediate = true, required = false, force = false } = {}) => {
-    if (stopped) return required ? Promise.reject(new Error('The Bot team cannot be saved after this host stopped.')) : writing
-    indexSessions()
-    if (!immediate && !required && !force) {
-      if (!writable()) return writing
-      deferred = true
-      if (saveTimer === undefined) {
-        saveTimer = setTimeout(() => {
-          saveTimer = undefined
-          void flush().catch(() => {})
-        }, 60_000)
-        saveTimer.unref?.()
-      }
-      return writing
-    }
-    const pending = deferred
-    const epoch = lockEpoch
-    cancelSaveTimer()
-    deferred = false
-    return writeState({ required, force }).catch(error => {
-      if (pending && lockEpoch === epoch) deferred = true
-      throw error
-    })
-  }
-
-  const flush = () => {
-    cancelSaveTimer()
-    if (!deferred) return writing
-    const epoch = lockEpoch
-    deferred = false
-    return writeState().catch(error => {
-      if (lockEpoch === epoch) deferred = true
-      throw error
-    })
-  }
-
   ctx.effect(() => () => {
     stopped = true
-    return flush().finally(() => lock.release())
+    return writing.finally(() => lock.release())
   }, 'ds-bot: state lock')
 
   const botOf = id => (id === undefined ? undefined : own(state.bots, id))
@@ -630,18 +504,14 @@ export function install(rt) {
   // archived and stay readable.
   /** @type {Map<string, string>} */
   const chatOwners = new Map()
+  /** @type {Map<string, {botId:string, taskId:string}>} */
+  const taskOwners = new Map()
   /** @type {Map<string, {botId:string, roomId:string}>} */
   const groupOwners = new Map()
-  // Remote group Sessions keep the local Bot's identity without a local group roster.
-  const remoteGroupOwners = new Map()
   /** @type {Map<string, string>} */
   const roomOwners = new Map()
   /** @type {Map<string, {botId?:string, roomId?:string}>} */
   const pastOwners = new Map()
-  /** @type {Map<string, object>} sessionId → raw bot for joined-shadow lookup via bySessionId */
-  const bySessionIdMap = new Map()
-  /** @type {Map<string, {botId:string, threadId:string}>} sessionId → the Thread it runs in (docs/thread-model.md §1.2) */
-  const bySessionIdFullMap = new Map()
   const chatOf = botId => sessionIdOf(botOf(botId)?.sessionId) ?? botId
   const sessionOfRoom = room => (room === undefined ? undefined : sessionIdOf(room.sessionId) ?? room.id)
   // DSH turns away every step of an archived Session and every task aimed at it, so a
@@ -658,7 +528,7 @@ export function install(rt) {
     } catch {
       return
     }
-    const held = [...chatOwners.keys(), ...groupOwners.keys(), ...remoteGroupOwners.keys(), ...roomOwners.keys()].filter(id => archived.has(id))
+    const held = [...chatOwners.keys(), ...groupOwners.keys(), ...roomOwners.keys()].filter(id => archived.has(id))
     if (held.length === 0) return
     restoring = (async () => {
       for (const sessionId of held) {
@@ -670,12 +540,10 @@ export function install(rt) {
   }
   const indexSessions = () => {
     chatOwners.clear()
+    taskOwners.clear()
     groupOwners.clear()
-    remoteGroupOwners.clear()
     roomOwners.clear()
     pastOwners.clear()
-    bySessionIdMap.clear()
-    bySessionIdFullMap.clear()
     const indexPast = (segments, owner) => {
       if (!Array.isArray(segments)) return
       for (const segment of segments) {
@@ -685,20 +553,7 @@ export function install(rt) {
     }
     for (const [id, bot] of Object.entries(state.bots)) {
       const botId = sessionIdOf(bot?.id) ?? sessionIdOf(id)
-      if (botId === undefined || bot.origin === 'peer') continue
-      for (const sessionId of bot.remoteGroupSessions ?? []) {
-        const sid = sessionIdOf(sessionId)
-        if (sid === undefined) continue
-        remoteGroupOwners.set(sid, botId)
-        bySessionIdMap.set(sid, bot)
-      }
-      const indexOwn = sid => {
-        if (sessionIdOf(sid) === undefined) return
-        bySessionIdMap.set(sid, bot)
-        bySessionIdFullMap.set(sid, { botId, threadId: mainThreadId(botId) })
-      }
-      indexOwn(bot.sessionId)
-      for (const segment of bot.segments ?? []) indexOwn(segment?.sessionId)
+      if (botId === undefined) continue
       indexPast(bot.segments, { botId })
       const currentSid = chatOf(botId)
       if (sessionIdOf(currentSid) !== undefined) chatOwners.set(currentSid, botId)
@@ -708,20 +563,24 @@ export function install(rt) {
       for (const part of bot.openParts ?? []) {
         const partSid = sessionIdOf(part?.sessionId)
         if (partSid !== undefined) chatOwners.set(partSid, botId)
-        indexOwn(partSid)
-        for (const segment of part?.segments ?? []) indexOwn(segment?.sessionId)
         indexPast(part?.segments, { botId })
       }
-    }
-    // Every Thread's Session resolves to that Thread, including a thread beyond Main and a
-    // Main thread whose Session was replaced after the Bot row was written.
-    for (const [threadId, thread] of Object.entries(state.threads ?? {})) {
-      const sessionId = thread?.sessionId
-      if (typeof sessionId !== 'string' || sessionId === '') continue
-      const bot = thread.botId === undefined ? undefined : own(state.bots, thread.botId)
-      if (bot === undefined) continue
-      bySessionIdMap.set(sessionId, bot)
-      bySessionIdFullMap.set(sessionId, { botId: bot.id, threadId })
+      // Background tasks keep their own stable records separate from openParts. Only
+      // active tasks stay in chatOwners/taskOwners; settled tasks move to pastOwners
+      // so folder/engine/model sweeps do not wake them again.
+      for (const task of bot.tasks ?? []) {
+        const taskSid = sessionIdOf(task?.sessionId)
+        const roomMeta = typeof task?.roomId === 'string' && task.roomId !== '' ? { roomId: task.roomId } : {}
+        if (taskSid !== undefined) {
+          if (isActiveTask(task)) {
+            chatOwners.set(taskSid, botId)
+            taskOwners.set(taskSid, { botId, taskId: task.id, ...roomMeta })
+          } else {
+            pastOwners.set(taskSid, { botId, ...roomMeta })
+          }
+        }
+        indexPast(task?.segments, { botId, ...roomMeta })
+      }
     }
     for (const [id, room] of Object.entries(state.rooms)) {
       const roomId = sessionIdOf(room?.id) ?? sessionIdOf(id)
@@ -744,10 +603,10 @@ export function install(rt) {
   }
   // The Bot a Session speaks for: its own chat, one of its group Sessions, or an
   // earlier segment of either.
-  const selfOf = id => chatOwners.get(id) ?? groupOwners.get(id)?.botId ?? remoteGroupOwners.get(id) ?? pastOwners.get(id)?.botId
+  const selfOf = id => chatOwners.get(id) ?? groupOwners.get(id)?.botId ?? pastOwners.get(id)?.botId
   // A Session where the Bot speaks now, as opposed to an archived segment.
-  const isBotSession = id => chatOwners.has(id) || groupOwners.has(id) || remoteGroupOwners.has(id)
-  const groupSessionsOf = botId => [...Object.values(state.rooms).map(room => room.sessions?.[botId]).filter(Boolean), ...(botOf(botId)?.remoteGroupSessions ?? [])]
+  const isBotSession = id => chatOwners.has(id) || groupOwners.has(id)
+  const groupSessionsOf = botId => Object.values(state.rooms).map(room => room.sessions?.[botId]).filter(Boolean)
   const dropGroupSession = (room, botId) => {
     if (room.memberDirs !== undefined) delete room.memberDirs[botId]
     const sessionId = room.sessions?.[botId]
@@ -806,121 +665,11 @@ export function install(rt) {
   }
 
   Object.assign(rt, {
-    state, load, save, flush, refresh, readOnly, hasLoaded, syncReadOnly, own, onSaved, closeCard,
+    state, load, save, refresh, readOnly, hasLoaded, syncReadOnly, own, onSaved, closeCard,
     botOf, roomOf, isMain, chatOf, sessionOfRoom, selfOf, isBotSession,
-    chatOwners, groupOwners, roomOwners, pastOwners,
+    chatOwners, taskOwners, groupOwners, roomOwners, pastOwners,
     groupSessionsOf, dropGroupSession, retireGroupSession, findBot, findRooms, isAdminOf,
-    bySessionId: sid => bySessionIdMap.get(sid),
-    bySessionIdFull: sid => bySessionIdFullMap.get(sid),
-    threadOf: id => threadOf(state, id),
-    threadsOfBot: botId => threadsOfBot(state, botId),
-    mainThreadOf: botId => mainThreadOf(state, botId),
-    updateBySessionId: (botId, oldSessionId, newSessionId) => {
-      updateBySessionId(bySessionIdMap, botId, oldSessionId, newSessionId)
-      // A mirror Session belongs to the Bot's Main thread: keep both the full index and the
-      // Thread row on it, so a re-keyed Session still routes to the same thread (A2).
-      const threadId = mainThreadOf(state, botId)?.id ?? mainThreadId(botId)
-      updateBySessionIdFull(bySessionIdFullMap, botId, oldSessionId, newSessionId, threadId)
-      const main = threadOf(state, threadId)
-      if (main !== undefined) {
-        main.sessionId = typeof newSessionId === 'string' && newSessionId !== '' ? newSessionId : null
-        main.updatedAt = Date.now()
-      }
-    },
   })
-}
-
-// Memory federation (M4 S1): the hub keeps the sequence that says how fresh a node's
-// copy is, and the last sequence each node acknowledged. This migration only fills the
-// shape; it never renumbers a sequence that is already there, so a restart cannot make
-// a node believe its old snapshot is newer than it is. Running it twice leaves the
-// state byte-identical, and it never touches the peer `federation` field beside it.
-export function migrateMemoryFederation(state) {
-  let changed = false
-  const value = state.memoryFederation
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    state.memoryFederation = { seq: 0, schemaVersion: 1, nodes: {}, inbox: {} }
-    return true
-  }
-  if (!Number.isInteger(value.seq) || value.seq < 0) {
-    value.seq = 0
-    changed = true
-  }
-  if (value.schemaVersion !== 1) {
-    value.schemaVersion = 1
-    changed = true
-  }
-  if (value.nodes === null || typeof value.nodes !== 'object' || Array.isArray(value.nodes)) {
-    value.nodes = {}
-    changed = true
-  }
-  for (const [nodeId, entry] of Object.entries(value.nodes)) {
-    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
-      value.nodes[nodeId] = { lastSeq: 0, sentSeq: 0 }
-      changed = true
-      continue
-    }
-    if (!Number.isInteger(entry.lastSeq) || entry.lastSeq < 0) {
-      entry.lastSeq = 0
-      changed = true
-    }
-    if (!Number.isInteger(entry.sentSeq) || entry.sentSeq < 0) {
-      entry.sentSeq = 0
-      changed = true
-    }
-  }
-  if (value.inbox === null || typeof value.inbox !== 'object' || Array.isArray(value.inbox)) {
-    value.inbox = {}
-    changed = true
-  }
-  return changed
-}
-
-// v1 → v2 (docs/thread-model.md §1.3): every Bot gets its default Main thread, and
-// `bot.threadIds` names it. The version guard makes this run once per loaded file; the Main
-// id is derived from the Bot id, so running it again finds that thread and adds nothing —
-// a half-migrated state cannot grow a second Main. Returns whether the state changed.
-export function migrateThreads(state, now = Date.now()) {
-  let changed = false
-  // Always an object: code reads `state.threads[session]` and JSON round-trips must not
-  // turn an empty team into `threads: null`.
-  if (state.threads === null || typeof state.threads !== 'object' || Array.isArray(state.threads)) {
-    state.threads = {}
-    changed = true
-  }
-  // Threads already saved per Bot, read once: a team with many Bots must not rescan the
-  // whole Thread table for each of them.
-  const savedThreadIds = new Map()
-  for (const row of Object.values(state.threads)) {
-    if (row === null || typeof row !== 'object' || typeof row.botId !== 'string' || typeof row.id !== 'string') continue
-    if (!savedThreadIds.has(row.botId)) savedThreadIds.set(row.botId, [])
-    savedThreadIds.get(row.botId).push(row.id)
-  }
-  for (const bot of Object.values(state.bots ?? {})) {
-    if (bot === null || typeof bot !== 'object' || typeof bot.id !== 'string' || bot.id === '') continue
-    // A peer row is a shadow of another machine's Bot: it has no Session and so no Thread.
-    if (bot.origin === 'peer') continue
-    const id = mainThreadId(bot.id)
-    if (threadOf(state, id) === undefined) {
-      saveThread(state, newMainThread(bot, now))
-      changed = true
-    }
-    // Main first, then any thread the Bot already had. A hand-edited or half-migrated team
-    // therefore keeps its other threads listed instead of losing them to `[main]`.
-    const extras = (savedThreadIds.get(bot.id) ?? []).filter(threadId => threadId !== id)
-    const listed = Array.isArray(bot.threadIds) ? bot.threadIds.filter(threadId => typeof threadId === 'string' && threadId !== '') : []
-    const next = [id, ...listed.filter(threadId => threadId !== id), ...extras.filter(threadId => !listed.includes(threadId))]
-    if (!Array.isArray(bot.threadIds) || next.length !== bot.threadIds.length || next.some((threadId, index) => threadId !== bot.threadIds[index])) {
-      bot.threadIds = next
-      changed = true
-    }
-  }
-  const version = Number.isInteger(state.version) ? state.version : 1
-  if (version < STATE_VERSION) {
-    state.version = STATE_VERSION
-    changed = true
-  }
-  return changed
 }
 
 // LEGACY: local-agent routes moved under the `local-` prefix (see engines.js).
@@ -952,10 +701,6 @@ export function migrateLocalRoutes(state) {
     return ids.filter(Boolean)
   }
   for (const bot of Object.values(state.bots ?? {})) {
-    // A joined shadow's model is a ref of the NODE's catalog, not a route of this machine's local agents:
-    // the node keeps reporting the names it knows (claude-code/..., codex-cli/...), and a rewrite here would
-    // make the shadow name a model the node does not have. Only Bots that run on this machine migrate.
-    if (joinedShadow(bot)) continue
     for (const key of ['model', 'appliedModel']) {
       const ref = split(bot[key])
       const next = legacyRoute(ref?.provider)
