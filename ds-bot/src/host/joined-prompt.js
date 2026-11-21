@@ -108,57 +108,17 @@ export function install(rt) {
     const session = await ensureMirrorSession(rt, bot)
     if (hasPromptRequest(session, request.requestId)) return { accepted: true }
 
-    const timeoutMs = rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS
-    const isBusy = () => rt.joinedInFlight?.has(bot.id) || mirrorTurnOpen(rt, bot.id)
-
-    // mode: 'steer' means "interrupt the current turn at its next step" — deliver
-    // the message as a steer into the in-flight page turn via the node's steer path.
-    // mode: 'queue' (default) means "wait until the current turn ends, then run".
-    // Both are accepted immediately (accepted: true) — the user is never blocked.
-    const mode = request.mode === 'steer' ? 'steer' : 'queue'
-
-    if (isBusy()) {
-      if (mode === 'steer') {
-        // Steer the in-flight page turn: inject text into the node's current turn.
-        // The node receives a bot/steer frame and surfaces it at the next tool boundary.
-        let registry
-        try { registry = rt.ctx?.get?.('remote-agent:registry') } catch { registry = undefined }
-        const nodeId = String(bot.worker?.nodeId ?? '').trim()
-        const remoteBotId = String(bot.worker?.remoteBotId ?? '').trim()
-        if (registry && typeof registry.send === 'function' && nodeId && remoteBotId) {
-          try {
-            registry.send(nodeId, 'bot/steer', { nodeId, remoteBotId, text, requestId: request.requestId })
-          } catch (e) {
-            rt.warn?.('ds-bot: joined Bot steer to %s failed: %s', bot.id, e?.message ?? e)
-          }
-          return { accepted: true }
-        }
-        // Bridge unavailable — fall through to queue so the message is not lost.
-      }
-      // Queue: message runs after the current in-flight work ends.
-      if (!rt.joinedUserQueue) rt.joinedUserQueue = new Map()
-      const q = rt.joinedUserQueue.get(bot.id) ?? []
-      q.push({ text, requestId: request.requestId, session, state: mirrorStateOf(rt, bot.id, session) })
-      rt.joinedUserQueue.set(bot.id, q)
-      return { accepted: true }
-    }
-
     try {
-      await waitForJoinedMirror(rt, bot.id, timeoutMs)
+      // A Bot-to-Bot exchange may be writing this Session right now; it finishes first, so the
+      // page turn never takes a turn someone else has open.
+      await waitForJoinedMirror(rt, bot.id, rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS)
       startPageTurn({
-        rt, bot, text, requestId: request.requestId, session,
-        state: mirrorStateOf(rt, bot.id, session),
+        rt, bot, text, requestId: request.requestId, session, state: mirrorStateOf(rt, bot.id, session),
         tracker: rt.turnTracker,
-        timeoutMs,
+        timeoutMs: rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS,
       })
     } catch (error) {
-      if (error?.code === 'E_BUSY') {
-        if (!rt.joinedUserQueue) rt.joinedUserQueue = new Map()
-        const q = rt.joinedUserQueue.get(bot.id) ?? []
-        q.push({ text, requestId: request.requestId, session, state: mirrorStateOf(rt, bot.id, session) })
-        rt.joinedUserQueue.set(bot.id, q)
-        return { accepted: true }
-      }
+      if (error?.code === 'E_BUSY') throw await remoteError('session/agent-busy', BUSY, { reason: 'JOINED_TURN_IN_FLIGHT' })
       throw await remoteError('session/agent-unavailable', `无法送达节点：${failureText(error)}`, { reason: `JOINED_NODE_${error?.code ?? 'ERROR'}` })
     }
     return { accepted: true }
