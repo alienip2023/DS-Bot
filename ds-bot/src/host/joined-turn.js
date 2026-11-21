@@ -482,6 +482,12 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
       if (waiter) {
         pending.delete(exchangeId)
         clearTimeout(waiter.timer)
+        // P1-1 fix: also remove from pendingBySession to prevent leak
+        const bySession = pendingBySession.get(waiter.sessionId)
+        if (bySession) {
+          bySession.delete(exchangeId)
+          if (bySession.size === 0) pendingBySession.delete(waiter.sessionId)
+        }
       }
       return { ok: false, error: 'bot-turn-deliver-failed', ...roomFields }
     }

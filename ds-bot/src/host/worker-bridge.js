@@ -111,6 +111,7 @@ export function install(rt) {
         throw error
       }
       const statusResult = await tools.status.execute({ nodeId, taskId })
+      if (signal.aborted) return undefined  // P2-1: exit poll loop promptly on abort
       if (statusResult?.isError) continue
       const s = statusResult?.value
       const status = s?.status
@@ -223,6 +224,7 @@ export function install(rt) {
       const result = await pending
       if (controller.signal.aborted) {
         settleRemoteTask(rt, taskId, { status: 'failed', summary: 'Task wait aborted' })
+        decrementActive()  // P1-2 fix: always decrement on abort, not only on success
         return
       }
 

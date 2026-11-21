@@ -18,7 +18,11 @@ export function recordRemoteTask(rt, { taskId, exchangeId, nodeId, fromId, toId,
   const task = { taskId, exchangeId, nodeId, fromId, toId, goal: oneLine(prompt), startedAt, status: 'running', summary: '' }
   ;(rt.remoteTasks ??= new Map()).set(taskId, task)
   const settled = [...rt.remoteTasks.values()].filter(row => row.status === 'completed' || row.status === 'failed')
-  for (const oldest of settled.slice(0, -200)) rt.remoteTasks.delete(oldest.taskId)
+  // P2-2: sort by endedAt so we keep the 200 most recently finished, not 200 most recently inserted
+  if (settled.length > 200) {
+    settled.sort((a, b) => (a.endedAt ?? 0) - (b.endedAt ?? 0))
+    for (const oldest of settled.slice(0, -200)) rt.remoteTasks.delete(oldest.taskId)
+  }
   return task
 }
 
