@@ -9,6 +9,19 @@ import { ownChatSessions } from './threads.js'
 
 const CATALOG_TTL_MS = 10_000
 const ROUTE_WAIT_MS = 30_000
+// A failure the turn turns into a repair card keeps its code on the Error.
+// A code this module raises for a Bot the main created. It blocks the Bot, so the repair
+// card shows it, until a later apply finds the model and level again.
+const MANAGED_FAILURES = new Set(['E_BOT_MODEL_UNAVAILABLE', 'E_BOT_MODEL_NO_KEY', 'E_BOT_EFFORT_UNAVAILABLE'])
+
+function codedError(code, message) {
+  const error = new Error(message)
+  error.code = code
+  return error
+}
+
+const ROOM_RETRY_MS = 1500
+const ROOM_RETRY_MAX_MS = 5 * 60_000
 // The DeepSeek account's sign-in grant (dsh-deepseek-account-platform).
 const ACCOUNT_RECORD = 'deepseek-account-platform/default'
 const TRANSIENT_LLM_CODES = new Set(['TRANSPORT', 'TIMEOUT', 'MALFORMED_RESPONSE'])
@@ -476,12 +489,26 @@ export function install(rt) {
   // model picker can move the Session without telling this plugin.
   async function applyModel(bot, { force = false, syncGroups = true } = {}) {
     if (llm() === undefined) return undefined
-    const ref = await desiredModel(bot)
+    let ref
+    let effort
+    try {
+      ref = await desiredModel(bot)
+      if (ref !== undefined) effort = await desiredEffort(bot, ref)
+    } catch (error) {
+      if (MANAGED_FAILURES.has(error?.code) === true && bot.blocked?.code !== error.code) {
+        bot.blocked = { code: error.code, at: Date.now() }
+        await rt.save().catch(() => {})
+      }
+      throw error
+    }
     if (ref === undefined) {
       if (syncGroups) await syncBotRooms(bot.id)
       return ref
     }
-    const effort = await desiredEffort(bot, ref)
+    if (MANAGED_FAILURES.has(bot.blocked?.code) === true) {
+      delete bot.blocked
+      await rt.save()
+    }
     if (llm() === undefined) return
     const ownChanged = force || bot.appliedModel !== ref || (bot.appliedEffort ?? undefined) !== effort
     const route = { ...splitRef(ref), ...(effort === undefined ? {} : { reasoningEffort: effort }) }
