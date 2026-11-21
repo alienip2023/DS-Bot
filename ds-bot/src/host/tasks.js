@@ -341,4 +341,211 @@ export function install(rt) {
       }
     },
   }))
+
+  // ── import_team：单文件团队定义（对标 openmausbot team playbook）────────
+  //
+  // 文件格式（markdown + YAML frontmatter）：
+  //
+  //   ---
+  //   name: 我的团队
+  //   bots:
+  //     - name: 研究员
+  //       role: QA
+  //       model: deepseek/deepseek-chat
+  //       instructions: |
+  //         你是一名研究员，专注于...
+  //     - talent: 全栈工程师       # 从内置人才库引用
+  //       name: 阿全                # 可覆盖名称
+  //   groups:
+  //     - name: 开发组
+  //       members: [研究员, 阿全]
+  //   ---
+  //
+  //   团队描述文本（可选）
+  //
+  rt.teamTools.push(defineTool({
+    name: 'import_team',
+    description: 'Import a whole team from a single YAML or Markdown+frontmatter file: Bots, group chats, and talent references in one shot. Main Bot only. Existing Bots with the same name are skipped (no overwrite).',
+    parameters: {
+      text: { type: 'string', required: true, description: 'The full YAML or Markdown+frontmatter content of the team definition file.' },
+      dry_run: { type: 'boolean', description: 'Preview what would be created without actually creating anything.' },
+    },
+    output,
+    async execute(args, exec) {
+      await rt.load()
+      const self = rt.selfOf(exec.agent?.id)
+      if (!rt.isMain(self)) return 'Only a Main Bot can import a team.'
+
+      // Parse: strip frontmatter fences or treat as pure YAML
+      const raw = String(args.text ?? '').trim()
+      let yamlText = raw
+      const fmMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---/)
+      if (fmMatch) yamlText = fmMatch[1]
+
+      // Minimal inline YAML parser (same approach as talent-catalog.js)
+      // but supports nested lists via indentation.
+      let spec
+      try {
+        spec = parseTeamYaml(yamlText)
+      } catch (err) {
+        return `Could not parse team definition: ${err.message}`
+      }
+
+      const bots = Array.isArray(spec.bots) ? spec.bots : []
+      const groups = Array.isArray(spec.groups) ? spec.groups : []
+      if (bots.length === 0 && groups.length === 0) return 'No bots or groups found in the team definition.'
+
+      const talents = loadTalentCatalog(rt.dshHome)
+      const results = []
+      const created = []
+
+      if (args.dry_run) {
+        for (const b of bots) {
+          const name = String(b.name ?? b.talent ?? '').trim()
+          if (!name) { results.push('⚠ Skipped: bot entry has no name'); continue }
+          const exists = rt.findBot(name)
+          if (exists) { results.push(`→ Skip "${name}" (already exists)`); continue }
+          if (b.talent) {
+            const t = talents.find(t => String(t.name).toLowerCase() === String(b.talent).toLowerCase())
+            results.push(t ? `✓ Would hire talent "${t.name}"${b.name ? ` as "${b.name}"` : ''}` : `⚠ Talent "${b.talent}" not found`)
+          } else {
+            results.push(`✓ Would create Bot "${name}" (${b.role ?? 'no role'})`)
+          }
+        }
+        for (const g of groups) {
+          const name = String(g.name ?? '').trim()
+          if (!name) { results.push('⚠ Skipped: group entry has no name'); continue }
+          results.push(`✓ Would create group "${name}" with members: ${(g.members ?? []).join(', ')}`)
+        }
+        return `Dry run — nothing created:\n\n${results.join('\n')}`
+      }
+
+      // Create bots
+      for (const b of bots) {
+        const rawName = String(b.name ?? b.talent ?? '').trim()
+        if (!rawName) { results.push('⚠ Skipped: bot entry has no name'); continue }
+        if (rt.findBot(rawName)) { results.push(`→ Skipped "${rawName}" (already exists)`); continue }
+        try {
+          if (b.talent) {
+            const t = talents.find(t => String(t.name).toLowerCase() === String(b.talent).toLowerCase())
+            if (!t) { results.push(`⚠ Talent "${b.talent}" not found`); continue }
+            const params = talentToCreateBot(t)
+            if (rawName !== t.name) params.name = rawName
+            if (b.model) params.model = String(b.model).trim()
+            const bot = await rt.createBot(params)
+            created.push(bot.name)
+            results.push(`✓ Hired talent "${t.name}" as ${bot.name}`)
+          } else {
+            const instructions = String(b.instructions ?? '').trim()
+            const bot = await rt.createBot({ name: rawName, role: String(b.role ?? ''), instructions, model: b.model ?? undefined })
+            created.push(bot.name)
+            results.push(`✓ Created Bot "${bot.name}"`)
+          }
+        } catch (err) {
+          results.push(`✗ Failed to create "${rawName}": ${err.message}`)
+        }
+      }
+
+      // Create groups
+      for (const g of groups) {
+        const name = String(g.name ?? '').trim()
+        if (!name) { results.push('⚠ Skipped: group entry has no name'); continue }
+        const memberNames = Array.isArray(g.members) ? g.members.map(m => String(m).trim()).filter(Boolean) : []
+        try {
+          if (typeof rt.createGroup === 'function') {
+            await rt.createGroup({ name, memberNames })
+            results.push(`✓ Created group "${name}" with [${memberNames.join(', ')}]`)
+          } else {
+            results.push(`→ Skipped group "${name}": group creation not available via tool`)
+          }
+        } catch (err) {
+          results.push(`✗ Failed to create group "${name}": ${err.message}`)
+        }
+      }
+
+      await rt.save()
+      return `Team import complete:\n\n${results.join('\n')}`
+    },
+  }))
+}
+
+// ── minimal nested-YAML parser for team playbook ────────────────────────────
+function parseTeamYaml(text) {
+  const lines = String(text).split(/\r?\n/)
+  const root = {}
+  const stack = [{ obj: root, indent: -1 }]
+  let currentList = null
+  let currentListKey = null
+  let currentListItem = null
+  let listIndent = -1
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i]
+    if (raw.trim() === '' || raw.trim().startsWith('#')) continue
+    const indent = raw.match(/^(\s*)/)[1].length
+    const content = raw.trim()
+
+    // List item
+    if (content.startsWith('- ')) {
+      const val = content.slice(2).trim()
+      // top-level list key
+      if (currentList !== null && indent >= listIndent) {
+        if (val.includes(':')) {
+          // object item — start accumulating
+          currentListItem = {}
+          currentList.push(currentListItem)
+          const colonIdx = val.indexOf(':')
+          const k = val.slice(0, colonIdx).trim()
+          const v = val.slice(colonIdx + 1).trim()
+          if (v) currentListItem[k] = v.replace(/^\|$/, '').trim() || v
+        } else {
+          currentList.push(val)
+          currentListItem = null
+        }
+        continue
+      }
+      continue
+    }
+
+    // Key: value
+    if (content.includes(':')) {
+      const colonIdx = content.indexOf(':')
+      const k = content.slice(0, colonIdx).trim()
+      const v = content.slice(colonIdx + 1).trim()
+
+      if (v === '' || v === '|') {
+        // Start of a list or multi-line block
+        if (i + 1 < lines.length && lines[i + 1].trim().startsWith('-')) {
+          currentList = []
+          currentListKey = k
+          listIndent = indent + 2
+          root[k] = currentList
+          currentListItem = null
+        } else {
+          // Multi-line string — collect indented lines
+          let block = ''
+          while (i + 1 < lines.length) {
+            const next = lines[i + 1]
+            if (next.trim() === '') { i++; block += '\n'; continue }
+            if (next.match(/^(\s*)/)[1].length <= indent) break
+            i++
+            block += (block ? '\n' : '') + next.trim()
+          }
+          if (currentListItem) currentListItem[k] = block
+          else root[k] = block
+        }
+      } else {
+        const parsed = v.replace(/^['"]|['"]$/g, '')
+        if (currentListItem && indent > listIndent) {
+          currentListItem[k] = parsed
+        } else {
+          root[k] = parsed
+          currentList = null
+          currentListItem = null
+        }
+      }
+      continue
+    }
+  }
+  return root
 }
