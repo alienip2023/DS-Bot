@@ -56,6 +56,14 @@ async function openMirrorTurn(rt, bot, text, xid, senderName, roomId) {
 function closeMirrorTurn(rt, mirror, botId, { text, seq, error, stopped } = {}) {
   if (mirror === undefined) return
   closeJoinedMirror(rt, mirror, { text, seq, error, stopped })
+  // The group round waiter for this joined Bot never sees session events (its
+  // mirror Session has no local Agent), so notify it here: a finished turn
+  // touches the waiter, a failed one fails it.
+  const groupSessions = typeof rt.groupSessionsOf === 'function' ? (rt.groupSessionsOf(botId) ?? []) : []
+  for (const groupSessionId of groupSessions) {
+    if (error !== undefined || stopped === true) rt.failRoomTurn?.(groupSessionId, { code: error ?? 'STOPPED', message: stopped ? 'stopped' : String(text ?? '').slice(0, 300) })
+    else rt.touchRoomTurn?.(groupSessionId)
+  }
 }
 
 
