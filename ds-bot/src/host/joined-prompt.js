@@ -106,38 +106,44 @@ export function install(rt) {
 
     const text = await promptText(request.content)
     const session = await ensureMirrorSession(rt, bot)
-    // The client retries a prompt it did not hear back on: the same requestId is answered
-    // with the same acknowledgement and never sent to the node twice.
     if (hasPromptRequest(session, request.requestId)) return { accepted: true }
 
-    // Queue user messages while a Bot-to-Bot turn or page turn is in flight, so the
-    // user is never blocked from sending. The queued prompt runs when the current
-    // turn ends (executor.js releases the in-flight claim; the mirror writer wakes
-    // its waiters). This matches how local Bots behave: the message is accepted and
-    // the Bot reads it after its current work.
-    const tryStart = () => startPageTurn({
-      rt, bot, text, requestId: request.requestId, session, state: mirrorStateOf(rt, bot.id, session),
-      tracker: rt.turnTracker,
-      timeoutMs: rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS,
-    })
+    const timeoutMs = rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS
+    const isBusy = () => rt.joinedInFlight?.has(bot.id) || mirrorTurnOpen(rt, bot.id)
+
+    // If a Bot-to-Bot turn or a page turn is already in flight, queue the user message
+    // immediately — do NOT wait for the timeout. The message starts as a page turn the
+    // moment the in-flight work ends (flushLateReplies / release() drains the queue).
+    // This matches how local Bot sessions work: the message is accepted at once.
+    if (isBusy()) {
+      if (!rt.joinedUserQueue) rt.joinedUserQueue = new Map()
+      const q = rt.joinedUserQueue.get(bot.id) ?? []
+      q.push({ text, requestId: request.requestId, session, state: mirrorStateOf(rt, bot.id, session) })
+      rt.joinedUserQueue.set(bot.id, q)
+      return { accepted: true }
+    }
 
     try {
-      await waitForJoinedMirror(rt, bot.id, rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS)
-      tryStart()
+      // Not busy now, but a Bot-to-Bot write could open between the check above and
+      // startPageTurn; waitForJoinedMirror handles that narrow race with a short wait.
+      await waitForJoinedMirror(rt, bot.id, timeoutMs)
+      startPageTurn({
+        rt, bot, text, requestId: request.requestId, session,
+        state: mirrorStateOf(rt, bot.id, session),
+        tracker: rt.turnTracker,
+        timeoutMs,
+      })
     } catch (error) {
       if (error?.code === 'E_BUSY') {
-        // A Bot-to-Bot turn is still open after the wait timed out: queue the user
-        // message so it runs when the mirror writer drains. The page shows the
-        // message immediately (accepted: true), and the node processes it next.
+        // Lost the race: queue instead of failing.
         if (!rt.joinedUserQueue) rt.joinedUserQueue = new Map()
-        const queue = rt.joinedUserQueue.get(bot.id) ?? []
-        queue.push({ text, requestId: request.requestId, session, state: mirrorStateOf(rt, bot.id, session) })
-        rt.joinedUserQueue.set(bot.id, queue)
+        const q = rt.joinedUserQueue.get(bot.id) ?? []
+        q.push({ text, requestId: request.requestId, session, state: mirrorStateOf(rt, bot.id, session) })
+        rt.joinedUserQueue.set(bot.id, q)
         return { accepted: true }
       }
       throw await remoteError('session/agent-unavailable', `无法送达节点：${failureText(error)}`, { reason: `JOINED_NODE_${error?.code ?? 'ERROR'}` })
     }
-    // The user's message is on the page; the node's answer (or the failure) follows there.
     return { accepted: true }
   }, 'ds-bot: joined Bot prompt takeover')
 }
