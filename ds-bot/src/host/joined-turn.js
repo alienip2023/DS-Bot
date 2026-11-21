@@ -448,7 +448,7 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
       }
       if (typeof rt.sendThreadTurn === 'function') {
         await rt.sendThreadTurn({
-          botId: bot.id, kind: 'send', preview: turn.text, releaseOn: 'turn-end', run: send,
+          botId: bot.id, kind: 'send', preview: turn.text, releaseOn: 'run', run: send,
           onCancel: () => rt.settleJoinedTurn(exchangeId, '', Object.assign(new Error('bot-turn-cancelled'), { code: 'bot-turn-cancelled' })),
         })
       } else await send()

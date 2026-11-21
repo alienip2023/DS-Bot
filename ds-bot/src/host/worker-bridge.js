@@ -60,11 +60,13 @@ export function install(rt) {
       : worker.nodeId ? [{ nodeId: worker.nodeId }] : []
     if (nodes.length === 0) return null
     if (nodes.length === 1) return nodes[0]
-    // Sort by taskCount ascending (undefined treated as 0), break ties randomly.
+    // Sort by activeCount (in-flight) ascending, then taskCount (lifetime) as tiebreaker.
     const sorted = [...nodes].sort((a, b) => {
+      const aa = typeof a.activeCount === 'number' ? a.activeCount : 0
+      const ab = typeof b.activeCount === 'number' ? b.activeCount : 0
       const ca = typeof a.taskCount === 'number' ? a.taskCount : 0
       const cb = typeof b.taskCount === 'number' ? b.taskCount : 0
-      return ca - cb || Math.random() - 0.5
+      return aa - ab || ca - cb || Math.random() - 0.5
     })
     return sorted[0]
   }
@@ -166,7 +168,25 @@ export function install(rt) {
     recordRemoteTask(rt, { taskId, exchangeId, nodeId, fromId, toId, prompt: text })
     const controller = new AbortController()
     tasks.add(controller)
+
+    // Track active (in-flight) task count on the node so pickNode load-balances correctly.
+    // taskCount (incremented on completion) is a lifetime counter; activeCount is in-flight only.
+    if (Array.isArray(to.worker?.nodes)) {
+      const rec = to.worker.nodes.find(n => n.nodeId === nodeId)
+      if (rec) rec.activeCount = (rec.activeCount ?? 0) + 1
+    }
+    if (to.worker?.nodeId === nodeId) to.worker.activeCount = (to.worker.activeCount ?? 0) + 1
+
+    const decrementActive = () => {
+      if (Array.isArray(to.worker?.nodes)) {
+        const rec = to.worker.nodes.find(n => n.nodeId === nodeId)
+        if (rec) rec.activeCount = Math.max(0, (rec.activeCount ?? 1) - 1)
+      }
+      if (to.worker?.nodeId === nodeId) to.worker.activeCount = Math.max(0, (to.worker.activeCount ?? 1) - 1)
+    }
+
     const reportError = (error) => {
+      decrementActive()
       settleRemoteTask(rt, taskId, { status: 'failed', summary: error?.message ?? String(error) })
       rt.warn('ds-bot: worker-bridge: task failed for %s: %s', to.name, error)
       void rt.deliver?.({
@@ -219,7 +239,8 @@ export function install(rt) {
       }
       settleRemoteTask(rt, taskId, { status: result?.status, summary: summary ?? replyText })
 
-      // Update runtime state.
+      // Update runtime state: decrement active, increment lifetime task count.
+      decrementActive()
       if (to.worker) {
         to.worker.lastSeen = Date.now()
         to.worker.online = true

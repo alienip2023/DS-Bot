@@ -219,6 +219,22 @@ export function install(rt) {
       const task = result.task
       const done = task.status === 'done' ? ` Finished: "${task.result}"` : task.status === 'cancelled' ? ' Cancelled.' : ''
       await rt.save()
+      // Fire planWakes after save so the state is consistent.
+      if (typeof rt.planWakes === 'function' && typeof rt.executePlanWakes === 'function') {
+        let eventType
+        if (action === 'open') eventType = 'task/opened'
+        else if (action === 'complete' && task.status === 'pending_acceptance') eventType = 'task/completed'
+        else if (action === 'review' && task.status === 'active') eventType = 'task/review-requested'
+        else if (action === 'cancel' && task.status === 'cancelled') eventType = 'task/cancelled'
+        if (eventType) {
+          try {
+            const plans = rt.planWakes(eventType, { room, task, cancelledBy: action === 'cancel' ? self : undefined })
+            await rt.executePlanWakes(plans)
+          } catch (err) {
+            rt.warn?.('ds-bot: group_task planWakes failed for %s in %s: %s', eventType, room.name, err)
+          }
+        }
+      }
       return `${action === 'open' ? `Opened ${task.id}: ${task.goal}` : `Updated ${task.id} (${task.status}).`}${done}\n\n${ledger(room, self)}`
     },
   }))
