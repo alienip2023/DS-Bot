@@ -43,10 +43,12 @@ async function openMirrorTurn(rt, bot, text, xid, senderName, roomId) {
     const rpcId = MIRROR_RPC_PREFIX + xid
     if (hasPromptRequest(session, rpcId)) return { duplicate: true }
     const state = mirrorStateOf(rt, room ? session.id : bot.id, session)
-    // A page turn may hold this Session: beginJoinedMirror then buffers the exchange until the
-    // page turn ends, so the two writers never take turns on the same log (joined-mirror-writer.js).
-    // All joined members in a room share its log, so they share its writer gate too.
-    return beginJoinedMirror(rt, bot, session, { text: text ?? '', rpcId, state, ...(room ? { writerId: session.id } : {}) })
+    const mirror = beginJoinedMirror(rt, bot, session, { text: text ?? '', rpcId, state, ...(room ? { writerId: session.id } : {}) })
+    // Notify group round waiters that the node Bot has started working.
+    // This triggers the round's ROOM_WORK_GRACE_MS window so it doesn't time out
+    // while waiting for the node's reply. Local Bots do this via tool/call session events.
+    if (room) rt.workRoomTurn?.(session.id, 'joined-turn')
+    return mirror
   } catch (error) {
     rt.warn?.('ds-bot: a Bot-to-Bot message for %s was not mirrored: %s', bot.id, error?.message ?? error)
     return undefined
