@@ -89,3 +89,27 @@ test('a report whose words a turn just delivered is not sent, and not shown twic
   await handleNodeMessage(w.rt, report(w, { exchangeId: 'rep-new', text: 'a different result' }))
   assert.ok(w.sessionOf('mirror-1').log.some(event => event.type === 'assistant/message' && event.data.message.content[0].text.startsWith(TASK_RESULT_MARK)))
 })
+
+test('a report the link could not take is retried until it goes out, once on the hub', async () => {
+  let up = false
+  const sent = []
+  const network = { nodeId: 'n1', send: payload => { if (!up) return false; sent.push(payload); return true } }
+  const rt = { hubAskedBots: new Set(['b1']), botNetwork: network, taskReportRetryMs: 5 }
+  assert.equal(reportTaskToHub(rt, { id: 'b1', name: 'Worker' }, 'finished while the link was down'), false, 'not sent now')
+  assert.equal(sent.length, 0)
+  up = true
+  await new Promise(resolve => setTimeout(resolve, 40))
+  assert.equal(sent.length, 1, 'it goes out when the link is back')
+  assert.equal(sent[0].text, 'finished while the link was down')
+  await new Promise(resolve => setTimeout(resolve, 40))
+  assert.equal(sent.length, 1, 'and only once')
+})
+
+test('a Bot the hub asked stays asked across a restart: it is remembered on its row', () => {
+  const sent = []
+  const network = { nodeId: 'n1', send: payload => { sent.push(payload); return true } }
+  const bot = { id: 'b1', name: 'Worker', hubAskedAt: 123 }   // as saved before the node restarted
+  assert.equal(reportTaskToHub({ botNetwork: network }, bot, 'a task finished after the restart'), true)
+  assert.equal(sent.length, 1)
+  assert.equal(reportTaskToHub({ botNetwork: network }, { id: 'b2', name: 'Never asked' }, 'x'), false)
+})

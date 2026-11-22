@@ -40,10 +40,69 @@ function importedHistory(session, botId) {
   return { imported, untracked: messageTurns.size > 0 }
 }
 
+// The turns this host wrote live (a hub message and the node's answer), which carry no identity from the node's
+// own history. The node's history will list the same turns again; they are recognised by what was said, so the
+// turns the node produced on its own (a routine, an IM message, its own Bot-to-Bot work) can still be imported
+// without the live ones appearing twice.
+const textOfMessage = (data) => {
+  const content = data?.message?.content ?? data?.content
+  return Array.isArray(content) ? content.map(block => (typeof block?.text === 'string' ? block.text : '')).join('') : ''
+}
+const normalize = (text) => String(text ?? '').replace(/^\[[^\r\n]*\]\r?\n?/, '').replace(/^[↩⚠][^\r\n]*\r?\n+/, '').replace(/\s+/g, ' ').trim()
+const NOTICE = /^(节点仍在运行|没能让节点停下|⏹)/
+
+function liveTurnsOf(session, botId) {
+  const turns = []
+  let current
+  for (const event of session?.log ?? []) {
+    if (event.type === 'turn/start') { current = { turn: event.data?.turn, user: undefined, bot: '' }; continue }
+    if (current === undefined) continue
+    if (event.type === 'user/message' && current.user === undefined) current.user = normalize(textOfMessage(event.data))
+    else if (event.type === 'assistant/message') {
+      const text = normalize(textOfMessage(event.data))
+      if (text !== '' && !NOTICE.test(text)) current.bot = text
+    } else if (event.type === 'turn/end') {
+      const source = event.data?.mirrorHistory
+      if (!(source && source.botId === botId)) turns.push(current)
+      current = undefined
+    }
+  }
+  if (current !== undefined) turns.push(current)   // a turn still open is the live one: its history is not final
+  return turns
+}
+
+const sameTurn = (live, group) => {
+  const user = normalize(group.userText)
+  const bot = normalize(group.botText)
+  if (live.user === undefined || live.user !== user) return false
+  return live.bot === '' || bot === live.bot || bot.endsWith(live.bot) || live.bot.endsWith(bot)
+}
+
 export async function syncJoinedHistory(rt, bot, items, originalSession, unchanged, opts) {
-  const groups = historyGroups(items)
+  const allGroups = historyGroups(items)
   const { imported, untracked } = importedHistory(originalSession, bot.id)
-  if (untracked) return { deferred: 'mirror contains turns without remote part identity' }
+  // A mirror that holds turns written live before the node's own history could be matched (it has no identity
+  // for them) is never rewritten on a guess. The history as it stands now is taken as already represented (a
+  // baseline per node part); from then on only what the node adds AFTER it is imported — the turns it produced
+  // on its own (a routine, its IM, its own Bot-to-Bot work) — and the live ones are recognised by what was said.
+  if (untracked && bot.historyBaseline === undefined) {
+    const parts = {}
+    for (const group of allGroups) parts[group.partId] = Math.max(parts[group.partId] ?? -1, group.seq)
+    bot.historyBaseline = { parts, at: Date.now() }
+    await rt.save?.()
+    return { deferred: 'the mirror has live turns without remote identity: the history up to now is kept as it is, newer node turns will be imported' }
+  }
+  const baseline = bot.historyBaseline?.parts ?? {}
+  const live = liveTurnsOf(originalSession, bot.id)
+  // A node turn this host already wrote live is not imported again; each live turn matches at most one.
+  const groups = allGroups.filter((group) => {
+    if (imported.has(keyOf(group))) return true
+    if (group.seq <= (baseline[group.partId] ?? -1)) return false
+    const at = live.findIndex(turn => sameTurn(turn, group))
+    if (at === -1) return true
+    live.splice(at, 1)
+    return false
+  })
   const pending = groups.filter(group => !imported.has(keyOf(group)))
   // A turn already imported must never silently acquire a second copy or lose a tail.
   if (groups.some(group => imported.has(keyOf(group)) && imported.get(keyOf(group)) !== group.seq)) {

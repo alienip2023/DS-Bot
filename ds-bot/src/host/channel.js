@@ -176,7 +176,7 @@ export function createSendUser(rt, { textOfContent, getMirrorState, ctx, ownThre
       : joinedShadow(rt.bySessionId(ref)) ? rt.bySessionId(ref)
       : null
     if (joinedBot) {
-      const text = _textOfContent(content)
+      const text = textOrRefuse(content, _textOfContent)
       const session = await ensureMirrorSession(rt, joinedBot)
       if (hasPromptRequest(session, requestId)) return { accepted: true }
       const ms = _getMirrorState(rt, joinedBot.id, session)
@@ -1661,4 +1661,14 @@ export function install(rt) {
 function remoteTasksOf(bot, nodeTasks) {
   if (bot.worker?.online === false || !Array.isArray(nodeTasks)) return []
   return nodeTasks.map(task => ({ ...task, remote: true, updatedAt: task.startedAt }))
+}
+
+// A node Bot takes text only: an image or a file in the message is refused (the phone and IM show the reason),
+// never dropped so that only the words go out.
+function textOrRefuse(content, textOf) {
+  const parts = Array.isArray(content) ? content : []
+  if (parts.some(part => part?.type !== undefined && part.type !== 'text')) {
+    throw Object.assign(new Error('副机 Bot 暂不支持附件，请改为文字发送'), { code: 'session/joined-attachment-unsupported' })
+  }
+  return textOf(content)
 }

@@ -50,3 +50,16 @@ test('stop_bot already waited for the node: the page stop it triggers does not s
   await ticks()
   assert.equal(w.frames.filter(frame => frame.type === 'bot/stop').length, 0)
 })
+
+test('joinedTurnsRunning sees a page turn, a steer and a Bot-to-Bot or group exchange that is out on the node', async () => {
+  const { joinedTurnsRunning, listenBotTurnResult } = await import('../src/host/joined-turn.js')
+  const w = makeWorld({ tracker: true })
+  assert.equal(joinedTurnsRunning(w.rt, w.bot), false)
+  const registry = w.rt.ctx.get('remote-agent:registry')
+  const wait = listenBotTurnResult(registry, 'exchange-1', 'n1', 1000, 'rb1')
+  assert.equal(joinedTurnsRunning(w.rt, w.bot), true, 'an exchange with no page turn: a group round, or another Bot asking')
+  wait.cancel()
+  assert.equal(joinedTurnsRunning(w.rt, w.bot), false)
+  await w.prompt(textRequest('long work', 'req-1'))
+  assert.equal(joinedTurnsRunning(w.rt, w.bot), true)
+})

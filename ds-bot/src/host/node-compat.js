@@ -1,6 +1,6 @@
 // node-compat.js — what a node's AC can do, read from the capabilities it advertises in its hello.
 //
-// ds-bot's node features need AC on the node to carry them (AC 0.4.19): `bot-turn-mode/1` (a steer joins
+// ds-bot's node features need AC on the node to carry them (AC 0.4.20): `bot-turn-mode/1` (a steer joins
 // the running turn), `bot-action/1` (answer a card, stop / follow up a task from the hub), `roster-cards/1`
 // (the cards a Bot waits on reach the hub). A node without one is never silently half-working: ds-bot
 // falls back to what the node can do and says which node needs which update.
@@ -12,7 +12,7 @@ export const NODE_FEATURES = Object.freeze({
   actions: { cap: 'bot-action/1', label: '在主控回答卡片、操作任务' },
   cards: { cap: 'roster-cards/1', label: '节点卡片' },
 })
-export const AC_NEEDED = '0.4.19'
+export const AC_NEEDED = '0.4.20'
 
 /** The capabilities of a node, or undefined when they are not known. */
 export function nodeCapsOf(rt, nodeId) {

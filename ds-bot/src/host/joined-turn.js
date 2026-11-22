@@ -12,7 +12,7 @@ import { beginJoinedMirror, closeJoinedMirror, deferMirrorWrite, markJoinedMirro
 export const BRIDGE_DOWN_TEXT = '副机仍在执行，桥已断'
 // The link dropped after the node had the work: that is not a failure. The node keeps working and sends
 // the answer when it is back (ds-bot keeps listening for it), so the sender is told to wait, not to redo.
-export const LINK_LOST_TEXT = `${BRIDGE_DOWN_TEXT}。这不是失败：任务仍在节点上执行，连接恢复后结果会自动送回。请不要重复派发，也不要取消它的任务。`
+export const LINK_LOST_TEXT = `${BRIDGE_DOWN_TEXT}。这不是失败：任务可能仍在节点上执行，连接恢复后结果会自动送回（节点若在这期间重启，这一轮的结果不会再送回）。请不要重复派发，也不要取消它的任务；一小时后仍没有回音，再重发。`
 // What the sender is told when its exchange was settled by a stop, not by the node going away.
 export const STOPPED_TEXT = '已停止'
 export const PENDING_TURN_TEXT = '节点仍在运行，结果会在完成后送到这里。'
@@ -190,6 +190,17 @@ export function listenBotStopResult(registry, requestId, nodeId, timeoutMs) {
   registry.on?.('botStopResult', onResult)
   registry.on?.('nodeOffline', onOffline)
   return { pending, cancel: () => finish({ ok: false, stopped: false, error: 'bridge-down' }) }
+}
+
+/** Is a turn of this node Bot still out on its node (a page turn, a Bot-to-Bot exchange or a group round)? */
+export function joinedTurnsRunning(rt, bot) {
+  if (rt.joinedInFlight?.has(bot?.id) || (rt.joinedSide?.get(bot?.id)?.size ?? 0) > 0) return true
+  let registry
+  try { registry = rt.ctx?.get?.('remote-agent:registry') } catch { registry = undefined }
+  const tracked = inflightByRegistry.get(registry)?.get(trimmed(bot?.worker?.nodeId))
+  if (tracked === undefined) return false
+  const remoteBotId = trimmed(bot?.worker?.remoteBotId)
+  return [...tracked.values()].some(entry => entry.remoteBotId === remoteBotId)
 }
 
 /**
@@ -528,7 +539,7 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
     const bot = findLocal(rt, remoteBotId)
     if (!bot || bot.type === 'remote-worker' || bot.origin === 'joined') return { ok: false, error: 'bot-not-on-roster', ...roomFields }
     // The hub asked this Bot: what its background tasks report later is owed to that hub's page.
-    ;(rt.hubAskedBots ??= new Set()).add(bot.id)
+    markHubAsked(rt, bot)
     const done = new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(exchangeId)
@@ -628,6 +639,18 @@ export function exposeBotTurnReceiver(ctx, accept) {
   try { ctx?.provide?.('remote-agent:bot-turn', accept) } catch { /* registry plugin may be absent */ }
 }
 
+// Whether this hub has ever asked the Bot something: what its background tasks report later is owed to that hub.
+// Kept on the Bot's own row (it survives a restart of the node: a task that finishes after it still reports) and
+// in memory for the Bots this process has seen.
+export function markHubAsked(rt, bot) {
+  ;(rt.hubAskedBots ??= new Set()).add(bot.id)
+  if (typeof bot.hubAskedAt !== 'number') {
+    bot.hubAskedAt = Date.now()
+    void Promise.resolve(rt.save?.()).catch(() => {})
+  }
+}
+export const hubAsked = (rt, bot) => rt.hubAskedBots?.has(bot.id) === true || typeof bot.hubAskedAt === 'number'
+
 // Answers this node already sent for a hub's turns (by Bot id), so a task report with the same words is not
 // sent a second time.
 const DELIVERED_MS = 600_000
@@ -648,14 +671,29 @@ const deliveredAlready = (rt, botId, body) => (rt._deliveredReplies?.get(botId) 
 export function reportTaskToHub(rt, bot, text) {
   const network = rt.botNetwork
   const body = typeof text === 'string' ? text.trim() : ''
-  if (body === '' || !bot || !rt.hubAskedBots?.has(bot.id)) return false
+  if (body === '' || !bot || !hubAsked(rt, bot)) return false
   // The same words were just sent to the hub as a turn's answer: nothing more to report.
   if (deliveredAlready(rt, bot.id, body)) return false
   if (typeof network?.send !== 'function' || typeof network.nodeId !== 'string') return false
   const identity = { id: bot.id, name: bot.name || bot.id, nodeId: network.nodeId }
-  try {
-    return network.send({ from: identity, to: { ...identity, nodeId: 'hub' }, exchangeId: randomUUID(), kind: 'reply', text: body.slice(0, 60000), depth: 3 }) === true
-  } catch { return false }
+  const frame = { from: identity, to: { ...identity, nodeId: 'hub' }, exchangeId: randomUUID(), kind: 'reply', text: body.slice(0, 60000), depth: 3 }
+  const attempt = () => { try { return network.send(frame) === true } catch { return false } }
+  if (attempt()) return true
+  // The link is down right now: the report is not dropped. It is retried (same exchange id, so the hub shows it
+  // once) at growing intervals for a few minutes; a report only matters when its Bot is still on this hub's
+  // roster, and the hub drops a repeat it already has.
+  let tries = 0
+  const delays = Number.isFinite(rt.taskReportRetryMs) ? [rt.taskReportRetryMs, rt.taskReportRetryMs, rt.taskReportRetryMs] : [15_000, 30_000, 60_000, 120_000, 300_000]
+  const again = () => {
+    if (tries >= delays.length || rt.joinedLateClosed === true) return
+    const timer = setTimeout(() => { if (!attempt()) again() }, delays[tries++])
+    timer.unref?.()
+    if (!rt.joinedLate) rt.joinedLate = new Set()
+    const stop = () => clearTimeout(timer)
+    rt.joinedLate.add(stop)
+  }
+  again()
+  return false
 }
 
 export function install(rt) {
