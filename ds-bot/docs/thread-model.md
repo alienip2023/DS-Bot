@@ -117,7 +117,7 @@ Checked by `test/thread-model-anchors.test.js`: each row's line must contain its
 | `src/host/channel.js:1005` | `approval-answer` |
 | `src/host/channel.js:1331` | `thread-model §4.5` |
 | `src/host/channel.js:1333` | `sendThreadTurn` |
-| `src/host/delivery.js:311` | `thread-model §4.5` |
+| `src/host/delivery.js:317` | `thread-model §4.5` |
 | `src/host/thread-queue.js:5` | `maxParallelThreads` |
 | `src/host/thread-queue.js:31` | `slots` |
 | `src/host/thread-queue.js:33` | `slotOf` |

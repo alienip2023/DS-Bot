@@ -4,6 +4,8 @@ import { shadowId } from '../src/host/roster-join.js'
 import { handleJoinedTurn, createBotTurnReceiver, install, BRIDGE_DOWN_TEXT } from '../src/host/joined-turn.js'
 import { install as installDelivery } from '../src/host/delivery.js'
 import { install as installTurns } from '../src/host/turns.js'
+import { createSendUser } from '../src/host/channel.js'
+import { makeWorld, types } from './joined-world.js'
 
 function shadowFor(nodeId, remoteBotId) {
   const id = shadowId(nodeId, remoteBotId)
@@ -191,6 +193,7 @@ test('a joined turn is in the book before it goes out', async () => {
 })
 
 test('the remote receiver only accepts a local non-worker bot and keeps the exchangeId', async () => {
+  const sent = []
   const rt = {
     state: {
       bots: {
@@ -199,11 +202,12 @@ test('the remote receiver only accepts a local non-worker bot and keeps the exch
       },
     },
     chatOf: (id) => `chat:${id}`,
-    async deliver(msg) {
-      assert.equal(msg.joinedTurn, true)
-      assert.equal(msg.toId, 'alpha')
-      rt.settleJoinedTurn(msg.exchangeId, 'from-session')
-      return msg.exchangeId
+    // The turn is a user message in the Bot's own chat; the request id is the exchange id, and the
+    // turn's end settles the waiter (turns.js, settleJoinForTurn).
+    async sendUser({ sessionId, content, requestId }) {
+      sent.push({ sessionId, text: content[0].text, requestId })
+      rt.settleJoinedTurn(requestId, 'from-session')
+      return { accepted: true }
     },
   }
   const accept = createBotTurnReceiver(rt, { timeoutMs: 30 })
@@ -211,24 +215,23 @@ test('the remote receiver only accepts a local non-worker bot and keeps the exch
   assert.equal(ok.ok, true)
   assert.equal(ok.exchangeId, 'e1')
   assert.equal(ok.text, 'from-session')
+  assert.deepEqual(sent, [{ sessionId: 'chat:alpha', text: 'hi', requestId: 'e1' }])
   assert.equal((await accept({ nodeId: 'n', remoteBotId: 'worker', exchangeId: 'e2', text: 'hi' })).error, 'bot-not-on-roster')
   assert.equal((await accept({ nodeId: 'n', remoteBotId: 'missing', exchangeId: 'e3', text: 'hi' })).error, 'bot-not-on-roster')
+  assert.equal(sent.length, 1, 'a worker or an unknown Bot is not sent anything')
 })
 
-test('sidebar send does not prompt a local session when the bridge is down', async () => {
-  const shadow = shadowFor('node-a', 'alpha')
-  let prompted = 0
-  const rt = {
-    ctx: { get() { return undefined }, set() {} },
-    state: { bots: { [shadow.id]: shadow }, exchanges: [] },
-    botOf: (id) => (id === shadow.id ? shadow : undefined),
-    sendUser: async () => { prompted += 1 },
-  }
-  install(rt)
-  await assert.rejects(
-    () => rt.sendUser({ sessionId: shadow.id, content: [{ type: 'text', text: 'hi' }], requestId: 'req-1' }),
-    (err) => err.message === BRIDGE_DOWN_TEXT,
-  )
-  assert.equal(prompted, 0)
-  assert.equal(shadow.worker.lastReply.text, BRIDGE_DOWN_TEXT)
+test('a page send to a joined Bot whose bridge is down does not prompt a local session', async () => {
+  const w = makeWorld({ sendResult: false, tracker: true })
+  Object.assign(w.rt, {
+    pastOwners: new Map(), chatOwners: new Map(), groupOwners: new Map(),
+    roomOf: () => undefined, ensureCapabilities: async () => {},
+  })
+  const sendUser = createSendUser(w.rt, { ctx: w.rt.ctx })
+  const result = await sendUser({ sessionId: w.bot.sessionId, content: [{ type: 'text', text: 'hi' }], requestId: 'req-1' })
+  for (let i = 0; i < 6; i += 1) await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(result, { accepted: true }, 'the page is not blocked')
+  assert.equal(w.originalCalls.length, 0, 'no local Session is prompted')
+  assert.ok(types(w.sessionOf(w.bot.sessionId)).includes('user/message'), 'the message is on the page')
+  assert.ok(w.sessionOf(w.bot.sessionId).log.some(event => event.type === 'assistant/message'), 'and the page says why nothing came back')
 })

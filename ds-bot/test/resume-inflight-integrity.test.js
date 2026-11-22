@@ -9,7 +9,7 @@ import { test } from 'node:test'
 import './harness-resolve.mjs'
 import { fakeContext } from './fake-ctx.js'
 
-const { install } = await import('../src/host/resume.js')
+const { install, RESUME_DELAY_MS } = await import('../src/host/resume.js')
 
 const legacy = { turns: { s1: { botId: 'a', since: 1 } }, queued: { 'chat-a': [{ at: 5, args: { toId: 'a', exchangeId: 'e1', text: 'hi' } }] } }
 const dirOf = t => {
@@ -153,7 +153,6 @@ test('readOnly host does not rename a corrupt file either', async t => {
 
 // M6 characterization: the non-room `record.resumed` guard (resume.js, resumeTurn) had no
 // assertion. A turn already picked up once and cut off again is not delivered a second time.
-const { RESUME_DELAY_MS } = await import('../src/host/resume.js')
 for (const [name, resumed, expected] of [['picked up once before: stays stopped', true, 0], ['first time without flags: not replayed', false, 0]]) {
   test(`non-room turn ${name} (record.resumed guard)`, async t => {
     t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.UTC(2026, 10, 17) })

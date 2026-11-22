@@ -65,7 +65,8 @@ test('inherited Git command-line config is removed as one group while normal use
   delete process.env.GIT_CONFIG_PARAMETERS
   delete process.env.GIT_CONFIG_KEY_0
   process.env.GIT_CONFIG_COUNT = '1'
-  const malformed = spawnSync('git', ['status', '--porcelain'], { cwd: root, env: process.env, encoding: 'utf8' })
+  // git words this message in the user's language: ask for the C locale so the match below is stable.
+  const malformed = spawnSync('git', ['status', '--porcelain'], { cwd: root, env: { ...process.env, LC_ALL: 'C', LANGUAGE: 'C' }, encoding: 'utf8' })
   assert.notEqual(malformed.status, 0)
   assert.match(malformed.stderr, /missing config key GIT_CONFIG_KEY_0/)
   const status = spawnSync('git', ['status', '--porcelain'], { cwd: root, env: cleanEnv(), encoding: 'utf8' })

@@ -107,7 +107,10 @@ test("gate1: (botId, nodeSeq) idempotency — duplicate nodeSeq skipped", async 
   await ctx[Symbol.asyncDispose]?.() ?? ctx.dispose?.()
 })
 
-test("gate1: (turn, step) idempotency — duplicate step skipped", async () => {
+test("gate1: a caller-supplied turn number is not trusted — the turn is allocated from the session log", async () => {
+  // mirrorTurn allocates the turn itself (mirror.js: "never trust caller-supplied turn number"), so a
+  // second write that names turn 1 again, with a new nodeSeq, is written as turn 2, not skipped; what
+  // keeps a delivery from being written twice is its (botId, nodeSeq) key, covered above.
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx)
   const session = ctx.sessions.create(SessionId("gate1-dedup-step"), {})
@@ -119,7 +122,7 @@ test("gate1: (turn, step) idempotency — duplicate step skipped", async () => {
   const r1 = await mirrorTurn(session, { turn: 1, userText: "A", botText: "B", botId: "b1", nodeSeq: 1, seenKeys, closedKeys, seenSteps })
   const r2 = await mirrorTurn(session, { turn: 1, step: 1, userText: "C", botText: "D", botId: "b1", nodeSeq: 2, seenKeys, closedKeys, seenSteps })
   assert.equal(r1.skipped, false)
-  assert.equal(r2.skipped, true, "same (turn, step=1) must be skipped")
-  assert.equal(r2.reason, "already-written:step")
+  assert.equal(r2.skipped, false, "a new delivery is written even when it names the same turn")
+  assert.deepEqual([...seenSteps].sort(), ["1:1", "2:1"], "each write is its own turn")
   await ctx[Symbol.asyncDispose]?.() ?? ctx.dispose?.()
 })
