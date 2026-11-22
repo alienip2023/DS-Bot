@@ -24,6 +24,9 @@ import { installRunning } from './joined-running.js'
 import { wrapControllerMethod } from './controller-wrap.js'
 import { sendBotAction } from './node-cards.js'
 import { nodeCan } from './node-compat.js'
+import { stopOnNode } from './joined-turn.js'
+import { writeNodeReport } from './executor.js'
+import { STOP_NOTE_MARK } from './mirror.js'
 
 const BUSY = '副机 Bot 正在回复上一条，请稍候再发'
 const NO_ATTACHMENTS = '副机 Bot 暂不支持附件，请改为文字发送'
@@ -96,7 +99,24 @@ export function install(rt) {
   }, 'ds-bot: joined late reply listeners')
   const controller = ctx?.sessionController
   // The phone's Stop (turns.js stopChat) ends a joined Bot's page turn through the same call.
-  rt.stopJoinedTurn = botId => stopPageTurn(rt, botId)
+  // Stop ends the wait on this host AND tells the node, as for a local Bot the work really ends. A node that
+  // cannot be reached or does not answer is said so on the page, not left looking stopped.
+  const stopReasons = { 'bridge-down': '节点不在线', 'no-answer': '节点没有回应（它的 AC 可能版本较旧）', 'no-remote-identity': '没有节点身份' }
+  const tellNodeToStop = (botId) => {
+    const bot = rt.botOf?.(botId)
+    if (!joinedShadow(bot) || bot.worker?.home !== 'remote') return
+    void stopOnNode(rt, bot).then(async (result) => {
+      if (result.ok) return
+      const session = await ensureMirrorSession(rt, bot)
+      writeNodeReport({ rt, bot, session, state: mirrorStateOf(rt, bot.id, session), mark: STOP_NOTE_MARK, text: `没能让节点停下：${stopReasons[result.error] ?? result.error ?? '未知原因'}。它可能仍在运行。` })
+    }).catch(error => rt.warn?.('ds-bot: telling the node to stop %s failed: %s', botId, error?.message ?? error))
+  }
+  rt.tellNodeToStop = tellNodeToStop
+  rt.stopJoinedTurn = (botId, { notifyNode = true } = {}) => {
+    const stopped = stopPageTurn(rt, botId)
+    if (notifyNode) tellNodeToStop(botId)
+    return stopped
+  }
   installCancel(rt, controller)
   installRunning(rt, controller, joinedBotOfSession)
   if (typeof controller?.prompt !== 'function') return
@@ -189,12 +209,12 @@ export function install(rt) {
 // local Agent lives there). For a joined Bot's mirror Session the Stop ends the page turn
 // instead: the wait for the node stops, the in-flight slot is released and the turn closes as
 // aborted (startPageTurn's abort). Idempotent — a Stop with nothing in flight is acknowledged.
-// Every other Session goes to the original cancel untouched. The node is not told to stop.
+// The node is told to stop too (bot/stop). Every other Session goes to the original cancel untouched.
 function installCancel(rt, controller) {
   wrapControllerMethod(rt.ctx, controller, 'cancel', original => async function (request, ...rest) {
     const bot = joinedBotOfSession(rt, request?.sessionId)
     if (bot === undefined) return original.call(this, request, ...rest)
-    stopPageTurn(rt, bot.id)
+    rt.stopJoinedTurn(bot.id)
     return { accepted: true }
   }, 'ds-bot: joined Bot cancel takeover')
 }
