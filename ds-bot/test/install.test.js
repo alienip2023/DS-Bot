@@ -201,6 +201,7 @@ test('apply registers listeners and effects in a fixed order', (t) => {
     'effect ds-bot: load state',
     'provide remote-agent:bot-turn',
     'provide remote-agent:bot-stop',
+    'provide remote-agent:bot-action',
     'effect ds-bot: joined late reply listeners',
     'on api-session/added',
     'on agent/created (prepend)',

@@ -17,15 +17,15 @@ or **IMPLEMENTED** (code enforces it).
   (`src/host/approvals.js:45-`, stored at `:64`). The owner is resolved from `groupOwners` / `chatOwners`
   (`src/host/approvals.js:38-41`); a request from an unowned Session is passed on with `next()`.
 - Inflight notes `turns` and `queued`, both keyed by Session id (`src/host/resume.js:155`, `:158`).
-- The per-Bot gate slot and its FIFO queue: `slots` (`src/host/thread-queue.js:31`) and `slotOf(botId)` (`:33`), used at
-  `src/host/thread-queue.js:231`.
+- The per-Bot gate slot and its FIFO queue: `slots` (`src/host/thread-queue.js:35`) and `slotOf(botId)` (`:33`), used at
+  `src/host/thread-queue.js:250`.
 
 ### 1.2 Thread-scoped
 
 - Which saved conversation a Session runs in: `bySessionIdFullMap` (`src/host/store.js:644`).
 - At most `MAX_THREADS_PER_BOT = 10` Threads per Bot, Main included (`src/host/constants.js:22-23`). **IMPLEMENTED**:
   `createThread` refuses the eleventh Thread with `bot/refused` (`src/host/roster.js:358-360`), reached by the
-  `thread-create` route (`src/host/channel.js:854-856`) and tested by `test/thread-t2-api.test.js:55-65`.
+  `thread-create` route (`src/host/channel.js:855-857`) and tested by `test/thread-t2-api.test.js:55-65`.
 - One turn per Bot runs at a time across its Threads (section 4.5).
 
 ### 1.3 Process / profile-wide
@@ -36,8 +36,8 @@ or **IMPLEMENTED** (code enforces it).
   ); persisting is skipped when `rt.readOnly() !== undefined` (`src/host/resume.js:166`).
 - `state.json` and `state.lock`: the first host to load takes the lock, a second only reads
   (`src/host/home-lock.js:3`).
-- Read-only host mode (`rt.readOnly()`, `src/host/channel.js:424`, `:461`) and the `READS` allow-set
-  (`src/host/channel.js:486`), which contains `approval-answer`. That is a compatibility allowance, not
+- Read-only host mode (`rt.readOnly()`, `src/host/channel.js:425`, `:461`) and the `READS` allow-set
+  (`src/host/channel.js:487`), which contains `approval-answer`. That is a compatibility allowance, not
   authentication.
 
 ## 4. Concurrency
@@ -47,9 +47,9 @@ or **IMPLEMENTED** (code enforces it).
 - **DOCUMENTED**: the header comment of `src/host/thread-queue.js:1-11` says at most one running turn per Bot
   (`maxParallelThreads = 1`, a comment at `:5`, not a variable) and that the rest wait FIFO in memory.
 - **IMPLEMENTED**: the per-Bot slot. A turn starts only when `slot.running === null`; otherwise it is pushed on
-  `slot.queue` (`src/host/thread-queue.js:231-236`). The gate keys on `owner.botId`, so two Threads of one
+  `slot.queue` (`src/host/thread-queue.js:250-255`). The gate keys on `owner.botId`, so two Threads of one
   Bot share a slot.
-- The send endpoint reaches the gate through `rt.sendThreadTurn` (`src/host/channel.js:1226-1227`).
+- The send endpoint reaches the gate through `rt.sendThreadTurn` (`src/host/channel.js:1227-1228`).
 - A turn accepted but never started is let go after `ACCEPT_WAIT_MS = 60_000` (`src/host/thread-queue.js:17`).
 
 ### Approval answers
@@ -62,7 +62,7 @@ or **IMPLEMENTED** (code enforces it).
   (`:138-142`); `choice` is allow or reject (`:143-144`).
 - The binding is a stale-card guard, not a credential or a caller identity. A matching binding cannot make an
   unknown, settled or foreign-session id answerable, nor an invalid choice valid.
-- The binding is optional everywhere. `src/host/channel.js:998-999` passes `body.binding ?? undefined`; the web
+- The binding is optional everywhere. `src/host/channel.js:999-1000` passes `body.binding ?? undefined`; the web
   UI sends one when the view row carries both fields; the IM path sends none
   (`src/host/im/index.js:723-727`) because a card stores only the id.
 - `cancelApprovals(sessionId)` settles only that Session's entries as `cancelled`
@@ -104,7 +104,7 @@ Checked by `test/thread-model-anchors.test.js`: each row's line must contain its
 | Anchor | Token |
 |---|---|
 | `src/host/bot-store.js:155` | `thread-model.md §1.1` |
-| `src/host/executor.js:214` | `thread-model §4.5` |
+| `src/host/executor.js:216` | `thread-model §4.5` |
 | `src/host/store.js:509` | `chatOwners` |
 | `src/host/store.js:509` | `groupOwners` |
 | `src/host/store.js:813` | `thread-model.md §1.2` |
@@ -112,17 +112,17 @@ Checked by `test/thread-model-anchors.test.js`: each row's line must contain its
 | `src/host/store.js:869` | `bySessionIdFullMap.set` |
 | `src/host/store.js:869` | `bySessionIdFullMap.set` |
 | `src/host/store.js:1056` | `thread-model.md §1.3` |
-| `src/host/channel.js:484` | `READS` |
-| `src/host/channel.js:854` | `thread-create` |
-| `src/host/channel.js:1005` | `approval-answer` |
-| `src/host/channel.js:1331` | `thread-model §4.5` |
+| `src/host/channel.js:485` | `READS` |
+| `src/host/channel.js:855` | `thread-create` |
+| `src/host/channel.js:1006` | `approval-answer` |
+| `src/host/channel.js:1332` | `thread-model §4.5` |
 | `src/host/channel.js:1333` | `sendThreadTurn` |
 | `src/host/delivery.js:317` | `thread-model §4.5` |
 | `src/host/thread-queue.js:5` | `maxParallelThreads` |
-| `src/host/thread-queue.js:31` | `slots` |
-| `src/host/thread-queue.js:33` | `slotOf` |
-| `src/host/thread-queue.js:231` | `slotOf(owner.botId)` |
-| `src/host/thread-queue.js:236` | `slot.queue.push` |
+| `src/host/thread-queue.js:35` | `slots` |
+| `src/host/thread-queue.js:37` | `slotOf` |
+| `src/host/thread-queue.js:250` | `slotOf(owner.botId)` |
+| `src/host/thread-queue.js:255` | `slot.queue.push` |
 | `src/host/roster.js:358` | `MAX_THREADS_PER_BOT` |
 | `src/host/constants.js:23` | `MAX_THREADS_PER_BOT` |
 | `test/thread-t2-api.test.js:55` | `eleventh` |

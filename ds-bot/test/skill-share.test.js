@@ -14,12 +14,12 @@ const skill = { name: 'release-checks', kind: 'skill', description: 'Use for rel
 const proposal = { ...skill, id: 'proposal', kind: 'skill', action: 'create', botId: 'worker', at: 1, why: 'A repeated check was missed.' }
 const tick = () => new Promise(resolve => setImmediate(resolve))
 
-async function world(t, { privateBot = false } = {}) {
+async function world(t, { privateBot = false, proposals = { proposal } } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'ds-bot-skill-share-'))
   const bots = Object.fromEntries(['chief', 'worker', 'helper'].map(id => [id, { id, name: id, sessionId: id, capabilities: [], private: id === 'worker' && privateBot, createdAt: 1 }]))
   writeFileSync(join(home, 'state.json'), JSON.stringify({ version: 2, revision: 1, bots, mainBotIds: ['chief'], rooms: {}, threads: {}, capabilities: { items: {} } }))
   mkdirSync(join(home, 'learning'))
-  writeFileSync(join(home, 'learning/state.json'), JSON.stringify({ proposals: { proposal }, pending: {}, learned: {} }))
+  writeFileSync(join(home, 'learning/state.json'), JSON.stringify({ proposals, pending: {}, learned: {} }))
   const registry = new EventEmitter()
   const sent = []
   registry.getNode = () => ({ hello: { caps: ['peer/v1'] } })
@@ -313,15 +313,13 @@ test('failed import persistence rolls back attachments and library, then retries
 })
 
 test('user-approved learning can update a skill another Bot already uses', async t => {
-  const w = await world(t)
+  const content = 'Run the revised checks before delivering.'
+  // The learning state is written before the runtime starts: the roster report reads it at once.
+  const w = await world(t, { proposals: { proposal: { ...proposal, action: 'update', content, base: hashOf(`${skill.description}\n${skill.content}`) } } })
   await w.rt.capabilitySave(skill, { botId: 'worker' })
   await w.rt.changeCapabilityAttachment('attach', { name: skill.name }, 'helper')
   await w.rt.ensureCapabilities('helper')
-  const content = 'Run the revised checks before delivering.'
   await assert.rejects(w.rt.capabilitySave({ ...skill, content }, { botId: 'worker' }), /Another Bot uses/)
-  writeFileSync(join(w.home, 'learning/state.json'), JSON.stringify({ proposals: { proposal: {
-    ...proposal, action: 'update', content, base: hashOf(`${skill.description}\n${skill.content}`),
-  } } }))
   await approve(w.rt)
   await w.rt.reconcileCapabilities()
   assert.equal(w.skills.get('helper').get(skill.name).content, content)

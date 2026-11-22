@@ -850,7 +850,7 @@ test('with steerHandoff stuck, a steer the foreground never reads moves the busy
   dmA.inbox.nextStep.push(message)
   await env.emit('dm-a', 'agent/inbox/spliced', { target: 'next-step', inserted: [message] })
   assert.equal(env.rt.botOf('a').sessionId, 'dm-a', 'not at once')
-  await waitFor(() => env.rt.botOf('a').sessionId !== 'dm-a')
+  await waitFor(() => env.rt.botOf('a').sessionId !== 'dm-a' && (env.agentMap.get(env.rt.botOf('a').sessionId)?.injected.length ?? 0) >= 1)
   const botA = env.rt.botOf('a')
   assert.equal(botA.tasks.length, 1)
   assert.equal(botA.tasks[0].origin, 'fg-handoff')

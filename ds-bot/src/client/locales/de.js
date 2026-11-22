@@ -1596,7 +1596,6 @@ export const DE = {
   'Hide steps': 'Schritte ausblenden',
   'Show steps': 'Schritte anzeigen',
   'Current chat': 'Aktueller Chat',
-  'Earlier & parallel sessions': 'Frühere & parallele Sitzungen',
   '{count} tools': '{count} Werkzeuge',
   'Mailbox': 'Postfach',
   'Email address': 'E-Mail-Adresse',
