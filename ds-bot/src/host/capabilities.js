@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { encodeUrlComponent } from './secrets.js'
 import { own } from './store.js'
 import { sharedSkillProblem } from './skill-share.js'
+import { joinedShadow, NODE_ONLY_REASON } from './roster-join.js'
 
 const MCP_CLIENT = '@deepseek-ai/dsh-mcp-client'
 const NAME = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
@@ -601,6 +602,7 @@ export function install(rt) {
       writeCheck()
       const bot = rt.botOf(String(body.botId ?? ''))
       if (!bot) throw new Error('Unknown Bot')
+      if (joinedShadow(bot)) throw Object.assign(new Error(NODE_ONLY_REASON), { code: 'bot/refused' })
       const name = String(body.name ?? '')
       if (!own(library(), name)) throw new Error(`No capability named ${name}.`)
       return setAttached(bot, name, body.attached === true, body.mode)
