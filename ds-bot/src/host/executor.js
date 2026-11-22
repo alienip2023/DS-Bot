@@ -75,7 +75,7 @@ function dispatchRemote(args) {
 // register the result listener. Its refusals throw before anything is sent; `send()` is the
 // one irreversible step (it throws E_OFFLINE when the node does not take the frame), and
 // `cancel()` drops the listener of a prepared turn that is never sent.
-function prepareRemote({ bot, text, rt, tracker, timeoutOverride, lateWindowMs = 0, onTimeout }) {
+function prepareRemote({ bot, text, rt, tracker, timeoutOverride, lateWindowMs = 0, onTimeout, mode }) {
   if (!bot.worker) {
     throw new ExecutorError('E_NOT_FOUND', 'joined shadow missing worker config')
   }
@@ -111,6 +111,8 @@ function prepareRemote({ bot, text, rt, tracker, timeoutOverride, lateWindowMs =
         remoteBotId,
         exchangeId: turnId,
         text: text ?? '',
+        // How a busy node Bot takes it (AC 0.4.19+; an older node ignores it and queues).
+        ...(mode === 'steer' || mode === 'queue' ? { mode } : {}),
       })
     } catch (sendErr) {
       cancel()
@@ -513,12 +515,12 @@ export function joinedBusy(rt, botId) {
  * — the same wait a late reply has (joinedLateQueue). Returns { turnId, done }; `done` resolves
  * { ok, turnId } and rejects with an ExecutorError when the node did not take the message.
  */
-export function startSideTurn({ rt, bot, text, requestId, session, state = {}, tracker, timeoutMs }) {
+export function startSideTurn({ rt, bot, text, requestId, session, state = {}, tracker, timeoutMs, mode = 'steer' }) {
   if (!rt.joinedSide) rt.joinedSide = new Map()
   const sides = rt.joinedSide.get(bot.id) ?? new Set()
   if (sides.size >= JOINED_SIDE_LIMIT) throw new ExecutorError('E_BUSY', 'too many concurrent turns for this Bot')
   const lateWindowMs = Number.isFinite(rt.joinedLateWindowMs) ? Math.max(1, rt.joinedLateWindowMs) : JOINED_LATE_WINDOW_MS
-  const prepared = prepareRemote({ bot, text, rt, tracker, timeoutOverride: timeoutMs, lateWindowMs })
+  const prepared = prepareRemote({ bot, text, rt, tracker, timeoutOverride: timeoutMs, lateWindowMs, mode })
   const { seenKeys, closedKeys, seenSteps, closedTurns } = state
   const record = { requestId, abort: undefined }
   let over = false

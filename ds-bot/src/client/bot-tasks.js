@@ -267,7 +267,7 @@ export function TaskIslandPanel({ bot, room, roster, approvals = [], focusTaskId
   }
 
   const stopFocusedTask = () => {
-    if (busy || !task || !ownerBot || task.remote) return
+    if (busy || !task || !ownerBot) return
     setBusy(true)
     setError('')
     void Promise.resolve(actions.stopTask(ownerBot.id, task.id))
@@ -343,7 +343,7 @@ export function TaskIslandPanel({ bot, room, roster, approvals = [], focusTaskId
                 : task.brief && task.brief !== task.title ? h('div', { className: 'bt-btask-desc' }, task.brief) : null)
           : null,
 
-        task && taskActive && !task.remote && !isApproval && typeof actions.sendTask === 'function'
+        task && taskActive && !isApproval && typeof actions.sendTask === 'function'
           ? h('div', { className: 'bt-btask-reply' },
               h('textarea', {
                 ref: inputRef,
@@ -388,7 +388,7 @@ export function TaskIslandPanel({ bot, room, roster, approvals = [], focusTaskId
             ? h(Fragment, null,
                 h('button', { type: 'button', className: 'bt-btask-btn', disabled: busy, onClick: () => answerApproval('reject') }, t('Reject')),
                 h('button', { type: 'button', className: 'bt-btask-btn is-primary', disabled: busy, onClick: () => answerApproval('allow') }, t('Allow once')))
-            : taskActive && !task.remote
+            : taskActive
               ? h('button', { type: 'button', className: 'bt-btask-btn is-danger', disabled: busy, onClick: stopFocusedTask }, t('Stop'))
               : null)))
 }
@@ -618,7 +618,7 @@ export function DetailsTaskList({ tasks, sessionId, showBot = false, actions, ru
               active && typeof task.startedAt === 'number'
                 ? h(Elapsed, { at: task.startedAt, className: 'bt-task-row-time' })
                 : task.endedAt ? h(Fragment, null, h('span', { 'aria-hidden': true }, '·'), h('span', { className: 'bt-task-row-time' }, relativeShort(task.endedAt))) : null)),
-          active && !task.remote
+          active
             ? h('button', {
                 type: 'button',
                 className: 'bt-task-row-stop',

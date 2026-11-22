@@ -32,7 +32,7 @@ const makeTeam = (over = {}) => ({
   works: over.works ?? {},
   questions: {},
   views: {},
-  prefs: over.prefs ?? {},
+  prefs: { steerHandoff: 'immediate', ...(over.prefs ?? {}) },
   revision: 0,
 })
 
@@ -810,4 +810,76 @@ test('fg-handoff snapshots inheritedSegments so foreground rollover never shifts
   // 2) User opens a fresh parallel thread (clears bot.segments): task STILL keeps its frozen inherited snapshot!
   bot.segments = []
   assert.deepEqual(env.rt.partsOfThread('a', 'dm-a').map(p => p.sessionId), ['dm-a-p1', 'dm-a'])
+})
+
+// ── queue waits, steer joins the turn, a stuck foreground is the only thing that moves it ──
+
+const busyForeground = async (env) => {
+  const dmA = env.agentMap.get('dm-a')
+  dmA.status = 'running'
+  await env.emit('dm-a', 'turn/start', { turn: 1 })
+  await env.emit('dm-a', 'user/message', { content: [{ type: 'text', text: 'Run full integration suite' }], source: { kind: 'user' } })
+  await env.emit('dm-a', 'tool/call', { callId: 'tc1', name: 'bash', arguments: '{"command":"npm test"}' })
+  assert.equal(env.rt.shouldMoveForeground(env.rt.botOf('a'), 'dm-a'), true, 'a busy turn that ran a tool')
+  return dmA
+}
+const userMessage = (id, text) => ({ id, role: 'user', content: [{ type: 'text', text }], source: { kind: 'user' } })
+const settle = () => new Promise(resolve => setTimeout(resolve, 120))
+
+test('a steer stays in the running turn (no handoff) while the foreground reads it', async (t) => {
+  const env = await startEnv({ team: makeTeam({ prefs: { steerHandoff: 'stuck' } }) })
+  t.after(env.stop)
+  env.rt.steerValveMs = 40
+  const dmA = await busyForeground(env)
+  const message = userMessage('u-steer-1', 'Actually use the staging config')
+  dmA.inbox.nextStep.push(message)
+  await env.emit('dm-a', 'agent/inbox/spliced', { target: 'next-step', inserted: [message] })
+  // the foreground reads it before the valve: the model has it, nothing moves
+  dmA.inbox.nextStep.splice(0)
+  await settle()
+  assert.equal(env.rt.botOf('a').sessionId, 'dm-a', 'the foreground did not move')
+  assert.equal(env.rt.botOf('a').tasks?.length ?? 0, 0)
+})
+
+test('with steerHandoff stuck, a steer the foreground never reads moves the busy turn into a task once the valve is past', async (t) => {
+  const env = await startEnv({ team: makeTeam({ prefs: { steerHandoff: 'stuck' } }) })
+  t.after(env.stop)
+  env.rt.steerValveMs = 40
+  const dmA = await busyForeground(env)
+  const message = userMessage('u-steer-2', 'Also check the docs')
+  dmA.inbox.nextStep.push(message)
+  await env.emit('dm-a', 'agent/inbox/spliced', { target: 'next-step', inserted: [message] })
+  assert.equal(env.rt.botOf('a').sessionId, 'dm-a', 'not at once')
+  await waitFor(() => env.rt.botOf('a').sessionId !== 'dm-a')
+  const botA = env.rt.botOf('a')
+  assert.equal(botA.tasks.length, 1)
+  assert.equal(botA.tasks[0].origin, 'fg-handoff')
+  const notice = env.agentMap.get(botA.sessionId).injected[0].content[0].text
+  assert.match(notice, /What it was asked: Run full integration suite/, 'the new foreground is told what the moved turn is')
+})
+
+test('a queued message never moves the busy turn, whatever the setting', async (t) => {
+  const env = await startEnv({ team: makeTeam({ prefs: { steerHandoff: 'immediate' } }) })
+  t.after(env.stop)
+  env.rt.steerValveMs = 10
+  const dmA = await busyForeground(env)
+  const message = userMessage('u-queued-1', 'Then deploy it')
+  dmA.inbox.nextTurn.push(message)
+  await env.emit('dm-a', 'agent/inbox/spliced', { target: 'next-turn', inserted: [message] })
+  await settle()
+  assert.equal(env.rt.botOf('a').sessionId, 'dm-a', 'queue means wait')
+  assert.equal(env.rt.botOf('a').tasks?.length ?? 0, 0)
+})
+
+test('by default nothing copies the Session: an unread steer just stays pending', async (t) => {
+  const env = await startEnv({ team: makeTeam({ prefs: { steerHandoff: undefined } }) })
+  t.after(env.stop)
+  env.rt.steerValveMs = 10
+  const dmA = await busyForeground(env)
+  const message = userMessage('u-steer-3', 'Also check the docs')
+  dmA.inbox.nextStep.push(message)
+  await env.emit('dm-a', 'agent/inbox/spliced', { target: 'next-step', inserted: [message] })
+  await settle()
+  assert.equal(env.rt.botOf('a').sessionId, 'dm-a', 'no copy was made')
+  assert.equal(dmA.inbox.nextStep.length, 1, 'the steer is still waiting for the foreground to read it')
 })

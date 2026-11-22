@@ -751,6 +751,7 @@ const ZH = {
   'Background work': '后台工作',
   'Background commands after (seconds)': '命令转后台（秒）',
   'Bring up related memory': '自动带上相关记忆',
+  'Ask where a message goes when the Bot is busy': 'Bot 忙时，先问我这条消息怎么处理',
   'Group memory size': '群记忆容量',
   'Bot memory size': 'Bot 记忆容量',
   'Team memory size': '团队记忆容量',

@@ -37,7 +37,7 @@ async function createRealLoopRig(t, { prefs = {}, failForkAndCreate = false, hol
     works: {},
     questions: {},
     views: {},
-    prefs,
+    prefs: { steerHandoff: 'immediate', ...prefs },
     revision: 0,
   }))
 

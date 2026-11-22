@@ -459,6 +459,7 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
     const exchangeId = trimmed(turn?.exchangeId)
     const roomId = trimmed(turn?.roomId)
     const roomFields = roomId ? { roomId } : {}
+    const steering = turn?.mode === 'steer'
     if (remoteBotId === '' || exchangeId === '') return { ok: false, error: 'bot-turn-missing', ...roomFields }
     const bot = findLocal(rt, remoteBotId)
     if (!bot || bot.type === 'remote-worker' || bot.origin === 'joined') return { ok: false, error: 'bot-not-on-roster', ...roomFields }
@@ -493,9 +494,12 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
           sessionId: sessionIdForTurn,
           content: [{ type: 'text', text }],
           requestId: exchangeId,
+          ...(steering ? { mode: 'steer' } : {}),
         })
       }
-      if (typeof rt.sendThreadTurn === 'function') {
+      // A steer joins the turn already running on this Session; only what waits goes through the gate.
+      const joinsRunning = steering && rt.threadQueueLive?.(bot.id)?.running?.sessionId === sessionIdForTurn
+      if (typeof rt.sendThreadTurn === 'function' && !joinsRunning) {
         await rt.sendThreadTurn({
           botId: bot.id, kind: 'send', preview: turn.text, releaseOn: 'run', run: send,
           onCancel: () => rt.settleJoinedTurn(exchangeId, '', Object.assign(new Error('bot-turn-cancelled'), { code: 'bot-turn-cancelled' })),

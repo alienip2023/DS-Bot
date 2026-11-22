@@ -15,6 +15,10 @@ import { mainThreadId, threadOf } from './bot-store.js'
 // A turn the Session accepted but never started (no `turn/start`) would hold the Bot
 // forever; past this it is let go once, with a warning, and the queue moves on.
 const ACCEPT_WAIT_MS = 60_000
+// A Session whose agent sits idle with nothing waiting in its inbox this long after the prompt was
+// accepted will never start that turn (an older part, a message the core dropped): let it go early
+// instead of holding the Bot for the whole accept wait.
+const IDLE_NO_START_MS = 5_000
 // How often a running turn that has not started is checked for a failure. A refused turn
 // sets `bot.blocked` and may never emit `turn/end` (turns.js), so nothing else tells the
 // queue; this is not the accept wait, which stays above.
@@ -143,6 +147,15 @@ export function install(rt) {
     }
   }
 
+  // The Session's agent is there, idle, and nothing is queued for it: no turn will start from what was sent.
+  const idleWithNothingWaiting = (sessionId) => {
+    let agent
+    try { agent = ctx.get?.('agents')?.get(sessionId) } catch { agent = undefined }
+    if (agent === undefined || agent.status !== 'idle') return false
+    const inbox = agent.inbox
+    return (inbox?.nextStep?.length ?? 0) === 0 && (inbox?.nextTurn?.length ?? 0) === 0
+  }
+
   async function start(slot, entry) {
     // It is this entry's turn: the caller's abort no longer withdraws it, the Session's
     // own `turn/end` (or the watch) releases it from here.
@@ -169,12 +182,18 @@ export function install(rt) {
         if (slot.running?.queueId !== entry.queueId) return clearWatch(entry)
         if (entry.sawStart === true) return clearWatch(entry)
         const failure = failureOf(entry)
-        if (failure !== undefined) fail(entry, failure)
+        if (failure !== undefined) return fail(entry, failure)
+        if (entry.accepted === true && Date.now() - entry.acceptedAt >= IDLE_NO_START_MS && idleWithNothingWaiting(entry.sessionId)) {
+          rt.warn?.('ds-bot: a turn for %s was accepted but its Session is idle with nothing waiting; letting the next one run', entry.sessionId)
+          release(entry)
+        }
       }, FAILURE_POLL_MS)
       entry.probe.unref?.()
     }
     try {
       await entry.run()
+      entry.accepted = true
+      entry.acceptedAt = Date.now()
     } catch (error) {
       if (typeof error?.code === 'string' && slot.running?.queueId === entry.queueId) {
         slot.state = 'failed'

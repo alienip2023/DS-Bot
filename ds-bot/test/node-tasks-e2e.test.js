@@ -89,3 +89,82 @@ test('a node Bot\'s task report crosses the real AC bot/message path and is writ
   assert.deepEqual(texts, [`${TASK_RESULT_MARK}\n\nthe build is done`])
   assert.equal(w.frames.length, 0, 'nothing is sent back to the node')
 })
+
+test('a node card reaches the hub through the real AC roster path and its answer comes back through the real bot/action handler', { skip }, async () => {
+  const { bindRosterReport } = await load('roster-report.js')
+  const { withIngest } = await load('hub/registry-ingest.js')
+  const { handleBotActionFrame } = await load('bot-action.js')
+  const { HUB_TO_NODE } = await load('protocol.js')
+  const { nodeCardsOf, createBotActionReceiver, installHub, sendBotAction } = await import('../src/host/node-cards.js')
+
+  // ── the hub: the real AC ingest, its registry is what ds-bot sends bot/action through
+  const outbound = []
+  const listeners = {}
+  class Core {
+    constructor() { this.nodes = new Map([['n1', { nodeId: 'n1', lastSeen: 0, online: true }]]); this.tasks = new Map() }
+    log() {}
+    send(nodeId, type, payload) { outbound.push({ nodeId, type, payload }); return true }
+    on(name, fn) { (listeners[name] ??= []).push(fn) }
+    off(name, fn) { listeners[name] = (listeners[name] ?? []).filter(item => item !== fn) }
+    emit(name, payload) { for (const fn of [...(listeners[name] ?? [])]) fn(payload) }
+  }
+  const registry = new (withIngest(Core))()
+  const hubState = { bots: {}, mainBotIds: [] }
+  registry.on('roster', report => applyRosterReport(hubState, report))
+  const hubRt = {
+    ctx: { get: name => (name === 'remote-agent:registry' ? registry : undefined) },
+    state: hubState, botOf: id => hubState.bots[id], chatOf: id => hubState.bots[id]?.sessionId ?? id, save: async () => {},
+    approvalsView: () => [], learningView: () => ({}),
+  }
+  installHub(hubRt)
+
+  // ── the node: a local Bot with an ask_user question open, ds-bot's receiver behind AC's handler
+  const answered = []
+  const nodeRt = {
+    state: { bots: { k1: { id: 'k1', name: 'Worker', role: 'dev' } }, questions: { 'chat-k1': { id: 'q9', question: 'Ship it?', options: [{ label: 'yes' }, { label: 'no' }], allowCustom: true, askedAt: 4 } } },
+    botOf: id => nodeRt.state.bots[id], chatOf: id => `chat-${id}`,
+    approvalsView: () => [], learningView: () => ({}),
+    answerQuestion: async (...args) => { answered.push(args); delete nodeRt.state.questions['chat-k1'] },
+  }
+  const receiver = createBotActionReceiver(nodeRt)
+  const nodeCtx = { get: name => (name === 'remote-agent:bot-action' ? receiver : undefined) }
+  const sent = []
+  const report = bindRosterReport({ set() {} }, { send: (type, data) => { sent.push({ type, data }); return true }, nodeId: 'n1', hostname: 'h' })
+
+  assert.equal(report({ bots: reportableBots(nodeRt.state.bots, () => [], bot => nodeCardsOf(nodeRt, bot)) }), true)
+  registry.handleFrameFor('n1', { t: sent[0].type, d: sent[0].data })
+  const shadow = Object.values(hubState.bots)[0]
+  shadow.sessionId = 'mirror-k1'
+  assert.deepEqual(shadow.nodeCards.map(card => [card.id, card.kind, card.input]), [['question:q9', 'question', true]], 'the card crossed AC\'s whitelist')
+  assert.equal(hubRt.nodeQuestionsView()['mirror-k1'].question, 'Ship it?')
+
+  // the user answers on the hub; the frame goes through AC's real node handler; its result comes back
+  const pending = sendBotAction(hubRt, shadow, 'card-answer', { cardId: 'question:q9', choice: '0' })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(outbound[0].type, HUB_TO_NODE.BOT_ACTION)
+  const results = []
+  await handleBotActionFrame({
+    frame: { id: 'f1' }, data: outbound[0].payload, ctx: nodeCtx,
+    send: (type, payload) => { results.push({ type, payload }); registry.handleFrameFor('n1', { t: type, d: payload }) }, sendError() {},
+  })
+  const result = await pending
+  assert.equal(result.ok, true)
+  assert.deepEqual(answered, [['chat-k1', 'q9', { selected: ['yes'] }]], 'the node applied the answer to its own question')
+
+  // the next report no longer carries it
+  assert.equal(report({ bots: reportableBots(nodeRt.state.bots, () => [], bot => nodeCardsOf(nodeRt, bot)) }), true)
+  registry.handleFrameFor('n1', { t: sent.at(-1).type, d: sent.at(-1).data })
+  assert.deepEqual(Object.values(hubState.bots)[0].nodeCards, [])
+})
+
+test('a steer to a node Bot crosses AC with its mode and reaches the node receiver', { skip }, async () => {
+  const { handleBotTurnFrame } = await load('bot-turn.js')
+  const seen = []
+  const ctx = { get: name => (name === 'remote-agent:bot-turn' ? async turn => { seen.push(turn); return { ok: true, text: 'noted' } } : undefined) }
+  const frames = []
+  // what the hub's prepareRemote puts on the wire for a steer
+  const wire = { nodeId: 'n1', remoteBotId: 'k1', exchangeId: 'ex-1', text: 'change the plan', mode: 'steer' }
+  await handleBotTurnFrame({ frame: { id: 'f1' }, data: wire, ctx, send: (type, data) => { frames.push({ type, data }); return true }, sendError() {}, engine: {}, turnSeq: { next: () => 1 } })
+  assert.equal(seen[0].mode, 'steer')
+  assert.equal(frames[0].data.exchangeId, 'ex-1')
+})

@@ -1186,6 +1186,7 @@ export function install(rt) {
         entry.step = undefined
         entry.info = undefined
         entry.userRpcId = undefined
+        entry.userRpcIds = undefined
         entry.toolCount = 0
         entry.localDoing = undefined
         entry.usage = undefined
@@ -1263,6 +1264,8 @@ export function install(rt) {
         // Record rpcId for joined-turn settle: sendUser({requestId}) lands on source as rpcId.
         if (source?.kind === 'user' && typeof source.rpcId === 'string' && source.rpcId !== '') {
           entry.userRpcId = source.rpcId
+          // Every message the turn took (a steer joins it): each is owed the turn's answer.
+          ;(entry.userRpcIds ??= new Set()).add(source.rpcId)
         }
         // A result that came back counts as taken once a turn reads it.
         if (source?.kind === SOURCE_KIND && source.work !== undefined && source.replyTo !== undefined) rt.takenWork?.(source.work, source.replyTo)
@@ -1682,7 +1685,7 @@ export function install(rt) {
           const reply = failure !== undefined
             ? `${name} could not answer your message: its model call failed (${failureLine(failure)}).`
             : replyText()
-          const settled = settleJoinForTurn(rt, joinInfo, reply, failure)
+          const settled = settleJoinForTurns(rt, joinInfo, entry.userRpcIds, reply, failure)
           if (!settled && info !== undefined) finish(info, replyText())
           // A node Bot answering what its background task brought back: the hub's page that asked
           // for the work is told too (it would otherwise never see the result).
@@ -1794,4 +1797,14 @@ export function settleJoinForTurn(rt, info, reply, failure) {
   const id = info?.rpcId ?? info?.requestId ?? info?.exchangeId
   if (typeof id !== 'string' || id === '') return false
   return rt.settleJoinedTurn(id, reply, failure) === true
+}
+
+// A turn answers every message it took: the one that opened it, and each steer that joined it.
+// Returns whether the opening message's waiter was found (the others are settled on the side).
+export function settleJoinForTurns(rt, info, rpcIds, reply, failure) {
+  const settled = settleJoinForTurn(rt, info, reply, failure)
+  for (const rpcId of rpcIds ?? []) {
+    if (rpcId !== (info?.rpcId ?? info?.requestId ?? info?.exchangeId)) settleJoinForTurn(rt, { rpcId }, reply, failure)
+  }
+  return settled
 }

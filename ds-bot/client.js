@@ -136,6 +136,7 @@ var JA = {
   "Allow it in Shared capabilities.": "共有機能で許可してください。",
   "Background work": "バックグラウンド作業",
   "Background commands after (seconds)": "コマンドをバックグラウンドへ（秒後）",
+  "Ask where a message goes when the Bot is busy": "Bot が忙しいとき、メッセージの扱いを先に確認する",
   "A new reply is waiting": "新しい返信があります",
   "Opening…": "開いています…",
   "Still opening…": "まだ開いています…",
@@ -3696,6 +3697,7 @@ var KO = {
   "Show thinking": "사고 과정 표시",
   "Enter sends message": "Enter 키로 메시지 전송",
   "Bring up related memory": "관련 메모리 자동으로 불러오기",
+  "Ask where a message goes when the Bot is busy": "Bot이 바쁠 때 메시지를 어떻게 처리할지 먼저 묻기",
   "Group memory size": "그룹 메모리 용량",
   "Bot memory size": "Bot 메모리 용량",
   "Team memory size": "팀 메모리 용량",
@@ -6554,6 +6556,7 @@ var ES = {
   "Show thinking": "Mostrar razonamiento",
   "Enter sends message": "Enter envía el mensaje",
   "Bring up related memory": "Traer memoria relacionada",
+  "Ask where a message goes when the Bot is busy": "Si el Bot está ocupado, preguntar adónde va el mensaje",
   "Group memory size": "Tamaño de memoria del grupo",
   "Bot memory size": "Tamaño de memoria del Bot",
   "Team memory size": "Tamaño de memoria del equipo",
@@ -8665,6 +8668,7 @@ var FR = {
   "Allow it in Shared capabilities.": "Autorisez-le dans Capacités partagées.",
   "Background work": "Travail en arrière-plan",
   "Background commands after (seconds)": "Passer les commandes en arrière-plan après (secondes)",
+  "Ask where a message goes when the Bot is busy": "Si le Bot est occupé, demander où va le message",
   "A new reply is waiting": "Une nouvelle réponse vous attend",
   "Opening…": "Ouverture…",
   "Still opening…": "Toujours en cours d’ouverture…",
@@ -12225,6 +12229,7 @@ var DE = {
   "Show thinking": "Denkprozess anzeigen",
   "Enter sends message": "Enter sendet Nachricht",
   "Bring up related memory": "Verwandte Erinnerungen automatisch einbeziehen",
+  "Ask where a message goes when the Bot is busy": "Bei beschäftigtem Bot erst fragen, wohin die Nachricht geht",
   "Group memory size": "Kapazität des Gruppengedächtnisses",
   "Bot memory size": "Kapazität des Bot-Gedächtnisses",
   "Team memory size": "Kapazität des Teamgedächtnisses",
@@ -15084,6 +15089,7 @@ var ZH = {
   "Background work": "后台工作",
   "Background commands after (seconds)": "命令转后台（秒）",
   "Bring up related memory": "自动带上相关记忆",
+  "Ask where a message goes when the Bot is busy": "Bot 忙时，先问我这条消息怎么处理",
   "Group memory size": "群记忆容量",
   "Bot memory size": "Bot 记忆容量",
   "Team memory size": "团队记忆容量",
@@ -33740,7 +33746,7 @@ function TaskIslandPanel({ bot, room: room2, roster, approvals = [], focusTaskId
     void Promise.resolve(promise).catch((err) => setError(hostText(err?.message ?? String(err)))).finally(() => setBusy(false));
   };
   const stopFocusedTask = () => {
-    if (busy || !task || !ownerBot || task.remote) return;
+    if (busy || !task || !ownerBot) return;
     setBusy(true);
     setError("");
     void Promise.resolve(actions.stopTask(ownerBot.id, task.id)).catch((err) => setError(hostText(err?.message ?? String(err)))).finally(() => setBusy(false));
@@ -33820,7 +33826,7 @@ function TaskIslandPanel({ bot, room: room2, roster, approvals = [], focusTaskId
           task.error ? (0, import_react36.createElement)("div", { className: "bt-btask-err" }, task.error) : null,
           task.summary ? (0, import_react36.createElement)("div", { className: "bt-btask-desc" }, task.summary) : task.brief && task.brief !== task.title ? (0, import_react36.createElement)("div", { className: "bt-btask-desc" }, task.brief) : null
         ) : null,
-        task && taskActive && !task.remote && !isApproval && typeof actions.sendTask === "function" ? (0, import_react36.createElement)(
+        task && taskActive && !isApproval && typeof actions.sendTask === "function" ? (0, import_react36.createElement)(
           "div",
           { className: "bt-btask-reply" },
           (0, import_react36.createElement)("textarea", {
@@ -33876,7 +33882,7 @@ function TaskIslandPanel({ bot, room: room2, roster, approvals = [], focusTaskId
           null,
           (0, import_react36.createElement)("button", { type: "button", className: "bt-btask-btn", disabled: busy, onClick: () => answerApproval("reject") }, t("Reject")),
           (0, import_react36.createElement)("button", { type: "button", className: "bt-btask-btn is-primary", disabled: busy, onClick: () => answerApproval("allow") }, t("Allow once"))
-        ) : taskActive && !task.remote ? (0, import_react36.createElement)("button", { type: "button", className: "bt-btask-btn is-danger", disabled: busy, onClick: stopFocusedTask }, t("Stop")) : null
+        ) : taskActive ? (0, import_react36.createElement)("button", { type: "button", className: "bt-btask-btn is-danger", disabled: busy, onClick: stopFocusedTask }, t("Stop")) : null
       )
     )
   );
@@ -34142,7 +34148,7 @@ function DetailsTaskList({ tasks, sessionId, showBot = false, actions, run: run2
                 active && typeof task.startedAt === "number" ? (0, import_react36.createElement)(Elapsed, { at: task.startedAt, className: "bt-task-row-time" }) : task.endedAt ? (0, import_react36.createElement)(import_react36.Fragment, null, (0, import_react36.createElement)("span", { "aria-hidden": true }, "·"), (0, import_react36.createElement)("span", { className: "bt-task-row-time" }, relativeShort(task.endedAt))) : null
               )
             ),
-            active && !task.remote ? (0, import_react36.createElement)("button", {
+            active ? (0, import_react36.createElement)("button", {
               type: "button",
               className: "bt-task-row-stop",
               disabled: stoppingId === task.id,
@@ -45374,6 +45380,11 @@ function GeneralPage({ roster, actions, run: run2, dsh, openAdvanced = 0 }) {
           SetRow,
           { key: "bg", label: t("Background commands after (seconds)") },
           (0, import_react63.createElement)(SecondsField, { label: t("Background commands after (seconds)"), value: prefs.backgroundAfterSec ?? BACKGROUND_AFTER_SEC, save: (backgroundAfterSec) => run2(actions.setPrefs({ backgroundAfterSec })) })
+        ),
+        (0, import_react63.createElement)(
+          SetRow,
+          { key: "steerAsk", label: t("Ask where a message goes when the Bot is busy") },
+          (0, import_react63.createElement)(Switch, { label: t("Ask where a message goes when the Bot is busy"), on: prefs.steerAsk === true, onChange: (steerAsk) => run2(actions.setPrefs({ steerAsk })) })
         ),
         actions.setSurface && !inAgentMode ? (0, import_react63.createElement)(SetRow, { key: "classic", label: t("Classic Agent mode") }, (0, import_react63.createElement)("button", { type: "button", className: "bt-soft bt-soft-sm", onClick: () => actions.setSurface("agent") }, t("Switch"))) : null,
         ...more.map((id) => dshItem(dsh, id))

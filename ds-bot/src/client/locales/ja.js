@@ -14,6 +14,7 @@ export const JA = {
   'Allow it in Shared capabilities.': '共有機能で許可してください。',
   "Background work": "バックグラウンド作業",
   "Background commands after (seconds)": "コマンドをバックグラウンドへ（秒後）",
+  "Ask where a message goes when the Bot is busy": "Bot が忙しいとき、メッセージの扱いを先に確認する",
   'A new reply is waiting': "新しい返信があります",
   "Opening…": "開いています…",
   "Still opening…": "まだ開いています…",

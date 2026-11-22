@@ -352,6 +352,8 @@ function GeneralPage({ roster, actions, run, dsh, openAdvanced = 0 }) {
           h(MemorySize, { label: t(label), value: prefs.memoryLimits?.[scope] ?? size, save: value => run(actions.setPrefs({ memoryLimits: { [scope]: value } })) }))),
         h(SetRow, { key: 'bg', label: t('Background commands after (seconds)') },
           h(SecondsField, { label: t('Background commands after (seconds)'), value: prefs.backgroundAfterSec ?? BACKGROUND_AFTER_SEC, save: backgroundAfterSec => run(actions.setPrefs({ backgroundAfterSec })) })),
+        h(SetRow, { key: 'steerAsk', label: t('Ask where a message goes when the Bot is busy') },
+          h(Switch, { label: t('Ask where a message goes when the Bot is busy'), on: prefs.steerAsk === true, onChange: steerAsk => run(actions.setPrefs({ steerAsk })) })),
         actions.setSurface && !inAgentMode
           ? h(SetRow, { key: 'classic', label: t('Classic Agent mode') }, h('button', { type: 'button', className: 'bt-soft bt-soft-sm', onClick: () => actions.setSurface('agent') }, t('Switch')))
           : null,

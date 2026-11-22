@@ -22,6 +22,7 @@ import { JOINED_TURN_TIMEOUT_MS } from './joined-turn.js'
 import { dropJoinedMirrorQueues, waitForJoinedMirror, mirrorTurnOpen } from './joined-mirror-writer.js'
 import { installRunning } from './joined-running.js'
 import { wrapControllerMethod } from './controller-wrap.js'
+import { sendBotAction } from './node-cards.js'
 
 const BUSY = '副机 Bot 正在回复上一条，请稍候再发'
 const NO_ATTACHMENTS = '副机 Bot 暂不支持附件，请改为文字发送'
@@ -114,36 +115,38 @@ export function install(rt) {
     // below blocks until the exchange turn is closed, so the page starts after.
     const isBusy = () => rt.joinedInFlight?.has(bot.id) === true
 
-    // mode: 'steer' means "interrupt the current turn at its next step" — deliver
-    // the message as a steer into the in-flight page turn via the node's steer path.
+    // mode: 'steer' means "join the turn in flight": the message goes to the node now, as a bot/turn
+    // carrying mode 'steer', and the node's Bot takes it at its next step.
     // mode: 'queue' (default) means "wait until the current turn ends, then run".
     // Both are accepted immediately (accepted: true) — the user is never blocked.
     const mode = request.mode === 'steer' ? 'steer' : 'queue'
 
+    const hold = () => {
+      if (!rt.joinedUserQueue) rt.joinedUserQueue = new Map()
+      const q = rt.joinedUserQueue.get(bot.id) ?? []
+      q.push({ text, requestId: request.requestId, session, state: mirrorStateOf(rt, bot.id, session) })
+      rt.joinedUserQueue.set(bot.id, q)
+    }
+    const steerNow = () => startSideTurn({ rt, bot, text, requestId: request.requestId, session, state: mirrorStateOf(rt, bot.id, session), tracker: rt.turnTracker, timeoutMs, mode: 'steer' })
+    if (isBusy() && mode === 'steer' && rt.state?.prefs?.steerAsk === true) {
+      // Opt-in: ask where it goes (never blocks; unanswered, it steers). Only the composer reaches this.
+      const asked = rt.askSteer?.({
+        sessionId: request.sessionId, text,
+        apply: async (choice) => {
+          if (choice === 'queue') return hold()
+          if (choice === 'independent' || choice === 'related') return sendBotAction(rt, bot, 'task-start', { text, relation: choice })
+          try { steerNow() } catch (error) { if (error?.code === 'E_BUSY') hold(); else throw error }
+        },
+      })
+      if (asked === true) return { accepted: true }
+    }
     if (isBusy()) {
-      if (mode === 'steer') {
-        // Steer the in-flight page turn: inject text into the node's current turn.
-        // The node receives a bot/steer frame and surfaces it at the next tool boundary.
-        let registry
-        try { registry = rt.ctx?.get?.('remote-agent:registry') } catch { registry = undefined }
-        const nodeId = String(bot.worker?.nodeId ?? '').trim()
-        const remoteBotId = String(bot.worker?.remoteBotId ?? '').trim()
-        if (registry && typeof registry.send === 'function' && nodeId && remoteBotId) {
-          try {
-            registry.send(nodeId, 'bot/steer', { nodeId, remoteBotId, text, requestId: request.requestId })
-          } catch (e) {
-            rt.warn?.('ds-bot: joined Bot steer to %s failed: %s', bot.id, e?.message ?? e)
-          }
-          return { accepted: true }
-        }
-        // Bridge unavailable — fall through to queue so the message is not lost.
-      }
-      // Default: the message goes to the node at once and runs next to the work in flight (the
-      // node moves a busy foreground into a background task and starts this one). Only when it
-      // cannot — too many already, or the setting is off — it waits for the turn in flight.
-      if (rt.joinedConcurrent !== false) {
+      // Steer: the message goes to the node now and joins the turn there (the node's Bot takes it at
+      // its next step, in the same Session with its whole context). Queue: it waits here until the
+      // turn in flight ends — queue means wait, on a node as on this host.
+      if (mode === 'steer' && rt.joinedConcurrent !== false) {
         try {
-          startSideTurn({ rt, bot, text, requestId: request.requestId, session, state: mirrorStateOf(rt, bot.id, session), tracker: rt.turnTracker, timeoutMs })
+          startSideTurn({ rt, bot, text, requestId: request.requestId, session, state: mirrorStateOf(rt, bot.id, session), tracker: rt.turnTracker, timeoutMs, mode: 'steer' })
           return { accepted: true }
         } catch (error) {
           if (error?.code !== 'E_BUSY') throw await remoteError('session/agent-unavailable', `无法送达节点：${failureText(error)}`, { reason: `JOINED_NODE_${error?.code ?? 'ERROR'}` })

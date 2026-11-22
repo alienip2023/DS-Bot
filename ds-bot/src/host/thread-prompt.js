@@ -46,6 +46,27 @@ export function install(rt) {
     if (joinedBotOfSession(rt, request.sessionId) !== undefined) return original.call(this, request, ...rest)
     const thread = rt.threadOf?.(full.threadId)
     if (thread === undefined) return original.call(this, request, ...rest)
+    // A steer goes into the turn that is running on this very Session: the core takes it at the
+    // next step (the gate is for messages that wait for a turn to end, not for ones that join it).
+    if (request.mode === 'steer' && rt.threadQueueLive?.(full.botId)?.running?.sessionId === request.sessionId) {
+      const self = this
+      // Opt-in (prefs.steerAsk): the user is asked where the message goes; it never blocks.
+      if (rt.state?.prefs?.steerAsk === true) {
+        const asked = rt.askSteer?.({
+          sessionId: request.sessionId, text: await textOf(request.content),
+          apply: async (choice) => {
+            if (choice === 'independent' || choice === 'related') {
+              const message = await textOf(request.content)
+              return rt.startTask(request.sessionId, { title: message.replace(/\s+/g, ' ').trim().slice(0, 60) || 'Task', brief: message, relation: choice })
+            }
+            const next = choice === 'queue' ? { ...request, mode: 'queue' } : request
+            return choice === 'queue' ? self.prompt(next, ...rest) : original.call(self, next, ...rest)
+          },
+        })
+        if (asked === true) return { accepted: true }
+      }
+      return original.call(this, request, ...rest)
+    }
     const text = await textOf(request.content)
     return rt.sendThreadTurn({
       botId: full.botId,

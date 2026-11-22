@@ -1834,6 +1834,8 @@ export function install(rt) {
   const stripRelayHeader = text => String(text ?? '').replace(/^\[[^\r\n]*\]\r?\n?/, '').trim()
   const cleanTaskBrief = (text) => stripRelayHeader(text)
     .replace(/\n\n\[Recent context from your own chat\][\s\S]*$/, '')
+    // What a task is told about its relation to the chat (bot-tasks.js): context for the Bot, not part of the brief.
+    .replace(/\n\n(?:\[What the chat is doing right now\]|\[Other background tasks running\]|\[Keep apart\]|This is an independent task: )[\s\S]*$/, '')
     .replace(/\n\nDo this work here\. The user does not chat directly in this task session;[\s\S]*$/, '')
     .trim()
 
@@ -2196,14 +2198,15 @@ export function install(rt) {
   // running on a DSH model in the same folder, falling back to a fresh Session
   // when there is no completed turn yet (first turn), a different workDir is
   // requested, or the Bot runs on a local CLI agent.
-  async function openTaskPart(bot, fromSessionId, task, { workDir } = {}) {
+  async function openTaskPart(bot, fromSessionId, task, { workDir, fresh = false } = {}) {
     const room = task.roomId !== undefined ? rt.roomOf(task.roomId) : undefined
     const defaultDir = rt.workDirOf({ botId: bot.id, ...(room ? { roomId: room.id } : {}) })
     const dir = workDir !== undefined ? (workDir ?? undefined) : defaultDir
     const isLocal = rt.localAgentBadge?.(bot.model ?? bot.appliedModel) !== undefined
     let sessionId
     let forked = false
-    if (!isLocal && dir === defaultDir && typeof ctx.sessionController?.fork === 'function') {
+    // `fresh`: an independent task starts clean, with none of this chat's history.
+    if (!fresh && !isLocal && dir === defaultDir && typeof ctx.sessionController?.fork === 'function') {
       try {
         const res = await ctx.sessionController.fork({ sessionId: fromSessionId })
         if (typeof res?.sessionId === 'string' && res.sessionId !== '') {

@@ -30,7 +30,7 @@ export function taskSummaryOf(taskView) {
     .map(task => ({ id: task.id.slice(0, 64), title: String(task.title ?? '').slice(0, 80), status: task.status, startedAt: Number.isFinite(task.startedAt) ? task.startedAt : 0 }))
 }
 
-export function reportableBots(bots, taskViewOf) {
+export function reportableBots(bots, taskViewOf, cardsOf) {
   return Object.values(bots ?? {}).flatMap((bot) => {
     if (!bot || typeof bot !== 'object') return []
     if (bot.type === 'remote-worker' || bot.origin === 'peer') return []
@@ -51,7 +51,27 @@ export function reportableBots(bots, taskViewOf) {
     if (typeof taskViewOf === 'function') {
       try { entry.tasks = taskSummaryOf(taskViewOf(bot)) } catch { /* a task view must not take the roster down */ }
     }
+    if (typeof cardsOf === 'function') {
+      try { entry.cards = cardsOf(bot) } catch { /* a card view must not take the roster down */ }
+    }
     return [entry]
+  })
+}
+
+// The cards a node Bot is waiting on, as the hub keeps them: plain strings, small, nothing else.
+export function cardSummaryOf(cards) {
+  return (Array.isArray(cards) ? cards : []).slice(0, 16).flatMap((card) => {
+    if (!card || typeof card.id !== 'string' || card.id === '') return []
+    return [{
+      id: card.id.slice(0, 200),
+      kind: typeof card.kind === 'string' ? card.kind.slice(0, 32) : 'other',
+      title: String(card.title ?? '').slice(0, 120),
+      body: String(card.body ?? '').slice(0, 4000),
+      options: (Array.isArray(card.options) ? card.options : []).slice(0, 8)
+        .filter(option => typeof option?.id === 'string' && option.id !== '').map(option => ({ id: option.id.slice(0, 64), label: String(option.label ?? option.id).slice(0, 60) })),
+      input: card.input === true,
+      at: Number.isFinite(card.at) ? card.at : 0,
+    }]
   })
 }
 
@@ -102,6 +122,11 @@ export function applyRosterReport(state, report, now = Date.now(), onChange) {
     // The node's running background tasks (read-only on the hub). A report from an older node has
     // none: what was known stays; an empty list clears it. Equal lists keep the old array so an
     // unchanged report does not count as a change.
+    if (Array.isArray(bot.cards)) {
+      const nextCards = cardSummaryOf(bot.cards)
+      row.nodeCards = JSON.stringify(nextCards) === JSON.stringify(existing?.nodeCards ?? []) ? (existing?.nodeCards ?? nextCards) : nextCards
+      if (nextCards.length === 0 && existing?.nodeCards === undefined) delete row.nodeCards
+    }
     if (Array.isArray(bot.tasks)) {
       const next = taskSummaryOf(bot.tasks)
       row.nodeTasks = JSON.stringify(next) === JSON.stringify(existing?.nodeTasks ?? []) ? (existing?.nodeTasks ?? next) : next
@@ -460,7 +485,7 @@ export function install(rt) {
     if (stopped) return
     await rt.loadSecrets?.()
     if (stopped) return
-    report({ bots: reportableBots(rt.state?.bots, rt.taskViewOf), skills: sharedSkillSnapshot(rt) })
+    report({ bots: reportableBots(rt.state?.bots, rt.taskViewOf, rt.nodeCardsOf), skills: sharedSkillSnapshot(rt) })
   }
   rt.publishSkillRoster = publish
   // Backfill homeNodeId for joined bots written before this field was introduced.

@@ -839,3 +839,34 @@ test('bot-task-read excludes inherited foreground chat history, renders task-bri
   assert.equal(roSend.error?.code, 'bot/read-only')
   env.rt.readOnly = () => undefined
 })
+
+test('task_start relation: independent starts clean (no fork, only the brief); related forks and carries the running turn\'s words', async (t) => {
+  const env = await startEnv()
+  t.after(env.stop)
+  const dmA = env.agentMap.get('dm-a')
+  // the chat is in the middle of a turn
+  await env.emit('dm-a', 'turn/start', { turn: 1 })
+  await env.emit('dm-a', 'user/message', { content: [{ type: 'text', text: 'Migrate the billing tables to the new schema' }], source: { kind: 'user' } })
+  const forksBefore = env.forkedCalls.length
+
+  const clean = await env.tool('task_start').execute({ title: 'Check the weather page', brief: 'Look at the weather page', relation: 'independent' }, execOf(dmA))
+  assert.match(clean, /clean session \(independent/)
+  const independent = env.rt.botOf('a').tasks.find(task => task.title === 'Check the weather page')
+  assert.equal(independent.relation, 'independent')
+  const cleanPrompt = String(env.agentMap.get(independent.sessionId).followups[0]?.content?.[0]?.text ?? '')
+  assert.match(cleanPrompt, /independent task: you start with no chat history/)
+  assert.equal(cleanPrompt.includes('Migrate the billing tables'), false, 'nothing of the chat leaks into an independent task')
+  assert.equal(env.forkedCalls.length, forksBefore, 'an independent task is not forked from the chat')
+
+  await env.tool('task_start').execute({ title: 'Backfill old invoices', brief: 'Backfill the old invoices too' }, execOf(dmA))
+  const related = env.rt.botOf('a').tasks.find(task => task.title === 'Backfill old invoices')
+  assert.equal(related.relation, 'related')
+  const relatedPrompt = String(env.agentMap.get(related.sessionId).followups[0]?.content?.[0]?.text ?? '')
+  assert.match(relatedPrompt, /\[What the chat is doing right now\]/)
+  assert.match(relatedPrompt, /What it was asked: Migrate the billing tables to the new schema/, 'the running turn\'s own words')
+  assert.match(relatedPrompt, /\[Other background tasks running\]\n- Check the weather page/)
+  assert.match(relatedPrompt, /Do not edit the files it is editing/)
+  assert.equal(env.forkedCalls.length, forksBefore + 1, 'a related task is forked from the chat')
+  const page = await env.callApi('bot-task-read', { botId: 'a', taskId: related.id })
+  assert.equal(page.value.items.some(item => item.kind === 'task-brief' && /Do not edit the files|What the chat is doing/.test(item.text)), false, 'the packet is context for the Bot, not part of the brief the page shows')
+})

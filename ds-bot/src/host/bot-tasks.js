@@ -25,6 +25,8 @@ const REPORT_MAX = 4000
 const CONTEXT_FALLBACK_MAX = 4000
 const CONTEXT_FALLBACK_ITEMS = 8
 const DIGEST_REQUEST_MAX = 1500
+// A steer unread this long means the foreground is stuck (a long call, an approval, a subagent).
+const STEER_VALVE_MS = 8_000
 const MAX_SETTLED_TASKS = 50
 
 const oneLine = (text, max) => String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, max)
@@ -354,7 +356,7 @@ export function install(rt) {
   }
 
   // Starts a background task for a Bot from either its foreground own chat or a group member Session.
-  async function startTask(fromSessionId, { title, brief, workdir }, exec) {
+  async function startTask(fromSessionId, { title, brief, workdir, relation }, exec) {
     if (rt.taskOwners?.has(fromSessionId)) {
       throw Object.assign(new Error('Background tasks cannot start nested background tasks. Finish this task and report back to your chat instead.'), { code: 'bot/invalid' })
     }
@@ -435,14 +437,21 @@ export function install(rt) {
       ...(imOrigin !== undefined ? { imOrigin } : {}),
     }
 
-    const { sessionId, forked, task } = await rt.openTaskPart(bot, fromSessionId, baseTask, { workDir: resolvedDir })
+    // independent: work that has nothing to do with this chat — a clean Session with only the brief.
+    // related (the default): a continuation or a part of what this chat is doing — the Session is
+    // forked from this chat and also gets the running turn's own words (the fork is taken before
+    // that turn), so it never has to guess what "that" refers to.
+    const independent = relation === 'independent'
+    baseTask.relation = independent ? 'independent' : 'related'
+    const { sessionId, forked, task } = await rt.openTaskPart(bot, fromSessionId, baseTask, { workDir: resolvedDir, fresh: independent })
     if (taskWorkId !== undefined) {
       rt.openWork?.(taskWorkId, { from: bot.id, parent: parentWork, name: `task "${name}"`, child: id })
     }
     if (room !== undefined) rt.workRoomTurn?.(fromSessionId, 'task')
 
     const isLocal = isLocalCliBot(bot, ctx.get('agents')?.get(fromSessionId)?.session)
-    const contextNote = forked ? '' : fallbackContextSummary(fromSessionId)
+    const contextNote = independent ? '\n\nThis is an independent task: you start with no chat history. Everything you need is in the brief above.'
+      : forked ? relatedPacket(fromSessionId, bot, id) : fallbackContextSummary(fromSessionId)
     const localNote = isLocal ? '\nNote: You are running in a separate local CLI session that does not share in-memory state with the foreground chat.' : ''
     const dirNote = resolvedDir ? `\nWorking directory: ${resolvedDir}` : ''
     const reportDest = room !== undefined ? `your session in group "${room.name}"` : 'your own chat'
@@ -464,7 +473,7 @@ export function install(rt) {
     }
 
     emitTaskEvent('task.started', bot, task)
-    return { ...task, sessionId, forked }
+    return { ...task, sessionId, forked, relation: baseTask.relation }
   }
 
   async function stopTask(bot, task, reason = 'stopped', { notifyForeground = false } = {}) {
@@ -785,6 +794,19 @@ export function install(rt) {
     if (tools.length > 0) lines.push(`Progress: ${tools.length} tool call${tools.length === 1 ? '' : 's'} so far, latest: ${[...new Set(tools.slice(-5).reverse())].join(', ')}`)
     if (lastSaid !== '') lines.push(`Last thing you said there: ${oneLine(lastSaid, 600)}`)
     return lines.length === 0 ? '' : `\n${lines.join('\n')}`
+  }
+
+  // What a related task is told on top of the forked history: the running turn's own words and
+  // progress, the tasks already running, and the one rule that keeps two workers apart.
+  const relatedPacket = (fromSessionId, bot, taskId) => {
+    const digest = runningTurnDigest(ctx.get('agents')?.get(fromSessionId)?.session)
+    const others = activeTasksOf(bot).filter(item => item.id !== taskId).slice(0, 5)
+      .map(item => `- ${item.title} (${item.id})`)
+    const lines = []
+    if (digest !== '') lines.push(`[What the chat is doing right now]${digest}`)
+    if (others.length > 0) lines.push(`[Other background tasks running]\n${others.join('\n')}`)
+    lines.push('[Keep apart] The chat keeps working while you do this. Do not edit the files it is editing; if the work needs the same files, say so in your report instead of changing them.')
+    return `\n\n${lines.join('\n\n')}`
   }
 
   const transferIdOf = (item) => {
@@ -1150,6 +1172,10 @@ export function install(rt) {
   // — after `Session.append()` releases its reentrancy guard and before `wakeDriver()` or
   // the next step claims the inbox — so `inbox.remove()` succeeds synchronously without
   // reentering `Session.append()`.
+  // How a steer into a busy foreground is handled (see Case 2 below).
+  const steerHandsOffAtOnce = () => rt.state?.prefs?.steerHandoff === 'immediate'
+  const steerValveMs = () => (Number.isFinite(rt.steerValveMs) ? rt.steerValveMs : STEER_VALVE_MS)
+
   const interceptForegroundUserMessage = (agent, msg) => {
     const id = agent?.id ?? agent?.session?.id
     if (replacedIds.delete(msg?.id)) return
@@ -1201,24 +1227,42 @@ export function install(rt) {
       return
     }
 
-    // Case 2: Busy foreground — pull any earlier queued user prompts plus this message
-    // synchronously in FIFO order and move the busy turn intact into `bot.tasks[]`.
+    // Case 2: Busy foreground. A queued message (next turn) waits: queue means wait, it never moves
+    // work. A steer (next step) goes into the running turn, in the same Session with its whole
+    // context, and the model decides what it is (adjust, answer, or start a task of its own).
+    // Nothing copies the Session by itself: a copy that runs next to the original races it on the
+    // same files and answers from a stale picture. A steer a stuck foreground has not read yet stays
+    // pending (the page shows it as steered) until the blocking step ends or the user stops it; the
+    // model starts a concurrent task itself when the work is separate. `prefs.steerHandoff` opts in:
+    // 'stuck' moves the busy turn into a background task once the steer stays unread past the valve
+    // (the new foreground is told what the turn is), 'immediate' keeps the older rule (move at once).
     const botId = rt.chatOwners.get(id)
     const bot = botId === undefined ? undefined : rt.botOf(botId)
-    if (!shouldMoveForeground(bot, id)) return
-    if (agent?.inbox?.remove === undefined) return
-    const earlier = handoffing.get(bot.id)?.oldSid === id ? [] : pullPendingUserMessages(agent, msg.id)
-    if (!agent.inbox.remove(msg.id)) {
-      if (earlier.length > 0) restorePulledMessages(earlier)
-      return
-    }
-    clearSteeredAt()
-    const pulled = [...earlier, { msg, target, oldAgent: agent }]
-    recordPendingTransfers(pulled, { botId: bot.id })
+    if (target !== 'next-step') return
+    const moveNow = () => {
+      if (!shouldMoveForeground(bot, id)) return
+      if (agent?.inbox?.remove === undefined) return
+      const earlier = handoffing.get(bot.id)?.oldSid === id ? [] : pullPendingUserMessages(agent, msg.id)
+      if (!agent.inbox.remove(msg.id)) {
+        if (earlier.length > 0) restorePulledMessages(earlier)
+        return
+      }
+      clearSteeredAt()
+      const pulled = [...earlier, { msg, target, oldAgent: agent }]
+      recordPendingTransfers(pulled, { botId: bot.id })
 
-    void handoffForeground(bot, id, pulled).catch((error) => {
-      rt.warn('ds-bot: foreground handoff for %s failed; restored input: %s', bot.name, error)
-    })
+      void handoffForeground(bot, id, pulled).catch((error) => {
+        rt.warn('ds-bot: foreground handoff for %s failed; restored input: %s', bot.name, error)
+      })
+    }
+    if (bot === undefined) return
+    if (steerHandsOffAtOnce()) { moveNow(); return }
+    if (rt.state?.prefs?.steerHandoff !== 'stuck') return
+    const timer = setTimeout(() => {
+      if (agent.inbox?.locate?.(msg.id) === undefined) return   // read by then: the model has it
+      moveNow()
+    }, steerValveMs())
+    timer.unref?.()
   }
 
   // Desktop/Web foreground busy auto-handoff runs on `agent/inbox/inserted` (outside
@@ -1349,6 +1393,7 @@ export function install(rt) {
       title: { type: 'string', required: true, description: `Short name for the task, at most ${TITLE_MAX} characters, in the user's language` },
       brief: { type: 'string', required: true, description: 'Clear goal, scope, and what to report back' },
       workdir: { type: 'string', description: 'Optional separate working folder (e.g. a git worktree) for this task' },
+      relation: { type: 'string', description: "'independent' when the work has nothing to do with this chat (it starts clean, with only the brief); 'related' (default) when it continues or is part of what this chat is doing (it gets this chat's history and the running turn's words)" },
     },
     output,
     async execute(args, exec) {
@@ -1357,7 +1402,7 @@ export function install(rt) {
       if (blocked !== undefined) return blocked
       try {
         const task = await startTask(exec.agent?.id, args, exec)
-        const mode = task.forked ? 'with full chat context' : 'in a fresh session with recent summary'
+        const mode = task.relation === 'independent' ? 'in a clean session (independent: no chat history)' : task.forked ? 'with full chat context' : 'in a fresh session with recent summary'
         return `Started background task "${task.title}" (${task.id}) ${mode}. Its result will come back here when it finishes; do not wait for it.`
       } catch (error) {
         return error.message
@@ -1451,6 +1496,8 @@ export function install(rt) {
   Object.assign(rt, {
     startTask,
     shouldMoveForeground,
+    // Whether a steer should divert to a background task at once (legacy setting); the model decides otherwise.
+    steerHandsOff: (bot, id) => steerHandsOffAtOnce() && shouldMoveForeground(bot, id),
     isHandingOff: id => id !== undefined && [...handoffing.values()].some(record => record.oldSid === id),
     consumeEmptyTaskWake: id => id !== undefined && rejectEmptyTaskWake.delete(id),
     handoffForeground,

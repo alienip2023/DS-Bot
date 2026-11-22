@@ -168,7 +168,7 @@ function pumpJoinedQueue(rt, bot, session) {
 export function createSendUser(rt, { textOfContent, getMirrorState, ctx, ownThreadTarget } = {}) {
   const _textOfContent = textOfContent ?? ((c) => (typeof c === 'string' ? c : Array.isArray(c) ? c.map(b => typeof b?.text === 'string' ? b.text : '').join('') : ''))
   const _getMirrorState = getMirrorState ?? mirrorStateOf
-  return async function sendUser({ sessionId: ref, content, requestId = randomUUID(), wait = false }) {
+  return async function sendUser({ sessionId: ref, content, requestId = randomUUID(), wait = false, mode = 'queue' }) {
     // Joined shadow: ensureMirrorSession + startPageTurn (user message on the page first, node answer after)
     const directBot = rt.botOf(ref)
     const joinedBot = joinedShadow(directBot) ? directBot
@@ -229,7 +229,8 @@ export function createSendUser(rt, { textOfContent, getMirrorState, ctx, ownThre
     const request = {
       requestId,
       sessionId,
-      mode: 'queue',
+      // 'steer' joins the turn running on this Session (a node asked for it); everything else waits.
+      mode: mode === 'steer' ? 'steer' : 'queue',
       content,
     }
     // This turn already went through sendThreadTurn above (or is a joined turn); the
@@ -389,7 +390,7 @@ export function install(rt) {
     // Deleted private Bots whose folder, memory and chats stay closed to the others.
     privateArchives: rt.archivesView(),
     exchangeTurns: state.exchangeTurns,
-    questions: publicCards(state.questions),
+    questions: publicCards({ ...state.questions, ...rt.nodeQuestionsView?.() }),
     views: publicCards(state.views),
     closedCards: state.closedCards ?? {},
     // Aside answers of each Bot's current part, newest first. Not part of the
@@ -535,7 +536,7 @@ export function install(rt) {
       if (body.enterToSend === false) state.prefs.enterToSend = false
       else if (body.enterToSend === true || body.enterToSend === null) delete state.prefs.enterToSend
     }
-    if (body.backgroundAfterSec !== undefined) {
+    if (body.steerAsk !== undefined) { if (body.steerAsk === true) state.prefs.steerAsk = true; else delete state.prefs.steerAsk } if (body.backgroundAfterSec !== undefined) {
       const seconds = body.backgroundAfterSec
       if (seconds === null) delete state.prefs.backgroundAfterSec
       else if (Number.isInteger(seconds) && seconds >= 0 && seconds <= BACKGROUND_AFTER_MAX_SEC) state.prefs.backgroundAfterSec = seconds
@@ -1489,7 +1490,7 @@ export function install(rt) {
           const bot = rt.botOf(String(body.botId ?? ''))
           if (bot === undefined) return fail('Unknown Bot', 'bot/not-found')
           const taskId = String(body.taskId ?? '')
-          const task = (bot.tasks ?? []).find(item => item?.id === taskId)
+          const task = (bot.tasks ?? []).find(item => item?.id === taskId) ?? rt.nodeTaskOf?.(bot, taskId)
           if (task === undefined) return fail('Unknown task', 'bot/not-found')
           const text = String(body.text ?? '').trim()
           if (text === '') return fail('Message text is required', 'bot/invalid')

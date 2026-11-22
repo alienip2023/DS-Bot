@@ -738,6 +738,7 @@ export const ES = {
   'Show thinking': 'Mostrar razonamiento',
   'Enter sends message': 'Enter envía el mensaje',
   'Bring up related memory': 'Traer memoria relacionada',
+  'Ask where a message goes when the Bot is busy': 'Si el Bot está ocupado, preguntar adónde va el mensaje',
   'Group memory size': 'Tamaño de memoria del grupo',
   'Bot memory size': 'Tamaño de memoria del Bot',
   'Team memory size': 'Tamaño de memoria del equipo',

@@ -14,6 +14,7 @@ export const FR = {
   'Allow it in Shared capabilities.': 'Autorisez-le dans Capacités partagées.',
   "Background work": "Travail en arrière-plan",
   "Background commands after (seconds)": "Passer les commandes en arrière-plan après (secondes)",
+  "Ask where a message goes when the Bot is busy": "Si le Bot est occupé, demander où va le message",
   'A new reply is waiting': "Une nouvelle réponse vous attend",
   "Opening…": "Ouverture…",
   "Still opening…": "Toujours en cours d’ouverture…",
