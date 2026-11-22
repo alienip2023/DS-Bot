@@ -202,7 +202,7 @@ describe('S22: channel sendUser routing (via createSendUser)', () => {
     const userMsgs = appendedEvents.filter(e => e.t === 'user/message')
     const asstMsgs = appendedEvents.filter(e => e.t === 'assistant/message')
     assert.equal(userMsgs.length, 1, 'mirror must write exactly 1 user/message')
-    assert.equal(asstMsgs.length, 1, 'mirror must write exactly 1 assistant/message')
+    assert.equal(asstMsgs.length, 0, 'the mirror writes no assistant line before the node answers')
   })
 
   it('S22-by-session: mirror sessionId resolves to joined bot via bySessionId', async () => {

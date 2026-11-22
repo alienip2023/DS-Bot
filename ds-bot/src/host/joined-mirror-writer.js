@@ -210,3 +210,18 @@ export function dropJoinedMirrorQueues(rt) {
   }
   writers.clear()
 }
+
+/**
+ * Run a write that opens a turn of its own on a node Bot's page (a late reply, a task result) once nothing else is
+ * writing there: while a page turn or a Bot-to-Bot turn is open the write waits in `rt.joinedLateQueue`, which is
+ * drained when that turn is released (executor.js flushLateReplies). Writing inside an open turn would close it as
+ * interrupted. Returns false when the plugin was unloaded (nothing is written).
+ */
+export function deferMirrorWrite(rt, botId, write) {
+  if (rt.joinedLateClosed === true) return false
+  if (rt.joinedInFlight?.has(botId) || mirrorTurnOpen(rt, botId)) {
+    if (!rt.joinedLateQueue) rt.joinedLateQueue = new Map()
+    rt.joinedLateQueue.set(botId, [...(rt.joinedLateQueue.get(botId) ?? []), write])
+  } else write()
+  return true
+}

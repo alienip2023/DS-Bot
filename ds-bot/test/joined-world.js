@@ -91,7 +91,8 @@ export function makeWorld({ sessionId = 'mirror-1', bot: botOverrides = {}, send
   }
   const originals = { ...rt.ctx.sessionController }
   install(rt)
-  const reply = (index, patch = {}) => emitter.emit('botTurnResult', { exchangeId: frames[index].payload.exchangeId, ok: true, text: 'node says hi', seq: seq++, ...patch })
+  // `index` counts the bot/turn frames (a Stop also puts a bot/stop frame on the wire).
+  const reply = (index, patch = {}) => emitter.emit('botTurnResult', { exchangeId: frames.filter(frame => frame.type === 'bot/turn')[index].payload.exchangeId, ok: true, text: 'node says hi', seq: seq++, ...patch })
   const idle = () => Promise.all([...(rt.joinedPromptTasks ?? [])])
   const prompt = (request, signal = new AbortController().signal) => rt.ctx.sessionController.prompt(request, signal)
   const cancel = (sessionId = 'mirror-1') => rt.ctx.sessionController.cancel({ sessionId })

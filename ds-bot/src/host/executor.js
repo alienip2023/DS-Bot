@@ -15,7 +15,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { joinedShadow } from './roster-join.js'
 import { listenBotTurnResult, JOINED_TURN_TIMEOUT_MS, JOINED_LATE_WINDOW_MS, LINK_LOST_TEXT, PENDING_TURN_TEXT } from './joined-turn.js'
 import { mirrorTurn, allocateTurn, mirrorTurnStart, mirrorTurnFinish, mirrorTurnFail, mirrorTurnAbort, mirrorTurnPending, mirrorLateReply, TASK_RESULT_MARK, STEER_REPLY_MARK } from './mirror.js'
-import { drainJoinedMirror, mirrorTurnOpen } from './joined-mirror-writer.js'
+import { deferMirrorWrite, drainJoinedMirror, mirrorTurnOpen } from './joined-mirror-writer.js'
 
 /**
  * Error codes thrown by send() / deliverTurn():
@@ -149,6 +149,10 @@ function prepareRemote({ bot, text, rt, tracker, timeoutOverride, lateWindowMs =
       tracker?.finish(turnId, { status: 'failed', error: 'E_OFFLINE' })
       throw new ExecutorError('E_OFFLINE', result?.error ?? 'bridge-down')
     }
+    if (result.error === 'bot-turn-timeout') {
+      tracker?.finish(turnId, { status: 'timeout', error: 'E_TIMEOUT' })
+      throw new ExecutorError('E_TIMEOUT', 'no answer within the waiting window')
+    }
     if (result.ok === false) {
       tracker?.finish(turnId, { status: 'failed', error: 'E_REJECTED' })
       throw new ExecutorError('E_REJECTED', result.error ?? 'bot-turn-rejected')
@@ -272,7 +276,7 @@ export async function deliverTurn({ botId, text, rt, session, turn, step = 1, se
 
 const FAILURE_WORDS = {
   E_OFFLINE: '节点离线或不可达',
-  E_TIMEOUT: '等待节点回复超时（节点完成后，回复会补到这里）',
+  E_TIMEOUT: '等了很久，节点也没有回复（它若之后才回复，不会再自动补到这里）',
   E_REJECTED: '节点拒绝了这条消息',
   E_NOT_FOUND: '找不到这个远程 Bot',
   E_INVALID: '消息或 Bot 配置无效',
@@ -332,19 +336,34 @@ export function flushLateReplies(rt, botId) {
     rt.joinedLateQueue.delete(botId)
     for (const write of queued) write()
   }
-  // Drain queued user messages: when a Bot-to-Bot turn closes and no page turn is
-  // in flight, the next user prompt waiting in the queue starts as a page turn.
+  // Drain queued user messages, ONE at a time: when a turn closes and no page turn is in flight, the next
+  // waiting message starts as a page turn; the ones behind it stay queued and start when that turn is released
+  // (starting several at once would make all but the first fail as busy and be lost).
   const userQueue = rt.joinedUserQueue?.get(botId)
   if (userQueue && userQueue.length > 0 && !rt.joinedInFlight?.has(botId) && !mirrorTurnOpen(rt, botId)) {
-    rt.joinedUserQueue.delete(botId)
-    for (const item of userQueue) {
-      try {
-        startPageTurn({ rt, bot: rt.botOf(botId), text: item.text, requestId: item.requestId, session: item.session, state: item.state ?? {}, tracker: rt.turnTracker, timeoutMs: rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS })
-      } catch (err) {
+    const item = userQueue.shift()
+    if (userQueue.length === 0) rt.joinedUserQueue.delete(botId)
+    try {
+      startPageTurn({ rt, bot: rt.botOf(botId), text: item.text, requestId: item.requestId, session: item.session, state: item.state ?? {}, tracker: rt.turnTracker, timeoutMs: rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS })
+    } catch (err) {
+      if (err?.code === 'E_BUSY') {
+        // Something took the slot in between: keep its place at the front, the next release tries again.
+        rt.joinedUserQueue.set(botId, [item, ...(rt.joinedUserQueue.get(botId) ?? [])])
+      } else {
         rt.warn?.('ds-bot: queued user prompt for %s could not start: %s', botId, err?.message ?? err)
+        void writeQueuedFailure(rt, botId, item, err)
       }
     }
   }
+}
+
+// A queued message that could not be started is said so on the page, not dropped with a log line.
+async function writeQueuedFailure(rt, botId, item, err) {
+  try {
+    const bot = rt.botOf(botId)
+    if (bot === undefined || item.session === undefined) return
+    writeNodeReport({ rt, bot, session: item.session, state: item.state ?? {}, mark: '⚠ 没能发出', text: `排队的消息「${String(item.text).slice(0, 60)}」没能发给节点：${failureText(err)}` })
+  } catch { /* nothing more to say */ }
 }
 
 // What the page already shows for a node Bot: a result that comes again — a background task report
@@ -470,7 +489,7 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
         fail(err)
         throw err
       }
-      markPending(`Delivered to ${bot.name ?? bot.id}; running…`)
+      // No 'delivered, running…' line on the page: the running state says it, as on a local Bot's page.
       let result
       try {
         result = await prepared.settle()
@@ -605,8 +624,27 @@ export function startSideTurn({ rt, bot, text, requestId, session, state = {}, t
     over = true
     prepared.stop()
     if (!userWritten) writeTurn(turn => mirrorTurnAbort(session, { turn, step: 1, closedTurns }))
+    // The node was told to stop, but if it still answers (the work was past the point of no return) the answer
+    // is written as a late reply, as for the page turn.
+    armSideLateReply()
     release()
     return true
+  }
+  // The answer to a steer that arrives after the page stopped waiting for it (Stop, or a lost link).
+  const armSideLateReply = () => {
+    if (typeof prepared.awaitLate !== 'function' || rt.joinedLateClosed === true) return
+    const windowMs = Number.isFinite(rt.joinedLateWindowMs) ? rt.joinedLateWindowMs : JOINED_LATE_WINDOW_MS
+    const end = prepared.awaitLate((payload) => {
+      if (payload?.ok === false || typeof payload?.text !== 'string') return false
+      rt.joinedLate?.delete(end)
+      // The same turn may have answered the page's own message with these words already: shown once.
+      if (repliedAlready(rt, bot.id, payload.text)) return true
+      rememberReply(rt, bot.id, payload.text)
+      writeWhenFree(() => mirrorLateReply(session, { botText: payload.text, botId: bot.id, mark: STEER_REPLY_MARK, closedTurns }))
+      return true
+    }, windowMs)
+    if (!rt.joinedLate) rt.joinedLate = new Set()
+    rt.joinedLate.add(end)
   }
   if (!rt.joinedLate) rt.joinedLate = new Set()
   const dispose = () => record.abort()
@@ -618,6 +656,9 @@ export function startSideTurn({ rt, bot, text, requestId, session, state = {}, t
         prepared.send()
       } catch (error) {
         over = true
+        // The steer never left: the page was told it was accepted and its message is on the page, so say what
+        // happened on the page instead of leaving a question that nobody will ever answer.
+        if (!answerInline(`⚠ 无法送达节点：${failureText(error)}`, STEER_REPLY_MARK)) writeTurn(turn => mirrorTurnFail(session, { turn, step: 1, code: error?.code, message: failureText(error), closedTurns }))
         throw error
       }
       let result
@@ -626,6 +667,8 @@ export function startSideTurn({ rt, bot, text, requestId, session, state = {}, t
       } catch (error) {
         if (error?.code === 'E_ABORTED') return { ok: false, aborted: true, turnId: prepared.turnId }
         over = true
+        // A link lost after the node had the steer is not a failure: its answer is still waited for.
+        if (error?.code === 'E_OFFLINE' && error?.message === 'bridge-down') armSideLateReply()
         if (!answerInline(`⚠ 无法送达节点：${failureText(error)}`, STEER_REPLY_MARK)) writeTurn(turn => mirrorTurnFail(session, { turn, step: 1, code: error?.code, message: failureText(error), closedTurns }))
         throw error
       }
@@ -660,9 +703,5 @@ export function writeNodeReport({ rt, bot, session, state = {}, text, mark = TAS
       rt.warn?.('ds-bot: a background task result of Bot %s was not written: %s', bot.id, error?.message ?? error)
     }
   }
-  if (rt.joinedInFlight?.has(bot.id) || mirrorTurnOpen(rt, bot.id)) {
-    if (!rt.joinedLateQueue) rt.joinedLateQueue = new Map()
-    rt.joinedLateQueue.set(bot.id, [...(rt.joinedLateQueue.get(bot.id) ?? []), write])
-  } else write()
-  return true
+  return deferMirrorWrite(rt, bot.id, write)
 }

@@ -126,7 +126,7 @@ test('a deferred timeout keeps the mirror open and delivers a late result once',
   assert.equal(w.replies.length, 0)
   assert.equal(w.closed.length, 0)
   assert.equal(w.session.log.filter(e => e.type === 'turn/end').length, 0)
-  assert.match(JSON.stringify(w.session.log), /Node is still running; its result will be delivered later/)
+  assert.match(JSON.stringify(w.session.log), /节点仍在运行，结果会在完成后送到这里/)
   w.registry.emit('botTurnResult', { nodeId: 'other-node', exchangeId: 'late', ok: true, text: 'wrong', seq: 1 })
   w.reply(0, 'late answer')
   w.reply(0, 'late answer')
@@ -152,20 +152,22 @@ test('nodeOffline after a deferred timeout reports a real bridge loss', async t 
   assert.deepEqual(w.replies.map(msg => msg.text), [LINK_LOST_TEXT])
 })
 
-test('expiry of the late window still leaves real disconnects observable', async t => {
+test('expiry of the window for the answer tells the sender the node did not answer, once; a later disconnect adds nothing', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const w = joinedWorld(t)
   w.rt.joinedTurnTimeoutMs = 10
   w.rt.joinedLateWindowMs = 100
   await w.send({ joinedAsync: true })
   t.mock.timers.tick(10)
+  await drain()
+  assert.equal(w.replies.length, 0, 'still waiting inside the window')
   t.mock.timers.tick(100)
   await drain()
-  assert.equal(w.replies.length, 0)
-  assert.equal(w.registry.listenerCount('botTurnResult'), 0, 'the late result window is bounded')
+  assert.equal(w.registry.listenerCount('botTurnResult'), 0, 'the window is bounded')
+  assert.deepEqual(w.replies.map(msg => msg.text), ['副机没有接上：bot-turn-timeout'])
   w.registry.emit('nodeOffline', { nodeId: 'n1' })
   await drain()
-  assert.deepEqual(w.replies.map(msg => msg.text), [LINK_LOST_TEXT])
+  assert.equal(w.replies.length, 1, 'the exchange is closed: a disconnect now says nothing more')
   assert.equal(w.session.log.filter(e => e.type === 'turn/end').length, 1)
 })
 
@@ -242,4 +244,24 @@ test('a link loss before the node had the work is a failure and nothing is waite
   assert.deepEqual(result, { ok: false, error: 'bridge-down' })
   assert.equal(w.registry.listenerCount('botTurnResult'), 0)
   assert.equal(w.replies[0].text, BRIDGE_DOWN_TEXT, 'the short text: the work never left')
+})
+
+test('an answer that arrives after a lost link while a page turn is open waits for it instead of closing it as interrupted', async t => {
+  const { flushLateReplies } = await import('../src/host/executor.js')
+  const w = joinedWorld(t)
+  await w.send({ joinedAsync: true })
+  w.registry.emit('nodeOffline', { nodeId: 'n1' })
+  await drain()
+  // the user kept talking: a page turn of this Bot is open
+  w.rt.joinedInFlight = new Map([[w.bot.id, { requestId: 'page' }]])
+  const turnStarts = () => w.session.log.filter(event => event.type === 'turn/start').length
+  const before = turnStarts()
+  w.reply(0, 'finished while the link was down')
+  await drain()
+  assert.equal(turnStarts(), before, 'nothing is written into the page while its turn is open')
+  w.rt.joinedInFlight.delete(w.bot.id)
+  flushLateReplies(w.rt, w.bot.id)
+  assert.equal(turnStarts(), before + 1, 'then it is written as a turn of its own')
+  assert.match(JSON.stringify(w.session.log), /节点迟到回复[^"]*finished while the link was down/)
+  assert.equal(w.session.log.filter(event => event.type === 'turn/end' && event.data.reason?.kind === 'interrupted').length, 0)
 })

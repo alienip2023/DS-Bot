@@ -35,8 +35,7 @@ test('A: page sendUser accepts within 100ms with zero result frames and a pendin
   assert.ok(performance.now() - started < 100)
   assert.equal(result.accepted, true)
   assert.deepEqual(w.frames.map(frame => frame.type), ['bot/turn'])
-  assert.equal(texts(w.sessionOf('mirror-1')).length, 1)
-  assert.match(texts(w.sessionOf('mirror-1'))[0], /Delivered to Joined.*running/i)
+  assert.equal(texts(w.sessionOf('mirror-1')).length, 0, 'no "delivered, running…" line: the running state says it')
   assert.equal(types(w.sessionOf('mirror-1')).includes('turn/end'), false)
 })
 
@@ -44,13 +43,13 @@ test('B: a later botTurnResult follows pending in the same session and turn, exa
   const w = pageWorld(t)
   const pending = w.send()
   await drain()
-  assert.match(texts(w.sessionOf('mirror-1'))[0] ?? '', /Delivered to Joined/)
+  assert.equal(texts(w.sessionOf('mirror-1')).length, 0, 'nothing is written before the answer')
   w.reply(0, { text: 'finished work', seq: 42, nodeId: 'n1' })
   w.reply(0, { text: 'finished work', seq: 42, nodeId: 'n1' })
   await pending
   await drain()
   const session = w.sessionOf('mirror-1')
-  assert.deepEqual(texts(session), ['Delivered to Joined; running…', 'finished work'])
+  assert.deepEqual(texts(session), ['finished work'])
   assert.equal(types(session).filter(type => type === 'turn/start').length, 1)
   assert.equal(types(session).filter(type => type === 'turn/end').length, 1)
   assert.equal(session.log.at(-1).data.reason.kind, 'completed')
@@ -68,7 +67,7 @@ test('C: 601 seconds is pending progress, never bot-turn-lost, bridge-down or an
   const session = w.sessionOf('mirror-1')
   assert.equal(failures(session).length, 0)
   assert.doesNotMatch(JSON.stringify(session.log), /bot-turn-lost|桥已断|bridge-down|E_TIMEOUT/)
-  assert.match(texts(session).at(-1), /Node is still running; its result will be delivered later/)
+  assert.match(texts(session).at(-1), /节点仍在运行，结果会在完成后送到这里/)
   assert.equal(types(session).includes('turn/end'), false)
   assert.equal(w.rt.joinedInFlight.has(w.bot.id), true)
   const turnId = w.frames[0].payload.exchangeId
@@ -119,7 +118,7 @@ test('a page retry with the same requestId dispatches once while results are pen
   assert.deepEqual(await w.send(), { accepted: true })
   assert.deepEqual(await w.send(), { accepted: true })
   assert.equal(w.frames.length, 1)
-  assert.equal(texts(w.sessionOf('mirror-1')).length, 1)
+  assert.equal(texts(w.sessionOf('mirror-1')).length, 0)
   w.reply(0)
   await w.idle()
   assert.deepEqual(await w.send(), { accepted: true })
@@ -150,22 +149,35 @@ test('offline after the soft deadline fails once and keeps the answer that follo
   assert.equal((JSON.stringify(session.log).match(/after disconnect/g) ?? []).length, 1, 'written once')
 })
 
-test('late window expiry is still pending and stoppable, with no invented bridge loss', async t => {
+test('when the window for the answer ends without one, the turn fails with its own code and frees the Bot (no bridge loss is invented)', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const w = pageWorld(t)
   w.rt.joinedTurnTimeoutMs = 10
   w.rt.joinedLateWindowMs = 100
   await w.send()
   t.mock.timers.tick(10)
+  assert.equal(w.rt.joinedInFlight.has(w.bot.id), true, 'still waiting and stoppable inside the window')
   t.mock.timers.tick(100)
-  await drain()
+  await w.idle()
   const session = w.sessionOf('mirror-1')
   assert.equal(w.emitter.listenerCount('botTurnResult'), 0)
-  assert.equal(failures(session).length, 0)
+  assert.equal(failures(session).length, 1)
+  assert.equal(session.log.at(-1).data.reason.error.code, 'E_TIMEOUT')
+  assert.equal(w.rt.joinedInFlight.has(w.bot.id), false, 'the Bot is free: later messages are not held behind a turn that will never end')
+})
+
+test('a turn that is still inside its window can be stopped', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const w = pageWorld(t)
+  w.rt.joinedTurnTimeoutMs = 10
+  w.rt.joinedLateWindowMs = 100
+  await w.send()
+  t.mock.timers.tick(10)
+  await drain()
   assert.equal(w.rt.joinedInFlight.has(w.bot.id), true)
   await w.cancel()
   await w.idle()
-  assert.equal(session.log.at(-1).data.reason.kind, 'aborted')
+  assert.equal(w.sessionOf('mirror-1').log.at(-1).data.reason.kind, 'aborted')
 })
 
 test('unload removes active page listeners and releases the pending turn', async t => {

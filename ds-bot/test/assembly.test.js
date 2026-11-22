@@ -228,7 +228,7 @@ describe('S27-asm-timeout: config.joinedTurnTimeoutMs reaches the running page t
     const texts = () => session.log.filter(event => event.type === 'assistant/message').map(event => event.data.message.content[0].text)
     while (texts().length < 2 && Date.now() - started < 3000) await new Promise(resolve => setTimeout(resolve, 50))
     assert.equal(ended(), false)
-    assert.match(texts().at(-1), /Node is still running/)
+    assert.match(texts().at(-1), /节点仍在运行/)
     assert.ok(Date.now() - started >= 950, 'and not earlier than the configured second')
     w.emitter.emit('botTurnResult', { exchangeId: w.frames[0].payload.exchangeId, ok: true, text: 'done', seq: 1 })
     await Promise.all(w.rt.joinedPromptTasks)
