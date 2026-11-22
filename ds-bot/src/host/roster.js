@@ -488,6 +488,8 @@ export function install(rt) {
   async function duplicateBot(id) {
     const bot = liveBot(id)
     if (bot === undefined) throw new Error('Unknown Bot')
+    // A copy made here would be a hub Bot carrying the node's model and folder: not the same Bot.
+    if (bot.origin === 'joined') throw codedError('bot/refused', 'A node Bot cannot be copied here: create a new Bot on the node instead')
     if (bot.private === true) throw new Error(`${bot.name} is private, so it cannot be copied`)
     const served = (await rt.catalog()).some(entry => entry.ref === bot.model)
     // A folder that went away since leaves the copy in the team workspace.

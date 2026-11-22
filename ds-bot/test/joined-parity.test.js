@@ -65,3 +65,54 @@ test('capability attach, browser control and computer control refuse for a node 
   const hub = await w.call('bot-capability', { botId: local.id, name: 'nothing-here', attached: true })
   assert.notEqual(hub.error?.message, NODE_ONLY_REASON)
 })
+
+test('duplicate-bot refuses a node Bot instead of making a hub Bot with the node\'s model and folder', async () => {
+  const { w, local } = await world()
+  const before = Object.keys(w.rt.state.bots).sort()
+  w.rt.state.bots[JOINED].model = 'node-only/model'
+  w.rt.state.bots[JOINED].workDir = '/srv/node-only'
+  const result = await w.call('duplicate-bot', { id: JOINED })
+  assert.equal(result.ok, false)
+  assert.equal(result.error.code, 'bot/refused')
+  assert.match(result.error.message, /node Bot cannot be copied/)
+  assert.deepEqual(Object.keys(w.rt.state.bots).sort(), before)
+  const hub = await w.call('duplicate-bot', { id: local.id })
+  assert.equal(hub.ok, true, 'a hub Bot still duplicates')
+})
+
+test('a node clock that is ahead of the hub, or a month behind, does not show a nonsense age', async () => {
+  const { applyRosterReport, clampNodeTime } = await import('../src/host/roster-join.js')
+  const { installHub } = await import('../src/host/node-cards.js')
+  const now = 1_800_000_000_000
+  const DAY = 24 * 60 * 60 * 1000
+  assert.equal(clampNodeTime(now - 60_000, now), now - 60_000, 'a normal timestamp is kept')
+  assert.equal(clampNodeTime(now + 4_000, now), now + 4_000, 'a few seconds ahead is clock skew, kept')
+  assert.equal(clampNodeTime(now + 6_000, now), now, 'more than 5 s in the future uses the receive time')
+  assert.equal(clampNodeTime(now - 31 * DAY, now), now, 'older than 30 days uses the receive time')
+  assert.equal(clampNodeTime(now - 31 * DAY, now + 9_000, now), now, 'the first receive time is kept, so rows do not change on every report')
+  assert.equal(clampNodeTime(0, now), 0, '0 is unknown')
+  assert.equal(clampNodeTime(Number.NaN, now), 0)
+
+  const state = { bots: {} }
+  const report = at => ({
+    nodeId: 'n1', hostname: 'box', online: true,
+    bots: [{ id: 'rb1', name: 'Remote', role: '', tasks: [{ id: 't1', title: 'Build', status: 'running', startedAt: at }], cards: [{ id: 'question:q1', kind: 'question', title: 'Which?', options: [{ id: '0', label: 'A' }], at }] }],
+  })
+  applyRosterReport(state, report(now + 3_600_000), now)
+  const row = state.bots[JOINED]
+  assert.equal(row.nodeTasks[0].startedAt, now, 'a task start an hour ahead becomes the receive time')
+  assert.equal(row.nodeCards[0].at, now)
+  applyRosterReport(state, report(now + 3_600_000), now + 30_000)
+  assert.equal(state.bots[JOINED].nodeTasks[0].startedAt, now, 'the next report keeps the first receive time')
+  applyRosterReport(state, report(now - 40 * DAY), now + 60_000)
+  assert.equal(state.bots[JOINED].nodeCards[0].at, now, 'a month-old node timestamp does not make the card ancient')
+  applyRosterReport(state, report(now - 5_000), now + 90_000)
+  assert.equal(state.bots[JOINED].nodeTasks[0].startedAt, now - 5_000, 'a believable timestamp is used as sent')
+
+  // The views read a row stored before the clamp the same way.
+  const rt = { state, approvalsView: () => [], chatOf: () => 'mirror-1', ctx: {} }
+  state.bots[JOINED].worker.lastSeen = now + 90_000
+  state.bots[JOINED].nodeCards[0].at = now + 10 * DAY
+  installHub(rt)
+  assert.equal(rt.nodeQuestionsView()['mirror-1'].askedAt, now + 90_000)
+})
