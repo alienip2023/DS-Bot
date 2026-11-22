@@ -1,5 +1,6 @@
 // Step 1: a remote DS-Bot roster becomes shadow rows in the controller sidebar.
 // No turn is started here, and no local session is created.
+import { isColor } from './text.js'
 import { ensureMainThread, mainThreadOf } from './bot-store.js'
 import { mirrorTurnOpen } from './joined-mirror-writer.js'
 import { hasHistoryIdentity, syncJoinedHistory } from './joined-history.js'
@@ -67,6 +68,10 @@ export function reportableBots(bots, taskViewOf, cardsOf) {
     if (clusterBotId !== '' && clusterBotId.length <= 64 && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(clusterBotId)) {
       entry.clusterBotId = clusterBotId
     }
+    // How the Bot looks and thinks: the hub row of a node Bot matches the Bot's own page.
+    if (isColor(bot.color)) entry.color = bot.color
+    if (typeof bot.avatar?.shape === 'string' && /^[a-z][\w-]{0,31}$/.test(bot.avatar.shape)) entry.avatarShape = bot.avatar.shape
+    if (typeof bot.effort === 'string' && /^[a-z][a-z0-9-]{0,15}$/.test(bot.effort)) entry.effort = bot.effort
     if (typeof taskViewOf === 'function') {
       try { entry.tasks = taskSummaryOf(taskViewOf(bot)) } catch { /* a task view must not take the roster down */ }
     }
@@ -151,6 +156,10 @@ export function applyRosterReport(state, report, now = Date.now(), onChange) {
     }
     // No model in this report keeps existing?.model. Do not write null or ''.
     if (reportedModel !== '') row.model = reportedModel
+    // The node's own look. Not reported (an older node) keeps what the hub row has.
+    if (isColor(bot.color)) row.color = bot.color
+    if (typeof bot.avatarShape === 'string' && /^[a-z][\w-]{0,31}$/.test(bot.avatarShape)) row.avatar = { ...(existing?.avatar ?? {}), shape: bot.avatarShape }
+    if (typeof bot.effort === 'string' && /^[a-z][a-z0-9-]{0,15}$/.test(bot.effort)) row.effort = bot.effort
     // The node's running background tasks (read-only on the hub). A report from an older node has
     // none: what was known stays; an empty list clears it. Equal lists keep the old array so an
     // unchanged report does not count as a change.
