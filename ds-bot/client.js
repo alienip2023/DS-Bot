@@ -16305,6 +16305,90 @@ Object.assign(DE, {
   "Paste the secret value": "Geheimen Wert einfügen",
   "No credentials saved.": "Keine Zugangsdaten gespeichert."
 });
+Object.assign(ZH, {
+  "by {creator}": "来自 {creator}",
+  "Create {name}": "创建 {name}",
+  "Your template": "你的模板",
+  "What it does": "它能做什么",
+  "Tools it cannot use": "它不能使用的工具",
+  "Ready-made Bots for your team": "为你的团队准备好的现成 Bot",
+  "Featured": "精选",
+  "See all {count}": "查看全部 {count} 个",
+  "{count} results": "{count} 个结果",
+  "Leads the team": "带领团队",
+  "Reviews the work": "审核成果",
+  "Does the work": "负责执行"
+});
+Object.assign(JA, {
+  "by {creator}": "作成者：{creator}",
+  "Create {name}": "{name} を作成",
+  "Your template": "あなたのテンプレート",
+  "What it does": "できること",
+  "Tools it cannot use": "使えないツール",
+  "Ready-made Bots for your team": "チーム向けのすぐ使える Bot",
+  "Featured": "おすすめ",
+  "See all {count}": "{count} 件をすべて見る",
+  "{count} results": "{count} 件の結果",
+  "Leads the team": "チームを率いる",
+  "Reviews the work": "成果をレビューする",
+  "Does the work": "作業を担当する"
+});
+Object.assign(KO, {
+  "by {creator}": "{creator} 제공",
+  "Create {name}": "{name} 만들기",
+  "Your template": "내 템플릿",
+  "What it does": "할 수 있는 일",
+  "Tools it cannot use": "사용할 수 없는 도구",
+  "Ready-made Bots for your team": "팀을 위한 바로 쓸 수 있는 Bot",
+  "Featured": "추천",
+  "See all {count}": "{count}개 모두 보기",
+  "{count} results": "결과 {count}개",
+  "Leads the team": "팀을 이끕니다",
+  "Reviews the work": "결과물을 검토합니다",
+  "Does the work": "실무를 맡습니다"
+});
+Object.assign(ES, {
+  "by {creator}": "por {creator}",
+  "Create {name}": "Crear {name}",
+  "Your template": "Tu plantilla",
+  "What it does": "Qué hace",
+  "Tools it cannot use": "Herramientas que no puede usar",
+  "Ready-made Bots for your team": "Bots listos para tu equipo",
+  "Featured": "Destacados",
+  "See all {count}": "Ver los {count}",
+  "{count} results": "{count} resultados",
+  "Leads the team": "Dirige al equipo",
+  "Reviews the work": "Revisa el trabajo",
+  "Does the work": "Hace el trabajo"
+});
+Object.assign(FR, {
+  "by {creator}": "par {creator}",
+  "Create {name}": "Créer {name}",
+  "Your template": "Votre modèle",
+  "What it does": "Ce qu'il fait",
+  "Tools it cannot use": "Outils qu'il ne peut pas utiliser",
+  "Ready-made Bots for your team": "Des Bots prêts à l'emploi pour votre équipe",
+  "Featured": "À la une",
+  "See all {count}": "Tout voir ({count})",
+  "{count} results": "{count} résultats",
+  "Leads the team": "Dirige l'équipe",
+  "Reviews the work": "Relit le travail",
+  "Does the work": "Fait le travail"
+});
+Object.assign(DE, {
+  "by {creator}": "von {creator}",
+  "Create {name}": "{name} erstellen",
+  "Your template": "Deine Vorlage",
+  "What it does": "Was er tut",
+  "Tools it cannot use": "Werkzeuge, die er nicht nutzen darf",
+  "Ready-made Bots for your team": "Fertige Bots für dein Team",
+  "Featured": "Empfohlen",
+  "See all {count}": "Alle {count} ansehen",
+  "{count} results": "{count} Ergebnisse",
+  "Leads the team": "Leitet das Team",
+  "Reviews the work": "Prüft die Arbeit",
+  "Does the work": "Erledigt die Arbeit"
+});
 var ZH_TW = { ...convertDict(ZH), ...ZH_TW_OVERRIDES };
 var HOST_ERRORS_ZH_TW = convertHostErrors(HOST_ERRORS);
 var LANGUAGES = [
@@ -19162,6 +19246,67 @@ body[data-ds-dark-theme] .jcd-scrim{background:rgba(0,0,0,.5)}
 .bt-browser-settings{display:flex;flex-direction:column;gap:22px}
 .bt-set-card{border:.5px solid var(--bt-glass-rim);border-radius:12px;background:var(--bt-card);box-shadow:var(--bt-card-shadow);display:flex;flex-direction:column}
 .bt-set-card>*+*{border-top:.5px solid var(--bt-line)}
+/* Bot Market (market.js): featured row, category shelves, detail page. --mk is a card's category ink. */
+.bt-market{--mk:var(--bt-accent);display:flex;flex-direction:column;gap:18px;padding-bottom:36px}
+.bt-market-head{display:flex;flex-direction:column;gap:2px}
+.bt-market-title{margin:0;font-size:22px;line-height:28px;font-weight:650;letter-spacing:-.01em;color:var(--bt-ink)}
+.bt-market-sub{margin:0;font-size:13px;color:var(--bt-ink-3)}
+.bt-market-search{position:relative}
+.bt-market-search-icon{position:absolute;left:14px;top:50%;display:flex;transform:translateY(-50%);color:var(--bt-ink-3);pointer-events:none}
+.bt-market-search-icon svg{width:16px;height:16px}
+.bt-market-search-input{height:40px;padding-left:38px;border-radius:999px;font-size:14px}
+.bt-market-cats{display:flex;gap:8px;overflow-x:auto;scrollbar-width:none;padding:2px 0}
+.bt-market-cats::-webkit-scrollbar{display:none}
+.bt-market-chip{flex:none;display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px;border-radius:999px;border:.5px solid var(--bt-line-2);background:transparent;color:var(--bt-ink-2);font:inherit;font-size:13px;cursor:pointer;transition:background .15s ease,color .15s ease}
+.bt-market-chip:hover{background:var(--bt-hover)}
+.bt-market-chip[aria-pressed=true]{background:var(--bt-ink);border-color:transparent;color:var(--bt-main)}
+.bt-market-chip-n{font-size:11px;opacity:.6}
+.bt-market-shelves{display:flex;flex-direction:column;gap:28px}
+.bt-market-shelf{display:flex;flex-direction:column;gap:12px}
+.bt-market-shelf-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+.bt-market-shelf-title{margin:0;font-size:15px;line-height:20px;font-weight:600;color:var(--bt-ink)}
+.bt-market-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}
+.bt-market-featured{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+.bt-market-card{position:relative;display:flex;border:.5px solid var(--bt-line-2);border-radius:16px;background:var(--bt-card);transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease}
+.bt-market-card:hover{transform:translateY(-1px);border-color:color-mix(in srgb,var(--mk) 45%,var(--bt-line-2));box-shadow:var(--bt-card-shadow)}
+.bt-market-card-featured{border-color:color-mix(in srgb,var(--mk) 28%,var(--bt-line-2));background:linear-gradient(150deg,color-mix(in srgb,var(--mk) 14%,var(--bt-card)),var(--bt-card) 70%)}
+.bt-market-open{all:unset;box-sizing:border-box;flex:1;min-width:0;display:flex;gap:12px;padding:14px 46px 14px 14px;border-radius:inherit;cursor:pointer}
+.bt-market-open:focus-visible{outline:2px solid var(--bt-accent);outline-offset:2px}
+.bt-market-card-featured .bt-market-open{gap:14px;padding:18px 50px 18px 18px}
+.bt-market-avatar{flex:none;display:inline-flex;align-items:center;justify-content:center;border-radius:12px;background:color-mix(in srgb,var(--mk) 14%,transparent)}
+.bt-market-card-text{display:flex;flex-direction:column;gap:3px;min-width:0}
+.bt-market-name{font-size:14px;line-height:20px;font-weight:600;color:var(--bt-ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bt-market-meta{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;font-size:11.5px;line-height:16px;color:var(--bt-ink-3)}
+.bt-market-role{color:color-mix(in srgb,var(--mk) 70%,var(--bt-ink-2))}
+.bt-market-desc{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:12.5px;line-height:18px;color:var(--bt-ink-2)}
+.bt-market-card-featured .bt-market-desc{-webkit-line-clamp:3}
+.bt-market-cat-label{margin-top:4px;font-size:11px;color:var(--bt-ink-3)}
+.bt-market-add{position:absolute;top:12px;right:12px;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;padding:0;border-radius:50%;border:.5px solid var(--bt-line-2);background:var(--bt-main);color:var(--bt-ink-2);cursor:pointer;transition:background .15s ease,color .15s ease}
+.bt-market-add svg{width:14px;height:14px}
+.bt-market-add:hover:not(:disabled){border-color:transparent;background:var(--bt-accent);color:var(--bt-accent-ink)}
+.bt-market-add:disabled{cursor:default;opacity:.7}
+.bt-market-spin{width:12px;height:12px;border-radius:50%;border:2px solid currentColor;border-right-color:transparent;animation:bt-market-spin .7s linear infinite}
+@keyframes bt-market-spin{to{transform:rotate(360deg)}}
+.bt-market-link{all:unset;display:inline-flex;align-items:center;gap:2px;font-size:12.5px;color:var(--bt-accent);cursor:pointer}
+.bt-market-link svg{width:14px;height:14px}
+.bt-market-note{position:sticky;top:8px;z-index:2;box-shadow:var(--bt-card-shadow);display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:10px;font-size:13px;color:var(--bt-ink);background:color-mix(in srgb,var(--bt-ink-green) 14%,var(--bt-card))}
+.bt-market-note svg{flex:none;width:16px;height:16px}
+.bt-market-note-error{color:var(--bt-danger);background:color-mix(in srgb,var(--bt-danger) 10%,var(--bt-card))}
+.bt-market-loading,.bt-market-empty{padding:40px 0;text-align:center;font-size:13px;color:var(--bt-ink-3)}
+.bt-market-back{all:unset;align-self:flex-start;display:inline-flex;align-items:center;gap:4px;font-size:13px;color:var(--bt-ink-3);cursor:pointer}
+.bt-market-back:hover{color:var(--bt-ink)}
+.bt-market-back svg{width:16px;height:16px}
+.bt-market-hero{display:flex;align-items:center;gap:18px;padding:20px;border:.5px solid color-mix(in srgb,var(--mk) 28%,var(--bt-line-2));border-radius:18px;background:linear-gradient(150deg,color-mix(in srgb,var(--mk) 16%,var(--bt-card)),var(--bt-card) 75%)}
+.bt-market-hero-text{display:flex;flex-direction:column;gap:6px;min-width:0}
+.bt-market-chips{display:flex;flex-wrap:wrap;gap:6px}
+.bt-market-badge{padding:0 7px;border-radius:999px;background:color-mix(in srgb,var(--mk) 18%,transparent);font-size:11px;line-height:16px;color:var(--bt-ink-2)}
+.bt-market-create{display:flex;gap:10px}
+.bt-market-create .bt-input{flex:1;min-width:0}
+.bt-market-create-btn{flex:none;height:36px;padding:0 18px;border-radius:999px}
+.bt-market-block h3{margin:0 0 6px;font-size:13px;font-weight:600;color:var(--bt-ink)}
+.bt-market-block p{margin:0;font-size:13.5px;line-height:20px;color:var(--bt-ink-2)}
+.bt-market-instructions{margin:0 0 6px;padding:12px 14px;max-height:360px;overflow:auto;border:.5px solid var(--bt-line);border-radius:12px;background:var(--bt-card);font-family:var(--bt-mono);font-size:12px;line-height:18px;white-space:pre-wrap;word-break:break-word;color:var(--bt-ink-2)}
+@media (prefers-reduced-motion:reduce){.bt-market-card,.bt-market-chip,.bt-market-add{transition:none}.bt-market-card:hover{transform:none}.bt-market-spin{animation:none}}
 .bt-set-row{display:flex;align-items:center;gap:16px;min-height:48px;padding:12px 16px;border:0;background:none;color:var(--bt-ink);font:inherit;font-size:13px;line-height:18px;text-align:left;width:100%;box-sizing:border-box;border-radius:0;transition:background-color .14s ease}
 button.bt-set-row{cursor:pointer}
 button.bt-set-row:hover{background:var(--bt-hover)}
@@ -22163,11 +22308,11 @@ function ComputerPage({ roster, actions, run: run2, Section: Section2, Row: Row4
     )
   ];
 }
-function BotComputerCard({ bot, roster, actions, run: run2, Card: Card3, Row: Row4 }) {
+function BotComputerCard({ bot, roster, actions, run: run2, Card: Card4, Row: Row4 }) {
   const computer = roster.computer ?? { enabled: false };
   const apps = Object.entries(bot.computer?.apps ?? {});
   return (0, import_react12.createElement)(
-    Card3,
+    Card4,
     { title: t("Control") },
     !computer.enabled ? (0, import_react12.createElement)(Row4, { label: t("Computer use") }, (0, import_react12.createElement)("span", { className: "bt-muted" }, t("Off in Settings → Computer use"))) : [
       (0, import_react12.createElement)(Row4, { key: "level", label: t("Computer use"), hint: providerWorks(computer.provider ?? { state: "loading" }) ? void 0 : t("Bots get no computer tools until the provider is ready.") }, (0, import_react12.createElement)(LevelPicker, { bot, actions, run: run2 })),
@@ -26970,7 +27115,7 @@ var ReadingModels = () => (0, import_react22.createElement)(
   (0, import_react22.createElement)("i", { className: "bt-loading-spin", "aria-hidden": true }),
   t("Reading models…")
 );
-function RunModeCard({ bot, roster, actions, run: run2, Card: Card3 }) {
+function RunModeCard({ bot, roster, actions, run: run2, Card: Card4 }) {
   const [open, setOpen] = (0, import_react22.useState)(false);
   const [mode, setMode] = (0, import_react22.useState)("model");
   const [target, setTarget] = (0, import_react22.useState)("");
@@ -26993,7 +27138,7 @@ function RunModeCard({ bot, roster, actions, run: run2, Card: Card3 }) {
     if (done !== false) setOpen(false);
   });
   return (0, import_react22.createElement)(
-    Card3,
+    Card4,
     { title: t("Runs on") },
     (0, import_react22.createElement)(
       "div",
@@ -27838,13 +27983,13 @@ function CapabilitiesPage({ roster, actions, run: run2 }) {
     )
   );
 }
-function BotCapabilitiesCard({ bot, roster, actions, run: run2, Card: Card3, SwitchRow: SwitchRow2 }) {
+function BotCapabilitiesCard({ bot, roster, actions, run: run2, Card: Card4, SwitchRow: SwitchRow2 }) {
   const items = [...roster.capabilities ?? []].sort((a, b) => Number(b.kind === "pack") - Number(a.kind === "pack") || a.name.localeCompare(b.name));
   const attached = new Set(bot.capabilities ?? []);
   const statuses = roster.capabilityStatuses?.[bot.id] ?? {};
   if (items.length === 0) return null;
   return (0, import_react25.createElement)(
-    Card3,
+    Card4,
     { title: t("Capabilities") },
     items.map((item) => (0, import_react25.createElement)(SwitchRow2, {
       key: item.name,
@@ -41958,53 +42103,188 @@ var BOT_MODELS_CSS = `
 
 // src/client/market.js
 var import_react56 = require("react");
-var CATEGORIES2 = ["工程", "运维", "数据", "产品", "写作", "管理", "研究"];
-function MarketCard({ tmpl, onInstall, busy }) {
-  const duty = tmpl.duty ? (0, import_react56.createElement)("span", { className: "bt-market-duty" }, tmpl.duty) : null;
-  const tags = Array.isArray(tmpl.tags) && tmpl.tags.length > 0 ? (0, import_react56.createElement)("div", { className: "bt-market-tags" }, tmpl.tags.slice(0, 4).map((tag) => (0, import_react56.createElement)("span", { key: tag, className: "bt-market-tag" }, tag))) : null;
+var CATEGORY_ORDER = ["管理", "工程", "运维", "数据", "产品", "研究", "写作"];
+var CATEGORY_INK = { 管理: "green", 工程: "blue", 运维: "orange", 数据: "cyan", 产品: "violet", 研究: "yellow", 写作: "magenta" };
+var INK_CYCLE = ["rose", "sky", "tangerine", "cobalt", "deepseek", "aurora"];
+var SHELF_SIZE = 6;
+var INSTRUCTIONS_PREVIEW = 700;
+var DUTY_LABEL = { lead: "Leads the team", qa: "Reviews the work", executor: "Does the work" };
+var categoryInk = (category) => {
+  if (CATEGORY_INK[category]) return CATEGORY_INK[category];
+  let sum = 0;
+  for (const ch of String(category ?? "")) sum = (sum + ch.charCodeAt(0)) % 997;
+  return INK_CYCLE[sum % INK_CYCLE.length];
+};
+var needleOf = (tmpl) => [tmpl.id, tmpl.name, tmpl.role, tmpl.description, tmpl.category, tmpl.creator, ...tmpl.tags ?? []].filter(Boolean).join(" ").toLowerCase();
+function filterMarket(templates, query, category) {
+  const words = String(query ?? "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+  return templates.filter((tmpl) => (category === "" || tmpl.category === category) && words.every((word) => needleOf(tmpl).includes(word)));
+}
+function shelvesOf(templates) {
+  const groups = /* @__PURE__ */ new Map();
+  for (const tmpl of templates) {
+    const key = tmpl.category || "";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(tmpl);
+  }
+  const known = CATEGORY_ORDER.filter((key) => groups.has(key));
+  const rest = [...groups.keys()].filter((key) => !CATEGORY_ORDER.includes(key)).sort();
+  return [...known, ...rest].map((key) => ({ category: key, items: groups.get(key) }));
+}
+function Avatar({ tmpl, size }) {
   return (0, import_react56.createElement)(
-    "div",
-    { className: "bt-market-card" },
-    (0, import_react56.createElement)(
-      "div",
-      { className: "bt-market-card-head" },
-      (0, import_react56.createElement)("span", { className: "bt-market-name" }, tmpl.name),
-      duty
-    ),
-    (0, import_react56.createElement)("div", { className: "bt-market-role" }, tmpl.role || "—"),
-    (0, import_react56.createElement)("p", { className: "bt-market-desc" }, tmpl.description || ""),
-    tags,
-    (0, import_react56.createElement)(
-      "div",
-      { className: "bt-market-foot" },
-      (0, import_react56.createElement)("button", {
-        type: "button",
-        className: "bt-send bt-market-install",
-        disabled: busy,
-        onClick: () => onInstall(tmpl)
-      }, busy ? t("Creating…") : t("Create from template"))
-    )
+    "span",
+    { className: "bt-market-avatar", style: { "--mk": inkFill(categoryInk(tmpl.category)), width: size, height: size } },
+    (0, import_react56.createElement)(BotMark, { bot: { id: `market:${tmpl.id}`, name: tmpl.name }, size: Math.round(size * 0.78) })
   );
 }
-function MarketPage({ actions, onBack }) {
+function Card3({ tmpl, featured = false, onOpen, onAdd, busy }) {
+  const label = tmpl.category || t("Other");
+  return (0, import_react56.createElement)(
+    "div",
+    { className: featured ? "bt-market-card bt-market-card-featured" : "bt-market-card", style: { "--mk": inkFill(categoryInk(tmpl.category)) } },
+    (0, import_react56.createElement)(
+      "button",
+      { type: "button", className: "bt-market-open", onClick: () => onOpen(tmpl), "aria-label": tmpl.name },
+      (0, import_react56.createElement)(Avatar, { tmpl, size: featured ? 52 : 40 }),
+      (0, import_react56.createElement)(
+        "span",
+        { className: "bt-market-card-text" },
+        (0, import_react56.createElement)("span", { className: "bt-market-name" }, tmpl.name),
+        (0, import_react56.createElement)(
+          "span",
+          { className: "bt-market-meta" },
+          tmpl.role ? (0, import_react56.createElement)("span", { className: "bt-market-role" }, tmpl.role) : null,
+          (0, import_react56.createElement)("span", { className: "bt-market-creator" }, t("by {creator}", { creator: tmpl.creator || "DS Bot" }))
+        ),
+        (0, import_react56.createElement)("span", { className: "bt-market-desc" }, tmpl.description || ""),
+        featured ? (0, import_react56.createElement)("span", { className: "bt-market-cat-label" }, label) : null
+      )
+    ),
+    (0, import_react56.createElement)("button", {
+      type: "button",
+      className: "bt-market-add",
+      disabled: busy,
+      "aria-label": t("Create {name}", { name: tmpl.name }),
+      title: t("Create from template"),
+      onClick: () => onAdd(tmpl)
+    }, busy ? (0, import_react56.createElement)("span", { className: "bt-market-spin", "aria-hidden": true }) : (0, import_react56.createElement)(PlusIcon))
+  );
+}
+function Detail({ tmpl, onBack, onCreate, busy, result }) {
+  const [name, setName] = (0, import_react56.useState)(tmpl.name);
+  const [whole, setWhole] = (0, import_react56.useState)(false);
+  useEscape(onBack, true);
+  const instructions = String(tmpl.instructions || "").trim();
+  const long = instructions.length > INSTRUCTIONS_PREVIEW;
+  const shown = whole || !long ? instructions : `${instructions.slice(0, INSTRUCTIONS_PREVIEW).trimEnd()}…`;
+  const denied = Array.isArray(tmpl.denyTools) ? tmpl.denyTools : [];
+  const duty = DUTY_LABEL[tmpl.duty];
+  return (0, import_react56.createElement)(
+    "div",
+    { className: "bt-market bt-market-detail", style: { "--mk": inkFill(categoryInk(tmpl.category)) } },
+    (0, import_react56.createElement)(
+      "button",
+      { type: "button", className: "bt-market-back", onClick: onBack },
+      (0, import_react56.createElement)(ChevronLeftIcon),
+      t("Bot Market")
+    ),
+    (0, import_react56.createElement)(
+      "div",
+      { className: "bt-market-hero" },
+      (0, import_react56.createElement)(Avatar, { tmpl, size: 76 }),
+      (0, import_react56.createElement)(
+        "div",
+        { className: "bt-market-hero-text" },
+        (0, import_react56.createElement)("h2", { className: "bt-market-title" }, tmpl.name),
+        (0, import_react56.createElement)(
+          "div",
+          { className: "bt-market-meta" },
+          (0, import_react56.createElement)("span", { className: "bt-market-creator" }, t("by {creator}", { creator: tmpl.creator || "DS Bot" })),
+          tmpl.source === "user" ? (0, import_react56.createElement)("span", { className: "bt-market-badge" }, t("Your template")) : null
+        ),
+        (0, import_react56.createElement)(
+          "div",
+          { className: "bt-market-chips" },
+          tmpl.category ? (0, import_react56.createElement)("span", { className: "bt-chip" }, tmpl.category) : null,
+          tmpl.role ? (0, import_react56.createElement)("span", { className: "bt-chip" }, tmpl.role) : null,
+          duty ? (0, import_react56.createElement)("span", { className: "bt-chip" }, t(duty)) : null
+        )
+      )
+    ),
+    (0, import_react56.createElement)(
+      "form",
+      {
+        className: "bt-market-create",
+        onSubmit: (event) => {
+          event.preventDefault();
+          onCreate(tmpl, name.trim() || tmpl.name);
+        }
+      },
+      (0, import_react56.createElement)("input", {
+        className: "bt-input",
+        value: name,
+        maxLength: 60,
+        disabled: busy,
+        onChange: (event) => setName(event.target.value),
+        "aria-label": t("Name")
+      }),
+      (0, import_react56.createElement)(
+        "button",
+        { type: "submit", className: "bt-send bt-market-create-btn", disabled: busy },
+        busy ? t("Creating…") : t("Create Bot")
+      )
+    ),
+    result ? (0, import_react56.createElement)(
+      "div",
+      { className: result.ok ? "bt-market-note" : "bt-market-note bt-market-note-error", role: "status" },
+      result.ok ? (0, import_react56.createElement)(CheckIcon) : null,
+      result.text
+    ) : null,
+    tmpl.description ? (0, import_react56.createElement)(
+      "section",
+      { className: "bt-market-block" },
+      (0, import_react56.createElement)("h3", null, t("What it does")),
+      (0, import_react56.createElement)("p", null, tmpl.description)
+    ) : null,
+    instructions ? (0, import_react56.createElement)(
+      "section",
+      { className: "bt-market-block" },
+      (0, import_react56.createElement)("h3", null, t("Instructions")),
+      (0, import_react56.createElement)("pre", { className: "bt-market-instructions" }, shown),
+      long ? (0, import_react56.createElement)("button", { type: "button", className: "bt-market-link", onClick: () => setWhole(!whole) }, whole ? t("Show less") : t("Show all")) : null
+    ) : null,
+    denied.length > 0 ? (0, import_react56.createElement)(
+      "section",
+      { className: "bt-market-block" },
+      (0, import_react56.createElement)("h3", null, t("Tools it cannot use")),
+      (0, import_react56.createElement)("div", { className: "bt-market-chips" }, denied.map((tool) => (0, import_react56.createElement)("code", { key: tool, className: "bt-chip" }, tool)))
+    ) : null,
+    Array.isArray(tmpl.tags) && tmpl.tags.length > 0 ? (0, import_react56.createElement)(
+      "section",
+      { className: "bt-market-block" },
+      (0, import_react56.createElement)("div", { className: "bt-market-chips" }, tmpl.tags.map((tag) => (0, import_react56.createElement)("span", { key: tag, className: "bt-chip" }, tag)))
+    ) : null
+  );
+}
+function MarketPage({ actions }) {
   const [templates, setTemplates] = (0, import_react56.useState)([]);
   const [loading, setLoading] = (0, import_react56.useState)(true);
   const [error, setError] = (0, import_react56.useState)("");
   const [query, setQuery] = (0, import_react56.useState)("");
   const [category, setCategory] = (0, import_react56.useState)("");
-  const [installing, setInstalling] = (0, import_react56.useState)(null);
-  const [note, setNote] = (0, import_react56.useState)("");
+  const [openId, setOpenId] = (0, import_react56.useState)(null);
+  const [busyId, setBusyId] = (0, import_react56.useState)(null);
+  const [result, setResult] = (0, import_react56.useState)(null);
   (0, import_react56.useEffect)(() => {
     let cancelled = false;
     if (typeof actions.marketBrowse !== "function") {
       setLoading(false);
-      return;
+      return void 0;
     }
-    setLoading(true);
-    actions.marketBrowse(query, category).then((res) => {
+    actions.marketBrowse("", "").then((res) => {
       if (cancelled) return;
-      const list = Array.isArray(res?.templates) ? res.templates : [];
-      setTemplates(list);
+      setTemplates(Array.isArray(res?.templates) ? res.templates : []);
       setError("");
     }).catch((err) => {
       if (!cancelled) setError(err?.message ?? String(err));
@@ -42014,86 +42294,100 @@ function MarketPage({ actions, onBack }) {
     return () => {
       cancelled = true;
     };
-  }, [query, category]);
-  const onInstall = async (tmpl) => {
-    setInstalling(tmpl.id);
-    setNote("");
+  }, []);
+  const create = async (tmpl, name) => {
+    setBusyId(tmpl.id);
+    setResult(null);
     try {
-      const result = typeof actions.marketInstall === "function" ? await actions.marketInstall(tmpl.id, tmpl.name, tmpl.model) : await actions.createBot({
-        name: tmpl.name,
-        role: tmpl.role || "",
-        model: tmpl.model || void 0,
-        instructions: tmpl.instructions || tmpl.description || ""
-      });
-      const name = result?.bot?.name ?? result?.name ?? tmpl.name;
-      setNote(t('Created {name} from template "{tmpl}".', { name, tmpl: tmpl.id }));
+      const made = typeof actions.marketInstall === "function" ? await actions.marketInstall(tmpl.id, name, tmpl.model) : await actions.createBot({ name, role: tmpl.role || "", model: tmpl.model || void 0, instructions: tmpl.instructions || tmpl.description || "" });
+      const created = made?.bot?.name ?? made?.name ?? name;
+      setResult({ ok: true, text: t('Created {name} from template "{tmpl}".', { name: created, tmpl: tmpl.name }) });
     } catch (err) {
-      setNote(t("Could not create: {error}", { error: err?.message ?? String(err) }));
+      setResult({ ok: false, text: t("Could not create: {error}", { error: err?.message ?? String(err) }) });
     } finally {
-      setInstalling(null);
+      setBusyId(null);
     }
   };
-  const grouped3 = (0, import_react56.useMemo)(() => {
-    const map = {};
-    for (const tmpl of templates) {
-      const cat = tmpl.category || t("Other");
-      (map[cat] ??= []).push(tmpl);
-    }
-    return map;
-  }, [templates]);
+  const open = (tmpl) => {
+    setResult(null);
+    setOpenId(tmpl.id);
+  };
+  const categories = (0, import_react56.useMemo)(() => shelvesOf(templates), [templates]);
+  const shown = (0, import_react56.useMemo)(() => filterMarket(templates, query, category), [templates, query, category]);
+  const featured = (0, import_react56.useMemo)(() => templates.filter((tmpl) => tmpl.featured), [templates]);
+  const current2 = openId === null ? void 0 : templates.find((tmpl) => tmpl.id === openId);
+  if (current2) {
+    return (0, import_react56.createElement)(Detail, { key: current2.id, tmpl: current2, onBack: () => setOpenId(null), onCreate: create, busy: busyId === current2.id, result });
+  }
+  const overview = query.trim() === "" && category === "";
+  const card = (tmpl, featuredCard = false) => (0, import_react56.createElement)(Card3, { key: tmpl.id, tmpl, featured: featuredCard, onOpen: open, onAdd: (tmpl2) => create(tmpl2, tmpl2.name), busy: busyId === tmpl.id });
   return (0, import_react56.createElement)(
     "div",
     { className: "bt-market" },
     (0, import_react56.createElement)(
-      "div",
+      "header",
       { className: "bt-market-head" },
-      onBack ? (0, import_react56.createElement)("button", { type: "button", className: "bt-icon-btn", "aria-label": t("Back"), onClick: onBack }, (0, import_react56.createElement)(ChevronLeftIcon)) : null,
-      (0, import_react56.createElement)("span", { className: "bt-page-title" }, t("Bot Market")),
-      (0, import_react56.createElement)("span", { className: "bt-market-count" }, loading ? t("Loading…") : `${templates.length} ${t("templates")}`)
+      (0, import_react56.createElement)("h2", { className: "bt-market-title" }, t("Bot Market")),
+      (0, import_react56.createElement)("p", { className: "bt-market-sub" }, loading ? t("Loading…") : `${t("Ready-made Bots for your team")} · ${templates.length} ${t("templates")}`)
     ),
     (0, import_react56.createElement)(
       "div",
-      { className: "bt-market-toolbar" },
-      (0, import_react56.createElement)(
-        "div",
-        { className: "bt-market-search" },
-        (0, import_react56.createElement)(SearchIcon ? SearchIcon : "span", { className: "bt-market-search-icon" }),
-        (0, import_react56.createElement)("input", {
-          className: "bt-input bt-market-search-input",
-          type: "search",
-          placeholder: t("Search templates by name, role, tag…"),
-          value: query,
-          onChange: (e) => setQuery(e.target.value),
-          "aria-label": t("Search")
-        })
-      ),
-      (0, import_react56.createElement)(
-        "select",
-        {
-          className: "bt-input bt-market-cat",
-          value: category,
-          onChange: (e) => setCategory(e.target.value),
-          "aria-label": t("Category")
-        },
-        (0, import_react56.createElement)("option", { value: "" }, t("All categories")),
-        CATEGORIES2.map((cat) => (0, import_react56.createElement)("option", { key: cat, value: cat }, cat))
-      )
+      { className: "bt-market-search" },
+      (0, import_react56.createElement)("span", { className: "bt-market-search-icon", "aria-hidden": true }, (0, import_react56.createElement)(SearchIcon)),
+      (0, import_react56.createElement)("input", {
+        className: "bt-input bt-market-search-input",
+        type: "search",
+        value: query,
+        placeholder: t("Search templates by name, role, tag…"),
+        onChange: (event) => setQuery(event.target.value),
+        "aria-label": t("Search")
+      })
     ),
-    note ? (0, import_react56.createElement)("div", { className: "bt-market-note" }, note) : null,
-    error ? (0, import_react56.createElement)("div", { className: "bt-error", role: "alert" }, t("Could not load templates: {error}", { error })) : null,
-    loading ? (0, import_react56.createElement)("div", { className: "bt-market-loading" }, t("Loading templates…")) : templates.length === 0 ? (0, import_react56.createElement)("div", { className: "bt-market-empty" }, t("No templates found. Try a different search.")) : (0, import_react56.createElement)(
+    categories.length > 1 ? (0, import_react56.createElement)(
       "div",
-      { className: "bt-market-grid" },
-      Object.keys(grouped3).sort().map((cat) => (0, import_react56.createElement)(
-        "div",
-        { key: cat, className: "bt-market-section" },
-        (0, import_react56.createElement)("div", { className: "bt-market-section-title" }, cat),
+      { className: "bt-market-cats", role: "group", "aria-label": t("Category") },
+      (0, import_react56.createElement)("button", { type: "button", className: "bt-market-chip", "aria-pressed": category === "", onClick: () => setCategory("") }, t("All")),
+      categories.map(({ category: key, items }) => (0, import_react56.createElement)("button", {
+        key: key || "-",
+        type: "button",
+        className: "bt-market-chip",
+        "aria-pressed": category === key,
+        style: { "--mk": inkFill(categoryInk(key)) },
+        onClick: () => setCategory(category === key ? "" : key)
+      }, key || t("Other"), (0, import_react56.createElement)("span", { className: "bt-market-chip-n" }, items.length)))
+    ) : null,
+    result ? (0, import_react56.createElement)("div", { className: result.ok ? "bt-market-note" : "bt-market-note bt-market-note-error", role: "status" }, result.ok ? (0, import_react56.createElement)(CheckIcon) : null, result.text) : null,
+    error ? (0, import_react56.createElement)("div", { className: "bt-error", role: "alert" }, t("Could not load templates: {error}", { error })) : null,
+    loading ? (0, import_react56.createElement)("div", { className: "bt-market-loading" }, t("Loading templates…")) : shown.length === 0 ? (0, import_react56.createElement)("div", { className: "bt-market-empty" }, t("No templates found. Try a different search.")) : overview ? (0, import_react56.createElement)(
+      "div",
+      { className: "bt-market-shelves" },
+      featured.length > 0 ? (0, import_react56.createElement)(
+        "section",
+        { className: "bt-market-shelf" },
+        (0, import_react56.createElement)("h3", { className: "bt-market-shelf-title" }, t("Featured")),
+        (0, import_react56.createElement)("div", { className: "bt-market-featured" }, featured.map((tmpl) => card(tmpl, true)))
+      ) : null,
+      categories.map(({ category: key, items }) => (0, import_react56.createElement)(
+        "section",
+        { key: key || "-", className: "bt-market-shelf" },
         (0, import_react56.createElement)(
           "div",
-          { className: "bt-market-section-items" },
-          grouped3[cat].map((tmpl) => (0, import_react56.createElement)(MarketCard, { key: tmpl.id, tmpl, onInstall, busy: installing === tmpl.id }))
-        )
+          { className: "bt-market-shelf-head" },
+          (0, import_react56.createElement)("h3", { className: "bt-market-shelf-title" }, key || t("Other")),
+          items.length > SHELF_SIZE ? (0, import_react56.createElement)(
+            "button",
+            { type: "button", className: "bt-market-link", onClick: () => setCategory(key) },
+            t("See all {count}", { count: items.length }),
+            (0, import_react56.createElement)(ChevronRightIcon)
+          ) : null
+        ),
+        (0, import_react56.createElement)("div", { className: "bt-market-grid" }, items.slice(0, SHELF_SIZE).map((tmpl) => card(tmpl)))
       ))
+    ) : (0, import_react56.createElement)(
+      "section",
+      { className: "bt-market-shelf" },
+      (0, import_react56.createElement)("h3", { className: "bt-market-shelf-title" }, category !== "" && query.trim() === "" ? category : t("{count} results", { count: shown.length })),
+      (0, import_react56.createElement)("div", { className: "bt-market-grid" }, shown.map((tmpl) => card(tmpl)))
     )
   );
 }
@@ -46622,7 +46916,7 @@ function Line({ line, roster, terms, className }) {
     (0, import_react70.createElement)("div", { className: "bt-gs-line" }, marked(line.text, terms))
   );
 }
-function Detail({ hit, roster, terms, back }) {
+function Detail2({ hit, roster, terms, back }) {
   return (0, import_react70.createElement)(
     "div",
     { className: "bt-gs-detail" },
@@ -46730,7 +47024,7 @@ function GroupSearch({ room: room2, roster, token, actions }) {
       setMoreError(failure);
     });
   };
-  const body = picked !== null ? (0, import_react70.createElement)(Detail, { hit: picked, roster, terms, back: () => setPicked(null) }) : text2.length < MIN_QUERY ? (0, import_react70.createElement)(
+  const body = picked !== null ? (0, import_react70.createElement)(Detail2, { hit: picked, roster, terms, back: () => setPicked(null) }) : text2.length < MIN_QUERY ? (0, import_react70.createElement)(
     "div",
     { className: "bt-palette-empty" },
     (0, import_react70.createElement)("span", { className: "bt-palette-empty-icon", "aria-hidden": true }, (0, import_react70.createElement)(SearchIcon)),

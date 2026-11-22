@@ -680,6 +680,28 @@ export function loadBotTemplates(dshHome) {
   return [...user, ...builtin]
 }
 
+/** The templates the Bot Market puts on its top shelf (a user template can set `featured: true`). */
+export const FEATURED_TEMPLATE_IDS = ['team-orchestrator', 'fullstack-engineer', 'code-reviewer', 'data-analyst']
+
+/**
+ * What the Bot Market shows of a template: the card fields, who made it, where it comes from,
+ * and whether it sits on the top shelf. Built-in templates are DS Bot's; a user file is the
+ * user's own unless it names a `creator`.
+ */
+export function marketEntry(t) {
+  const user = t._source === 'user'
+  const creator = typeof t.creator === 'string' && t.creator.trim() !== '' ? t.creator.trim() : (user ? 'You' : 'DS Bot')
+  const featured = t.featured === true || t.featured === 'true' || (t.featured === undefined && FEATURED_TEMPLATE_IDS.includes(t.id))
+  return {
+    id: t.id, name: t.name, role: t.role || '', duty: t.duty || '',
+    category: t.category || '', tags: Array.isArray(t.tags) ? t.tags : [],
+    description: t.description || '', model: t.model || null,
+    denyTools: Array.isArray(t.denyTools) ? t.denyTools : [],
+    instructions: t.instructions || '',
+    creator, source: user ? 'user' : 'builtin', featured,
+  }
+}
+
 /**
  * 过滤模版。
  */

@@ -2377,6 +2377,92 @@ Object.assign(DE, {
   "No credentials saved.": "Keine Zugangsdaten gespeichert.",
 })
 
+// Bot Market redesign (market.js), in every supported dictionary (zh-TW is converted from zh).
+Object.assign(ZH, {
+  "by {creator}": "来自 {creator}",
+  "Create {name}": "创建 {name}",
+  "Your template": "你的模板",
+  "What it does": "它能做什么",
+  "Tools it cannot use": "它不能使用的工具",
+  "Ready-made Bots for your team": "为你的团队准备好的现成 Bot",
+  "Featured": "精选",
+  "See all {count}": "查看全部 {count} 个",
+  "{count} results": "{count} 个结果",
+  "Leads the team": "带领团队",
+  "Reviews the work": "审核成果",
+  "Does the work": "负责执行",
+})
+Object.assign(JA, {
+  "by {creator}": "作成者：{creator}",
+  "Create {name}": "{name} を作成",
+  "Your template": "あなたのテンプレート",
+  "What it does": "できること",
+  "Tools it cannot use": "使えないツール",
+  "Ready-made Bots for your team": "チーム向けのすぐ使える Bot",
+  "Featured": "おすすめ",
+  "See all {count}": "{count} 件をすべて見る",
+  "{count} results": "{count} 件の結果",
+  "Leads the team": "チームを率いる",
+  "Reviews the work": "成果をレビューする",
+  "Does the work": "作業を担当する",
+})
+Object.assign(KO, {
+  "by {creator}": "{creator} 제공",
+  "Create {name}": "{name} 만들기",
+  "Your template": "내 템플릿",
+  "What it does": "할 수 있는 일",
+  "Tools it cannot use": "사용할 수 없는 도구",
+  "Ready-made Bots for your team": "팀을 위한 바로 쓸 수 있는 Bot",
+  "Featured": "추천",
+  "See all {count}": "{count}개 모두 보기",
+  "{count} results": "결과 {count}개",
+  "Leads the team": "팀을 이끕니다",
+  "Reviews the work": "결과물을 검토합니다",
+  "Does the work": "실무를 맡습니다",
+})
+Object.assign(ES, {
+  "by {creator}": "por {creator}",
+  "Create {name}": "Crear {name}",
+  "Your template": "Tu plantilla",
+  "What it does": "Qué hace",
+  "Tools it cannot use": "Herramientas que no puede usar",
+  "Ready-made Bots for your team": "Bots listos para tu equipo",
+  "Featured": "Destacados",
+  "See all {count}": "Ver los {count}",
+  "{count} results": "{count} resultados",
+  "Leads the team": "Dirige al equipo",
+  "Reviews the work": "Revisa el trabajo",
+  "Does the work": "Hace el trabajo",
+})
+Object.assign(FR, {
+  "by {creator}": "par {creator}",
+  "Create {name}": "Créer {name}",
+  "Your template": "Votre modèle",
+  "What it does": "Ce qu'il fait",
+  "Tools it cannot use": "Outils qu'il ne peut pas utiliser",
+  "Ready-made Bots for your team": "Des Bots prêts à l'emploi pour votre équipe",
+  "Featured": "À la une",
+  "See all {count}": "Tout voir ({count})",
+  "{count} results": "{count} résultats",
+  "Leads the team": "Dirige l'équipe",
+  "Reviews the work": "Relit le travail",
+  "Does the work": "Fait le travail",
+})
+Object.assign(DE, {
+  "by {creator}": "von {creator}",
+  "Create {name}": "{name} erstellen",
+  "Your template": "Deine Vorlage",
+  "What it does": "Was er tut",
+  "Tools it cannot use": "Werkzeuge, die er nicht nutzen darf",
+  "Ready-made Bots for your team": "Fertige Bots für dein Team",
+  "Featured": "Empfohlen",
+  "See all {count}": "Alle {count} ansehen",
+  "{count} results": "{count} Ergebnisse",
+  "Leads the team": "Leitet das Team",
+  "Reviews the work": "Prüft die Arbeit",
+  "Does the work": "Erledigt die Arbeit",
+})
+
 const ZH_TW = { ...convertDict(ZH), ...ZH_TW_OVERRIDES }
 const HOST_ERRORS_ZH_TW = convertHostErrors(HOST_ERRORS)
 

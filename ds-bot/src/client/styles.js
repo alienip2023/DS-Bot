@@ -684,6 +684,67 @@ body[data-ds-dark-theme] .jcd-scrim{background:rgba(0,0,0,.5)}
 .bt-browser-settings{display:flex;flex-direction:column;gap:22px}
 .bt-set-card{border:.5px solid var(--bt-glass-rim);border-radius:12px;background:var(--bt-card);box-shadow:var(--bt-card-shadow);display:flex;flex-direction:column}
 .bt-set-card>*+*{border-top:.5px solid var(--bt-line)}
+/* Bot Market (market.js): featured row, category shelves, detail page. --mk is a card's category ink. */
+.bt-market{--mk:var(--bt-accent);display:flex;flex-direction:column;gap:18px;padding-bottom:36px}
+.bt-market-head{display:flex;flex-direction:column;gap:2px}
+.bt-market-title{margin:0;font-size:22px;line-height:28px;font-weight:650;letter-spacing:-.01em;color:var(--bt-ink)}
+.bt-market-sub{margin:0;font-size:13px;color:var(--bt-ink-3)}
+.bt-market-search{position:relative}
+.bt-market-search-icon{position:absolute;left:14px;top:50%;display:flex;transform:translateY(-50%);color:var(--bt-ink-3);pointer-events:none}
+.bt-market-search-icon svg{width:16px;height:16px}
+.bt-market-search-input{height:40px;padding-left:38px;border-radius:999px;font-size:14px}
+.bt-market-cats{display:flex;gap:8px;overflow-x:auto;scrollbar-width:none;padding:2px 0}
+.bt-market-cats::-webkit-scrollbar{display:none}
+.bt-market-chip{flex:none;display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px;border-radius:999px;border:.5px solid var(--bt-line-2);background:transparent;color:var(--bt-ink-2);font:inherit;font-size:13px;cursor:pointer;transition:background .15s ease,color .15s ease}
+.bt-market-chip:hover{background:var(--bt-hover)}
+.bt-market-chip[aria-pressed=true]{background:var(--bt-ink);border-color:transparent;color:var(--bt-main)}
+.bt-market-chip-n{font-size:11px;opacity:.6}
+.bt-market-shelves{display:flex;flex-direction:column;gap:28px}
+.bt-market-shelf{display:flex;flex-direction:column;gap:12px}
+.bt-market-shelf-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+.bt-market-shelf-title{margin:0;font-size:15px;line-height:20px;font-weight:600;color:var(--bt-ink)}
+.bt-market-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}
+.bt-market-featured{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+.bt-market-card{position:relative;display:flex;border:.5px solid var(--bt-line-2);border-radius:16px;background:var(--bt-card);transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease}
+.bt-market-card:hover{transform:translateY(-1px);border-color:color-mix(in srgb,var(--mk) 45%,var(--bt-line-2));box-shadow:var(--bt-card-shadow)}
+.bt-market-card-featured{border-color:color-mix(in srgb,var(--mk) 28%,var(--bt-line-2));background:linear-gradient(150deg,color-mix(in srgb,var(--mk) 14%,var(--bt-card)),var(--bt-card) 70%)}
+.bt-market-open{all:unset;box-sizing:border-box;flex:1;min-width:0;display:flex;gap:12px;padding:14px 46px 14px 14px;border-radius:inherit;cursor:pointer}
+.bt-market-open:focus-visible{outline:2px solid var(--bt-accent);outline-offset:2px}
+.bt-market-card-featured .bt-market-open{gap:14px;padding:18px 50px 18px 18px}
+.bt-market-avatar{flex:none;display:inline-flex;align-items:center;justify-content:center;border-radius:12px;background:color-mix(in srgb,var(--mk) 14%,transparent)}
+.bt-market-card-text{display:flex;flex-direction:column;gap:3px;min-width:0}
+.bt-market-name{font-size:14px;line-height:20px;font-weight:600;color:var(--bt-ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bt-market-meta{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;font-size:11.5px;line-height:16px;color:var(--bt-ink-3)}
+.bt-market-role{color:color-mix(in srgb,var(--mk) 70%,var(--bt-ink-2))}
+.bt-market-desc{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:12.5px;line-height:18px;color:var(--bt-ink-2)}
+.bt-market-card-featured .bt-market-desc{-webkit-line-clamp:3}
+.bt-market-cat-label{margin-top:4px;font-size:11px;color:var(--bt-ink-3)}
+.bt-market-add{position:absolute;top:12px;right:12px;width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;padding:0;border-radius:50%;border:.5px solid var(--bt-line-2);background:var(--bt-main);color:var(--bt-ink-2);cursor:pointer;transition:background .15s ease,color .15s ease}
+.bt-market-add svg{width:14px;height:14px}
+.bt-market-add:hover:not(:disabled){border-color:transparent;background:var(--bt-accent);color:var(--bt-accent-ink)}
+.bt-market-add:disabled{cursor:default;opacity:.7}
+.bt-market-spin{width:12px;height:12px;border-radius:50%;border:2px solid currentColor;border-right-color:transparent;animation:bt-market-spin .7s linear infinite}
+@keyframes bt-market-spin{to{transform:rotate(360deg)}}
+.bt-market-link{all:unset;display:inline-flex;align-items:center;gap:2px;font-size:12.5px;color:var(--bt-accent);cursor:pointer}
+.bt-market-link svg{width:14px;height:14px}
+.bt-market-note{position:sticky;top:8px;z-index:2;box-shadow:var(--bt-card-shadow);display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:10px;font-size:13px;color:var(--bt-ink);background:color-mix(in srgb,var(--bt-ink-green) 14%,var(--bt-card))}
+.bt-market-note svg{flex:none;width:16px;height:16px}
+.bt-market-note-error{color:var(--bt-danger);background:color-mix(in srgb,var(--bt-danger) 10%,var(--bt-card))}
+.bt-market-loading,.bt-market-empty{padding:40px 0;text-align:center;font-size:13px;color:var(--bt-ink-3)}
+.bt-market-back{all:unset;align-self:flex-start;display:inline-flex;align-items:center;gap:4px;font-size:13px;color:var(--bt-ink-3);cursor:pointer}
+.bt-market-back:hover{color:var(--bt-ink)}
+.bt-market-back svg{width:16px;height:16px}
+.bt-market-hero{display:flex;align-items:center;gap:18px;padding:20px;border:.5px solid color-mix(in srgb,var(--mk) 28%,var(--bt-line-2));border-radius:18px;background:linear-gradient(150deg,color-mix(in srgb,var(--mk) 16%,var(--bt-card)),var(--bt-card) 75%)}
+.bt-market-hero-text{display:flex;flex-direction:column;gap:6px;min-width:0}
+.bt-market-chips{display:flex;flex-wrap:wrap;gap:6px}
+.bt-market-badge{padding:0 7px;border-radius:999px;background:color-mix(in srgb,var(--mk) 18%,transparent);font-size:11px;line-height:16px;color:var(--bt-ink-2)}
+.bt-market-create{display:flex;gap:10px}
+.bt-market-create .bt-input{flex:1;min-width:0}
+.bt-market-create-btn{flex:none;height:36px;padding:0 18px;border-radius:999px}
+.bt-market-block h3{margin:0 0 6px;font-size:13px;font-weight:600;color:var(--bt-ink)}
+.bt-market-block p{margin:0;font-size:13.5px;line-height:20px;color:var(--bt-ink-2)}
+.bt-market-instructions{margin:0 0 6px;padding:12px 14px;max-height:360px;overflow:auto;border:.5px solid var(--bt-line);border-radius:12px;background:var(--bt-card);font-family:var(--bt-mono);font-size:12px;line-height:18px;white-space:pre-wrap;word-break:break-word;color:var(--bt-ink-2)}
+@media (prefers-reduced-motion:reduce){.bt-market-card,.bt-market-chip,.bt-market-add{transition:none}.bt-market-card:hover{transform:none}.bt-market-spin{animation:none}}
 .bt-set-row{display:flex;align-items:center;gap:16px;min-height:48px;padding:12px 16px;border:0;background:none;color:var(--bt-ink);font:inherit;font-size:13px;line-height:18px;text-align:left;width:100%;box-sizing:border-box;border-radius:0;transition:background-color .14s ease}
 button.bt-set-row{cursor:pointer}
 button.bt-set-row:hover{background:var(--bt-hover)}

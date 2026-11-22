@@ -1244,19 +1244,13 @@ export function install(rt) {
         }
         case 'market-browse': {
           await rt.load()
-          const { loadBotTemplates, filterBotTemplates } = await import('./bot-templates.js')
+          const { loadBotTemplates, filterBotTemplates, marketEntry } = await import('./bot-templates.js')
           const all = loadBotTemplates(rt.dshHome)
           const q = typeof body.query === 'string' ? body.query : ''
           const cat = typeof body.category === 'string' ? body.category : ''
           let filtered = filterBotTemplates(all, q)
           if (cat) filtered = filtered.filter(t => String(t.category || '').toLowerCase() === cat.toLowerCase())
-          const templates = filtered.map(t => ({
-            id: t.id, name: t.name, role: t.role || '', duty: t.duty || '',
-            category: t.category || '', tags: Array.isArray(t.tags) ? t.tags : [],
-            description: t.description || '', model: t.model || null,
-            denyTools: Array.isArray(t.denyTools) ? t.denyTools : [],
-            instructions: t.instructions || '',
-          }))
+          const templates = filtered.map(marketEntry)
           return ok({ templates, total: templates.length, source: 'local' })
         }
         case 'market-install': {
