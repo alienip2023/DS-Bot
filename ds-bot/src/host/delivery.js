@@ -81,9 +81,18 @@ export function install(rt) {
         if (record.delivered === true) shown.set(record.id, record)
       }
     }
+    // A request whose answer came back was delivered, whether or not its own mark was kept: a
+    // dispatch to a node leaves no Session on this machine to mark, so older books hold such
+    // requests written but never marked.
+    for (const record of [...shown.values()]) {
+      if (record.role === 'reply' && typeof record.replyTo === 'string' && written.has(record.replyTo) && !shown.has(record.replyTo)) {
+        shown.set(record.replyTo, written.get(record.replyTo))
+      }
+    }
     return { written, shown, marks }
   }
-  const pairMessages = (a, b) => [...pairRecords(a, b).shown.values()]
+  // In the order they were sent (a stable sort, so equal times keep the order they were written).
+  const pairMessages = (a, b) => [...pairRecords(a, b).shown.values()].sort((x, y) => (x.time ?? 0) - (y.time ?? 0))
 
   function deliveredReplyOf(fromId, toId, replyTo) {
     if (typeof fromId !== 'string' || fromId === '' || typeof replyTo !== 'string' || replyTo === '') return undefined
@@ -171,7 +180,15 @@ export function install(rt) {
       if (!ANSWER_ROLES.has(role) && classify(role) !== 'control' && typeof rt.handleJoinedTurn === 'function') {
         await writeBook()
         // joinedAsync remains accepted for older callers; only wait:true opts out of deferral.
-        return rt.handleJoinedTurn({ fromId, toId, text, role, exchangeId, replyTo, work, ...(roomId ? { roomId, roomName: rt.roomOf?.(roomId)?.name } : {}), defer: wait !== true, ...(joinedAsync ? { joinedAsync: true } : {}), ...(stopped === true ? { stopped: true } : {}) })
+        const outcome = await rt.handleJoinedTurn({ fromId, toId, text, role, exchangeId, replyTo, work, ...(roomId ? { roomId, roomName: rt.roomOf?.(roomId)?.name } : {}), defer: wait !== true, ...(joinedAsync ? { joinedAsync: true } : {}), ...(stopped === true ? { stopped: true } : {}) })
+        // The node has the request (an offline node or a refused dispatch answers `{ ok: false }` and
+        // stays unmarked). The pair's view shows a message once it is marked: with no Session here to
+        // take it up, this is the only place the request can be.
+        if (book !== undefined && !(outcome !== null && typeof outcome === 'object' && outcome.ok === false)) {
+          rt.ledger.append(book, { event: 'delivered', id: exchangeId, sessionId: sessionId ?? rt.chatOf(toId), time: Date.now(), ...(typeof work === 'string' && work !== '' ? { work } : {}) })
+          await rt.ledger.written(book).catch(() => {})
+        }
+        return outcome
       }
       return refused
     }
