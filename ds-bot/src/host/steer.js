@@ -506,6 +506,8 @@ export function install(rt) {
     }]
   }
   rt.refreshShellShadows = () => {}
+  // What the Bot is in the middle of (steer-latency.js records it next to how long a steer waited).
+  rt.steerPhaseOf = id => state.get(id)?.phase
 
   ctx.on('session/event', (session, event) => {
     const id = session?.id

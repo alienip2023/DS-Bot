@@ -137,6 +137,7 @@ var JA = {
   "Background work": "バックグラウンド作業",
   "Background commands after (seconds)": "コマンドをバックグラウンドへ（秒後）",
   "Ask where a message goes when the Bot is busy": "Bot が忙しいとき、メッセージの扱いを先に確認する",
+  "Node needs an AC update": "ノードの AC 更新が必要",
   "A new reply is waiting": "新しい返信があります",
   "Opening…": "開いています…",
   "Still opening…": "まだ開いています…",
@@ -3697,6 +3698,7 @@ var KO = {
   "Enter sends message": "Enter 키로 메시지 전송",
   "Bring up related memory": "관련 메모리 자동으로 불러오기",
   "Ask where a message goes when the Bot is busy": "Bot이 바쁠 때 메시지를 어떻게 처리할지 먼저 묻기",
+  "Node needs an AC update": "노드 AC 업데이트 필요",
   "Group memory size": "그룹 메모리 용량",
   "Bot memory size": "Bot 메모리 용량",
   "Team memory size": "팀 메모리 용량",
@@ -6555,6 +6557,7 @@ var ES = {
   "Enter sends message": "Enter envía el mensaje",
   "Bring up related memory": "Traer memoria relacionada",
   "Ask where a message goes when the Bot is busy": "Si el Bot está ocupado, preguntar adónde va el mensaje",
+  "Node needs an AC update": "El nodo necesita actualizar AC",
   "Group memory size": "Tamaño de memoria del grupo",
   "Bot memory size": "Tamaño de memoria del Bot",
   "Team memory size": "Tamaño de memoria del equipo",
@@ -8666,6 +8669,7 @@ var FR = {
   "Background work": "Travail en arrière-plan",
   "Background commands after (seconds)": "Passer les commandes en arrière-plan après (secondes)",
   "Ask where a message goes when the Bot is busy": "Si le Bot est occupé, demander où va le message",
+  "Node needs an AC update": "Le nœud doit mettre à jour AC",
   "A new reply is waiting": "Une nouvelle réponse vous attend",
   "Opening…": "Ouverture…",
   "Still opening…": "Toujours en cours d’ouverture…",
@@ -12226,6 +12230,7 @@ var DE = {
   "Enter sends message": "Enter sendet Nachricht",
   "Bring up related memory": "Verwandte Erinnerungen automatisch einbeziehen",
   "Ask where a message goes when the Bot is busy": "Bei beschäftigtem Bot erst fragen, wohin die Nachricht geht",
+  "Node needs an AC update": "Knoten braucht AC-Update",
   "Group memory size": "Kapazität des Gruppengedächtnisses",
   "Bot memory size": "Kapazität des Bot-Gedächtnisses",
   "Team memory size": "Kapazität des Teamgedächtnisses",
@@ -15085,6 +15090,7 @@ var ZH = {
   "Background commands after (seconds)": "命令转后台（秒）",
   "Bring up related memory": "自动带上相关记忆",
   "Ask where a message goes when the Bot is busy": "Bot 忙时，先问我这条消息怎么处理",
+  "Node needs an AC update": "节点 AC 需升级",
   "Group memory size": "群记忆容量",
   "Bot memory size": "Bot 记忆容量",
   "Team memory size": "团队记忆容量",
@@ -34987,7 +34993,7 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
   const joined = bot.origin === "joined" && bot.worker?.home === "remote";
   const remoteHome = remoteHomeOf(bot);
   const peer = bot.origin === "peer" && bot.worker?.home === "hub";
-  const machine = joined ? [joinedMachineLabel(bot.worker, t), bot.worker.online === false ? "离线" : ""].filter(Boolean).join(" · ") : peer ? [bot.worker?.hostname || bot.worker?.nodeId || "", bot.worker?.online === false ? "离线" : "在线"].filter(Boolean).join(" · ") : "";
+  const machine = joined ? [joinedMachineLabel(bot.worker, t), bot.worker.online === false ? "离线" : "", bot.nodeCompat?.length ? t("Node needs an AC update") : ""].filter(Boolean).join(" · ") : peer ? [bot.worker?.hostname || bot.worker?.nodeId || "", bot.worker?.online === false ? "离线" : "在线"].filter(Boolean).join(" · ") : "";
   const taskCounts = taskCountsOf({ bot });
   const openTasks = () => {
     actions.openSession(id);

@@ -752,6 +752,7 @@ const ZH = {
   'Background commands after (seconds)': '命令转后台（秒）',
   'Bring up related memory': '自动带上相关记忆',
   'Ask where a message goes when the Bot is busy': 'Bot 忙时，先问我这条消息怎么处理',
+  'Node needs an AC update': '节点 AC 需升级',
   'Group memory size': '群记忆容量',
   'Bot memory size': 'Bot 记忆容量',
   'Team memory size': '团队记忆容量',

@@ -266,7 +266,7 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
   // Another machine's Bot, mirrored read-only: it has no local Session to open.
   const peer = bot.origin === 'peer' && bot.worker?.home === 'hub'
   const machine = joined
-    ? [joinedMachineLabel(bot.worker, t), bot.worker.online === false ? '离线' : ''].filter(Boolean).join(' · ')
+    ? [joinedMachineLabel(bot.worker, t), bot.worker.online === false ? '离线' : '', bot.nodeCompat?.length ? t('Node needs an AC update') : ''].filter(Boolean).join(' · ')
     : peer
       ? [bot.worker?.hostname || bot.worker?.nodeId || '', bot.worker?.online === false ? '离线' : '在线'].filter(Boolean).join(' · ')
       : ''

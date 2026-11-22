@@ -739,6 +739,7 @@ export const KO = {
   'Enter sends message': 'Enter 키로 메시지 전송',
   'Bring up related memory': '관련 메모리 자동으로 불러오기',
   'Ask where a message goes when the Bot is busy': 'Bot이 바쁠 때 메시지를 어떻게 처리할지 먼저 묻기',
+  'Node needs an AC update': '노드 AC 업데이트 필요',
   'Group memory size': '그룹 메모리 용량',
   'Bot memory size': 'Bot 메모리 용량',
   'Team memory size': '팀 메모리 용량',

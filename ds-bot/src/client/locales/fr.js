@@ -15,6 +15,7 @@ export const FR = {
   "Background work": "Travail en arrière-plan",
   "Background commands after (seconds)": "Passer les commandes en arrière-plan après (secondes)",
   "Ask where a message goes when the Bot is busy": "Si le Bot est occupé, demander où va le message",
+  "Node needs an AC update": "Le nœud doit mettre à jour AC",
   'A new reply is waiting': "Une nouvelle réponse vous attend",
   "Opening…": "Ouverture…",
   "Still opening…": "Toujours en cours d’ouverture…",

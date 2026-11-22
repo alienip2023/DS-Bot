@@ -220,6 +220,8 @@ export function mirrorTurnAbort(session, { turn, step = 1, closedTurns } = {}) {
 export const LATE_REPLY_MARK = '↩ 节点迟到回复'
 /** The first line of what a node Bot's background task reports after its turn was answered. */
 export const TASK_RESULT_MARK = '↩ 节点后台任务结果'
+/** The first line of a node Bot's answer to a steer whose page turn had already ended. */
+export const STEER_REPLY_MARK = '↩ 对插话的回复'
 
 /**
  * The node answered AFTER the page turn ended with E_TIMEOUT. The answer is written as a NEW

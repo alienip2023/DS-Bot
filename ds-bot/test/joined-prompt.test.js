@@ -186,7 +186,7 @@ describe('S24: joined Bot page prompt takeover', () => {
     assert.deepEqual(w.sessionOf('mirror-1').log.filter(event => event.type === 'turn/start').map(event => event.data.turn), [1, 2])
   })
 
-  it('S24-e2 a steer while a turn is in flight goes to the node at once as a bot/turn with mode steer, and is written whole when its answer arrives', async () => {
+  it('S24-e2 a steer while a turn is in flight goes to the node at once as a bot/turn with mode steer, and is written on the page in the order it happened', async () => {
     const w = makeWorld()
     await w.prompt(textRequest('first', 'req-1'))
     const ack = await w.prompt(steerRequest('second', 'req-2'))
@@ -197,17 +197,33 @@ describe('S24: joined Bot page prompt takeover', () => {
     assert.equal(w.frames[1].payload.mode, 'steer')
     assert.equal(w.originalCalls.length, 0)
     assert.equal(w.rt.joinedUserQueue?.get(w.bot.id)?.length ?? 0, 0, 'nothing waits on the hub')
+    const session = w.sessionOf('mirror-1')
+    const users = () => session.log.filter(event => event.type === 'user/message').map(event => event.data.message?.content?.[0]?.text ?? event.data.content?.[0]?.text)
+    assert.deepEqual(users(), ['first', 'second'], 'the steer is on the page at once, inside the turn that is running')
     w.reply(1)   // the steer answers first
     await ticks()
-    const session = w.sessionOf('mirror-1')
-    assert.deepEqual(session.log.filter(event => event.type === 'turn/start').map(event => event.data.turn), [1], 'its turn waits while the first page turn is open')
+    const answers = () => session.log.filter(event => event.type === 'assistant/message').map(event => event.data.message.content[0].text)
+    assert.ok(answers().some(text => text === 'node says hi'), 'its answer lands right after it, in the same turn')
+    assert.equal(session.log.filter(event => event.type === 'turn/start').length, 1, 'no turn of its own')
     w.reply(0)
     await ticks()
-    assert.deepEqual(session.log.filter(event => event.type === 'turn/start').map(event => event.data.turn), [1, 2])
-    assert.deepEqual(session.log.filter(event => event.type === 'turn/end').map(event => event.data.reason.kind), ['completed', 'completed'])
-    const users = session.log.filter(event => event.type === 'user/message').map(event => event.data.message?.content?.[0]?.text ?? event.data.content?.[0]?.text)
-    assert.deepEqual(users, ['first', 'second'])
+    assert.deepEqual(session.log.filter(event => event.type === 'turn/start').map(event => event.data.turn), [1])
+    assert.deepEqual(session.log.filter(event => event.type === 'turn/end').map(event => event.data.reason.kind), ['completed'])
     assert.equal(w.rt.joinedSide?.size ?? 0, 0, 'no side turn is left')
+  })
+
+  it('S24-e2b a steer whose page turn ended first still has its question on the page; its answer is a marked reply', async () => {
+    const w = makeWorld()
+    await w.prompt(textRequest('first', 'req-1'))
+    await w.prompt(steerRequest('second', 'req-2'))
+    w.reply(0)   // the page turn ends before the steer is answered
+    await ticks()
+    w.reply(1)
+    await ticks()
+    const session = w.sessionOf('mirror-1')
+    const answers = session.log.filter(event => event.type === 'assistant/message').map(event => event.data.message.content[0].text)
+    assert.ok(answers.some(text => text.startsWith('↩ 对插话的回复')), 'the late answer is marked as a reply to the steer')
+    assert.equal(session.log.filter(event => event.type === 'user/message').length, 2, 'the question was written once')
   })
 
   it('S24-e3 more steers than the limit wait on the hub; Stop ends the page turn and the side turns', async () => {
@@ -511,7 +527,6 @@ describe('S30-late: failures close listeners while stopped turns retain late rep
     for (const [name, trigger, code] of [
       ['rejected', w => w.reply(0, { ok: false, text: undefined, error: 'bot-busy-on-node' }), 'E_REJECTED'],
       ['no-seq', w => w.reply(0, { seq: undefined }), 'E_REJECTED'],
-      ['bridge-down', w => w.emitter.emit('nodeOffline', { nodeId: 'n1' }), 'E_OFFLINE'],
     ]) {
       const w = makeWorld()
       await w.prompt(textRequest('hi'))
@@ -524,6 +539,19 @@ describe('S30-late: failures close listeners while stopped turns retain late rep
       w.reply(0, { text: 'too late', seq: 11 })
       assert.equal(session.log.length, before, `${name}: a result after a non-timeout failure writes nothing`)
     }
+  })
+
+  it('S30-late-a1: a node that went offline ends the turn with its own code, then keeps listening: the answer it sends once back is written', async () => {
+    const w = makeWorld()
+    await w.prompt(textRequest('hi'))
+    w.emitter.emit('nodeOffline', { nodeId: 'n1' })
+    await w.idle()
+    const session = w.sessionOf('mirror-1')
+    assert.equal(session.log.at(-1).data.reason.error.code, 'E_OFFLINE')
+    assert.equal(w.emitter.listenerCount('botTurnResult'), 1, 'the answer is still waited for')
+    w.reply(0, { text: 'finished while the link was down', seq: 11 })
+    assert.match(JSON.stringify(session.log), /节点迟到回复[^"]*finished while the link was down/)
+    assert.equal(w.emitter.listenerCount('botTurnResult'), 0, 'one answer, then done')
   })
 
   it('S30-late-a2: a stopped turn keeps one listener (the contrast the test above relies on)', async () => {

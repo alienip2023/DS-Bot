@@ -10,6 +10,7 @@
 // Card ids carry their kind: `approval:<id>`, `question:<id>`, `learning:<id>`.
 import { randomUUID } from 'node:crypto'
 import { joinedShadow } from './roster-join.js'
+import { nodeCan, refusalFor } from './node-compat.js'
 
 const BODY_MAX = 3800
 const clip = (text, max) => String(text ?? '').slice(0, max)
@@ -181,6 +182,7 @@ export async function sendBotAction(rt, bot, action, params, { timeoutMs = ACTIO
   if (typeof registry?.send !== 'function' || !nodeId || !remoteBotId) {
     throw Object.assign(new Error('节点不在线，无法操作'), { code: 'bot/refused' })
   }
+  if (!nodeCan(rt, bot, 'actions')) throw Object.assign(new Error(refusalFor('actions')), { code: 'bot/refused' })
   const requestId = randomUUID()
   const result = await new Promise((resolve, reject) => {
     let timer

@@ -739,6 +739,7 @@ export const DE = {
   'Enter sends message': 'Enter sendet Nachricht',
   'Bring up related memory': 'Verwandte Erinnerungen automatisch einbeziehen',
   'Ask where a message goes when the Bot is busy': 'Bei beschäftigtem Bot erst fragen, wohin die Nachricht geht',
+  'Node needs an AC update': 'Knoten braucht AC-Update',
   'Group memory size': 'Kapazität des Gruppengedächtnisses',
   'Bot memory size': 'Kapazität des Bot-Gedächtnisses',
   'Team memory size': 'Kapazität des Teamgedächtnisses',
