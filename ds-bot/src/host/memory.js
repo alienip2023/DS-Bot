@@ -1913,7 +1913,7 @@ export function install(rt) {
     const bot = typeof key === 'string' && key.startsWith('joined:') ? Object.values(state.bots).find(item => joinedShadow(item) && remoteBotKey(item.worker.nodeId, item.worker.remoteBotId) === key) : undefined
     return bot === undefined ? undefined : remoteOwnScope(bot)
   }
-  const NODE_MEMORY_ASSISTANT = 'This Bot keeps its memory on its node: the memory assistant, restore and tidy are not available here. Edit its entries in the list.'
+  const NODE_MEMORY_ASSISTANT = 'Not available for a node Bot: edit the entries in the list'
   // A change the panel made to a node Bot's memory reaches the node through the federation snapshot.
   const afterPanelChange = scope => (scope.nodeId === undefined ? undefined : rt.memoryHub?.afterPanelChange?.(scope))
   const panelBody = panel => (panel.group ? { roomId: panel.id } : { botId: panel.id })

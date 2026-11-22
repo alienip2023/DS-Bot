@@ -51,8 +51,8 @@ test('nothing is written to a local folder named after the shadow', async (t) =>
 test('the memory assistant and restore refuse for a node Bot with a reason instead of acting on the wrong memory', async (t) => {
   const { rt, close } = await world()
   t.after(close)
-  await assert.rejects(() => rt.memoryEndpoint('memory-ask', { botId: SHADOW, text: 'tidy this' }), /keeps its memory on its node/)
-  await assert.rejects(() => rt.memoryEndpoint('memory-restore', { botId: SHADOW, id: 'x' }), /keeps its memory on its node/)
+  await assert.rejects(() => rt.memoryEndpoint('memory-ask', { botId: SHADOW, text: 'tidy this' }), /Not available for a node Bot/)
+  await assert.rejects(() => rt.memoryEndpoint('memory-restore', { botId: SHADOW, id: 'x' }), /Not available for a node Bot/)
 })
 
 test('the change log of a node Bot lists the changes its memory made', async (t) => {

@@ -21,6 +21,7 @@ import { t } from './i18n.js'
 import { rectsOverlap } from './browser-overlap.js'
 import { useEscape } from './overlay-hooks.js'
 import { writeClipboard } from './dsh-primitives.js'
+import { isJoinedRemote } from './joined-errors.js'
 
 export const PANEL_LINGER_MS = 300
 const WIDTH_KEY = STORAGE.browserWidth
@@ -953,7 +954,8 @@ function ImportCard({ flow, page, busy, imports, onApply, onCancel, onCloseAndIm
 export function BotPanel({ pane, leaving, room, overlay, roster, actions, useSessions, useSessionStatus, useActivity, useWork, useBrowserTabs, useBrowserPages, useBrowserHolds, useComputer }) {
   const bot = roster.byId[pane.id]
   const roomSubject = roster.roomsById?.[pane.id]
-  const canBrowse = Boolean(bot && roster.browser === true && actions.browserShow)
+  // A node Bot's browser is on its node, not on this machine.
+  const canBrowse = Boolean(bot && !isJoinedRemote(bot) && roster.browser === true && actions.browserShow)
   const sideChats = bot ? sideChatsOf(roster, bot.id) : []
   const sideChat = sideChats.find(chat => chat?.id === pane.side)
   const taskBot = pane.task?.botId ? roster.byId?.[pane.task.botId] : undefined

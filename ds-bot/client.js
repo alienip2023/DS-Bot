@@ -187,6 +187,12 @@ var JA = {
   "Beta": "ベータ",
   "Main Bot": "メイン Bot",
   "Running on {host}": "{host} で実行中",
+  "This Bot runs on a node: change it there": "この Bot はノードで実行されています。変更はノード側で行ってください",
+  "A node Bot cannot be copied here: create a new Bot on the node instead": "ノードの Bot はここでは複製できません。ノード側で新しい Bot を作成してください",
+  "A folder on the node: type its path": "ノード上のフォルダです。パスを入力してください",
+  "The node's default folder": "ノードの既定のフォルダ",
+  "Browser, computer use and connectors": "ブラウザ、コンピューター操作、コネクタ",
+  "Not available for a node Bot: edit the entries in the list": "ノードの Bot では使えません。リストで項目を編集してください",
   "Working": "実行中",
   "Waiting for your answer": "回答待ち",
   "Waiting for {names}": "{names} の応答待ち",
@@ -3000,6 +3006,12 @@ var KO = {
   // Shared
   "Main Bot": "메인 Bot",
   "Running on {host}": "{host}에서 실행 중",
+  "This Bot runs on a node: change it there": "이 Bot은 노드에서 실행됩니다. 노드에서 변경하세요",
+  "A node Bot cannot be copied here: create a new Bot on the node instead": "노드의 Bot은 여기서 복사할 수 없습니다. 노드에서 새 Bot을 만드세요",
+  "A folder on the node: type its path": "노드의 폴더입니다. 경로를 입력하세요",
+  "The node's default folder": "노드의 기본 폴더",
+  "Browser, computer use and connectors": "브라우저, 컴퓨터 사용 및 커넥터",
+  "Not available for a node Bot: edit the entries in the list": "노드 Bot에서는 사용할 수 없습니다. 목록에서 항목을 편집하세요",
   Working: "작업 중",
   "Waiting for your answer": "답변 대기 중",
   "Waiting for {names}": "{names} 응답 대기 중",
@@ -5859,6 +5871,12 @@ var ES = {
   // Shared
   "Main Bot": "Bot principal",
   "Running on {host}": "Se ejecuta en {host}",
+  "This Bot runs on a node: change it there": "Este Bot se ejecuta en un nodo: cámbialo allí",
+  "A node Bot cannot be copied here: create a new Bot on the node instead": "Un Bot de un nodo no se puede copiar aquí: crea un Bot nuevo en el nodo",
+  "A folder on the node: type its path": "Una carpeta del nodo: escribe su ruta",
+  "The node's default folder": "Carpeta predeterminada del nodo",
+  "Browser, computer use and connectors": "Navegador, uso del ordenador y conectores",
+  "Not available for a node Bot: edit the entries in the list": "No disponible para un Bot de nodo: edita las entradas en la lista",
   Working: "En curso",
   "Waiting for your answer": "Esperando tu respuesta",
   "Waiting for {names}": "Esperando a {names}",
@@ -8719,6 +8737,12 @@ var FR = {
   "Beta": "Bêta",
   "Main Bot": "Bot principal",
   "Running on {host}": "S'exécute sur {host}",
+  "This Bot runs on a node: change it there": "Ce Bot s'exécute sur un nœud : modifiez-le là-bas",
+  "A node Bot cannot be copied here: create a new Bot on the node instead": "Un Bot de nœud ne peut pas être copié ici : créez plutôt un nouveau Bot sur le nœud",
+  "A folder on the node: type its path": "Un dossier du nœud : saisissez son chemin",
+  "The node's default folder": "Dossier par défaut du nœud",
+  "Browser, computer use and connectors": "Navigateur, contrôle de l'ordinateur et connecteurs",
+  "Not available for a node Bot: edit the entries in the list": "Indisponible pour un Bot de nœud : modifiez les entrées dans la liste",
   "Working": "En cours",
   "Waiting for your answer": "Attend votre réponse",
   "Waiting for {names}": "En attente de {names}",
@@ -11532,6 +11556,12 @@ var DE = {
   // Shared
   "Main Bot": "Haupt-Bot",
   "Running on {host}": "Läuft auf {host}",
+  "This Bot runs on a node: change it there": "Dieser Bot läuft auf einem Knoten: Änderungen dort vornehmen",
+  "A node Bot cannot be copied here: create a new Bot on the node instead": "Ein Knoten-Bot kann hier nicht kopiert werden: Erstelle stattdessen einen neuen Bot auf dem Knoten",
+  "A folder on the node: type its path": "Ein Ordner auf dem Knoten: Pfad eingeben",
+  "The node's default folder": "Standardordner des Knotens",
+  "Browser, computer use and connectors": "Browser, Computersteuerung und Konnektoren",
+  "Not available for a node Bot: edit the entries in the list": "Für einen Knoten-Bot nicht verfügbar: Einträge in der Liste bearbeiten",
   Working: "Arbeitet",
   "Waiting for your answer": "Wartet auf deine Antwort",
   "Waiting for {names}": "Wartet auf {names}",
@@ -14332,6 +14362,12 @@ var ZH = {
   // Shared
   "Main Bot": "主 Bot",
   "Running on {host}": "运行于 {host}",
+  "This Bot runs on a node: change it there": "这个 Bot 运行在节点上：请在节点上修改",
+  "A node Bot cannot be copied here: create a new Bot on the node instead": "节点上的 Bot 不能在这里复制：请直接在节点上新建",
+  "A folder on the node: type its path": "节点上的文件夹：请输入它的路径",
+  "The node's default folder": "节点的默认文件夹",
+  "Browser, computer use and connectors": "浏览器、电脑操控和连接器",
+  "Not available for a node Bot: edit the entries in the list": "节点上的 Bot 不可用：请直接在列表里编辑条目",
   Working: "进行中",
   "A new reply is waiting": "有一条新回复",
   "Waiting for your answer": "等你回答",
@@ -17371,6 +17407,7 @@ async function sendFromDialog(actions, botId, text2, fallback = "Failed to send"
 
 // src/client/joined-errors.js
 var isJoinedRemote = (bot) => bot?.origin === "joined" && bot?.worker?.home === "remote";
+var nodeOnlyReason = () => t("This Bot runs on a node: change it there");
 function joinedUpdateErrorText(raw) {
   const reason = String(raw ?? "").trim();
   switch (reason) {
@@ -17385,6 +17422,8 @@ function joinedUpdateErrorText(raw) {
       return t("The node did not answer in time, so the change may not have applied. Try again in a moment.");
     case "bot-update-not-found":
       return t("The node cannot find this Bot.");
+    case "This Bot runs on a node: change it there":
+      return nodeOnlyReason();
     default:
       return t("The node refused this change: {reason}", { reason: reason.replace(/^bot-update-failed:\s*/, "") || t("unknown reason") });
   }
@@ -23306,7 +23345,7 @@ var COMPUTER_CSS = `
 .bt-cstep-shot-open img{max-height:280px;max-width:480px}
 `;
 
-// node_modules/deep-view/src/react/ui.js
+// ../../../../Users/kjclaw/projects/ds-bot/ds-bot/node_modules/deep-view/src/react/ui.js
 var import_react13 = require("react");
 var FallbackMarkdown = ({ text: text2 }) => (0, import_react13.createElement)("span", null, String(text2 ?? ""));
 var ViewUi = (0, import_react13.createContext)({ t: (key) => key, Markdown: FallbackMarkdown });
@@ -23373,7 +23412,7 @@ function useOptionKeys2(count, onPick, ownRef) {
   return count > 0 && listening <= 1;
 }
 
-// node_modules/deep-view/src/core/formula.js
+// ../../../../Users/kjclaw/projects/ds-bot/ds-bot/node_modules/deep-view/src/core/formula.js
 var FUNCTIONS = {
   min: { args: [1, Infinity], run: (...values) => Math.min(...values.map(num)) },
   max: { args: [1, Infinity], run: (...values) => Math.max(...values.map(num)) },
@@ -23654,7 +23693,7 @@ function evaluate(tree, lookup) {
   }
 }
 
-// node_modules/deep-view/src/core/views.js
+// ../../../../Users/kjclaw/projects/ds-bot/ds-bot/node_modules/deep-view/src/core/views.js
 var LAYOUT = ["stack", "row"];
 var DISPLAY = ["text", "metric", "table", "chart", "progress", "callout", "sources", "html"];
 var INPUT_TYPES = ["slider", "choice", "toggle", "number"];
@@ -24286,7 +24325,7 @@ function validateForm(node, values) {
   return { fields };
 }
 
-// node_modules/deep-view/src/react/chart.js
+// ../../../../Users/kjclaw/projects/ds-bot/ds-bot/node_modules/deep-view/src/react/chart.js
 var import_react14 = require("react");
 var PALETTE = ["var(--dv-accent)", "var(--dv-ink-tangerine)", "var(--dv-ink-green)", "var(--dv-ink-violet)", "var(--dv-ink-sky)", "var(--dv-ink-rose)", "var(--dv-ink-yellow)", "var(--dv-ink-cyan)", "var(--dv-ink-magenta)"];
 var colorAt = (index) => PALETTE[index % PALETTE.length];
@@ -24725,7 +24764,7 @@ var CHART_CSS = `
 @media (prefers-reduced-motion:reduce){.dv-chart-mark,.dv-chart-dot{transition:none}.dv-chart-tip{animation:none}}
 `;
 
-// node_modules/deep-view/src/react/frame.js
+// ../../../../Users/kjclaw/projects/ds-bot/ds-bot/node_modules/deep-view/src/react/frame.js
 var import_react15 = require("react");
 var THEME_VARS = [
   ["--view-ink", "--bt-ink", "--dv-ink"],
@@ -24807,7 +24846,7 @@ var HTML_CSS = `
 .dv-view-frame-stopped{margin:0;font-size:13px;line-height:18px;color:var(--dv-ink-2)}
 `;
 
-// node_modules/deep-view/src/react/card.js
+// ../../../../Users/kjclaw/projects/ds-bot/ds-bot/node_modules/deep-view/src/react/card.js
 var import_react16 = require("react");
 var mdLabels2 = (ui) => ({ code: { copyLabel: ui.t("Copy"), copiedLabel: ui.t("Copied") }, footnotes: ui.t("Footnotes") });
 var TONES2 = ["good", "warn", "bad"];
@@ -25549,7 +25588,7 @@ ${CHART_CSS}
 ${HTML_CSS}
 `;
 
-// node_modules/deep-view/src/react/styles.js
+// ../../../../Users/kjclaw/projects/ds-bot/ds-bot/node_modules/deep-view/src/react/styles.js
 var THEME_CSS = `
 body{
 --dv-ink:var(--dsw-alias-label-primary);
@@ -25647,10 +25686,10 @@ button.dv-q-opt:active{background:var(--dv-active)}
 @media (prefers-reduced-motion:reduce){.dv-q,.dv-view-bare,.dv-q-submit,.dv-menu,.dv-q-check{animation:none}}
 `;
 
-// node_modules/deep-view/src/react/index.js
+// ../../../../Users/kjclaw/projects/ds-bot/ds-bot/node_modules/deep-view/src/react/index.js
 var DEEP_VIEW_CSS = THEME_CSS + QUESTION_CSS + WIDGET_CSS;
 
-// node_modules/deep-view/src/core/reply.js
+// ../../../../Users/kjclaw/projects/ds-bot/ds-bot/node_modules/deep-view/src/core/reply.js
 var REPLY_KIND = "user-question-reply";
 var REPLY_SOURCE_KIND = "deep-view-reply";
 function viewCardText(args) {
@@ -27912,14 +27951,14 @@ var import_react23 = require("react");
 var import_react_dom2 = require("react-dom");
 var folderName = (path2) => String(path2).replace(/[\\/]+$/, "").split(/[\\/]/).pop() || String(path2);
 var Tick = ({ on }) => (0, import_react23.createElement)("span", { className: "bt-model-tick", "aria-hidden": true }, on ? (0, import_react23.createElement)(CheckIcon) : null);
-function FolderMenu({ value, group = false, team = false, actions, run: run2, onPick, wide = false, disabled = false }) {
+function FolderMenu({ value, group = false, team = false, node = false, actions, run: run2, onPick, wide = false, disabled = false }) {
   const { isOpen, shownPlace, leaving, button, menu, open, close } = useAnchoredMenu();
   const [info, setInfo] = (0, import_react23.useState)(null);
   const [view, setView] = (0, import_react23.useState)("list");
   const [draft, setDraft] = (0, import_react23.useState)("");
   const [listing, setListing] = (0, import_react23.useState)(null);
   const [problem, setProblem] = (0, import_react23.useState)("");
-  const fallback = group ? t("Each Bot's own folder") : t("Team workspace");
+  const fallback = group ? t("Each Bot's own folder") : node ? t("The node's default folder") : t("Team workspace");
   const toggle = () => {
     if (isOpen) {
       close();
@@ -27927,7 +27966,7 @@ function FolderMenu({ value, group = false, team = false, actions, run: run2, on
     }
     setView("list");
     setProblem("");
-    void Promise.resolve(actions.folders()).then(setInfo).catch(() => setInfo((last) => last ?? { team: null, picker: null, folders: [] }));
+    if (!node) void Promise.resolve(actions.folders()).then(setInfo).catch(() => setInfo((last) => last ?? { team: null, picker: null, folders: [] }));
     open();
   };
   const choose = (path2) => {
@@ -27951,7 +27990,16 @@ function FolderMenu({ value, group = false, team = false, actions, run: run2, on
   };
   const known = info?.folders ?? [];
   const folders = value && !known.some((folder) => folder.path === value) ? [{ path: value, title: folderName(value) }, ...known] : known;
-  const listView = (0, import_react23.createElement)(
+  const nodeView = (0, import_react23.createElement)(
+    "div",
+    { key: "list", className: "bt-folder-view" },
+    (0, import_react23.createElement)("div", { className: "bt-folder-path bt-folder-here" }, t("A folder on the node: type its path")),
+    (0, import_react23.createElement)("button", { type: "button", role: "menuitem", onClick: () => {
+      setDraft(value ?? "");
+      setView("type");
+    } }, (0, import_react23.createElement)(PencilIcon), (0, import_react23.createElement)("span", { className: "bt-menu-label" }, t("Enter a path…")))
+  );
+  const listView = node ? nodeView : (0, import_react23.createElement)(
     "div",
     { key: "list", className: "bt-folder-view" },
     team ? null : (0, import_react23.createElement)(
@@ -29217,7 +29265,7 @@ function historyLine(row) {
   if (row.op === "replace") return t("Updated: {text}", { text: text2 });
   return row.scope === "team" ? t("Added to team memory: {text}", { text: text2 }) : t("Added: {text}", { text: text2 });
 }
-function HistoryRow({ row, undo, now }) {
+function HistoryRow({ row, undo, now, node = false }) {
   const [confirming, setConfirming] = (0, import_react27.useState)(false);
   const [busy, setBusy] = (0, import_react27.useState)(false);
   (0, import_react27.useEffect)(() => {
@@ -29248,9 +29296,9 @@ function HistoryRow({ row, undo, now }) {
       type: "button",
       className: "bt-mem-remove",
       "data-confirm": confirming || void 0,
-      disabled: busy,
+      disabled: busy || node,
       "aria-label": confirming ? t("Click again to undo") : t("Undo this change"),
-      title: confirming ? void 0 : t("Undo this change"),
+      title: node ? t("Not available for a node Bot: edit the entries in the list") : confirming ? void 0 : t("Undo this change"),
       onClick: click
     }, t("Undo"))
   );
@@ -29294,7 +29342,7 @@ function History({ owner, actions, undo, now }) {
   return (0, import_react27.createElement)(
     "div",
     { className: "bt-mem-entries" },
-    (0, import_react27.createElement)("ul", { className: "bt-mem-list" }, rows2.map((row) => (0, import_react27.createElement)(HistoryRow, { key: row.id, row, undo: undoRow, now }))),
+    (0, import_react27.createElement)("ul", { className: "bt-mem-list" }, rows2.map((row) => (0, import_react27.createElement)(HistoryRow, { key: row.id, row, undo: undoRow, now, node: owner.node === true }))),
     more ? (0, import_react27.createElement)("button", { type: "button", className: "bt-soft bt-soft-sm", disabled: paging, onClick: () => void moreClick() }, t("Load more")) : null
   );
 }
@@ -29364,7 +29412,7 @@ function useNow(every) {
 }
 function MemoryDialog({ owner, actions, leaving = false }) {
   const { view, error, load, show: show2 } = useMemoryView(owner.id, actions);
-  const [page, setPage] = (0, import_react27.useState)("summary");
+  const [page, setPage] = (0, import_react27.useState)(owner.node === true ? "entries" : "summary");
   const [menu, setMenu] = (0, import_react27.useState)(false);
   const [menuShown, menuLeaving] = useLinger(menu, MENU_EXIT_MS2);
   const [moving, setMoving] = (0, import_react27.useState)(null);
@@ -29500,7 +29548,7 @@ function MemoryDialog({ owner, actions, leaving = false }) {
       (0, import_react27.createElement)(
         "div",
         { className: "bt-mem-head" },
-        page === "summary" ? null : (0, import_react27.createElement)("button", { type: "button", className: "bt-icon-btn", "aria-label": t("Back to the summary"), onClick: backToSummary }, (0, import_react27.createElement)(ChevronLeftIcon)),
+        page === "summary" || owner.node === true ? null : (0, import_react27.createElement)("button", { type: "button", className: "bt-icon-btn", "aria-label": t("Back to the summary"), onClick: backToSummary }, (0, import_react27.createElement)(ChevronLeftIcon)),
         (0, import_react27.createElement)("h2", null, page === "entries" ? t("All entries") : page === "history" ? t("Change history") : t("Memory summary")),
         (0, import_react27.createElement)("span", { className: "bt-mem-status" }, page === "summary" ? [owner.name, status].filter(Boolean).join(" · ") : page === "entries" ? status : ""),
         (0, import_react27.createElement)("span", { className: "bt-mem-head-gap" }),
@@ -29520,7 +29568,7 @@ function MemoryDialog({ owner, actions, leaving = false }) {
             { type: "button", role: "menuitem", onClick: openHistory },
             (0, import_react27.createElement)("span", { className: "bt-menu-label" }, t("Change history"))
           ),
-          (0, import_react27.createElement)(
+          owner.node === true ? null : (0, import_react27.createElement)(
             "button",
             { type: "button", role: "menuitem", disabled: count === 0 || view?.summarizing, onClick: regenerate },
             (0, import_react27.createElement)("span", { className: "bt-menu-label" }, t("Regenerate summary"))
@@ -29545,8 +29593,8 @@ function MemoryDialog({ owner, actions, leaving = false }) {
             className: "bt-mem-input",
             value: text2,
             maxLength: 2e3,
-            disabled: view === null,
-            placeholder: t("Ask or update"),
+            disabled: view === null || owner.node === true,
+            placeholder: owner.node === true ? t("Not available for a node Bot: edit the entries in the list") : t("Ask or update"),
             "aria-label": t("Ask about or update {name}'s memory", { name: owner.name }),
             onChange: (event) => setText(event.target.value)
           }),
@@ -29857,6 +29905,8 @@ function BotSettingsForm({ bot, roster, actions, run: run2 }) {
   const nodeId = bot.worker?.nodeId;
   const nodeEntry = Array.isArray(nodeCaps) ? nodeCaps.find((n) => n.nodeId === nodeId) : void 0;
   const nodeTooOld = isJoinedRemote(bot) && nodeEntry !== void 0 && nodeEntry.federates !== true;
+  const joined = isJoinedRemote(bot);
+  const nodeOnlyCard = (title) => (0, import_react28.createElement)(Card2, { title }, (0, import_react28.createElement)("div", { className: "bt-set-row" }, (0, import_react28.createElement)("span", { className: "bt-set-hint" }, nodeOnlyReason())));
   const duplicate = () => run2(actions.duplicateBot(bot.id).then((copy2) => actions.openSession(copy2.id)));
   const remove = () => {
     if (confirming) void run2(actions.deleteBot(bot.id));
@@ -29914,13 +29964,14 @@ function BotSettingsForm({ bot, roster, actions, run: run2 }) {
         "div",
         { className: "bt-set-row bt-bs-row" },
         (0, import_react28.createElement)("span", { className: "bt-set-copy" }, (0, import_react28.createElement)("span", { className: "bt-bs-label" }, t("Folder"))),
-        (0, import_react28.createElement)(FolderMenu, { value: bot.workDir, actions, run: run2, onPick: (workDir) => save({ workDir }) })
+        (0, import_react28.createElement)(FolderMenu, { value: bot.workDir, node: joined, actions, run: run2, onPick: (workDir) => save({ workDir }) })
       )
     ),
     bot.type === "remote-worker" || bot.type === void 0 ? (0, import_react28.createElement)(
       Card2,
-      { title: t("Bot Type") },
-      (0, import_react28.createElement)(
+      { title: joined ? t("Memory Backend") : t("Bot Type") },
+      // A node Bot is what its node says it is: its type, hub URL and token are not this machine's to edit.
+      joined ? null : (0, import_react28.createElement)(
         "div",
         { className: "bt-set-row bt-bs-row" },
         (0, import_react28.createElement)("span", { className: "bt-set-copy" }, (0, import_react28.createElement)("span", { className: "bt-bs-label" }, t("Type"))),
@@ -29936,7 +29987,7 @@ function BotSettingsForm({ bot, roster, actions, run: run2 }) {
           (0, import_react28.createElement)("option", { value: "remote-worker" }, t("Worker Bot (Remote Machine)"))
         )
       ),
-      bot.type === "remote-worker" ? (0, import_react28.createElement)(
+      bot.type === "remote-worker" && !joined ? (0, import_react28.createElement)(
         "div",
         null,
         (0, import_react28.createElement)(
@@ -29979,9 +30030,9 @@ function BotSettingsForm({ bot, roster, actions, run: run2 }) {
       { title: t("Privacy") },
       (0, import_react28.createElement)(SwitchRow, {
         label: t("Private"),
-        hint: privacyHint,
+        hint: joined ? nodeOnlyReason() : privacyHint,
         on: bot.private === true,
-        disabled: bot.private !== true && (isMainBot || inGroup || !bot.workDir),
+        disabled: joined || bot.private !== true && (isMainBot || inGroup || !bot.workDir),
         onChange: (value) => save({ private: value })
       })
     ),
@@ -29994,8 +30045,8 @@ function BotSettingsForm({ bot, roster, actions, run: run2 }) {
         (0, import_react28.createElement)(InlineText, { label: t("Instructions"), value: bot.instructions, multiline: true, placeholder: t("What this Bot is responsible for…"), onSave: (instructions) => save({ instructions }) })
       )
     ),
-    (0, import_react28.createElement)(BotCapabilitiesCard, { bot, roster, actions, run: run2, Card: Card2 }),
-    (0, import_react28.createElement)(BotComputerCard, { bot, roster, actions, run: run2, Card: Card2, Row }),
+    joined ? nodeOnlyCard(t("Capabilities")) : (0, import_react28.createElement)(BotCapabilitiesCard, { bot, roster, actions, run: run2, Card: Card2 }),
+    joined ? nodeOnlyCard(t("Control")) : (0, import_react28.createElement)(BotComputerCard, { bot, roster, actions, run: run2, Card: Card2, Row }),
     roster.memory === false ? null : (0, import_react28.createElement)(MemoryCard, { bot, actions }),
     (0, import_react28.createElement)(BotSchedules, { bot, roster, actions }),
     (0, import_react28.createElement)(
@@ -30029,7 +30080,11 @@ function BotSettingsForm({ bot, roster, actions, run: run2 }) {
     (0, import_react28.createElement)(
       Card2,
       { title: t("Manage") },
-      bot.private === true ? null : (0, import_react28.createElement)(
+      joined ? (0, import_react28.createElement)(
+        "div",
+        { className: "bt-set-row bt-bs-row", "aria-disabled": true },
+        (0, import_react28.createElement)("span", { className: "bt-set-copy" }, (0, import_react28.createElement)("span", { className: "bt-bs-label" }, t("Duplicate")), (0, import_react28.createElement)("span", { className: "bt-set-hint" }, t("A node Bot cannot be copied here: create a new Bot on the node instead")))
+      ) : bot.private === true ? null : (0, import_react28.createElement)(
         "button",
         { type: "button", className: "bt-set-row bt-bs-row", onClick: duplicate },
         (0, import_react28.createElement)("span", { className: "bt-set-copy" }, (0, import_react28.createElement)("span", { className: "bt-bs-label" }, t("Duplicate")), (0, import_react28.createElement)("span", { className: "bt-set-hint" }, t("A copy with the same job and model, and fresh memory."))),
@@ -34993,7 +35048,9 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
   const joined = bot.origin === "joined" && bot.worker?.home === "remote";
   const remoteHome = remoteHomeOf(bot);
   const peer = bot.origin === "peer" && bot.worker?.home === "hub";
-  const machine = joined ? [joinedMachineLabel(bot.worker, t), bot.worker.online === false ? "离线" : "", bot.nodeCompat?.length ? t("Node needs an AC update") : ""].filter(Boolean).join(" · ") : peer ? [bot.worker?.hostname || bot.worker?.nodeId || "", bot.worker?.online === false ? "离线" : "在线"].filter(Boolean).join(" · ") : "";
+  const nodeFlags = joined ? [bot.worker.online === false ? "离线" : "", bot.nodeCompat?.length ? t("Node needs an AC update") : ""].filter(Boolean) : [];
+  const flagged = (text2) => nodeFlags.length > 0 ? [text2, ...nodeFlags].join(" · ") : text2;
+  const machine = joined ? [joinedMachineLabel(bot.worker, t), ...nodeFlags].join(" · ") : peer ? [bot.worker?.hostname || bot.worker?.nodeId || "", bot.worker?.online === false ? "离线" : "在线"].filter(Boolean).join(" · ") : "";
   const taskCounts = taskCountsOf({ bot });
   const openTasks = () => {
     actions.openSession(id);
@@ -35047,7 +35104,7 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
       "span",
       { className: "bt-row-body" },
       (0, import_react38.createElement)("span", { className: "bt-row-name" }, (0, import_react38.createElement)("span", { className: "bt-row-title" }, bot.name), bot.engine ? (0, import_react38.createElement)(AgentBadge, { engine: bot.engine }) : null, pinned ? (0, import_react38.createElement)(PinMark) : null, (0, import_react38.createElement)(SidebarTaskPill, { active: taskCounts.active, waitingApproval: taskCounts.waitingApproval, onClick: openTasks })),
-      waitLine ? (0, import_react38.createElement)("span", { className: "bt-row-preview bt-row-preview-wait" }, waitLine) : machine ? (0, import_react38.createElement)("span", { className: "bt-row-preview", "data-machine": bot.worker.hostname || bot.worker.nodeId || "" }, machine) : runningLine ? (0, import_react38.createElement)("span", { className: "bt-row-preview" }, runningLine) : awayLine ? (0, import_react38.createElement)("span", { className: "bt-row-preview" }, awayLine) : deferredWaitLine ? (0, import_react38.createElement)("span", { className: "bt-row-preview bt-row-preview-wait" }, deferredWaitLine) : waitsFor ? (0, import_react38.createElement)("span", { className: "bt-row-preview" }, waitsFor) : preview ? (0, import_react38.createElement)("span", { className: "bt-row-preview" }, preview) : null
+      peer && machine ? (0, import_react38.createElement)("span", { className: "bt-row-preview", "data-machine": bot.worker.hostname || bot.worker.nodeId || "" }, machine) : waitLine ? (0, import_react38.createElement)("span", { className: "bt-row-preview bt-row-preview-wait" }, flagged(waitLine)) : runningLine ? (0, import_react38.createElement)("span", { className: "bt-row-preview" }, runningLine) : awayLine ? (0, import_react38.createElement)("span", { className: "bt-row-preview" }, awayLine) : deferredWaitLine ? (0, import_react38.createElement)("span", { className: "bt-row-preview bt-row-preview-wait" }, flagged(deferredWaitLine)) : waitsFor ? (0, import_react38.createElement)("span", { className: "bt-row-preview" }, flagged(waitsFor)) : preview ? (0, import_react38.createElement)("span", { className: "bt-row-preview" }, flagged(preview)) : machine ? (0, import_react38.createElement)("span", { className: "bt-row-preview", "data-machine": bot.worker.hostname || bot.worker.nodeId || "" }, machine) : null
     ) : null,
     wide && alert && !active ? (0, import_react38.createElement)("span", { className: "bt-unread bt-unread-wait", "aria-hidden": true }) : wide && unread && !active ? (0, import_react38.createElement)("span", { className: "bt-unread", "aria-hidden": true }) : !wide && !active && (alert || unread) ? (0, import_react38.createElement)("span", { className: `bt-dot${alert ? " bt-dot-wait" : ""}`, "aria-hidden": true }) : null,
     wide && !peer ? (0, import_react38.createElement)("button", {
@@ -38719,7 +38776,7 @@ var CONNECTORS_PAGE_CSS = `
 @media (prefers-reduced-motion:reduce){.bt-app[data-fresh]::after,.bt-app[data-fresh] .bt-app-icon,.bt-app[data-fresh] .bt-app-btn-done{animation:none}}
 `;
 
-// node_modules/qrcode-generator/dist/qrcode.mjs
+// ../../../../Users/kjclaw/projects/ds-bot/ds-bot/node_modules/qrcode-generator/dist/qrcode.mjs
 var qrcode = function(typeNumber, errorCorrectionLevel) {
   const PAD0 = 236;
   const PAD1 = 17;
@@ -50725,7 +50782,7 @@ function ContextMenu({ menu, roster, actions, useWork, leaving = false }) {
       bot ? [t("Edit Bot"), GearIcon, () => actions.openSettings("bots", bot.id)] : null,
       room2 ? [t("Group settings"), GearIcon, () => actions.openSettings("groups", room2.id)] : null,
       room2 ? [t("Rename group"), PencilIcon, () => actions.renameBot(room2.id)] : null,
-      bot ? [t("Duplicate"), DuplicateIcon, async () => {
+      bot && !isJoinedRemote(bot) ? [t("Duplicate"), DuplicateIcon, async () => {
         const copy2 = await actions.duplicateBot(bot.id);
         actions.openSession(copy2.id);
       }] : null,
@@ -51638,6 +51695,14 @@ var EMPTY_TABS = { ids: [], active: null };
 function PermissionRow({ bot, roster, actions, run: run2 }) {
   const catalog = roster.permissions;
   if (!catalog?.options?.length) return null;
+  if (isJoinedRemote(bot)) {
+    return (0, import_react83.createElement)(
+      "div",
+      { className: "bt-drawer-permission" },
+      (0, import_react83.createElement)("div", { className: "bt-section-title" }, t("Permissions")),
+      (0, import_react83.createElement)("div", { className: "bt-note" }, nodeOnlyReason())
+    );
+  }
   return (0, import_react83.createElement)(
     "div",
     { className: "bt-drawer-permission" },
@@ -51905,7 +51970,7 @@ function DetailsDrawer({ sessionId, startRenaming, startTab, hasStrip, roster, a
   const part = owner ? currentPart(owner) : sessionId;
   const isMainBot = isMainOf(roster, owner?.id);
   const [tab, setTab] = (0, import_react83.useState)(
-    startTab === "tasks" ? "tasks" : startTab === "computer" && owner && roster.computer?.enabled === true ? "computer" : startTab === "browser" && owner ? "browser" : "details"
+    startTab === "tasks" ? "tasks" : startTab === "computer" && owner && !isJoinedRemote(owner) && roster.computer?.enabled === true ? "computer" : startTab === "browser" && owner && !isJoinedRemote(owner) ? "browser" : "details"
   );
   const room2 = roster.roomsById[sessionId];
   const [view, setView] = (0, import_react83.useState)(startTab === "settings" && (owner || room2) ? "settings" : "overview");
@@ -51925,8 +51990,9 @@ function DetailsDrawer({ sessionId, startRenaming, startTab, hasStrip, roster, a
   const tabs = [
     "details",
     ...chatTasks.length > 0 ? ["tasks"] : [],
-    ...bot ? ["browser"] : [],
-    ...bot && roster.computer?.enabled === true ? ["computer"] : []
+    // The browser and the computer belong to the machine the Bot runs on: a node Bot has none here.
+    ...bot && !isJoinedRemote(bot) ? ["browser"] : [],
+    ...bot && !isJoinedRemote(bot) && roster.computer?.enabled === true ? ["computer"] : []
   ];
   const activeTab = tabs.includes(tab) ? tab : "details";
   const glide2 = useGlide(`${activeTab}:${tabs.join(",")}`);
@@ -51974,7 +52040,7 @@ function DetailsDrawer({ sessionId, startRenaming, startTab, hasStrip, roster, a
   const more = drawerMenuKeys({
     bot: bot !== void 0,
     room: room2 !== void 0,
-    canBrowse: bot !== void 0 && roster.browser === true && actions.openBrowser !== void 0,
+    canBrowse: bot !== void 0 && !isJoinedRemote(bot) && roster.browser === true && actions.openBrowser !== void 0,
     canTerminal: actions.canOpenTerminal?.() === true,
     canFiles: actions.canOpenFiles?.() === true
   }).map((key) => menuItemFor(key, actions, sessionId));
@@ -52063,12 +52129,17 @@ function DetailsDrawer({ sessionId, startRenaming, startTab, hasStrip, roster, a
           modelOf(bot, roster) ? null : (0, import_react83.createElement)("div", { className: "bt-note" }, t("Pick a model and {name} can start.", { name: bot.name }))
         ),
         (0, import_react83.createElement)(PermissionRow, { key: "permission", bot, roster, actions, run: run2 }),
-        (0, import_react83.createElement)(BotConnectors, { key: "connectors", bot, roster, actions, run: run2 }),
+        isJoinedRemote(bot) ? (0, import_react83.createElement)(
+          "div",
+          { key: "node-only", className: "bt-drawer-model" },
+          (0, import_react83.createElement)("div", { className: "bt-section-title" }, t("Browser, computer use and connectors")),
+          (0, import_react83.createElement)("div", { className: "bt-note" }, nodeOnlyReason())
+        ) : (0, import_react83.createElement)(BotConnectors, { key: "connectors", bot, roster, actions, run: run2 }),
         (0, import_react83.createElement)(
           "div",
           { key: "folder", className: "bt-drawer-model" },
           (0, import_react83.createElement)("div", { className: "bt-section-title" }, t("Working folder")),
-          (0, import_react83.createElement)(FolderMenu, { value: bot.workDir, actions, run: run2, wide: true, onPick: (workDir) => run2(actions.updateBot(bot.id, { workDir })) })
+          (0, import_react83.createElement)(FolderMenu, { value: bot.workDir, node: isJoinedRemote(bot), actions, run: run2, wide: true, onPick: (workDir) => run2(actions.updateBot(bot.id, { workDir })) })
         ),
         roster.readOnly ? bot.instructions ? (0, import_react83.createElement)(About, { key: `about:${bot.id}`, text: bot.instructions }) : null : (0, import_react83.createElement)(About, {
           key: `about:${bot.id}`,
@@ -53261,7 +53332,7 @@ function ImportCard({ flow, page, busy, imports, onApply, onCancel, onCloseAndIm
 function BotPanel({ pane, leaving, room: room2, overlay, roster, actions, useSessions, useSessionStatus, useActivity, useWork, useBrowserTabs, useBrowserPages, useBrowserHolds, useComputer }) {
   const bot = roster.byId[pane.id];
   const roomSubject = roster.roomsById?.[pane.id];
-  const canBrowse = Boolean(bot && roster.browser === true && actions.browserShow);
+  const canBrowse = Boolean(bot && !isJoinedRemote(bot) && roster.browser === true && actions.browserShow);
   const sideChats = bot ? sideChatsOf(roster, bot.id) : [];
   const sideChat = sideChats.find((chat) => chat?.id === pane.side);
   const taskBot = pane.task?.botId ? roster.byId?.[pane.task.botId] : void 0;
@@ -53801,7 +53872,7 @@ function Overlays({ useRoster, useUi, useSessions, useSessionStatus, useActivity
   const [settings, settingsLeaving] = useLinger(shellHeld ? null : ui.settings, DIALOG_EXIT_MS2);
   const memoryOwner = (id) => {
     const bot = roster.byId[id];
-    if (bot) return { id: bot.id, name: bot.name };
+    if (bot) return { id: bot.id, name: bot.name, ...bot.origin === "joined" && bot.worker?.home === "remote" ? { node: true } : {} };
     const room2 = roster.roomsById[id];
     return room2 ? { id: room2.id, name: room2.name, group: true } : null;
   };

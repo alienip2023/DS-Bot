@@ -3,6 +3,7 @@ import { isMuted, toggleMuted } from './notifications.js'
 import { inkFill } from './inks.js'
 import { isMainOf } from './sources.js'
 import { currentPart } from './text.js'
+import { isJoinedRemote } from './joined-errors.js'
 import { GearIcon, PinIcon, UnreadIcon, PencilIcon, StarLineIcon, CopyIcon, HideIcon, TrashIcon, DuplicateIcon, FolderIcon, PlusIcon, CheckIcon, PeopleIcon, SignOutIcon } from './icons.js'
 import { BotMark, RoomAvatar } from './mark.js'
 import { useEscape } from './overlay-hooks.js'
@@ -79,7 +80,7 @@ export function ContextMenu({ menu, roster, actions, useWork, leaving = false })
       bot ? [t('Edit Bot'), GearIcon, () => actions.openSettings('bots', bot.id)] : null,
       room ? [t('Group settings'), GearIcon, () => actions.openSettings('groups', room.id)] : null,
       room ? [t('Rename group'), PencilIcon, () => actions.renameBot(room.id)] : null,
-      bot ? [t('Duplicate'), DuplicateIcon, async () => { const copy = await actions.duplicateBot(bot.id); actions.openSession(copy.id) }] : null,
+      bot && !isJoinedRemote(bot) ? [t('Duplicate'), DuplicateIcon, async () => { const copy = await actions.duplicateBot(bot.id); actions.openSession(copy.id) }] : null,
       bot && !isMainBot ? [t('Make Main Bot'), StarLineIcon, () => actions.setMain(bot.id, true)] : null,
       bot && isMainBot && mainCount > 1 ? [t('Remove Main Bot role'), StarLineIcon, () => actions.setMain(bot.id, false)] : null,
     ],

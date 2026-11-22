@@ -7,7 +7,7 @@ import { lookOf, BotMark } from './mark.js'
 import { modelOf } from './model-menu.js'
 import { BotModelMenu } from './node-models.js'
 import { RunModeCard } from './agent-cards.js'
-import { isJoinedRemote } from './joined-errors.js'
+import { isJoinedRemote, nodeOnlyReason } from './joined-errors.js'
 import { FolderMenu } from './folder-menu.js'
 import { BotSchedules } from './schedules.js'
 import { BotCapabilitiesCard } from './capability-settings.js'
@@ -237,6 +237,9 @@ export function BotSettingsForm({ bot, roster, actions, run }) {
   const nodeId = bot.worker?.nodeId
   const nodeEntry = Array.isArray(nodeCaps) ? nodeCaps.find(n => n.nodeId === nodeId) : undefined
   const nodeTooOld = isJoinedRemote(bot) && nodeEntry !== undefined && nodeEntry.federates !== true
+  const joined = isJoinedRemote(bot)
+  // What only exists where the Bot runs is not edited here: the card says so instead of a switch that does nothing.
+  const nodeOnlyCard = title => h(Card, { title }, h('div', { className: 'bt-set-row' }, h('span', { className: 'bt-set-hint' }, nodeOnlyReason())))
   const duplicate = () => run(actions.duplicateBot(bot.id).then(copy => actions.openSession(copy.id)))
   const remove = () => { if (confirming) void run(actions.deleteBot(bot.id)); else setConfirming(true) }
   // DSH settings can change the model list at any time; the hint should match it.
@@ -263,10 +266,11 @@ export function BotSettingsForm({ bot, roster, actions, run }) {
     h(Card, { title: t('Working folder') },
       h('div', { className: 'bt-set-row bt-bs-row' },
         h('span', { className: 'bt-set-copy' }, h('span', { className: 'bt-bs-label' }, t('Folder'))),
-        h(FolderMenu, { value: bot.workDir, actions, run, onPick: workDir => save({ workDir }) }))),
+        h(FolderMenu, { value: bot.workDir, node: joined, actions, run, onPick: workDir => save({ workDir }) }))),
     bot.type === 'remote-worker' || bot.type === undefined
-      ? h(Card, { title: t('Bot Type') },
-          h('div', { className: 'bt-set-row bt-bs-row' },
+      ? h(Card, { title: joined ? t('Memory Backend') : t('Bot Type') },
+          // A node Bot is what its node says it is: its type, hub URL and token are not this machine's to edit.
+          joined ? null : h('div', { className: 'bt-set-row bt-bs-row' },
             h('span', { className: 'bt-set-copy' }, h('span', { className: 'bt-bs-label' }, t('Type'))),
             h('select', {
               className: 'bt-input',
@@ -276,7 +280,7 @@ export function BotSettingsForm({ bot, roster, actions, run }) {
             },
               h('option', { value: 'normal' }, t('Normal Bot')),
               h('option', { value: 'remote-worker' }, t('Worker Bot (Remote Machine)')))),
-          bot.type === 'remote-worker'
+          bot.type === 'remote-worker' && !joined
             ? h('div', null,
                 h(Row, { label: t('Hub URL') },
                   h(InlineText, { label: t('Hub URL'), value: bot.worker?.hubUrl ?? '', placeholder: 'https://hub.example.com', onSave: v => save({ worker: { ...bot.worker, hubUrl: v } }) })),
@@ -304,16 +308,16 @@ export function BotSettingsForm({ bot, roster, actions, run }) {
     h(Card, { title: t('Privacy') },
       h(SwitchRow, {
         label: t('Private'),
-        hint: privacyHint,
+        hint: joined ? nodeOnlyReason() : privacyHint,
         on: bot.private === true,
-        disabled: bot.private !== true && (isMainBot || inGroup || !bot.workDir),
+        disabled: joined || (bot.private !== true && (isMainBot || inGroup || !bot.workDir)),
         onChange: value => save({ private: value }),
       })),
     h(Card, { title: t('Instructions') },
       h(Row, { label: t('What this Bot does'), hint: t('Its job on the team. Part of the Bot\'s system prompt.'), stack: true },
         h(InlineText, { label: t('Instructions'), value: bot.instructions, multiline: true, placeholder: t('What this Bot is responsible for…'), onSave: instructions => save({ instructions }) }))),
-    h(BotCapabilitiesCard, { bot, roster, actions, run, Card }),
-    h(BotComputerCard, { bot, roster, actions, run, Card, Row }),
+    joined ? nodeOnlyCard(t('Capabilities')) : h(BotCapabilitiesCard, { bot, roster, actions, run, Card }),
+    joined ? nodeOnlyCard(t('Control')) : h(BotComputerCard, { bot, roster, actions, run, Card, Row }),
     roster.memory === false ? null : h(MemoryCard, { bot, actions }),
     h(BotSchedules, { bot, roster, actions }),
     h(Card, { title: t('Main Bot') },
@@ -335,7 +339,9 @@ export function BotSettingsForm({ bot, roster, actions, run }) {
       h(SwitchRow, { label: t('Pin'), hint: t('Kept above the other chats.'), on: bot.pinned === true, onChange: pinned => run(actions.setFlags(bot.id, { pinned })) }),
       isMainBot ? null : h(SwitchRow, { label: t('Hide from sidebar'), hint: t('Search still finds it.'), on: bot.hidden === true, onChange: hidden => run(actions.setFlags(bot.id, { hidden })) })),
     h(Card, { title: t('Manage') },
-      bot.private === true ? null : h('button', { type: 'button', className: 'bt-set-row bt-bs-row', onClick: duplicate },
+      joined ? h('div', { className: 'bt-set-row bt-bs-row', 'aria-disabled': true },
+        h('span', { className: 'bt-set-copy' }, h('span', { className: 'bt-bs-label' }, t('Duplicate')), h('span', { className: 'bt-set-hint' }, t('A node Bot cannot be copied here: create a new Bot on the node instead'))))
+      : bot.private === true ? null : h('button', { type: 'button', className: 'bt-set-row bt-bs-row', onClick: duplicate },
         h('span', { className: 'bt-set-copy' }, h('span', { className: 'bt-bs-label' }, t('Duplicate')), h('span', { className: 'bt-set-hint' }, t('A copy with the same job and model, and fresh memory.'))),
         h('span', { className: 'bt-chevron' }, h(ChevronRightIcon))),
       isMainBot ? null : h('button', { type: 'button', className: 'bt-set-row bt-bs-row bt-bs-danger', 'data-confirm': confirming || undefined, onClick: remove },

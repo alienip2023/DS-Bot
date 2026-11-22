@@ -13,20 +13,21 @@ const Tick = ({ on }) => h('span', { className: 'bt-model-tick', 'aria-hidden': 
 // one a Bot works in the team workspace and a group member in its own folder. `onPick`
 // gets the chosen path, or '' for that default. `team` is the menu for the team workspace
 // itself, which has no default.
-export function FolderMenu({ value, group = false, team = false, actions, run, onPick, wide = false, disabled = false }) {
+export function FolderMenu({ value, group = false, team = false, node = false, actions, run, onPick, wide = false, disabled = false }) {
   const { isOpen, shownPlace, leaving, button, menu, open, close } = useAnchoredMenu()
   const [info, setInfo] = useState(null)
   const [view, setView] = useState('list')
   const [draft, setDraft] = useState('')
   const [listing, setListing] = useState(null)
   const [problem, setProblem] = useState('')
-  const fallback = group ? t("Each Bot's own folder") : t('Team workspace')
+  const fallback = group ? t("Each Bot's own folder") : node ? t('The node\'s default folder') : t('Team workspace')
   const toggle = () => {
     if (isOpen) { close(); return }
     setView('list')
     setProblem('')
-    // Projects added in DSH meanwhile show up, so opening asks again.
-    void Promise.resolve(actions.folders()).then(setInfo).catch(() => setInfo(last => last ?? { team: null, picker: null, folders: [] }))
+    // Projects added in DSH meanwhile show up, so opening asks again. A node Bot's folder is on the
+    // node's disk: this machine's projects and folder browser say nothing about it.
+    if (!node) void Promise.resolve(actions.folders()).then(setInfo).catch(() => setInfo(last => last ?? { team: null, picker: null, folders: [] }))
     open()
   }
   const choose = (path) => {
@@ -48,7 +49,10 @@ export function FolderMenu({ value, group = false, team = false, actions, run, o
   }
   const known = info?.folders ?? []
   const folders = value && !known.some(folder => folder.path === value) ? [{ path: value, title: folderName(value) }, ...known] : known
-  const listView = h('div', { key: 'list', className: 'bt-folder-view' },
+  const nodeView = h('div', { key: 'list', className: 'bt-folder-view' },
+    h('div', { className: 'bt-folder-path bt-folder-here' }, t('A folder on the node: type its path')),
+    h('button', { type: 'button', role: 'menuitem', onClick: () => { setDraft(value ?? ''); setView('type') } }, h(PencilIcon), h('span', { className: 'bt-menu-label' }, t('Enter a path…'))))
+  const listView = node ? nodeView : h('div', { key: 'list', className: 'bt-folder-view' },
     team ? null : h('button', { type: 'button', role: 'menuitemradio', 'aria-checked': !value, title: group ? undefined : info?.team ?? undefined, onClick: () => choose('') },
       h('span', { className: 'bt-menu-label' }, fallback), h(Tick, { on: !value })),
     folders.length > 0 ? h('div', { className: 'bt-model-group', role: 'presentation' }, t('Folders')) : null,
