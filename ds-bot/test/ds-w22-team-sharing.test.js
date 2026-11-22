@@ -17,7 +17,7 @@ function world(t, { privateBot = false } = {}) {
   const worker = { id: 'worker', capabilities: [] }
   const rt = {
     // These tests exercise the endpoints only. Background review and mount effects stay idle.
-    ctx: { on() {}, effect() {} }, config: {}, home,
+    ctx: { on() {}, effect() {}, systemPrompt: { section() {} } }, config: {}, home,
     state: { bots: { worker }, capabilities: { items: {} } },
     load: async () => {}, loadSecrets: async () => {}, save: async () => {},
     readOnly: () => undefined, isMain: () => false, isPrivate: id => privateBot && id === worker.id,

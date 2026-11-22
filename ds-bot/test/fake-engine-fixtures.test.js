@@ -19,7 +19,7 @@ import { ClaudeEngine } from '../src/host/local-agents/claude.js'
 const DIR = fileURLToPath(new URL('./fixtures/', import.meta.url))
 const tmp = () => mkdtempSync(join(tmpdir(), 'dsb-fx-'))
 // Not engines: listed so a new fixture cannot be skipped silently.
-const NOT_ENGINES = { 'echo-argv-env': 'argv/env echo helper', 'gateway-egress': 'gateway egress probe server', 'self-signed': 'TLS certificate helper' }
+const NOT_ENGINES = { 'echo-argv-env': 'argv/env echo helper', 'gateway-egress': 'gateway egress probe server', 'self-signed': 'TLS certificate helper', 'im-view-crash': 'IM view crash helper' }
 // fixture -> [engine kind, route, default args]
 const ROUTES = {
   'counting-acp': ['acp', 'local-acp-fake', () => [join(tmp(), 'count')]],

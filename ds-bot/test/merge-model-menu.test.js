@@ -118,7 +118,7 @@ async function menuOf(bot, models, { open = true } = {}) {
     tree = menu.rerender()
   }
   const items = find(expand(tree), n => n.type === 'button' && n.props.role === 'menuitemradio')
-  return { picks: items.map(n => n.props.title), calls, tree }
+  return { picks: items.map(n => n.props['aria-description']), calls, tree }
 }
 
 test('M-menu-remote: a remote Bot whose model is a local-… name lists the node catalog whole, local names of either spelling included', async () => {

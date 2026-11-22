@@ -106,6 +106,9 @@ export function createRuntime(ctx, config = {}) {
     // The Bot-only tools each module defines; tools.js registers them in each
     // Bot Session's own scope, never globally (see shareBotTools).
     teamTools: [],
+    // False while MODULES are still installing so per-agent `tools/execute` hooks
+    // (steer.js) defer until host-level privacy/secrets wrappers have registered.
+    installed: false,
     defaults: {
       mainName: config.mainName ?? 'Chief',
       mainRole: config.mainRole ?? 'Chief of Staff',
@@ -116,6 +119,7 @@ export function createRuntime(ctx, config = {}) {
   // How long a joined Bot's turn waits for the node (config.joinedTurnTimeoutMs, default 10 minutes).
   rt.joinedTurnTimeoutMs = joinedTimeoutFrom(config.joinedTurnTimeoutMs)
   for (const module of MODULES) module.install(rt)
+  rt.installed = true
   // A live Agent can be scoped before the last module has added its tools (the memory
   // module starts a load during install): complete the scope now that every tool is in.
   rt.syncScopedTools?.()

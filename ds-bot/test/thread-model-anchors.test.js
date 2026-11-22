@@ -27,7 +27,7 @@ test('T2 the Anchors table is present and every anchor line contains its token',
 
 test('T1 MAX_THREADS_PER_BOT is documented as implemented at its verified anchors', () => {
   assert.doesNotMatch(doc, /enforcement \*\*not verified\*\*|where it is enforced is \*\*not verified\*\*/)
-  assert.match(doc, /\*\*IMPLEMENTED\*\*:\s+`createThread` refuses the eleventh Thread[^]*?`src\/host\/roster\.js:350-352`[^]*?`src\/host\/channel\.js:872-874`[^]*?`test\/thread-t2-api\.test\.js:55-65`/)
+  assert.match(doc, /\*\*IMPLEMENTED\*\*:\s+`createThread` refuses the eleventh Thread[^]*?`src\/host\/roster\.js:358-360`[^]*?`src\/host\/channel\.js:854-856`[^]*?`test\/thread-t2-api\.test\.js:55-65`/)
   const roster = readFileSync(`${root}src/host/roster.js`, 'utf8').split('\n')
-  assert.match(roster.slice(349, 352).join('\n'), /rows\.length >= MAX_THREADS_PER_BOT[^]*bot\/refused/)
+  assert.match(roster.slice(357, 360).join('\n'), /rows\.length >= MAX_THREADS_PER_BOT[^]*bot\/refused/)
 })

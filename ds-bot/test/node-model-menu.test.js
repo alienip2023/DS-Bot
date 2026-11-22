@@ -188,7 +188,7 @@ async function openDrawerMenu(p, sessionId, { menuEffects = false } = {}) {
 test('M5-a: a joined remote Bot can pick configured API models missing from its report; absent CLIs stay disabled', async () => {
   const p = page()
   const m = await openDrawerMenu(p, 'bot-j1')
-  assert.deepEqual(m.pickable.map(n => n.props.title), ['ccmax/claude-sonnet-5-5', 'piion/m1', 'xai/grok-4.3'])
+  assert.deepEqual(m.pickable.map(n => n.props['aria-description']), ['ccmax/claude-sonnet-5-5', 'piion/m1', 'xai/grok-4.3'])
   assert.deepEqual(m.off.map(n => textOf(n)), [
     'Claude Code Sonnet|The node has no matching CLI yet, or its setup is not synced',
   ])
@@ -207,7 +207,7 @@ const twoNodes = order => {
 test('M5-R10: with two nodes the drawer lists the catalog of the Bot\'s own node, whichever order the targets come in', async () => {
   for (const order of ['other-first', 'mine-first']) {
     const m = await openDrawerMenu(page({ targets: twoNodes(order) }), 'bot-j1')
-    assert.deepEqual(m.pickable.map(n => n.props.title), ['ccmax/claude-sonnet-5-5', 'piion/m1', 'xai/grok-4.3'], order)
+    assert.deepEqual(m.pickable.map(n => n.props['aria-description']), ['ccmax/claude-sonnet-5-5', 'piion/m1', 'xai/grok-4.3'], order)
     assert.equal(m.props.notice, null, order)
   }
 })
@@ -215,7 +215,7 @@ test('M5-R10: with two nodes the drawer lists the catalog of the Bot\'s own node
 test('M5-R10b: the Bot\'s node is not among the targets (other nodes only) → no catalog for it: main list with the notice, never another node\'s list', async () => {
   const other = { nodeId: 'n-other', hostname: 'node-other', online: true, models: OTHER_NODE_MODELS, defaultModel: null }
   const m = await openDrawerMenu(page({ targets: [other] }), 'bot-j1')
-  assert.deepEqual(m.pickable.map(n => n.props.title), MAIN_MODELS.map(x => x.ref), 'the main list, all pickable')
+  assert.deepEqual(m.pickable.map(n => n.props['aria-description']), MAIN_MODELS.map(x => x.ref), 'the main list, all pickable')
   assert.ok(m.props.notice, 'the notice says the node reported nothing')
   assert.equal(m.off.length, 0, 'nothing is greyed out against another node\'s list')
 })
@@ -292,7 +292,7 @@ test('M5-a2: picking a node model saves it (updateBot -> update-bot); a greyed-o
   const p = page({ bot: { model: 'piion/m1' } })
   const m = await openDrawerMenu(p, 'bot-j1')
   p.calls.length = 0
-  m.pickable.find(n => n.props.title === 'ccmax/claude-sonnet-5-5').props.onClick()
+  m.pickable.find(n => n.props['aria-description'] === 'ccmax/claude-sonnet-5-5').props.onClick()
   await settle()
   assert.deepEqual(p.calls.filter(c => c[0] === 'update-bot'), [['update-bot', { id: 'bot-j1', model: 'ccmax/claude-sonnet-5-5' }]])
   p.calls.length = 0
@@ -309,7 +309,7 @@ test('M5-a2: picking a node model saves it (updateBot -> update-bot); a greyed-o
 test('M5-b: a local Bot drawer is unchanged: the whole main list, nothing greyed out, no notice, no node lookup', async () => {
   const p = page()
   const m = await openDrawerMenu(p, 'bot-local')
-  assert.deepEqual(m.pickable.map(n => n.props.title), MAIN_MODELS.map(x => x.ref))
+  assert.deepEqual(m.pickable.map(n => n.props['aria-description']), MAIN_MODELS.map(x => x.ref))
   assert.deepEqual(m.off, [])
   assert.equal(m.props.notice, null)
   assert.equal(p.calls.some(c => c[0] === 'bot-create-targets'), false)
@@ -319,7 +319,7 @@ test('M5-c: no node catalog (empty, or the lookup failed): the main list with a 
   for (const opts of [{ nodeModels: [] }, { targetsFail: true }]) {
     const p = page(opts)
     const m = await openDrawerMenu(p, 'bot-j1')
-    assert.deepEqual(m.pickable.map(n => n.props.title), MAIN_MODELS.map(x => x.ref))
+    assert.deepEqual(m.pickable.map(n => n.props['aria-description']), MAIN_MODELS.map(x => x.ref))
     assert.deepEqual(m.off, [])
     assert.equal(m.props.notice, 'The node has not reported its models; some may be unavailable.')
     assert.match(m.text, /The node has not reported its models; some may be unavailable\./)
@@ -425,7 +425,10 @@ test('s60-C: a node model that reports thinking levels shows the level bar, and 
   hooks = { i: 0, slots: {}, effects: [], seed: {}, sets: [] }
   const bar = barEl.type(barEl.props)
   assert.equal(find(bar, n => n.props?.className === 'bt-effort-bar').length, 1)
-  assert.deepEqual(find(bar, n => n.props?.className === 'bt-effort-dot').map(n => n.props.title), ['Default', 'Low', 'High'])
+  // The bar is a slider since 0.3.10: its dots carry no names; the stops are counted and the shown one is named.
+  const [slider] = find(bar, n => n.props?.role === 'slider')
+  assert.equal(find(bar, n => n.props?.className === 'bt-effort-dot').length, 3, 'Default, Low, High')
+  assert.deepEqual([slider.props['aria-valuemin'], slider.props['aria-valuemax'], slider.props['aria-valuetext']], [0, 2, 'Default'])
   assert.deepEqual(p.effortCalls, [], 'the node already said its levels: no efforts RPC')
 })
 
@@ -500,7 +503,7 @@ test('picking a main API model reaches the node session before updating the hub 
     return pending
   } })
   const menu = await openDrawerMenu(p, 'bot-j1')
-  const row = menu.pickable.find(n => n.props.title === 'xai/grok-4.3')
+  const row = menu.pickable.find(n => n.props['aria-description'] === 'xai/grok-4.3')
   assert.ok(row, 'a main API model must be selectable despite the stale node report')
   row.props.onClick()
   const result = await pending
@@ -549,7 +552,7 @@ test('a refused node pick leaves both model records and the node session unchang
     return pending
   } })
   const menu = await openDrawerMenu(p, 'bot-j1')
-  const row = menu.pickable.find(n => n.props.title === 'xai/grok-4.3')
+  const row = menu.pickable.find(n => n.props['aria-description'] === 'xai/grok-4.3')
   assert.ok(row)
   row.props.onClick()
   const result = await pending

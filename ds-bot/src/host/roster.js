@@ -281,6 +281,7 @@ export function install(rt) {
         // Per-bot memory backend: one of the four values, stored exactly as chosen so
         // the settings screen reads back what the user picked ('auto' included).
         ...(memory === undefined ? {} : { memoryConfig: memory }),
+        packs: [],
       }
       // Every Bot owns a Main Thread row from the moment it exists (docs/thread-model.md §1.2).
       ensureMainThread(state, state.bots[id])
@@ -317,9 +318,16 @@ export function install(rt) {
       await rt.save({ immediate: true })
       await scopeTools()
       // The greeting runs on the Bot's own model, once its provider is registered.
+      // Reading the model catalog can throw: the greeting then goes out on the model
+      // the Bot has, as a released greeting does. Nothing awaits this chain, so an
+      // uncaught rejection here would end the host.
       void rt.waitForModel(bot)
-        .then(() => rt.applyModel(bot).catch(error => rt.warn('ds-bot: model for %s not applied: %s', cleanName, error)))
+        .then(
+          () => rt.applyModel(bot).catch(error => rt.warn('ds-bot: model for %s not applied: %s', cleanName, error)),
+          error => rt.warn('ds-bot: model for %s not ready, greeting on its current model: %s', cleanName, error),
+        )
         .then(() => sendKickoff(bot, greeting))
+        .catch(error => rt.warn('ds-bot: greeting for %s not sent: %s', cleanName, error))
       return bot
     } catch (error) {
       // The Bot's Session was already made: archive it instead of leaving an orphan.

@@ -42,6 +42,8 @@ function fixture(record, { death, reportedId = 'B' } = {}) {
     }),
   })
   adapter.ensureMcp = async () => ({})
+  // Since 0.3.10 the loop reads through take(); the fake engine's events come from the live's own next().
+  adapter.take = live => ({ event: live.next(), drop: () => {} })
   const liveFor = adapter.liveFor.bind(adapter)
   adapter.liveFor = async (...args) => {
     const live = await liveFor(...args)

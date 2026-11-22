@@ -58,6 +58,7 @@ export function install(rt) {
 
   // Roles recorded as team exchanges.
   const EXCHANGE_ROLES = new Set(['request', 'reply', 'stopped'])
+  const TASK_ROLES = new Set(['task', 'task-followup', 'task-report'])
 
   // What two Bots say to each other is in the book of the pair (ledger.js), whole, written
   // before the message goes out. A message is shown once a record says it was delivered.
@@ -91,8 +92,12 @@ export function install(rt) {
     }
     return { written, shown, marks }
   }
-  // In the order they were sent (a stable sort, so equal times keep the order they were written).
-  const pairMessages = (a, b) => [...pairRecords(a, b).shown.values()].sort((x, y) => (x.time ?? 0) - (y.time ?? 0))
+  // In the order they were sent; messages of the same millisecond keep the order they were written to the book.
+  const pairMessages = (a, b) => {
+    const { shown, written } = pairRecords(a, b)
+    const at = new Map([...written.keys()].map((id, index) => [id, index]))
+    return [...shown.values()].sort((x, y) => ((x.time ?? 0) - (y.time ?? 0)) || ((at.get(x.id) ?? 0) - (at.get(y.id) ?? 0)))
+  }
 
   function deliveredReplyOf(fromId, toId, replyTo) {
     if (typeof fromId !== 'string' || fromId === '' || typeof replyTo !== 'string' || replyTo === '') return undefined
@@ -271,7 +276,8 @@ export function install(rt) {
     // A message between Bots is an event line ("Reply from X", opened for the whole text), as it is
     // between Bots on one machine: it keeps `kind: 'bot'`, so it is not drawn as something the
     // user typed. Other visible roles (group, report, task) are still written as user text.
-    const visible = classify(role) === 'visible' && !EXCHANGE_ROLES.has(role) && typeof agent.session?.append === 'function'
+    // Background task roles (DS Bot 0.3.10) are drawn by the task bar from their `kind: 'bot'` source, not as text the user typed.
+    const visible = classify(role) === 'visible' && !EXCHANGE_ROLES.has(role) && !TASK_ROLES.has(role) && typeof agent.session?.append === 'function'
     if (visible) {
       // The chat projector renders user sources verbatim; relay sources show only an
       // exchange link. Keep the relay metadata on the wake that owns the next turn.
