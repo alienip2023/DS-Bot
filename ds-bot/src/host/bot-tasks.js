@@ -24,6 +24,7 @@ const SUMMARY_MAX = 300
 const REPORT_MAX = 4000
 const CONTEXT_FALLBACK_MAX = 4000
 const CONTEXT_FALLBACK_ITEMS = 8
+const DIGEST_REQUEST_MAX = 1500
 const MAX_SETTLED_TASKS = 50
 
 const oneLine = (text, max) => String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, max)
@@ -752,6 +753,40 @@ export function install(rt) {
     return 'Background task'
   }
 
+  // What the running turn was asked and has done so far. The fresh foreground is forked from the
+  // last completed turn, so it knows nothing of this turn: without this, a message like "change
+  // that to blue" or "no, the other one" reaches a Session that has never heard of the work.
+  const runningTurnDigest = (session) => {
+    const events = session?.snapshotEvents?.() ?? []
+    const inherited = Number.isInteger(session?.inheritedEventCount) && session.inheritedEventCount > 0 ? session.inheritedEventCount : 0
+    const all = inherited > 0 ? events.slice(inherited) : events
+    // From the last completed turn on: the request may come just before or just after turn/start.
+    const lastStart = all.findLastIndex(ev => ev.type === 'turn/start')
+    const priorEnd = lastStart === -1 ? -1 : all.slice(0, lastStart).findLastIndex(ev => ev.type === 'turn/end')
+    const turn = all.slice(priorEnd + 1)
+    const requests = []
+    const tools = []
+    let lastSaid = ''
+    for (const ev of turn) {
+      if (ev.type === 'user/message') {
+        if (ev.data?.source?.kind === SOURCE_KIND && ev.data.source.role === 'task-handoff') continue
+        const text = textOf(ev.data?.message?.content ?? ev.data?.content ?? []).replace(/^\[[^\r\n]*\]\r?\n?/, '').trim()
+        if (text !== '') requests.push(text)
+      } else if (ev.type === 'tool/call') {
+        const name = String(ev.data?.name ?? '')
+        if (name !== '') tools.push(name)
+      } else if (ev.type === 'assistant/message') {
+        const text = textOf(ev.data?.message?.content ?? []).trim()
+        if (text !== '' && text !== HANDOFF_ACK) lastSaid = text
+      }
+    }
+    const lines = []
+    requests.slice(0, 3).forEach((text, index) => lines.push(`${index === 0 ? 'What it was asked' : 'Also in that turn'}: ${oneLine(text, index === 0 ? DIGEST_REQUEST_MAX : 600)}`))
+    if (tools.length > 0) lines.push(`Progress: ${tools.length} tool call${tools.length === 1 ? '' : 's'} so far, latest: ${[...new Set(tools.slice(-5).reverse())].join(', ')}`)
+    if (lastSaid !== '') lines.push(`Last thing you said there: ${oneLine(lastSaid, 600)}`)
+    return lines.length === 0 ? '' : `\n${lines.join('\n')}`
+  }
+
   const transferIdOf = (item) => {
     if (item.transferId === undefined) {
       item.transferId = item.msg?.source?.rpcId ?? item.msg?.id ?? newId()
@@ -1032,7 +1067,10 @@ export function install(rt) {
         // background and is still running (never leak hidden Bot-to-Bot work).
         try {
           const contextNote = forked ? '' : fallbackContextSummary(oldSid)
-          const notice = `[Background task notice] Your earlier turn ("${task.title}", ${task.id}) moved to the background and is still running there; its result will come back here when it finishes.${contextNote}`
+          // This Session was forked before that turn began, so it has to be told what the turn is.
+          const digest = runningTurnDigest(oldAgent?.session)
+          const guide = ` If the user's next message continues, corrects or asks about that work, it belongs to it: read it with task_read (${task.id}) and pass the change on with task_send instead of starting the same work again. If it is about something else, handle it on its own.`
+          const notice = `[Background task notice] Your earlier turn ("${task.title}", ${task.id}) moved to the background and is still running there; its result will come back here when it finishes.${digest}${guide}${contextNote}`
           await rt.ensureCapabilities(newSid)
           const freshAgent = await rt.resolveAgent(newSid)
           freshAgent.inject?.(createUserMessage({

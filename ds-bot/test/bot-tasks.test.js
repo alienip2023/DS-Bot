@@ -795,6 +795,13 @@ test('bot-task-read excludes inherited foreground chat history, renders task-bri
   const movedTask = env.rt.botOf('a').tasks.find(item => item.origin === 'fg-handoff')
   assert.ok(movedTask, 'fg-handoff must create a background task')
   assert.ok(movedTask.startSeq > 0, 'fg-handoff must persist startSeq boundary')
+  // The new foreground is forked from before that turn: its notice has to say what the turn is,
+  // or a message such as "change that to blue" reaches a Session that never heard of the work.
+  const fresh = env.agentMap.get(env.rt.chatOf('a'))
+  const notice = fresh?.followups.find(message => message.source?.role === 'task-handoff')
+  const noticeText = String(notice?.content?.[0]?.text ?? '')
+  assert.match(noticeText, /What it was asked: Run full release check/, 'the notice carries the running turn\'s request')
+  assert.ok(noticeText.includes(`task_read (${movedTask.id})`) && noticeText.includes('task_send'), 'and says how to reach that work')
   const movedRes = await env.callApi('bot-task-read', { botId: 'a', taskId: movedTask.id })
   assert.equal(movedRes.ok, true)
   const movedItems = movedRes.value.items
