@@ -118,11 +118,15 @@ import { join } from 'node:path'
 import { createRuntime } from '../index.js'
 import { fakeContext } from './fake-ctx.js'
 
-function deleteWorld({ online = true } = {}) {
+function deleteWorld({ online = true, answer = () => ({ ok: true }), worker = {} } = {}) {
   const emitter = new EventEmitter()
   const frames = []
   const registry = {
-    send: (nodeId, type, payload) => { frames.push({ nodeId, type, payload }); return true },
+    send: (nodeId, type, payload) => {
+      frames.push({ nodeId, type, payload })
+      if (type === 'bot/delete') Promise.resolve().then(() => emitter.emit('botDeleteResult', { requestId: payload.requestId, nodeId, ...answer(payload) }))
+      return true
+    },
     on: (ev, fn) => emitter.on(ev, fn),
     off: (ev, fn) => emitter.off(ev, fn),
     onlineNodes: () => online ? [{ nodeId: 'n1' }] : [],
@@ -138,14 +142,14 @@ function deleteWorld({ online = true } = {}) {
   const rt = createRuntime(ctx, { home })
   const bot = {
     id: 'joined:n1:rb1', name: 'Joined', origin: 'joined', type: 'remote-worker',
-    worker: { nodeId: 'n1', remoteBotId: 'rb1', home: 'remote', online: true },
+    worker: { nodeId: 'n1', remoteBotId: 'rb1', home: 'remote', online: true, ...worker },
   }
   rt.state.bots[bot.id] = bot
   return { rt, bot, frames, registry, home }
 }
 
 describe('S58-D1: deleteBot sends bot/delete through real roster layer', () => {
-  it('S58-D1-send: deleting a joined Bot dispatches bot/delete to the node', async () => {
+  it('S58-D1-send: deleting a joined Bot dispatches bot/delete to the node and then forgets it', async () => {
     // Knife: revert joinedDeleteBot to take id (not bot) → rt.botOf returns undefined after delete → bot-not-joined → no send → RED
     const { rt, bot, frames } = deleteWorld({ online: true })
     await rt.deleteBot(bot.id)
@@ -156,23 +160,43 @@ describe('S58-D1: deleteBot sends bot/delete through real roster layer', () => {
     assert.equal(delFrame.payload.remoteBotId, 'rb1', 'payload must carry remoteBotId')
     assert.ok(delFrame.payload.requestId, 'payload must carry a requestId')
 
-    // Tombstone must be written regardless of send success
     assert.ok(rt.state.deletedJoinedIds?.includes(bot.id), 'tombstone must be in deletedJoinedIds')
     assert.equal(rt.state.bots[bot.id], undefined, 'bot must be removed from state.bots')
   })
 
-  it('S58-D1-offline: node offline still writes tombstone and does not throw', async () => {
-    // Knife: remove tombstone write → deletedJoinedIds empty → RED
+  it('S58-D1-offline: node offline refuses the delete; the Bot is not forgotten while it keeps running there', async () => {
     const { rt, bot, frames } = deleteWorld({ online: false })
-    await rt.deleteBot(bot.id)
+    await assert.rejects(() => rt.deleteBot(bot.id), (error) => {
+      assert.equal(error.code, 'bot/refused')
+      assert.match(error.message, /was not deleted.*node-offline/)
+      return true
+    })
+    assert.equal(frames.find(f => f.type === 'bot/delete'), undefined, 'no frame to an offline node')
+    assert.equal(rt.state.bots[bot.id], bot, 'the Bot row stays')
+    assert.equal(rt.state.deletedJoinedIds?.includes(bot.id) ?? false, false, 'no tombstone')
+  })
 
-    // No frame sent (node offline)
-    const delFrame = frames.find(f => f.type === 'bot/delete')
-    assert.equal(delFrame, undefined, 'must NOT send bot/delete when node is offline')
+  it('S58-D1-node-failed: a node that refuses bot/delete keeps the Bot and says why', async () => {
+    const { rt, bot } = deleteWorld({ answer: () => ({ ok: false, error: 'bot-delete-failed: busy' }) })
+    await assert.rejects(() => rt.deleteBot(bot.id), /bot-delete-failed: busy/)
+    assert.equal(rt.state.bots[bot.id], bot)
+    assert.equal(rt.state.deletedJoinedIds?.includes(bot.id) ?? false, false)
+  })
 
-    // Tombstone still written
-    assert.ok(rt.state.deletedJoinedIds?.includes(bot.id), 'tombstone must still be written when node offline')
-    assert.equal(rt.state.bots[bot.id], undefined, 'bot must be removed from state.bots')
+  it('S58-D1-timeout: no answer from the node keeps the Bot', async () => {
+    const { rt, bot } = deleteWorld({ answer: () => ({ ok: false, error: 'bot-delete-timeout' }) })
+    await assert.rejects(() => rt.deleteBot(bot.id), /bot-delete-timeout/)
+    assert.equal(rt.state.bots[bot.id], bot)
+  })
+
+  it('S58-D1-gone: a Bot the node no longer lists, or no longer has, can still be removed from the hub', async () => {
+    const missing = deleteWorld({ online: false, worker: { missingFromReport: true } })
+    await missing.rt.deleteBot(missing.bot.id)
+    assert.equal(missing.rt.state.bots[missing.bot.id], undefined)
+    assert.ok(missing.rt.state.deletedJoinedIds.includes(missing.bot.id))
+    const unknown = deleteWorld({ answer: () => ({ ok: false, error: 'bot-delete-failed: Unknown Bot' }) })
+    await unknown.rt.deleteBot(unknown.bot.id)
+    assert.equal(unknown.rt.state.bots[unknown.bot.id], undefined)
   })
 })
 
