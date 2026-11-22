@@ -11,6 +11,7 @@
 import { randomUUID } from 'node:crypto'
 import { clampNodeTime, joinedShadow } from './roster-join.js'
 import { nodeCan, refusalFor } from './node-compat.js'
+import { markHubAsked } from './joined-turn.js'
 
 const BODY_MAX = 1900
 const clip = (text, max) => String(text ?? '').slice(0, max)
@@ -126,11 +127,14 @@ export function createBotActionReceiver(rt) {
         // A new task on this Bot, started for the user from the hub (the "ask me" choice).
         const text = String(params.text ?? '').trim()
         if (text === '') return refuse('text-missing')
+        // The hub asked this Bot to work: what the task reports later is owed to that hub.
+        markHubAsked(rt, bot)
         const task = await rt.startTask(rt.chatOf(bot.id), { title: text.replace(/\s+/g, ' ').slice(0, 60) || 'Task', brief: text, relation: params.relation === 'independent' ? 'independent' : 'related' })
         return { ok: true, detail: task?.id }
       }
       if (action === 'task-send') {
         if (await taskOf(bot, params.taskId) === undefined) return refuse('task-unknown')
+        markHubAsked(rt, bot)
         await rt.deliverToTask(params.taskId, { text: String(params.text ?? '') })
         return { ok: true }
       }
