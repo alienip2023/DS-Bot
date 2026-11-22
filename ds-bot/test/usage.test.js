@@ -168,7 +168,9 @@ function start(home, { listedExtra, logsExtra, subagentsExtra, background = fals
   const pages = []
   const warnings = []
   const ctx = fakeContext()
-  ctx.logger.warn = (template, ...args) => warnings.push([template, ...args])
+  // The fork's start-up banners (config-source.js: settings dir, gateway config and port) are
+  // diagnostics, not usage warnings.
+  ctx.logger.warn = (template, ...args) => { if (!/^ds-bot: (settingsDir=|gateway )/.test(String(args[0] ?? ''))) warnings.push([template, ...args]) }
   ctx.sessionController = {
     list: async () => ({ items: [
       { sessionId: 's-x', projections: { kind: 'cached', asOfSeq: 1, values: {} } },

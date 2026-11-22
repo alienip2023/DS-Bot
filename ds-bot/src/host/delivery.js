@@ -6,6 +6,7 @@ import { joinedShadow, refuseJoinedDispatch } from './roster-join.js'
 import { headOf, textOf } from './text.js'
 import { sendToPeer } from './bot-network.js'
 import { classify } from './msg-classes.js'
+import { sameConversation } from './threads.js'
 
 // For remote dispatch, control is local, an answer is refused, everything else is work.
 // An answer is not new work: never dispatch it to another machine.
@@ -31,6 +32,7 @@ export function install(rt) {
     if (abandoned) return `[Waiting given up · ${fromName} did not hand back this work; go on with the work it was for${goesOn}]`
     if (deferred && role === 'reply') return `[Reply from ${fromName} · you read it during your last task; go on with the work it is for now${goesOn}]`
     if (deferred && role === 'report') return `[Group chat "${roomName}" · replies to your post · you read them during your last task; go on with the work they are for now${goesOn}]`
+    if (deferred && role === 'task-report') return `[Background task report · you read it during your last task; go on with the work it is for now${goesOn}]`
     if (deferred && role !== 'room') return `[Message from ${fromName} · you read it during your last task; answer it now]`
     if (retried && role !== 'room') return '[Your last reply wrote a tool call as text, so nothing ran]'
     if (resumed && role === 'resume') return '[DeepSeek Harness restarted while you were working]'
@@ -47,6 +49,9 @@ export function install(rt) {
     // the header stays neutral about who changed the profile.
     if (role === 'update') return '[Your profile was updated — follow the latest version]'
     if (role === 'secret') return '[Secret card]'
+    if (role === 'task') return `[Background task · ${note}]`
+    if (role === 'task-followup') return `[Follow-up from your own chat · ${note}]`
+    if (role === 'task-report') return `[Background task report · ${note}${goesOn}]`
     if (audience === 'user') return `[Message from ${fromName} · the user sees your reply here]`
     return `[Message from ${fromName}]`
   }
@@ -63,19 +68,63 @@ export function install(rt) {
     .map(entry => ({ ...entry, delivered: true })))
   // A message shows the text its delivery carried: the last record of its id written before
   // a delivery mark. A merged request whose replacement never went out keeps the text that did.
-  function pairMessages(a, b) {
+  function pairRecords(a, b) {
     const written = new Map()
     const shown = new Map()
+    const marks = []
     for (const record of rt.ledger.records(pairBook(a, b))) {
       if (record.event === 'delivered') {
         if (written.has(record.id)) shown.set(record.id, written.get(record.id))
+        marks.push(record)
       } else if (record.event === undefined) {
         written.set(record.id, record)
         if (record.delivered === true) shown.set(record.id, record)
       }
     }
-    return [...shown.values()]
+    return { written, shown, marks }
   }
+  const pairMessages = (a, b) => [...pairRecords(a, b).shown.values()]
+
+  function deliveredReplyOf(fromId, toId, replyTo) {
+    if (typeof fromId !== 'string' || fromId === '' || typeof replyTo !== 'string' || replyTo === '') return undefined
+    if (typeof toId === 'string' && toId !== '') {
+      if (rt.botOf(fromId) === undefined || rt.botOf(toId) === undefined) {
+        return (state.exchanges ?? []).findLast(entry => entry.from === fromId && entry.to === toId && entry.role === 'reply' && entry.replyTo === replyTo)
+      }
+      return pairMessages(fromId, toId).findLast(record => record.from === fromId && record.to === toId && record.role === 'reply' && record.replyTo === replyTo)
+    }
+    if (rt.botOf(fromId) !== undefined) {
+      for (const otherId of Object.keys(state.bots ?? {})) {
+        if (otherId === fromId) continue
+        const found = pairMessages(fromId, otherId).findLast(record => record.from === fromId && record.to === otherId && record.role === 'reply' && record.replyTo === replyTo)
+        if (found !== undefined) return found
+      }
+    }
+    return (state.exchanges ?? []).findLast(entry => entry.from === fromId && entry.role === 'reply' && entry.replyTo === replyTo)
+  }
+
+  const wasReplyDelivered = (fromId, toId, replyTo) => deliveredReplyOf(fromId, toId, replyTo) !== undefined
+
+  function deliveredFailuresOf(fromId, toId, requestId, targetSessionId, parentWork) {
+    if (typeof fromId !== 'string' || typeof toId !== 'string' || typeof requestId !== 'string' || requestId === '') return []
+    if (rt.botOf(fromId) === undefined || rt.botOf(toId) === undefined) return []
+    const wantedWork = typeof parentWork === 'string' && parentWork !== '' ? parentWork : undefined
+    const { written, marks } = pairRecords(fromId, toId)
+    const matches = []
+    for (const mark of marks) {
+      if (mark.failureRequestId !== requestId) continue
+      const markWork = typeof mark.work === 'string' && mark.work !== '' ? mark.work : undefined
+      if (markWork !== wantedWork) continue
+      const message = written.get(mark.id)
+      if (message?.from === fromId && message?.to === toId && sameConversation(state, toId, mark.sessionId, targetSessionId)) {
+        matches.push({ id: mark.id, replyTo: message.replyTo, work: markWork, sessionId: mark.sessionId })
+      }
+    }
+    return matches
+  }
+
+  const wasFailureRequestDelivered = (fromId, toId, requestId, targetSessionId, parentWork) =>
+    deliveredFailuresOf(fromId, toId, requestId, targetSessionId, parentWork).length > 0
 
   // `sessionId` defaults to the recipient's own chat; group turns name its group Session.
   // `deferred`: a request the Bot already read mid-turn, handed back to answer in a
@@ -91,7 +140,7 @@ export function install(rt) {
   // result that came back goes on with. `merged`: a request that takes in an earlier
   // one its recipient had not read, under that one's exchange. `fromPart`: the Session
   // of the sending Bot, which a reply comes back to when that is a background part.
-  async function deliver({ fromId, fromName: senderName, toId, sessionId, text, role, replyTo, roomId, audience, note, exchangeId = randomUUID(), steer = false, deferred = false, resumed = false, retried = false, resent = false, merged = false, abandoned = false, recordExchange = true, askedBy, fromRoomId, fromPart, images = [], files = [], length, work, joinedTurn = false, joinedAsync = false, wait = false, stopped = false }) {
+  async function deliver({ fromId, fromName: senderName, toId, sessionId, text, role, replyTo, roomId, audience, note, exchangeId = randomUUID(), steer = false, deferred = false, resumed = false, retried = false, resent = false, merged = false, abandoned = false, recordExchange = true, askedBy, fromRoomId, fromPart, images = [], files = [], length, work, taskId, imOrigin, failureRequestId, joinedTurn = false, joinedAsync = false, wait = false, stopped = false }) {
     const from = rt.botOf(fromId)
     const to = rt.botOf(toId)
     if (to === undefined) throw new Error(`Unknown Bot ${toId}`)
@@ -147,6 +196,8 @@ export function install(rt) {
       exchangeId,
       senderName: fromName,
       ...(work ? { work } : {}),
+      ...(taskId ? { taskId } : {}),
+      ...(imOrigin ? { imOrigin } : {}),
       ...(fromId ? { senderSessionId: fromId } : {}),
       ...(fromPart ? { senderPart: fromPart } : {}),
       ...(replyTo ? { replyTo } : {}),
@@ -190,10 +241,20 @@ export function install(rt) {
     // The book holds the text already; its mark says the message went out. A mark
     // that is lost only hides it from the dialog.
     const markDelivered = async () => {
-      rt.ledger.append(book, { event: 'delivered', id: exchangeId, sessionId: targetSessionId, time: Date.now() })
+      rt.ledger.append(book, {
+        event: 'delivered',
+        id: exchangeId,
+        sessionId: targetSessionId,
+        time: Date.now(),
+        ...(typeof failureRequestId === 'string' && failureRequestId !== '' ? { failureRequestId } : {}),
+        ...(typeof work === 'string' && work !== '' ? { work } : {}),
+      })
       await rt.ledger.written(book).catch(() => {})
     }
-    const visible = classify(role) === 'visible' && typeof agent.session?.append === 'function'
+    // A message between Bots is an event line ("Reply from X", opened for the whole text), as it is
+    // between Bots on one machine: it keeps `kind: 'bot'`, so it is not drawn as something the
+    // user typed. Other visible roles (group, report, task) are still written as user text.
+    const visible = classify(role) === 'visible' && !EXCHANGE_ROLES.has(role) && typeof agent.session?.append === 'function'
     if (visible) {
       // The chat projector renders user sources verbatim; relay sources show only an
       // exchange link. Keep the relay metadata on the wake that owns the next turn.
@@ -286,8 +347,8 @@ export function install(rt) {
     }
   }
 
-  // The text of a stored file, up to what the dialogs show.
-  async function fileText(file) {
+  // The text of a stored file, limited to what the dialogs show by default.
+  async function fileText(file, maxLength = TEXT_SHOW_MAX) {
     const attachments = ctx.get?.('attachments')
     if (attachments === undefined) return undefined
     const decoder = new TextDecoder()
@@ -295,7 +356,7 @@ export function install(rt) {
     try {
       for await (const chunk of attachments.readFileStream(file, AbortSignal.timeout(HISTORY_TIMEOUT_MS))) {
         text += decoder.decode(chunk, { stream: true })
-        if (text.length > TEXT_SHOW_MAX) return { text: headOf(text, TEXT_SHOW_MAX), whole: false }
+        if (text.length > maxLength) return { text: headOf(text, maxLength), whole: false }
       }
     } catch (error) {
       rt.warn('ds-bot: file %s not read: %s', file?.name, error)
@@ -363,5 +424,5 @@ export function install(rt) {
     return { ...record, ledger: true }
   }
 
-  Object.assign(rt, { resolveAgent, deliver, exchangeText, attachLong, fileText, exchangesOf, exchangeOf })
+  Object.assign(rt, { resolveAgent, deliver, exchangeText, attachLong, fileText, exchangesOf, exchangeOf, deliveredReplyOf, wasReplyDelivered, deliveredFailuresOf, wasFailureRequestDelivered })
 }

@@ -8,6 +8,7 @@ import { SPRING_TAP, spring, useMorph } from './motion.js'
 import { sendsOnEnter } from './enter-key.js'
 import { relativeShort } from './text.js'
 import { hostText, mdLabels, t } from './i18n.js'
+import { rowBinding } from './approval-card-model.js'
 
 // -------------------------------------------------------------------------
 // Background tasks UI (#783):
@@ -258,7 +259,8 @@ export function TaskIslandPanel({ bot, room, roster, approvals = [], focusTaskId
     setError('')
     const promise = approvalItem.kind === 'computer-app'
       ? actions.computerAppAnswer(approvalItem.ask.id, choice)
-      : actions.answerApproval(approvalItem.approval.id, choice)
+      // The host only lets the owning Session answer: send the row's own binding with it.
+      : actions.answerApproval(approvalItem.approval.id, choice, rowBinding(approvalItem.approval))
     void Promise.resolve(promise)
       .catch(err => setError(hostText(err?.message ?? String(err))))
       .finally(() => setBusy(false))

@@ -65,7 +65,8 @@ test('remote-tasks warns and returns an empty list when the ledger rejects', asy
   assert.equal(warnings[0][1], error)
 })
 
-// Listeners run in registration order; the team tools are not in this list
+// Listeners run in registration order (the union of upstream's modules and the fork's
+// remote-worker / roster / memory-federation / routines modules); the team tools are not in this list
 // because they are registered per Bot session scope, not globally.
 test('apply registers listeners and effects in a fixed order', (t) => {
   const { ctx, stop } = start()
@@ -88,6 +89,11 @@ test('apply registers listeners and effects in a fixed order', (t) => {
     'on tools/result',
     'on session/event',
     'effect ds-bot: lost hand-offs',
+    'effect ds-bot: visible delivery turns',
+    'effect ds-bot: remote worker waits',
+    'effect ds-bot: joined roster',
+    'effect ds-bot: peer roster',
+    'provide remote-agent:peer-roster',
     'on tools/execute',
     'effect ds-bot: identity section',
     'prompt bot-identity 640',
@@ -97,6 +103,7 @@ test('apply registers listeners and effects in a fixed order', (t) => {
     'on tools/change',
     'tools guard',
     'on agent/created',
+    'on agent/turn-stopping',
     'on system-prompt/assemble',
     'on llm/stream',
     'on session/event',
@@ -105,10 +112,12 @@ test('apply registers listeners and effects in a fixed order', (t) => {
     'effect ds-bot: group rounds',
     'effect ds-bot: group step lines',
     'on llm/stream',
+    'effect ds-bot: goal reminders',
     'on agent/created',
     'on agent/disposed',
     'on commands/change',
     'effect ds-bot: command shield cleanup',
+    'on tools/pre-execute',
     'on approval/request (prepend)',
     'on agent/inbox/discarded',
     'on session/event',
@@ -120,6 +129,7 @@ test('apply registers listeners and effects in a fixed order', (t) => {
     'on agent/status',
     'effect ds-bot: memory review',
     'effect ds-bot: memory tidy',
+    'effect ds-bot: memory federation',
     'effect ds-bot: Bot compaction',
     'on agent/created',
     'effect ds-bot: wake parts that wait for their run mode',
@@ -133,10 +143,8 @@ test('apply registers listeners and effects in a fixed order', (t) => {
     'on agent/status',
     'on llm/stream',
     'on session/event',
-    // bot-tasks.js: approval status bridge and turn/end task settlement.
     'effect ds-bot: bot-tasks approval bridge',
     'on session/event',
-    // changes.js: the announced workspace/changes turn, remembered for the group row.
     'on session/event',
     'on llm/stream',
     'on agent/status',
@@ -148,6 +156,9 @@ test('apply registers listeners and effects in a fixed order', (t) => {
     'effect ds-bot: capabilities',
     'on agent/status',
     'effect ds-bot: learning',
+    'on session/event',
+    'on session/disposed',
+    'effect ds-bot: Bot routines',
     'on tools/pre-execute',
     'on tools/execute',
     'on agent/created',
@@ -165,6 +176,7 @@ test('apply registers listeners and effects in a fixed order', (t) => {
     'effect ds-bot: update check',
     'effect ds-bot: dsh update install',
     'on session/event',
+    'on session/event',
     'effect ds-bot: mobile room signals',
     'on agent/status',
     'on session/event',
@@ -179,11 +191,23 @@ test('apply registers listeners and effects in a fixed order', (t) => {
     'effect ds-bot: api route',
     'route POST /api/bot',
     'effect ds-bot: load state',
+    'provide remote-agent:bot-turn',
+    'provide remote-agent:bot-stop',
     'effect ds-bot: joined late reply listeners',
+    'on api-session/added',
     'on agent/created (prepend)',
     'on agent/inbox/inserted (prepend)',
     'effect ds-bot: joined Bot mirror guard',
+    'provide remote-agent:bot-create',
+    'effect ds-bot: model gateway',
+    'provide remote-agent:bot-page',
+    'provide remote-agent:bot-update',
+    'provide remote-agent:bot-delete',
     'effect ds-bot: local agents',
+    'provide remote-agent:bot-message',
+    'effect ds-bot: Bot network',
+    'provide ds-bot:apply-model-sync',
+    'provide ds-bot:answer-approval',
   ])
 })
 

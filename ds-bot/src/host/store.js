@@ -11,6 +11,7 @@ import { currentColor, headOf, normalize, unquote } from './text.js'
 import { mainThreadId, mainThreadOf, newMainThread, saveThread, threadOf, threadsOfBot, updateBySessionId, updateBySessionIdFull } from './bot-store.js'
 import { ensureFederationState, migrateFederation } from './federation.js'
 import { joinedShadow } from './roster-join.js'
+import { isActiveTask } from './threads.js'
 import { AMBIGUOUS_OLD_ROUTES, legacyRoute } from './local-agents/engines.js'
 
 // A table read that sees only the keys the table holds itself. Ids that come from
@@ -384,10 +385,14 @@ export function install(rt) {
   }
 
   const hasLoaded = () => storeReady
+  const notifyStoreSync = () => {
+    rt.onStoreSync?.()
+    rt.syncDeepseekTools?.()
+  }
   const syncReadOnly = () => {
     if (storeReady && adopting === undefined && (stuck !== undefined || holder !== undefined) && stamp() !== seen) {
       adopt(readFileState())
-      rt.onStoreSync?.()
+      notifyStoreSync()
     }
   }
 
@@ -396,7 +401,7 @@ export function install(rt) {
     if (holder !== undefined) warn('ds-bot: %s', readOnly())
     const { migrated, stale } = adopt(readFileState())
     storeReady = true
-    rt.onStoreSync?.()
+    notifyStoreSync()
     if (holder !== undefined) return
     if (migrated && stuck === undefined) {
       // A failed write must not poison `loaded`: the migrated state stays in
@@ -429,6 +434,7 @@ export function install(rt) {
         }
       }
       adopt(readFileState())
+      notifyStoreSync()
     })
     writing = run.catch(() => {})
     const tracked = run.finally(() => { if (adopting === tracked) adopting = undefined })
@@ -456,7 +462,7 @@ export function install(rt) {
         warn('ds-bot: the other dsh has closed; this one now saves the Bot team')
         warnedReadOnly = false
         adopt(readFileState())
-        rt.onStoreSync?.()
+        notifyStoreSync()
         return
       }
     } else if (!lockBroken && !lock.owns()) {
@@ -467,18 +473,18 @@ export function install(rt) {
       if (lockBroken) return
       if (holder === undefined) {
         await reclaimHeld()
-        rt.onStoreSync?.()
+        notifyStoreSync()
         return
       }
       warn('ds-bot: %s', readOnly())
     }
     if (adopting !== undefined) {
       await adopting
-      rt.onStoreSync?.()
+      notifyStoreSync()
       return
     }
     if ((stuck !== undefined || holder !== undefined) && stamp() !== seen) adopt(readFileState())
-    rt.onStoreSync?.()
+    notifyStoreSync()
   }
 
   const warnReadOnly = () => {
@@ -630,6 +636,8 @@ export function install(rt) {
   // archived and stay readable.
   /** @type {Map<string, string>} */
   const chatOwners = new Map()
+  /** @type {Map<string, {botId:string, taskId:string}>} */
+  const taskOwners = new Map()
   /** @type {Map<string, {botId:string, roomId:string}>} */
   const groupOwners = new Map()
   // Remote group Sessions keep the local Bot's identity without a local group roster.
@@ -670,6 +678,7 @@ export function install(rt) {
   }
   const indexSessions = () => {
     chatOwners.clear()
+    taskOwners.clear()
     groupOwners.clear()
     remoteGroupOwners.clear()
     roomOwners.clear()
@@ -713,16 +722,20 @@ export function install(rt) {
         indexPast(part?.segments, { botId })
       }
       // Background tasks keep their own stable records separate from openParts. Only
-      // active tasks stay in chatOwners; settled tasks move to pastOwners so schedule
-      // tools can still find and move a task left behind on a finished task Session.
+      // active tasks stay in chatOwners/taskOwners; settled tasks move to pastOwners
+      // so folder/engine/model sweeps do not wake them again.
       for (const task of bot.tasks ?? []) {
         const taskSid = sessionIdOf(task?.sessionId)
-        if (taskSid === undefined) continue
-        if (task.status === 'running') {
-          chatOwners.set(taskSid, botId)
-        } else {
-          pastOwners.set(taskSid, { botId })
+        const roomMeta = typeof task?.roomId === 'string' && task.roomId !== '' ? { roomId: task.roomId } : {}
+        if (taskSid !== undefined) {
+          if (isActiveTask(task)) {
+            chatOwners.set(taskSid, botId)
+            taskOwners.set(taskSid, { botId, taskId: task.id, ...roomMeta })
+          } else {
+            pastOwners.set(taskSid, { botId, ...roomMeta })
+          }
         }
+        indexPast(task?.segments, { botId, ...roomMeta })
       }
     }
     // Every Thread's Session resolves to that Thread, including a thread beyond Main and a
@@ -820,7 +833,7 @@ export function install(rt) {
   Object.assign(rt, {
     state, load, save, flush, refresh, readOnly, hasLoaded, syncReadOnly, own, onSaved, closeCard,
     botOf, roomOf, isMain, chatOf, sessionOfRoom, selfOf, isBotSession,
-    chatOwners, groupOwners, roomOwners, pastOwners,
+    chatOwners, taskOwners, groupOwners, roomOwners, pastOwners,
     groupSessionsOf, dropGroupSession, retireGroupSession, findBot, findRooms, isAdminOf,
     bySessionId: sid => bySessionIdMap.get(sid),
     bySessionIdFull: sid => bySessionIdFullMap.get(sid),

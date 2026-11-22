@@ -501,7 +501,7 @@ async function checkUnreadTaskReply(t, inInbox) {
   ]]])
   writeFileSync(join(home, 'inflight.json'), JSON.stringify({
     turns: { 'b-task': { botId: 'b', since: 1, trigger: request } },
-    queued: inInbox ? {} : { 'b-task': [{ at: 2, args: reply }] },
+    queued: inInbox ? {} : { 'b-task': [{ at: Date.now(), args: reply }] },
   }))
   const host = await createRestartHost(t, home, logs)
   t.after(async () => {
@@ -603,6 +603,8 @@ test('resumeAll checks the upstream work and asker for role=reply continuation t
       a: {
         botId: 'a',
         since: 1,
+        // This fork replays a cut-off turn only when it was refused before it was accepted.
+        attempted: true, rejected: true, promptSubmitted: false, producedOutput: false,
         trigger: { role: 'reply', exchangeId: 'sub-reply', work: 'up-work', senderSessionId: 'b' },
       },
     },
@@ -626,6 +628,7 @@ test('resumeAll checks the upstream work and asker for role=reply continuation t
       a: {
         botId: 'a',
         since: 2,
+        attempted: true, rejected: true, promptSubmitted: false, producedOutput: false,
         trigger: { role: 'reply', exchangeId: 'sub-reply', work: 'up-work', senderSessionId: 'b' },
       },
     },

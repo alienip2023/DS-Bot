@@ -18,7 +18,11 @@ export const rowBinding = row => (
 export function planAnswer(row, { botId, roomId } = {}, choice) {
   if (choice !== 'allow' && choice !== 'reject') return { kind: 'block', state: 'unbound' }
   if (row?.answerable !== true) return { kind: 'block', state: 'unavailable' }
-  if (!filled(row.id) || !filled(botId) || !filled(roomId) || row.botId !== botId || row.roomId !== roomId) {
+  // A background-task approval (taskId) may belong to a Bot's own chat, which has no room:
+  // it only has to match the Bot, and the room too when the card knows one.
+  const task = filled(row.taskId)
+  const roomOk = task ? (roomId === undefined || row.roomId === roomId) : (filled(roomId) && row.roomId === roomId)
+  if (!filled(row.id) || !filled(botId) || row.botId !== botId || !roomOk) {
     return { kind: 'block', state: 'unbound' }
   }
   const binding = rowBinding(row)

@@ -8,6 +8,7 @@ import { normalizeView, VIEW_BYTE_LIMIT, viewBytes } from 'deep-view/core'
 import { goalProvider } from '../src/host/goal-skills.js'
 import { replyText } from '../src/host/parts.js'
 import { fakeContext } from './fake-ctx.js'
+import { ISSUES_URL } from '../src/host/diagnostics.js'
 
 let rt
 
@@ -179,7 +180,8 @@ test('an unconnected report returns a capped prefilled link, and a failed follow
   const link = fallback.value.issueReportResult.match(/https:\/\/\S+/)[0]
   assert.ok(link.length <= 4000)
   const url = new URL(link)
-  assert.equal(url.origin + url.pathname, 'https://github.com/Fei2411/DS-Bot/issues/new')
+  // This fork's prefilled report opens on its own repository (diagnostics.js ISSUES_URL).
+  assert.equal(url.origin + url.pathname, ISSUES_URL)
   assert.equal(url.searchParams.get('template'), 'bug.yml')
   assert.equal(url.searchParams.get('title'), args.title)
   assert.match(url.searchParams.get('what'), /^(?:故障😀)+故?障?…$/)
@@ -208,7 +210,10 @@ test('the capped fallback keeps a complete field when dropping its ellipsis make
   t.after(stop)
   rt.diagnostics.issueFacts = () => 'OS: mocked'
   const steps = 'x'.repeat(443) + 'turn automatic refresh off.'
-  const args = await prepareIssue({ what: '故'.repeat(365) + 'x'.repeat(405), steps })
+  // The lengths are tuned to the 4000 cap with upstream's link; this fork's repository name makes the
+  // link longer, which costs whole characters of the (9 bytes each once encoded) first field.
+  const linkShift = ISSUES_URL.length - 'https://github.com/Fei2411/DS-Bot/issues/new'.length
+  const args = await prepareIssue({ what: '故'.repeat(365 - Math.ceil(linkShift / 9)) + 'x'.repeat(405), steps })
   assert.equal((await show('writer-now', args)).concluded, true)
   const { id, view } = (await team()).views['writer-now']
   const reply = await call('view-reply', {

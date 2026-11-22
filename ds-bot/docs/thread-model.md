@@ -24,8 +24,8 @@ or **IMPLEMENTED** (code enforces it).
 
 - Which saved conversation a Session runs in: `bySessionIdFullMap` (`src/host/store.js:644`).
 - At most `MAX_THREADS_PER_BOT = 10` Threads per Bot, Main included (`src/host/constants.js:22-23`). **IMPLEMENTED**:
-  `createThread` refuses the eleventh Thread with `bot/refused` (`src/host/roster.js:348-350`), reached by the
-  `thread-create` route (`src/host/channel.js:850-852`) and tested by `test/thread-t2-api.test.js:55-65`.
+  `createThread` refuses the eleventh Thread with `bot/refused` (`src/host/roster.js:350-352`), reached by the
+  `thread-create` route (`src/host/channel.js:872-874`) and tested by `test/thread-t2-api.test.js:55-65`.
 - One turn per Bot runs at a time across its Threads (section 4.5).
 
 ### 1.3 Process / profile-wide
@@ -105,24 +105,24 @@ Checked by `test/thread-model-anchors.test.js`: each row's line must contain its
 |---|---|
 | `src/host/bot-store.js:155` | `thread-model.md §1.1` |
 | `src/host/executor.js:214` | `thread-model §4.5` |
-| `src/host/store.js:632` | `chatOwners` |
-| `src/host/store.js:634` | `groupOwners` |
-| `src/host/store.js:643` | `thread-model.md §1.2` |
-| `src/host/store.js:644` | `bySessionIdFullMap` |
-| `src/host/store.js:698` | `bySessionIdFullMap.set` |
-| `src/host/store.js:724` | `bySessionIdFullMap.set` |
-| `src/host/store.js:879` | `thread-model.md §1.3` |
-| `src/host/channel.js:486` | `READS` |
-| `src/host/channel.js:850` | `thread-create` |
-| `src/host/channel.js:998` | `approval-answer` |
-| `src/host/channel.js:1225` | `thread-model §4.5` |
-| `src/host/channel.js:1226` | `sendThreadTurn` |
-| `src/host/delivery.js:233` | `thread-model §4.5` |
+| `src/host/store.js:638` | `chatOwners` |
+| `src/host/store.js:642` | `groupOwners` |
+| `src/host/store.js:651` | `thread-model.md §1.2` |
+| `src/host/store.js:652` | `bySessionIdFullMap` |
+| `src/host/store.js:707` | `bySessionIdFullMap.set` |
+| `src/host/store.js:707` | `bySessionIdFullMap.set` |
+| `src/host/store.js:904` | `thread-model.md §1.3` |
+| `src/host/channel.js:502` | `READS` |
+| `src/host/channel.js:872` | `thread-create` |
+| `src/host/channel.js:1023` | `approval-answer` |
+| `src/host/channel.js:1383` | `thread-model §4.5` |
+| `src/host/channel.js:1384` | `sendThreadTurn` |
+| `src/host/delivery.js:294` | `thread-model §4.5` |
 | `src/host/thread-queue.js:5` | `maxParallelThreads` |
 | `src/host/thread-queue.js:31` | `slots` |
 | `src/host/thread-queue.js:33` | `slotOf` |
 | `src/host/thread-queue.js:231` | `slotOf(owner.botId)` |
 | `src/host/thread-queue.js:236` | `slot.queue.push` |
-| `src/host/roster.js:349` | `MAX_THREADS_PER_BOT` |
+| `src/host/roster.js:350` | `MAX_THREADS_PER_BOT` |
 | `src/host/constants.js:23` | `MAX_THREADS_PER_BOT` |
 | `test/thread-t2-api.test.js:55` | `eleventh` |

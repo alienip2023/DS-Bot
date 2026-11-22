@@ -26,6 +26,8 @@ function bench(t, failure = new Error('Session unavailable')) {
     ctx,
     state: { bots: {}, prefs: {}, rooms: { room: { id: 'room', sessionId: 'broken' } } },
     sessionOfRoom: room => room.sessionId,
+    // selectSessionModel records the selection it made (upstream 0.3.9).
+    save: async () => {},
     warn: (...args) => warnings.push(format(...args)),
   }
   install(rt)

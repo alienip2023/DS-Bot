@@ -40,7 +40,7 @@ function assertWrite(remote, scope, directory, text) {
 test('bot scope with clusterBotId writes only to the cluster identity', async (t) => {
   const { remote, tool } = await start(t, { clusterBotId: 'identity-1' })
 
-  assert.match(await tool('remember', { scope: 'bot', text: 'Cluster memory' }), /^Saved\./)
+  assert.match(await tool('bot_remember', { scope: 'bot', text: 'Cluster memory' }), /^Saved\./)
   assertWrite(remote, { kind: 'clusterBot', clusterBotId: 'identity-1' }, remote.dir('bots', clusterBotDirName('identity-1')), 'Cluster memory')
   assert.equal(existsSync(remote.dir('nodes', 'n1', 'bots')), false)
 })
@@ -49,7 +49,7 @@ test('bot scope without clusterBotId refuses the write without creating node Bot
   const { remote, rt, tool } = await start(t)
 
   let failure
-  try { await tool('remember', { scope: 'bot', text: 'Must not split memory' }) } catch (error) { failure = error }
+  try { await tool('bot_remember', { scope: 'bot', text: 'Must not split memory' }) } catch (error) { failure = error }
   const answer = remote.registry.frames('mem/write-result').at(-1).payload
   // Check the filesystem even when the old fallback incorrectly reports success.
   assert.equal(existsSync(remote.dir('nodes', 'n1', 'bots')), false)
@@ -67,7 +67,7 @@ test('bot scope without clusterBotId refuses the write without creating node Bot
 test('own scope without clusterBotId still writes to the node Bot directory', async (t) => {
   const { remote, tool } = await start(t)
 
-  assert.match(await tool('remember', { scope: 'own', text: 'Local own memory' }), /^Saved\./)
+  assert.match(await tool('bot_remember', { scope: 'own', text: 'Local own memory' }), /^Saved\./)
   assertWrite(remote, { kind: 'bot', nodeId: 'n1', botId: 'b1' }, remote.dir('nodes', 'n1', 'bots', 'b1'), 'Local own memory')
   assert.equal(existsSync(remote.dir('bots')), false)
 })
@@ -75,7 +75,7 @@ test('own scope without clusterBotId still writes to the node Bot directory', as
 test('node scope without clusterBotId still writes to the node directory', async (t) => {
   const { remote, tool } = await start(t)
 
-  assert.match(await tool('remember', { scope: 'node', text: 'Shared node memory' }), /^Saved\./)
+  assert.match(await tool('bot_remember', { scope: 'node', text: 'Shared node memory' }), /^Saved\./)
   assertWrite(remote, { kind: 'node', nodeId: 'n1' }, remote.dir('nodes', 'n1'), 'Shared node memory')
   assert.equal(existsSync(remote.dir('nodes', 'n1', 'bots')), false)
   assert.equal(existsSync(remote.dir('bots')), false)

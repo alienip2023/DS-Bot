@@ -25,7 +25,9 @@ test('a Bot without a preset runs a local agent on the profile default', () => {
   const { rt } = runtime()
   // The Bot's own chat: the profile's default, and the mode the CLI opens with.
   assert.equal(presetOf(rt, 'chat'), 'danger-full-access')
-  assert.equal(cliMode('claude', presetOf(rt, 'chat')), 'bypassPermissions')
+  // This fork opens a CLI on `danger-full-access` in ask mode ('default'): every call is approved
+  // through DS Bot (engines.js MODES), where upstream opens it on bypassPermissions.
+  assert.equal(cliMode('claude', presetOf(rt, 'chat')), 'default')
 })
 
 test('the group preset wins, then the Bot\'s own, then the profile default', () => {
@@ -33,7 +35,9 @@ test('the group preset wins, then the Bot\'s own, then the profile default', () 
   assert.equal(presetOf(rt, 'g1'), 'read-only')
   bots.b.permission = 'danger-full-access'
   assert.equal(presetOf(rt, 'chat'), 'danger-full-access')
-  assert.equal(cliMode('claude', presetOf(rt, 'chat')), 'bypassPermissions')
+  // This fork opens a CLI on `danger-full-access` in ask mode ('default'): every call is approved
+  // through DS Bot (engines.js MODES), where upstream opens it on bypassPermissions.
+  assert.equal(cliMode('claude', presetOf(rt, 'chat')), 'default')
 })
 
 test('without a permission service the old fallback stands', () => {

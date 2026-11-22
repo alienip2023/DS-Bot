@@ -49,7 +49,7 @@ test('the tools refuse a federated Bot row on the hub itself and queue nothing',
   assert.equal(rt.memoryNode.nodeId(), undefined)
 
   await assert.rejects(
-    () => tool('remember', { text: '- this must not be queued' }),
+    () => tool('bot_remember', { text: '- this must not be queued' }),
     error => error?.code === 'memory/federation-unsupported' && /no node identity/.test(error.message),
   )
   assert.equal(rt.memoryNode.outbox().length, 0)

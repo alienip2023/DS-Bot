@@ -13,7 +13,7 @@ test('remember with bot scope sends mem/write with the same remoteBotId', async 
   t.after(() => stop())
   await rt.load()
 
-  assert.match(await tool('remember', { text: 'Keep this across machines', scope: 'bot' }), /^Saved\./)
+  assert.match(await tool('bot_remember', { text: 'Keep this across machines', scope: 'bot' }), /^Saved\./)
   const sent = frames(link, 'mem/write')
   assert.equal(sent.length, 1)
   assert.equal(sent[0].payload.scope, 'bot')
@@ -29,7 +29,7 @@ test('recall with bot scope sends mem/read and labels cluster entries', async (t
   t.after(() => stop())
   await rt.load()
 
-  const answer = await tool('recall', { scope: 'bot' })
+  const answer = await tool('bot_recall', { scope: 'bot' })
   const sent = frames(link, 'mem/read')
   assert.equal(sent.length, 1)
   assert.equal(sent[0].payload.scope, 'bot')
@@ -45,9 +45,9 @@ test('cluster scope aliases are trimmed, unquoted and case-insensitive for reads
   await rt.load()
 
   for (const scope of ['cluster', '  "BoT"  ', " 'CLUSTER' ", '  "ClUsTeR BoT"  ', '机器人', '集群']) {
-    await tool('remember', { text: `Alias ${scope}`, scope })
+    await tool('bot_remember', { text: `Alias ${scope}`, scope })
     assert.equal(frames(link, 'mem/write').at(-1).payload.scope, 'bot', scope)
-    await tool('recall', { scope })
+    await tool('bot_recall', { scope })
     assert.equal(frames(link, 'mem/read').at(-1).payload.scope, 'bot', scope)
   }
 })
@@ -58,7 +58,7 @@ test('a write without scope still sends own', async (t) => {
   t.after(() => stop())
   await rt.load()
 
-  await tool('remember', { text: 'Keep this on the node' })
+  await tool('bot_remember', { text: 'Keep this on the node' })
   assert.deepEqual(frames(link, 'mem/write').map(frame => frame.payload.scope), ['own'])
 })
 
@@ -68,7 +68,7 @@ test('recall without scope still reads own then team', async (t) => {
   t.after(() => stop())
   await rt.load()
 
-  assert.equal(await tool('recall', {}), 'Your memory: nothing saved yet.\n\nThe team memory: nothing saved yet.')
+  assert.equal(await tool('bot_recall', {}), 'Your memory: nothing saved yet.\n\nThe team memory: nothing saved yet.')
   assert.deepEqual(frames(link, 'mem/read').map(frame => frame.payload.scope), ['own', 'team'])
 })
 
@@ -80,7 +80,7 @@ test('team writes are refused locally without a frame or outbox entry, online or
     await rt.load()
     const before = [...link.sent]
 
-    await assert.rejects(tool('remember', { text: 'Do not save this', scope: 'team' }), error => {
+    await assert.rejects(tool('bot_remember', { text: 'Do not save this', scope: 'team' }), error => {
       assert.equal(error.code, 'memory/team-read-only')
       assert.equal(error.message, 'The team memory is written on the hub by a Main Bot or a group admin; a node cannot write it. Nothing was saved.')
       return true
@@ -96,9 +96,9 @@ test('unknown and named Bot scope messages explain bot cluster memory', async (t
   t.after(() => stop())
   await rt.load()
 
-  const unknown = await tool('recall', { scope: 'missing' })
+  const unknown = await tool('bot_recall', { scope: 'missing' })
   assert.match(unknown, /^No scope named missing\./)
-  for (const message of [unknown, await tool('recall', { scope: 'Two' })]) {
+  for (const message of [unknown, await tool('bot_recall', { scope: 'Two' })]) {
     assert.match(message, /"bot"/)
     assert.match(message, /the memory the Bot keeps under its cluster identity, readable from any machine once that Bot has an identity/)
   }
@@ -122,7 +122,7 @@ test('the hub refuses a bot write when the roster row has no cluster identity', 
   await rt.load()
   const beforeWarnings = [...warnings]
 
-  await assert.rejects(tool('remember', { text: 'Fallback memory', scope: 'bot' }), error => {
+  await assert.rejects(tool('bot_remember', { text: 'Fallback memory', scope: 'bot' }), error => {
     assert.equal(error.code, 'memory/refused')
     assert.match(error.message, /A "bot" write requires clusterBotId on the hub roster\. Nothing was saved\./)
     return true
@@ -137,8 +137,8 @@ test('the hub refuses a bot write when the roster row has no cluster identity', 
   assert.equal(existsSync(remote.dir('nodes', 'n1', 'bots', 'b1', 'MEMORY.md')), false)
   assert.equal(existsSync(remote.dir('nodes', 'n1', 'bots', 'b1')), false)
   assert.equal(existsSync(remote.dir('bots')), false)
-  assert.equal(await tool('recall', { scope: 'bot' }), "The Bot's cluster memory: nothing saved yet.")
-  assert.equal(await tool('recall', { scope: 'own' }), 'Your memory: nothing saved yet.')
+  assert.equal(await tool('bot_recall', { scope: 'bot' }), "The Bot's cluster memory: nothing saved yet.")
+  assert.equal(await tool('bot_recall', { scope: 'own' }), 'Your memory: nothing saved yet.')
   assert.deepEqual(frames(link, 'mem/read').map(frame => frame.payload.scope), ['bot', 'own'])
   assert.deepEqual(remote.registry.frames('mem/read-result').map(frame => frame.payload.entries), [[], []])
   assert.equal(existsSync(remote.dir('nodes', 'n1', 'bots', 'b1')), false)

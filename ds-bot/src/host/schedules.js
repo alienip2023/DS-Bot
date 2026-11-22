@@ -114,8 +114,6 @@ export function install(rt) {
     if (room !== undefined) return { roomId: room.id }
     return rt.groupOwners.get(sessionId) ?? rt.pastOwners.get(sessionId)
   }
-  const known = owner => owner !== undefined && (owner.botId === undefined ? rt.roomOf(owner.roomId) !== undefined : rt.botOf(owner.botId) !== undefined)
-
   // The part that now carries the thread a task's Session belongs to: a Bot's chat and an
   // older chat still open beside it each go on in their own thread. A group member's own
   // part has none here.
@@ -133,6 +131,7 @@ export function install(rt) {
     const room = rt.roomOf(owner.roomId)
     return room === undefined ? undefined : rt.sessionOfRoom(room)
   }
+  const known = owner => owner !== undefined && (owner.botId === undefined ? rt.roomOf(owner.roomId) !== undefined : rt.botOf(owner.botId) !== undefined)
 
   // A Host-wide task delivering to this team Session, or nothing.
   const teamTask = async (id, sessionId) => {
@@ -184,6 +183,22 @@ export function install(rt) {
       else await service.create(sessionId, { title, prompt, ...selector })
       return schedulesView()
     },
+    async 'schedule-delete'(body) {
+      if (service === null) throw invalid('Automation tasks are off in DSH')
+      if (body.target?.kind === 'bot') {
+        await routines.remove(body)
+        return schedulesView()
+      }
+      if (ownerOf(body.sessionId) === undefined) throw invalid('No such task')
+      if (hostWide(service)) {
+        // Ids are Host-wide here, so the task must still deliver to the team Session named.
+        if (await teamTask(body.id, body.sessionId) === undefined) throw invalid('No such task')
+        await service.edit({ id: body.id, action: 'delete' })
+      } else {
+        await service.delete({ sessionId: body.sessionId, id: body.id })
+      }
+      return schedulesView()
+    },
     // Pause keeps the task and its timing; resume picks the next time it comes round.
     // The edit names the version it read, so a delivery that ended a one-time task or a
     // Bot's own change in between is not overwritten; a conflict reads the task again.
@@ -197,7 +212,7 @@ export function install(rt) {
         if (entry.status === (active ? 'active' : 'paused')) return schedulesView()
         // A one-time task whose time has come is about to be delivered: paused now, it
         // would never run and could never resume.
-        if (!active && (entry.kind === 'at' || entry.kind === 'after') && Date.parse(entry.scheduledAt) <= Date.now()) throw invalid("This task is due now and can’t be paused.")
+        if (!active && (entry.kind === 'at' || entry.kind === 'after') && Date.parse(entry.scheduledAt) <= Date.now()) throw invalid('This task is due now and can’t be paused.')
         const patch = { active }
         // A task left on an earlier part (a move that failed) resumes on the chat's
         // current part: DSH refuses to resume onto an archived Session.
@@ -209,7 +224,7 @@ export function install(rt) {
         } catch (error) {
           // A one-time task whose time has passed has nothing left to resume to.
           if (error?.code === 'not_future' || error?.details?.code === 'not_future' || /no future occurrence/i.test(error?.message ?? '')) throw invalid('Pick a time in the future')
-          if (/is archived/i.test(error?.message ?? '')) throw invalid("This task’s chat has ended. Delete the task and make it again.")
+          if (/is archived/i.test(error?.message ?? '')) throw invalid('This task’s chat has ended. Delete the task and make it again.')
           throw error
         }
         if (result?.code === 'schedule_conflict') continue
@@ -217,23 +232,6 @@ export function install(rt) {
         return schedulesView()
       }
       throw invalid('The task just changed. Try again.')
-    },
-    async 'schedule-delete'(body) {
-      if (service === null) throw invalid('Automation tasks are off in DSH')
-      if (body.target?.kind === 'bot') {
-        await routines.remove(body)
-        return schedulesView()
-      }
-      if (ownerOf(body.sessionId) === undefined) throw invalid('No such task')
-      if (hostWide(service)) {
-        // Ids are Host-wide here, so the task must still deliver to the team Session named.
-        const entry = (await service.catalog()).find(task => task.id === body.id)
-        if (entry === undefined || sessionOf(entry) !== body.sessionId) throw invalid('No such task')
-        await service.edit({ id: body.id, action: 'delete' })
-      } else {
-        await service.delete({ sessionId: body.sessionId, id: body.id })
-      }
-      return schedulesView()
     },
   }
 

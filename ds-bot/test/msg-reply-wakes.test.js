@@ -84,7 +84,7 @@ async function world(t) {
   return { rt, agent, sender, node, entered, released, requests, pages }
 }
 
-test('a joined reply to a busy sender is on chatPage now and runs its own completed turn', async t => {
+test('a joined reply to a busy sender waits for the current turn and runs its own completed turn', async t => {
   const w = await world(t)
   const { rt, agent, sender, node, entered, released } = w
   agent.followup(createUserMessage({ content: [{ type: 'text', text: 'current work' }], source: { kind: 'user' } }))
@@ -94,13 +94,12 @@ test('a joined reply to a busy sender is on chatPage now and runs its own comple
 
   await replyToSender(rt, { fromId: sender.id, toId: node.id, exchangeId: 'reply-busy', text: 'The node finished.' })
   assert.equal(agent.status, 'running')
+  // A reply between Bots is a relay event (kind 'bot'), not something the user typed: it is not
+  // a row of the user's own messages, and it waits behind the turn that is running.
   const { items } = await rt.chatPage(sender.id)
-  assert.ok(items.some(i => typeof i.text === 'string' && i.text.startsWith('[Reply from ')))
-  const row = items.find(i => typeof i.text === 'string' && i.text.startsWith('[Reply from '))
-  const transcript = w.pages.at(-1).map(record => record.event)
-  assert.ok(transcript.some(event => event.seq === row.seq && isReply(event)))
+  assert.equal(items.some(i => typeof i.text === 'string' && i.text.startsWith('[Reply from ')), false)
   assert.equal(agent.session.log.filter(event => event.type === 'turn/start').length, 1, 'the current turn is still running')
-  assert.equal(agent.inbox.nextTurn.some(message => message.source.replyTo === 'reply-busy'), false)
+  assert.equal(agent.inbox.nextTurn.some(message => message.source.replyTo === 'reply-busy' && message.source.kind === 'bot'), true)
 
   released.resolve()
   await until(() => agent.session.log.filter(event => event.type === 'turn/end').length === 2)
@@ -111,11 +110,12 @@ test('a joined reply to a busy sender is on chatPage now and runs its own comple
   assert.ok(starts[1].seq < ends[1].seq)
   assert.equal(ends[1].data.turn, starts[1].data.turn)
   assert.equal(ends[1].data.reason.kind, 'completed')
-  assert.equal(agent.session.log.filter(isReply).length, 1, 'the reply is recorded once')
-  assert.equal(w.requests.length, 2, 'the wake makes a model request')
+  const replies = agent.session.log.filter(isReply)
+  assert.equal(replies.length, 1, 'the reply is recorded once')
+  assert.equal(replies[0].data.source.kind, 'bot', 'and stays a Bot message, drawn as an event line')
+  assert.equal(w.requests.length, 2, 'the reply makes a model request')
   assert.equal(w.requests[1].messages.filter(message => textOf(message.content).startsWith('[Reply from ')).length, 1)
   assert.equal(agent.inbox.nextTurn.length, 0)
-  assert.equal((await rt.chatPage(sender.id)).items.filter(i => i.text?.startsWith('[Reply from ')).length, 1)
 })
 
 test('remote-worker work dispatches; answers and lifecycle controls keep the local path', async t => {
@@ -140,12 +140,13 @@ test('an idle sender wakes and consecutive visible messages each complete a turn
   for (const role of ['reply', 'report', 'mystery']) {
     await rt.deliver({ fromId: node.id, toId: sender.id, text: role, role })
   }
-  assert.equal((await rt.chatPage(sender.id)).items.filter(item => item.kind === 'user').length, 3)
+  // The reply is a relay event; the group report and the unnamed role are written as user text.
+  assert.equal((await rt.chatPage(sender.id)).items.filter(item => item.kind === 'user').length, 2)
   await until(() => agent.session.log.filter(event => event.type === 'turn/end').length === 3)
   assert.equal(requests.length, 3)
   assert.ok(agent.session.log.filter(event => event.type === 'turn/end').every(event => event.data.reason.kind === 'completed'))
   assert.equal(agent.inbox.nextTurn.length, 0)
-  assert.equal((await rt.chatPage(sender.id)).items.filter(item => item.kind === 'user').length, 3)
+  assert.equal((await rt.chatPage(sender.id)).items.filter(item => item.kind === 'user').length, 2)
 })
 
 test('a control message keeps followup delivery without an immediate transcript row', async t => {

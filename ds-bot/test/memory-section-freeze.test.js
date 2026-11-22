@@ -48,7 +48,7 @@ test('a change of role re-renders even though the snapshot did not move', async 
 
   await rt.setMain('b1', true)
   const promoted = section('b1')
-  assert.match(promoted, /As a Main Bot you write it with remember scope "team"/)
+  assert.match(promoted, /As a Main Bot you write it with bot_remember scope "team"/)
   assert.doesNotMatch(promoted, /tell a Main Bot with message_bot/)
   assert.match(promoted, /- held/)
   assert.equal(section('b1'), promoted)

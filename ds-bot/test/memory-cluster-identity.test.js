@@ -92,14 +92,14 @@ test('createBot and both copy paths give each Bot its own stable cluster identit
 test('own memory writes go to the cluster directory without creating a legacy directory', async (t) => {
   const bot = botRow({ clusterBotId: 'identity-1' })
   const { rt, ctx, root, put, tool } = await start(t, { bots: { b1: bot } })
-  await tool('remember', { text: 'Keeps the cluster fact', scope: 'own' })
+  await tool('bot_remember', { text: 'Keeps the cluster fact', scope: 'own' })
   const clusterDir = join(root, 'bots', clusterBotDirName(bot.clusterBotId))
   const legacyDir = join(root, 'bots', bot.id)
   assert.ok(existsSync(join(clusterDir, 'MEMORY.md')), 'own memory must create the cluster MEMORY.md')
   assert.match(readFileSync(join(clusterDir, 'MEMORY.md'), 'utf8'), /Keeps the cluster fact/)
   assert.equal(existsSync(legacyDir), false)
   assert.deepEqual(rt.memoryHost.ownScope(bot.id), { kind: 'clusterBot', clusterBotId: bot.clusterBotId })
-  assert.match(await tool('recall', { scope: 'own', query: 'cluster fact' }), /Keeps the cluster fact/)
+  assert.match(await tool('bot_recall', { scope: 'own', query: 'cluster fact' }), /Keeps the cluster fact/)
   const section = ctx.sections.get('bot-memory')
   assert.match(section.text({ agent: { id: bot.id } }), /Keeps the cluster fact/)
 
@@ -120,7 +120,7 @@ test('install mounts existing legacy data read-only and new own writes use the c
   const mounted = files.find(file => file.entries.some(entry => entry.text === 'legacy marker'))
   assert.ok(mounted, 'the Bot must still read its legacy marker')
   assert.equal(mounted.mountedFrom, join(root, 'bots', bot.id))
-  await tool('remember', { text: 'new cluster marker' })
+  await tool('bot_remember', { text: 'new cluster marker' })
   assert.match(readFileSync(join(root, 'bots', clusterBotDirName(bot.clusterBotId), 'MEMORY.md'), 'utf8'), /new cluster marker/)
   assert.equal(readFileSync(join(root, 'bots', bot.id, 'MEMORY.md'), 'utf8'), marker)
   assert.deepEqual(texts(await rt.memoryHost.readScope(scope)), ['new cluster marker', 'legacy marker'])
@@ -133,8 +133,8 @@ test('a Bot without clusterBotId still reads and writes its legacy directory', a
     seed: (root, put) => put(join(root, 'bots', bot.id, 'MEMORY.md'), '# Memory\n\n- old row marker\n'),
   })
   assert.deepEqual(rt.memoryHost.ownScope(bot.id), { kind: 'bot', botId: bot.id })
-  assert.match(await tool('recall', { scope: 'own', query: 'old row marker' }), /old row marker/)
-  await tool('remember', { text: 'still legacy' })
+  assert.match(await tool('bot_recall', { scope: 'own', query: 'old row marker' }), /old row marker/)
+  await tool('bot_remember', { text: 'still legacy' })
   assert.match(readFileSync(join(root, 'bots', bot.id, 'MEMORY.md'), 'utf8'), /still legacy/)
   assert.equal(existsSync(join(root, 'bots', clusterBotDirName(bot.id))), false)
 })
@@ -142,12 +142,12 @@ test('a Bot without clusterBotId still reads and writes its legacy directory', a
 test('private cluster memory keeps private reads, its own journal, and restorable history', async (t) => {
   const bot = botRow({ clusterBotId: 'private-identity', private: true })
   const { rt, root, tool } = await start(t, { bots: { b1: bot, b2: botRow({ id: 'b2', name: 'Reader', clusterBotId: 'reader' }) } })
-  await tool('remember', { text: 'private cluster fact' })
+  await tool('bot_remember', { text: 'private cluster fact' })
   const dir = join(root, 'bots', clusterBotDirName(bot.clusterBotId))
   assert.match(readFileSync(join(dir, 'journal.jsonl'), 'utf8'), /private cluster fact/)
   assert.equal(existsSync(join(root, 'journal.jsonl')), false)
-  assert.match(await tool('recall', { scope: bot.name }, 'b2'), /That Bot is private/)
-  await assert.rejects(tool('remember', { scope: bot.name, text: 'forbidden edit' }, 'b2'), /Only that Bot/)
+  assert.match(await tool('bot_recall', { scope: bot.name }, 'b2'), /That Bot is private/)
+  await assert.rejects(tool('bot_remember', { scope: bot.name, text: 'forbidden edit' }, 'b2'), /Only that Bot/)
   const { rows } = await rt.memoryEndpoint('memory-history', { botId: bot.id })
   assert.equal(rows.length, 1)
   assert.equal(rows[0].scope, 'own')
@@ -158,7 +158,7 @@ test('private cluster memory keeps private reads, its own journal, and restorabl
 test('archiving a local cluster Bot moves its cluster directory', async (t) => {
   const bot = botRow({ clusterBotId: 'archive-identity' })
   const { rt, root, tool } = await start(t, { bots: { b1: bot } })
-  await tool('remember', { text: 'archive cluster fact' })
+  await tool('bot_remember', { text: 'archive cluster fact' })
   const archiving = rt.archiveBotMemory(bot.id)
   delete rt.state.bots[bot.id]
   const archived = await archiving

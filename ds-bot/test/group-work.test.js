@@ -2939,7 +2939,8 @@ test('after a restart a batch whose finished member was renamed still wakes the 
 test('after a restart a member whose pick-up is still queued keeps its batch waiting', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const batch = { key: 'k-queued', roomId: 'r1', by: 'a', pending: ['b'], done: ['Tester'], doneIds: ['c'], results: [], worked: true, answered: false, at: 1 }
-  const note = { at: 1, args: { toId: 'b', sessionId: 'gb', role: 'room', roomId: 'r1', note: 'your turn', text: '整理文档', exchangeId: 'x-queued', askedBy: 'a' } }
+  // A note older than this fork's 30-minute queue TTL is dropped at the restart, so it is made now.
+  const note = { at: Date.now(), args: { toId: 'b', sessionId: 'gb', role: 'room', roomId: 'r1', note: 'your turn', text: '整理文档', exchangeId: 'x-queued', askedBy: 'a' } }
   const host = await start(t, undefined, undefined, undefined, undefined, undefined, { roomBatches: { 'k-queued': batch } }, { 'inflight.json': { turns: {}, queued: { gb: [note] } } })
   t.mock.timers.tick(3000)
   await settle(() => host.agentOf('gb').calls.length === 1)

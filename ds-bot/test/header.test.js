@@ -160,7 +160,8 @@ test('a group chat header mounts the approval bar in the top island and answers 
   }
   const work = {
     rooms: {},
-    approvals: [{ id: 'ap1', botId: 'a', roomId: 'r1', answerable: true, tool: 'bash', reason: 'Run check', detail: { code: 'npm test' }, at: 100 }],
+    // fork: the card answers only with the host row's own binding (sessionId + fingerprint), as the host always provides.
+    approvals: [{ id: 'ap1', botId: 'a', roomId: 'r1', sessionId: 'r1-a', fingerprint: 'fp1', answerable: true, tool: 'bash', reason: 'Run check', detail: { code: 'npm test' }, at: 100 }],
   }
   const computer = {
     asks: { ca1: { id: 'ca1', botId: 'b', roomId: 'r1', sessionId: 'r1-b', appName: 'Notes', at: 200 } },
@@ -256,7 +257,7 @@ test('a group chat header mounts the approval bar in the top island and answers 
   calls.length = 0
   const taskWork = {
     rooms: {},
-    approvals: [{ id: 'ap-task', botId: 'a', taskId: 'k_1', taskTitle: 'Deploy check', tool: 'bash', reason: 'Run deploy script', answerable: true, at: 100 }],
+    approvals: [{ id: 'ap-task', botId: 'a', sessionId: 'task-a', fingerprint: 'fp2', taskId: 'k_1', taskTitle: 'Deploy check', tool: 'bash', reason: 'Run deploy script', answerable: true, at: 100 }],
   }
   const renderBot = (uiState) => expand(HeaderPill({
     sessionId: 'a',
@@ -285,7 +286,9 @@ test('a group chat header mounts the approval bar in the top island and answers 
   assert.equal(botPanels.length, 1)
   const botBtns = findAll(botPanels[0], node => node.type === 'button')
   botBtns.find(btn => (btn.children ?? []).join('') === 'Allow once').props.onClick()
-  botBtns.find(btn => (btn.children ?? []).join('') === 'Reject').props.onClick()
+  // fork: one card answers once (double-click guard), so Reject is clicked on a freshly rendered card.
+  const freshBtns = findAll(findAll(renderBot({ approvalOpen: 'a' }), node => node.props?.className === 'bt-apv-panel')[0], node => node.type === 'button')
+  freshBtns.find(btn => (btn.children ?? []).join('') === 'Reject').props.onClick()
   assert.deepEqual(calls, [
     ['answerApproval', 'ap-task', 'allow'],
     ['answerApproval', 'ap-task', 'reject'],

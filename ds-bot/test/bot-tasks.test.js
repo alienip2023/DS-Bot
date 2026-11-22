@@ -450,7 +450,8 @@ test('background task approval bubbles directly as answerable with taskId/taskTi
   assert.equal(view[0].answerable, true)
   assert.equal(task.status, 'waiting_approval')
 
-  env.rt.answerApproval(view[0].id, 'allow')
+  // fork: answering names the owning Session (and the card fingerprint); upstream's bare call is forbidden here.
+  env.rt.answerApproval(view[0].id, 'allow', { sessionId: view[0].sessionId, fingerprint: view[0].fingerprint })
   assert.equal(await pendingApproval, 'allowed-once')
   assert.equal(task.status, 'running')
 })

@@ -61,7 +61,7 @@ async function start({ fail = {}, services = {}, home: reuse, state: seed = TEAM
   const warnings = []
   const infos = []
   ctx.logger = {
-    warn: (...args) => warnings.push(args.map(String).join(' ')),
+    warn: (...args) => { const line = args.map(String).join(' '); if (!/ds-bot: (settingsDir=|gateway )/.test(line)) warnings.push(line) },
     info: (...args) => infos.push(args.map(String).join(' ')),
   }
   const errorOf = value => (value instanceof Error ? value : new Error(INACTIVE))

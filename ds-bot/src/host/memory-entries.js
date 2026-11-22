@@ -5,7 +5,7 @@ import { createHash, randomBytes } from 'node:crypto'
 // Sizes, in characters of entry text: metadata does not count. Each MEMORY.md rides in
 // every request of a conversation, so its size is what a scope may always have in view;
 // the user can change these three (prefs.memoryLimits). A topic is read whole in one
-// recall. An entry holds one fact. `node` and the remote `bot` scopes have no files on
+// bot_recall. An entry holds one fact. `node` and the remote `bot` scopes have no files on
 // this machine yet, but they are written by the same path when they do; `snapshot` is
 // the whole rendered memory a node receives, across team, node and Bot sections.
 export const MEMORY_LIMITS = { entry: 300, group: 12_000, bot: 8_000, node: 8_000, team: 4_000, topic: 16_000, topics: 40, snapshot: 32_768 }
@@ -112,7 +112,7 @@ const DAY = /^\d{4}-\d{2}-\d{2}$/
 export const cleanDay = raw => (DAY.test(String(raw ?? '').trim()) ? String(raw).trim() : undefined)
 export const isExpired = (entry, today) => DAY.test(String(entry.meta?.until ?? '')) && entry.meta.until < today
 
-// An entry as the prompt shows it: its id and the day it was saved. recall shows the rest.
+// An entry as the prompt shows it: its id and the day it was saved. bot_recall shows the rest.
 export function promptEntry(entry) {
   const day = /^\d{4}-(\d{2}-\d{2})$/.exec(String(entry.meta?.added ?? ''))?.[1]
   return `- ${entry.text} [${[entryId(entry), day].filter(Boolean).join(' · ')}]`

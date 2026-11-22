@@ -550,9 +550,11 @@ test('a joined request gets the failure notice when the model call fails', () =>
   emit('b', 'assistant/message', assistantText('first half'))
   emit('b', 'user/message', { content: textBlock('[Message from Chief]\nmore'), source: replySource('request', { exchangeId: 'e1' }) })
   emit('b', 'turn/end', { turn: 1, reason: { kind: 'error', error: { code: 'SERVER', message: 'upstream busy', status: 503 } } })
-  assert.equal(delivered.length, 1)
-  assert.equal(delivered[0].replyTo, 'e1')
-  assert.match(delivered[0].text, /^Writer could not answer your message: its model call failed \(SERVER 503: upstream busy\)/)
+  // This fork also retries a failed turn by itself (a 'retry' to the Bot); the sender is told once.
+  const toSender = delivered.filter(job => job.toId === 'a')
+  assert.equal(toSender.length, 1)
+  assert.equal(toSender[0].replyTo, 'e1')
+  assert.match(toSender[0].text, /^Writer could not answer your message: its model call failed \(SERVER 503: upstream busy\)/)
 })
 
 test('a content-audit 403 stays on its turn without blocking the key', () => {

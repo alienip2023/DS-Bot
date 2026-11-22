@@ -180,11 +180,11 @@ test('M-mem-tools: the file-memory tools and the prompt section stay with the fi
   t.after(() => w.stop())
   await w.call('state', {})
   assert.match(w.section('b2'), /^# Your memory/)
-  assert.match(await w.tool('remember', { text: 'User prefers tea' }, 'b2'), /^Saved to your memory/)
+  assert.match(await w.tool('bot_remember', { text: 'User prefers tea' }, 'b2'), /^Saved to your memory/)
   assert.equal(w.section('b3'), '')
-  await assert.rejects(w.tool('remember', { text: 'x' }, 'b3'), /Memory is turned off for this Bot/)
+  await assert.rejects(w.tool('bot_remember', { text: 'x' }, 'b3'), /Memory is turned off for this Bot/)
   assert.equal(w.section('b4'), '')
-  await assert.rejects(w.tool('remember', { text: 'x' }, 'b4'), /keeps its memory in dsh-mneme/)
+  await assert.rejects(w.tool('bot_remember', { text: 'x' }, 'b4'), /keeps its memory in dsh-mneme/)
 })
 
 // What the pre-step puts in front of a Session's step: the group memory snapshot, the memory update and the
@@ -202,7 +202,7 @@ for (const backend of ['none', 'mneme']) {
     const w = world({ b3: 'file' })
     t.after(() => w.stop())
     await w.call('state', {})
-    await w.tool('remember', { text: 'Ship on Friday' }, 'g3')
+    await w.tool('bot_remember', { text: 'Ship on Friday' }, 'g3')
     assert.match(textOf((await frontOf(w.ctx, 'g3'))[0]), /Group memory/, 'on the file backend the snapshot is there')
     assert.equal((await w.call('update-bot', { id: 'b3', memoryConfig: { backend } })).ok, true)
     assert.deepEqual(await frontOf(w.ctx, 'g3'), [], 'moved off the file backend: nothing is put in front of the step')

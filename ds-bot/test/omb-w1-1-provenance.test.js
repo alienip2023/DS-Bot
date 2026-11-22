@@ -5,7 +5,14 @@ import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { test } from 'node:test'
 import { createRuntime } from '../index.js'
-import { toPlain, toTelegramHtml } from '../src/host/im/format.js'
+import { chunkTelegram, toPlain } from '../src/host/im/format.js'
+
+// What Telegram is sent for a message that fits one chunk (upstream 0.3.9 replaced toTelegramHtml).
+const toTelegramHtml = (markdown) => {
+  const chunks = chunkTelegram(markdown)
+  assert.equal(chunks.length, 1)
+  return chunks[0].html
+}
 import { adapters } from '../src/host/im/platforms/index.js'
 import { LocalAgentAdapter, pickAllowOption } from '../src/host/local-agents/adapter.js'
 import { escapeProvenance } from '../src/host/provenance.js'

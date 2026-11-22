@@ -296,7 +296,8 @@ test('group task approval carries roomId + taskId and lateRoomReply keeps batch 
   assert.equal(opened[0].taskTitle, 'Run migration')
   assert.equal(opened[0].answerable, true)
 
-  env.rt.answerApproval(opened[0].id, 'allow')
+  // fork: answering names the owning Session (and the card fingerprint); upstream's bare call is forbidden here.
+  env.rt.answerApproval(opened[0].id, 'allow', { sessionId: opened[0].sessionId, fingerprint: opened[0].fingerprint })
   assert.equal(await reqPromise, 'allowed-once')
 
   // Register a group batch waiting on Helper ('b'), then fire lateRoomReply while task is still running.

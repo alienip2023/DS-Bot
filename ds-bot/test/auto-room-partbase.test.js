@@ -162,7 +162,8 @@ async function bootBot(t, { provider, model, contextWindow, defaultMaxTokens, on
 
   const warnings = []
   const rt = createRuntime(root, { home })
-  rt.warn = (...args) => warnings.push(args.join(' '))
+  // The fork's start-up banners (settings dir, gateway config and port) are diagnostics, not warnings.
+  rt.warn = (...args) => { const line = args.join(' '); if (!/ds-bot: (settingsDir=|gateway )/.test(line)) warnings.push(line) }
   await rt.load()
   const { agent } = await agents.create({
     sessionId: 'm1',

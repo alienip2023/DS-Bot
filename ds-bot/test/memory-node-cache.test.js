@@ -80,7 +80,7 @@ test('the cache, the outbox and the applied seq survive a restart', async (t) =>
   const first = startNode({ home, link: fakeLink({ online: false }) })
   await first.rt.load()
   await first.rt.memoryNode.apply(snapshot(9, { team: '- kept over restart' }))
-  await first.tool('remember', { text: '- queued while offline' })
+  await first.tool('bot_remember', { text: '- queued while offline' })
   assert.equal(first.rt.memoryNode.status().queued, 1)
   const seq = first.rt.memoryNode.status().seq
   await first.stop({ keep: true })

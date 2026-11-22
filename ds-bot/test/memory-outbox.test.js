@@ -11,9 +11,9 @@ test('offline writes wait in the outbox and go out in order once the link is bac
   t.after(() => stop())
   await rt.load()
 
-  assert.match(await tool('remember', { text: 'first fact' }), /This node is offline, so the change waits in its outbox/)
-  assert.match(await tool('remember', { text: 'second fact' }), /waits in its outbox/)
-  assert.match(await tool('remember', { text: 'third fact' }), /waits in its outbox/)
+  assert.match(await tool('bot_remember', { text: 'first fact' }), /This node is offline, so the change waits in its outbox/)
+  assert.match(await tool('bot_remember', { text: 'second fact' }), /waits in its outbox/)
+  assert.match(await tool('bot_remember', { text: 'third fact' }), /waits in its outbox/)
   const queued = rt.memoryNode.outbox()
   assert.equal(queued.length, 3)
   assert.deepEqual(queued.map(item => item.text), ['first fact', 'second fact', 'third fact'])
@@ -39,7 +39,7 @@ test('a lost reply keeps the change queued and the retry reuses its requestId', 
   await rt.load()
 
   hub.silent = true
-  assert.match(await tool('remember', { text: 'written once' }), /waits in its outbox/)
+  assert.match(await tool('bot_remember', { text: 'written once' }), /waits in its outbox/)
   const queued = rt.memoryNode.outbox()
   assert.equal(queued.length, 1)
   const requestId = queued[0].requestId
@@ -69,7 +69,7 @@ test('a full outbox refuses the change and keeps what is already queued', async 
     text: `queued ${index}`,
     at: Date.now(),
   }))
-  await assert.rejects(tool('remember', { text: 'one too many' }), error => {
+  await assert.rejects(tool('bot_remember', { text: 'one too many' }), error => {
     assert.equal(error.code, 'memory/outbox-full')
     assert.match(error.message, /500 memory changes waiting/)
     return true
@@ -85,7 +85,7 @@ test('a team write is refused before a frame or an outbox entry exists', async (
   t.after(() => stop())
   await rt.load()
 
-  await assert.rejects(tool('remember', { text: 'team fact', scope: 'team' }), error => {
+  await assert.rejects(tool('bot_remember', { text: 'team fact', scope: 'team' }), error => {
     assert.equal(error.code, 'memory/team-read-only')
     assert.match(error.message, /written on the hub by a Main Bot or a group admin/)
     return true
@@ -96,7 +96,7 @@ test('a team write is refused before a frame or an outbox entry exists', async (
 
   // The same refusal happens with the node offline: nothing may be queued for the team.
   link.goDown()
-  await assert.rejects(tool('forget', { entry: 'anything', scope: 'team' }), error => error.code === 'memory/team-read-only')
+  await assert.rejects(tool('bot_forget', { entry: 'anything', scope: 'team' }), error => error.code === 'memory/team-read-only')
   assert.equal(rt.memoryNode.outbox().length, 0)
 })
 
@@ -107,7 +107,7 @@ test('a hub without memory-sync/1 fails closed instead of queueing', async (t) =
   t.after(() => stop())
   await rt.load()
 
-  await assert.rejects(tool('remember', { text: 'nowhere to go' }), error => {
+  await assert.rejects(tool('bot_remember', { text: 'nowhere to go' }), error => {
     assert.equal(error.code, 'memory/federation-unsupported')
     assert.match(error.message, /does not support federated memory \(memory-sync\/1\)/)
     return true
@@ -121,7 +121,7 @@ test('a non-terminal refusal keeps the entry and a terminal one lets it go', asy
   const { rt, tool, stop } = startNode({ link })
   t.after(() => stop())
   await rt.load()
-  await tool('remember', { text: '- retry me' })
+  await tool('bot_remember', { text: '- retry me' })
   assert.equal(rt.memoryNode.outbox().length, 1)
 
   // The hub answered, but could not write: the request stays and keeps its id, so the
@@ -139,7 +139,7 @@ test('a non-terminal refusal keeps the entry and a terminal one lets it go', asy
   // A good answer still dequeues: the terminal code only governs the stuck item.
   link.goDown()
   link.hub.fail = undefined
-  await tool('remember', { text: '- accepted now' })
+  await tool('bot_remember', { text: '- accepted now' })
   assert.equal(rt.memoryNode.outbox().length, 1)
   link.goUp()
   assert.equal(await rt.memoryNode.flush(), 1)

@@ -333,6 +333,7 @@ test('a turn picked up after a restart that leaves a task untouched blocks it; o
 
   // Finishing a task DS Bot blocked leaves no block behind.
   await host.tool({ action: 'complete', id: task('Write the draft').id, result: 'Draft delivered' }, 'gb')
-  assert.equal(task('Write the draft').status, 'done')
+  // fork: maker-can't-verify gate - complete lands on pending_acceptance (a reviewer makes it done).
+  assert.equal(task('Write the draft').status, 'pending_acceptance')
   assert.equal(task('Write the draft').blocked, undefined)
 })
