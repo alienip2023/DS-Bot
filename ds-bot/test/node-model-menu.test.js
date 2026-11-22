@@ -25,6 +25,9 @@ const { outputFiles } = await build({
       "export { ModelMenu } from './src/client/model-menu.js'",
       "export { ModelChoiceDock } from './src/client/model-menu.js'",
       "export { installLocale } from './src/client/i18n.js'",
+      "export { FolderMenu } from './src/client/folder-menu.js'",
+      "export { MemoryDialog } from './src/client/memory-panel.js'",
+      "export { joinedUpdateErrorText } from './src/client/joined-errors.js'",
     ].join('\n'),
     resolveDir: PLUGIN,
   },
@@ -59,7 +62,7 @@ runInNewContext(outputFiles[0].text, {
   navigator: {},
   Element: class {},
 })
-const { DetailsDrawer, BotSettingsForm, ModelMenu, ModelChoiceDock, installLocale } = module.exports
+const { DetailsDrawer, BotSettingsForm, ModelMenu, ModelChoiceDock, installLocale, FolderMenu, MemoryDialog, joinedUpdateErrorText } = module.exports
 
 const settle = () => new Promise(resolve => setTimeout(resolve, 5))
 // Render a component as a function; run its effects once, let the promises settle, render again.
@@ -564,4 +567,82 @@ test('a refused node pick leaves both model records and the node session unchang
   assert.equal(shadow.model, 'piion/m1')
   assert.equal(shadow.appliedModel, 'piion/m1')
   assert.ok(menu.drawerSets.some(value => typeof value === 'string' && value.length > 0), 'the drawer shows the refusal')
+})
+
+// A node Bot is used like a hub Bot: what cannot act on the node says so, it does not pretend.
+const NODE_REASON = 'This Bot runs on a node: change it there'
+
+test('the drawer of a node Bot gives the reason where Permissions, Connectors, Browser and Computer would be, and a node folder picker', async () => {
+  const p = page()
+  p.roster.permissions = { defaultPreset: 'ask', options: [{ id: 'ask', name: 'Ask' }] }
+  p.roster.computer = { enabled: true }
+  p.roster.browser = true
+  const named = (node, names) => {
+    if (Array.isArray(node)) return node.map(child => named(child, names))
+    if (!node || typeof node !== 'object' || node.props === undefined) return node
+    if (typeof node.type === 'function' && names.includes(node.type.name)) return named(node.type(node.props), names)
+    return { ...node, props: { ...node.props, children: named(node.props.children, names) } }
+  }
+  const drawn = async id => named((await render(DetailsDrawer, drawerProps(p, id), { effects: false })).tree, ['PermissionRow', 'BotConnectors'])
+  const tree = await drawn('bot-j1')
+  assert.equal(find(tree, n => n.type?.name === 'PermissionPicker').length, 0, 'no preset picker that would only edit the shadow row')
+  assert.equal(find(tree, n => n.type?.name === 'BotConnectors').length, 0)
+  const notes = find(tree, n => n.props?.className === 'bt-note').map(n => textOf(n))
+  assert.equal(notes.filter(text => text === NODE_REASON).length, 2, 'one for Permissions, one for Browser, computer use and connectors')
+  const titles = find(tree, n => n.props?.className === 'bt-section-title').map(n => textOf(n))
+  assert.ok(titles.includes('Permissions') && titles.includes('Browser, computer use and connectors'))
+  const tabs = find(tree, n => n.props?.role === 'tab').map(n => textOf(n))
+  assert.ok(!tabs.includes('Browser') && !tabs.includes('Computer'), `no Browser or Computer tab for a node Bot, got ${tabs}`)
+  const [folder] = find(tree, n => n.type?.name === 'FolderMenu')
+  assert.equal(folder.props.node, true, 'the folder is typed as a path on the node, not browsed on this disk')
+  // A hub Bot keeps all of them.
+  const local = await drawn('bot-local')
+  assert.equal(find(local, n => n.type?.name === 'PermissionPicker').length, 1)
+  const [localFolder] = find(local, n => n.type?.name === 'FolderMenu')
+  assert.equal(localFolder.props.node, false)
+})
+
+test('the settings of a node Bot: no Private switch, Type, Hub URL or Token, Capabilities, Control or Duplicate that would only edit the shadow row', async () => {
+  const p = page()
+  const { tree } = await render(BotSettingsForm, { bot: p.bot('bot-j1'), roster: { ...p.roster, computer: { enabled: true }, capabilities: [{ name: 'x', kind: 'skill' }] }, actions: p.actions, run: x => x }, { effects: false })
+  const all = textOf(tree)
+  assert.doesNotMatch(all, /Hub URL|Remote Port|Enrollment token|Worker Bot \(Remote Machine\)/)
+  assert.equal(find(tree, n => n.type === 'select' && n.props['aria-label'] === 'Bot type').length, 0)
+  assert.equal(find(tree, n => n.type === 'select' && n.props['aria-label'] === 'Memory backend').length, 1, 'the memory backend is the node\'s and stays')
+  const [priv] = find(tree, n => n.type?.name === 'SwitchRow' && n.props.label === 'Private')
+  assert.equal(priv.props.disabled, true)
+  assert.equal(priv.props.hint, NODE_REASON)
+  assert.equal(find(tree, n => n.type?.name === 'BotCapabilitiesCard' || n.type?.name === 'BotComputerCard').length, 0)
+  const cards = find(tree, n => n.type?.name === 'Card').map(n => n.props.title)
+  assert.ok(cards.includes('Capabilities') && cards.includes('Control'))
+  assert.equal(all.split(NODE_REASON).length - 1, 2, 'the reason shows in the Capabilities and Control cards (the Private switch carries it as its hint)')
+  const duplicate = find(tree, n => n.type === 'button' && textOf(n).includes('Duplicate'))
+  assert.equal(duplicate.length, 0, 'Duplicate is not a button for a node Bot')
+  assert.match(all, /A node Bot cannot be copied here/)
+  const [folder] = find(tree, n => n.type?.name === 'FolderMenu')
+  assert.equal(folder.props.node, true)
+})
+
+test('a node Bot\'s folder trigger names the node\'s default, not this machine\'s team workspace', async () => {
+  const noFolder = await render(FolderMenu, { value: undefined, node: true, actions: {}, run: x => x, onPick() {} }, { effects: false })
+  assert.equal(textOf(find(noFolder.tree, n => n.props?.className === 'bt-model-name')[0]), "The node's default folder")
+  const hub = await render(FolderMenu, { value: undefined, actions: {}, run: x => x, onPick() {} }, { effects: false })
+  assert.equal(textOf(find(hub.tree, n => n.props?.className === 'bt-model-name')[0]), 'Team workspace')
+})
+
+test('the memory dialog of a node Bot opens on its entries and has no assistant box that would refuse', async () => {
+  const props = owner => ({ owner, actions: { memoryView: async () => ({ entries: [], summary: null }), closeMemory() {} } })
+  const node = await render(MemoryDialog, props({ id: 'bot-j1', name: 'Scout', node: true }), { effects: false })
+  const [input] = find(node.tree, n => n.props?.className === 'bt-mem-input')
+  assert.equal(input.props.disabled, true)
+  assert.equal(input.props.placeholder, 'Not available for a node Bot: edit the entries in the list')
+  assert.equal(find(node.tree, n => n.props?.['aria-label'] === 'Back to the summary').length, 0)
+  assert.equal(textOf(find(node.tree, n => n.type === 'h2')[0]), 'All entries')
+  const hub = await render(MemoryDialog, props({ id: 'bot-local', name: 'Local' }), { effects: false })
+  assert.equal(find(hub.tree, n => n.props?.className === 'bt-mem-input')[0].props.placeholder, 'Ask or update')
+  assert.equal(textOf(find(hub.tree, n => n.type === 'h2')[0]), 'Memory summary')
+})
+
+test('the host\'s node-only refusal reads as its own sentence, not as "the node refused"', () => {
+  assert.equal(joinedUpdateErrorText(NODE_REASON), NODE_REASON)
 })

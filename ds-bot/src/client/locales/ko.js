@@ -64,6 +64,12 @@ export const KO = {
   // Shared
   'Main Bot': '메인 Bot',
   'Running on {host}': '{host}에서 실행 중',
+  'This Bot runs on a node: change it there': '이 Bot은 노드에서 실행됩니다. 노드에서 변경하세요',
+  'A node Bot cannot be copied here: create a new Bot on the node instead': '노드의 Bot은 여기서 복사할 수 없습니다. 노드에서 새 Bot을 만드세요',
+  'A folder on the node: type its path': '노드의 폴더입니다. 경로를 입력하세요',
+  'The node\'s default folder': '노드의 기본 폴더',
+  'Browser, computer use and connectors': '브라우저, 컴퓨터 사용 및 커넥터',
+  'Not available for a node Bot: edit the entries in the list': '노드 Bot에서는 사용할 수 없습니다. 목록에서 항목을 편집하세요',
   Working: '작업 중',
   'Waiting for your answer': '답변 대기 중',
   'Waiting for {names}': '{names} 응답 대기 중',

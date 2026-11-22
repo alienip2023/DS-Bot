@@ -70,3 +70,13 @@ test('a Bot that is not waiting has no such item', () => {
     assert.equal(buttons.some(button => String(labelOf(button)).startsWith('Give up waiting for')), false)
   }
 })
+
+test('a node Bot has no Duplicate item (a hub copy would carry the node\'s model and folder); a hub Bot keeps it', () => {
+  const joined = { id: 'j', name: 'Remote', createdAt: 3, origin: 'joined', type: 'remote-worker', worker: { nodeId: 'n1', remoteBotId: 'rb1', home: 'remote' } }
+  const both = { ...roster, bots: [bot, joined], byId: { b: bot, j: joined } }
+  const actions = { closeMenu() {}, reportError() {}, setFlags() {}, markUnread() {} }
+  const labels = id => menuitems(ContextMenu({ menu: { kind: 'bot', id, x: 10, y: 10 }, roster: both, actions, useWork: select => select({ waiting: {} }) })).map(labelOf)
+  assert.ok(labels('b').includes('Duplicate'))
+  assert.ok(!labels('j').includes('Duplicate'))
+  assert.ok(labels('j').includes('Edit Bot'))
+})

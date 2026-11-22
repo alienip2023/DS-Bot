@@ -20,7 +20,7 @@ import { threadCurrentOfPart, threadOfPart } from './threads.js'
 import { validateViewAnswer } from 'deep-view/core'
 import { BACKGROUND_AFTER_MAX_SEC, COLORS, EXTRA_COLORS, HISTORY_TIMEOUT_MS, ROUTE, THREAD_TITLE_MAX } from './constants.js'
 import { mainThreadId, ownerOfSession, threadOf, threadsOfBot } from './bot-store.js'
-import { joinedShadow } from './roster-join.js'
+import { joinedRouteRefusal, joinedShadow } from './roster-join.js'
 import { compatOf } from './node-compat.js'
 import { ensureMirrorSession, mirrorStateOf, hasPromptRequest, mirrorTurnPending } from './mirror.js'
 import { mirrorTurnOpen } from './joined-mirror-writer.js'
@@ -561,7 +561,7 @@ export function install(rt) {
       const body = payload ?? {}
       await rt.refresh()
       const readOnly = rt.readOnly()
-      if (readOnly !== undefined && !READS.has(endpoint)) return fail(readOnly, 'bot/read-only')
+      if (readOnly !== undefined && !READS.has(endpoint)) return fail(readOnly, 'bot/read-only'); const nodeOnly = joinedRouteRefusal(rt, endpoint, body); if (nodeOnly !== undefined) return fail(nodeOnly, 'bot/refused')
       switch (endpoint) {
         case 'state': {
           if (typeof body.locale === 'string' && /^[a-z]{2,3}(-[\w-]+)?$/i.test(body.locale)) uiLocale = body.locale
@@ -667,7 +667,7 @@ export function install(rt) {
               remote: true,
               nodeId: bot.worker?.nodeId ?? null,
               hostname: bot.worker?.hostname ?? null,
-              running: claim !== undefined,
+              running: claim !== undefined || (rt.joinedSide?.get(bot.id)?.size ?? 0) > 0,
               startedAt: Number.isFinite(claim?.startedAt) ? claim.startedAt : null,
             })
           }

@@ -5,6 +5,10 @@ import { t } from './i18n.js'
 // acted, so the code becomes a sentence: an unknown reason still says the node refused and why.
 export const isJoinedRemote = bot => bot?.origin === 'joined' && bot?.worker?.home === 'remote'
 
+// Why a control that only exists where the Bot runs is off for a node Bot. The same sentence is what
+// the host refuses such a change with, so a call that gets through anyway reads the same.
+export const nodeOnlyReason = () => t('This Bot runs on a node: change it there')
+
 export function joinedUpdateErrorText(raw) {
   const reason = String(raw ?? '').trim()
   switch (reason) {
@@ -14,6 +18,7 @@ export function joinedUpdateErrorText(raw) {
     case 'bridge-down': return t('The node is offline, so the change did not reach it. Try again when it is back.')
     case 'bot-update-timeout': return t('The node did not answer in time, so the change may not have applied. Try again in a moment.')
     case 'bot-update-not-found': return t('The node cannot find this Bot.')
+    case 'This Bot runs on a node: change it there': return nodeOnlyReason()
     default: return t('The node refused this change: {reason}', { reason: reason.replace(/^bot-update-failed:\s*/, '') || t('unknown reason') })
   }
 }
