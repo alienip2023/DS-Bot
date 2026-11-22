@@ -9,12 +9,14 @@ import { MENTION_ORIGIN, currentPart } from './text.js'
 import { SHELL_CSS, CONVERSATION_CSS, botOwnCss, installStyles, installCompiledStyles, RETURN_TOKENS } from './styles.js'
 import { lookOf } from './mark.js'
 import { TeamSidebar, YouAvatar, AccountLauncher, FooterAccount, BrandMark, BrandName, BotReturn, SIDEBAR_CSS, RETURN_CSS, holdShellShortcuts } from './sidebar.js'
+import { threadsStore } from './threads.js'
+import { threadTargetOf } from './thread-target.js'
+import { threadHomeGuard } from './thread-home.js'
 import { installSettingsShell, SETTINGS_SHELL_CSS } from './settings-shell.js'
 import { frameLayout, readSidebar, writeSidebar, toggledPref, DSH_NARROW } from './frame-layout.js'
 import { installFrameWatch } from './frame-watch.js'
 import { HeaderPill } from './header.js'
-import { watchAgentTerminals } from './agent-terminals.js'
-import { ComposerPlus, ComposerVoice, DraftKeeper, menuIcons } from './composer.js'
+import { ComposerPlus, ComposerVoice, menuIcons } from './composer.js'
 import { CHATS_SOURCE, atSources } from './at-menu.js'
 import { BtwDock, BtwTurnTail } from './btw.js'
 import { SIDE_CSS, sideSource } from './side-chat.js'
@@ -36,8 +38,7 @@ import { BROWSER_CSS } from './browser-pane.js'
 import { SECRET_CSS, SecretDock } from './secret-card.js'
 import { ConnectorDock, MailDock, CONNECTOR_CSS } from './connectors.js'
 import { CONNECTORS_PAGE_CSS } from './connectors-page.js'
-import { PROVIDERS_CSS } from './providers-page.js'
-import { LearningDock, LearningTurnTail, PendingLearning, LEARNING_CSS } from './learning-card.js'
+import { LearningDock, LearningTurnTail, LEARNING_CSS } from './learning-card.js'
 import { MODEL_CSS, ModelChoiceDock, DeepSeekSignIn } from './model-menu.js'
 import { ReadOnlyDock, READ_ONLY_CSS } from './read-only-dock.js'
 import { BOT_SETTINGS_CSS } from './bot-settings.js'
@@ -62,28 +63,32 @@ import { MEMBER_CSS, MemberDock } from './member-status.js'
 import { TASK_CSS } from './task-board.js'
 import { IM_CSS } from './im-page.js'
 import { GOAL_CSS } from './goal.js'
-import { TASKS_CSS } from './bot-tasks.js'
 import { BotMention, USER_MESSAGE_CSS, UserMessageCell, canDrawUserMessages, installUserBubble } from './user-message.js'
 import { BOT_MENTION_ID, installBotMentionRule } from './user-text-rule.js'
 import { QueueDock, QUEUE_CSS } from './queue-dock.js'
 import { PASTE_CSS, PasteDock, PasteGuard } from './paste-card.js'
-import { pruneDrafts } from './draft-keep.js'
 import { OPENING_CSS, bindOpeningWait } from './opening.js'
 import { noticeApprovals } from './approval-notices.js'
 import { listedOpener } from './open-listed.js'
+import { threadSessionOpener } from './thread-open.js'
+import { threadOwnerResolver } from './thread-owner.js'
+import { admitThreadPage, forgetThreadPage, readThreadPage, rememberThreadPage, restoreThreadPage } from './thread-restore.js'
+import { sessionProbes } from './host-session.js'
 import { needsIdleSample, pollDelay } from './polling.js'
 import { installMotionRest } from './motion-rest.js'
 import { agentSessionToReuse, singleFlight } from './agent-new.js'
 import { TextSelectionAction, ANNOTATION_CSS } from './text-annotation.js'
-import { installAgentForks } from './agent-fork.js'
 
 export const inject = ['sessions', 'uiWorkspace', 'uiConversation', 'slots', 'theme', 'layout']
-
-const WINDOWS = globalThis.navigator?.userAgentData?.platform === 'Windows' || /^Win/u.test(globalThis.navigator?.platform ?? '')
 
 export function apply(ctx) {
   ctx.effect(() => installLocale(ctx.get('locale')), 'ds-bot: interface copy')
   migrateStorage()
+  // The core restores the main view from its own saved Session id as soon as its
+  // lists are ready, and only a Session already in the list can be restored. A
+  // Thread page is a blank Session, so it is admitted here — before that restore —
+  // under the page this plugin remembers leaving.
+  admitThreadPage(ctx.sessions)
   // The window's cached prefs stand in until the first pull answers: a saved
   // `enterToSend: false` then already holds, instead of Enter sending meanwhile.
   const PREFS_KEY = STORAGE.prefs
@@ -97,7 +102,7 @@ export function apply(ctx) {
   let seenAt = seenStore.read()
   // `details` is the panel's subject (a Session id); `view` picks details or the
   // subject Bot's browser inside it.
-  const ui = createSource({ details: null, view: 'details', readOnlyPart: null, renaming: false, tab: null, side: null, task: null, taskDeck: null, newChat: null, exchange: null, menu: null, voice: null, palette: null, quote: null, paste: {}, pendingOpen: null, settings: null, memory: null, toast: null, signIn: null, renameAgent: null, unread: unreadStore.read(), reactions: reactionStore.read(), visits: {}, panelYield: false, leftDrawer: false, bootFailed: false, goalCompose: null, goalOpen: null, approvalOpen: null })
+  const ui = createSource({ details: null, view: 'details', readOnlyPart: null, renaming: false, tab: null, side: null, newChat: null, exchange: null, menu: null, voice: null, palette: null, quote: null, paste: {}, pendingOpen: null, settings: null, memory: null, toast: null, signIn: null, renameAgent: null, unread: unreadStore.read(), reactions: reactionStore.read(), visits: {}, panelYield: false, leftDrawer: false, bootFailed: false, goalCompose: null, goalOpen: null })
   // The left column's kept preference, and the frame geometry the layout rules
   // in frame-layout.js read: the window and the shell's collapsed track come from
   // installFrameWatch, the open column's width is the user's own.
@@ -220,7 +225,7 @@ export function apply(ctx) {
     }
     if (value.memoryNews !== undefined) noteMemoryNews(value.memoryNews)
     const current = roster.getSnapshot()
-    // Connector, capability, phone and MCP states change without a new revision.
+    // Connector, capability and phone states change without a new revision.
     const live = {}
     if (value.partsRunning !== undefined && JSON.stringify(value.partsRunning) !== JSON.stringify(current.partsRunning ?? {})) live.partsRunning = value.partsRunning
     if (value.secretStore !== undefined && JSON.stringify(value.secretStore) !== JSON.stringify(current.secretStore ?? {})) live.secretStore = value.secretStore
@@ -228,7 +233,6 @@ export function apply(ctx) {
     if (value.connectors !== undefined && JSON.stringify(value.connectors) !== JSON.stringify(current.connectors ?? [])) live.connectors = value.connectors
     if (value.capabilityStatuses !== undefined && JSON.stringify(value.capabilityStatuses) !== JSON.stringify(current.capabilityStatuses ?? {})) live.capabilityStatuses = value.capabilityStatuses
     if (value.phone !== undefined && JSON.stringify(value.phone) !== JSON.stringify(current.phone ?? null)) live.phone = value.phone
-    if (value.mcp !== undefined && JSON.stringify(value.mcp) !== JSON.stringify(current.mcp ?? null)) live.mcp = value.mcp
     if (value.learning !== undefined && JSON.stringify(value.learning) !== JSON.stringify(current.learning ?? {})) live.learning = value.learning
     if (value.learningSettled !== undefined && JSON.stringify(value.learningSettled) !== JSON.stringify(current.learningSettled ?? {})) live.learningSettled = value.learningSettled
     if (value.btwCards !== undefined && JSON.stringify(value.btwCards) !== JSON.stringify(current.btwCards ?? {})) live.btwCards = value.btwCards
@@ -439,7 +443,6 @@ export function apply(ctx) {
       document.body.dataset.btMotion = motion
       document.body.dataset.btLayout = layout
       document.body.dataset.btEffects = effects
-      if (WINDOWS) document.body.dataset.btOs = 'windows'
       document.body.style.setProperty('--bt-msg-w', String(width / 100))
       document.body.style.setProperty('--bt-flat-w', String(flatWidth / 100))
       const next = `${id}|${accent ?? ''}|${motion}|${layout}|${effects}|${width}|${flatWidth}|${registry.getSnapshot()}`
@@ -470,7 +473,6 @@ export function apply(ctx) {
         delete document.body.dataset.btMotion
         delete document.body.dataset.btLayout
         delete document.body.dataset.btEffects
-        delete document.body.dataset.btOs
         document.body.style.removeProperty('--bt-msg-w')
         document.body.style.removeProperty('--bt-flat-w')
         style.remove()
@@ -536,6 +538,12 @@ export function apply(ctx) {
     for (const [id, owner] of pendingAdopt) if (owner === agentId && !ids.includes(id)) ids.push(id)
     return ids
   }
+  // The Bot a Thread page belongs to. A Bot's own conversation is excluded even
+  // though its Main Thread shares the Session: that page wears the Bot skin.
+  const threadSessionBot = (id) => {
+    if (id === undefined || roster.getSnapshot().byId[id] !== undefined) return undefined
+    return threadsStore.botOfSession(id)
+  }
   const latestAgentSession = (agentId, list) => agentSessions(agentId)
     .sort((a, b) => (list.byId[b]?.updatedAt ?? 0) - (list.byId[a]?.updatedAt ?? 0))[0]
   const mainView = () => Object.values(ctx.sessions.list.getSnapshot().byId ?? {}).find(session => (session?.retainedBy?.mainView ?? 0) > 0)?.id
@@ -571,29 +579,113 @@ export function apply(ctx) {
     return frameLayout({ viewport: f.viewport, sidebarWidth: f.sidebarWidth, pref: sidebarPref.getSnapshot(), drawer: state.leftDrawer, panel: { view: view ?? state.view, yielded: state.panelYield === true } }).panel === 'folded'
   }
   const yieldBrowser = state => state.panelYield === true || panelFolded('browser')
-  // Bot mode's view must hold a team conversation; an outside Session wears the
-  // Bot skin without one. Runs whenever the surface is (or stays) Bot mode —
-  // including a cold start, where no setSurface call ever fires.
-  const homeToMainBot = () => {
-    const snapshot = roster.getSnapshot()
-    if (!snapshot.ready || !snapshot.mainBotId) return
-    const main = mainView()
-    if (main !== undefined && snapshot.byId[main] === undefined && snapshot.roomsById[main] === undefined) {
-      actions.openSession(snapshot.mainBotId)
-    }
-  }
   const ensureBotHome = () => {
-    if (roster.getSnapshot().ready) homeToMainBot()
+    if (roster.getSnapshot().ready) void homeToMainBot()
     else {
       const off = roster.subscribe(() => {
         if (!roster.getSnapshot().ready) return
         off()
-        homeToMainBot()
+        void homeToMainBot()
       })
     }
   }
+  // Threads are made by the Host as blank Sessions, and DSH's list shows a Session only
+  // once it has a message; the opener admits the Host's own record before it opens, and
+  // reports a Session it still cannot address instead of leaving a click with no effect.
+  const openThreadSession = threadSessionOpener({
+    sessions: ctx.sessions,
+    open: sessionId => actions.openAgentSession(sessionId),
+    report: error => actions.reportError(error, 'thread-open'),
+  })
+  // A Session the Thread cache has not loaded yet — after a reload or a restart — is
+  // still a Thread page as far as the Host is concerned; it answers and the cache learns.
+  const threadOwnerOf = threadOwnerResolver({
+    remember: (sessionId, botId) => threadsStore.remember(sessionId, botId),
+  })
+  // Bot mode's view must hold a team conversation; an outside Session wears the
+  // Bot skin without one. Runs whenever the surface is (or stays) Bot mode —
+  // including a cold start, where no setSurface call ever fires.
+  const homeToMainBot = threadHomeGuard({
+    roster,
+    mainView,
+    threadBotOfSession: threadSessionBot,
+    threadOwnerOf: (sessionId) => threadOwnerOf(sessionId),
+    // Read-only: the landing check yields while a Thread page waits to be restored.
+    hasThreadPage: () => readThreadPage() !== undefined,
+    threadPage: () => readThreadPage(),
+    openSession: (id) => actions.openSession(id),
+  })
+  // The core's restore only reopens a Session its list already shows, so the Thread
+  // page the user left can still be replaced by a fresh workspace Session. Once the
+  // restore settles, put that page back — never over a page the user chose, and
+  // never for a Thread the Host no longer knows (a deleted Thread goes to its Bot).
+  ctx.effect(() => {
+    const page = readThreadPage()
+    if (page === undefined) return
+    let done = false
+    let timer = 0
+    let tries = 0
+    const settle = async () => {
+      const list = ctx.sessions.list.getSnapshot()
+      const main = mainView()
+      const snapshot = roster.getSnapshot()
+      // A Host lookup can finish after another navigation. Its answer still fills
+      // the owner cache, but must not replace that page or erase its saved restore.
+      const isCurrent = () => mainView() === main && readThreadPage()?.sessionId === page.sessionId
+      // The restore kept the Thread page. Still ask the Host once: the answer
+      // teaches the Thread cache its owner (so `plain` follows the page without
+      // waiting for the next list change), and a Thread the Host no longer knows
+      // must not leave the page behind.
+      if (main === page.sessionId) {
+        await restoreThreadPage({
+          page,
+          ownerOf: (sessionId) => threadOwnerOf(sessionId),
+          forget: forgetThreadPage,
+          home: () => actions.openSession(snapshot.mainBotId),
+          alreadyOpen: true,
+          isCurrent,
+        })
+        return
+      }
+      const row = main === undefined ? undefined : list.byId?.[main]
+      const borrowed = main === undefined
+        || (row?.blank === true
+          && snapshot.byId[main] === undefined
+          && snapshot.roomsById[main] === undefined
+          && !isAgentSessionId(main)
+          && threadSessionBot(main) === undefined)
+      if (!borrowed) {
+        // The view is a Bot page, a Room, an Agent Session or another Thread: the
+        // saved page is stale.
+        forgetThreadPage()
+        return
+      }
+      await restoreThreadPage({
+        page,
+        open: (sessionId) => openThreadSession(sessionId),
+        ownerOf: (sessionId) => threadOwnerOf(sessionId),
+        forget: forgetThreadPage,
+        home: () => actions.openSession(snapshot.mainBotId),
+        isCurrent,
+      })
+    }
+    const tick = () => {
+      if (done) return
+      clearTimeout(timer)
+      const list = ctx.sessions.list.getSnapshot()
+      // The list subscription below calls again when it becomes ready, so waiting
+      // here costs nothing and the restore pass starts on the same tick it does.
+      if (list.phase !== 'ready') return
+      if (mainView() === undefined && tries < 20) { tries += 1; timer = setTimeout(tick, 100); return }
+      done = true
+      void settle()
+    }
+    const offList = ctx.sessions.list.subscribe(tick)
+    timer = setTimeout(tick, 0)
+    return () => { done = true; offList(); clearTimeout(timer) }
+  }, 'ds-bot: restore the last Thread page')
   const actions = {
-    ...teamActions({ call, after, partFor, roster, ui, live, cards, heldCards, turnClock, panelFolded }),
+    ...teamActions({ call, after, partFor, roster, ui, live, cards, heldCards, turnClock, panelFolded, openSession: id => actions.openSession(id), ...sessionProbes(ctx, quietly) }),
     // The files a group row names open DSH's own review tab for that turn. The tab reads
     // the changes of the Session the shell shows, so that Session is opened first; the same
     // call then retries until its right column is mounted. This jump is the one place a
@@ -609,13 +701,20 @@ export function apply(ctx) {
       if (openReview === undefined) { actions.notice(t('This window cannot open the change review')); return }
       openChangesReview(changes)
     },
-    learningAnswer: (id, approve) => after(call('learning-answer', { id, approve })),
+    learningAnswer: (id, approve, teamReusable = false) => after(call('learning-answer', { id, approve, teamReusable })),
     // The full-pane overlays sit above the conversation, so opening one must dismiss them
     // or the click appears to do nothing.
     isAgentSession: id => isAgentSessionId(id),
+    // The Bot a Thread Session belongs to; the sidebar's landing check asks this so a
+    // blank Thread page is not mistaken for an empty Session.
+    threadBotOfSession: id => threadSessionBot(id),
+    // Asked only when neither the roster nor the cache recognizes a blank Session.
+    threadOwnerOf: sessionId => threadOwnerOf(sessionId),
     openSession: (id) => {
-      // A DSH Agent Session id lands on the plain surface, not the Bot skin.
-      if (isAgentSessionId(id)) return actions.openAgentSession(id)
+      // A DSH Agent Session id, and a Thread Session id, land on the plain surface.
+      if (isAgentSessionId(id) || threadSessionBot(id) !== undefined) return actions.openAgentSession(id)
+      // Not a Thread page: the next restore must not put one back.
+      forgetThreadPage()
       ui.set(state => (state.newChat || state.exchange || state.menu || state.palette || state.groupSearch ? { ...state, newChat: null, exchange: null, menu: null, palette: null, groupSearch: null } : state))
       setPlain(false)
       const target = partFor(id)
@@ -624,10 +723,26 @@ export function apply(ctx) {
     // The conversation replacements withdraw for a plain Session; set the surface
     // before the navigation so the Bot skin never flashes.
     openAgentSession: (sessionId) => {
-      ui.set(state => ({ ...state, newChat: null, exchange: null, menu: null, palette: null, groupSearch: null, details: null, view: 'details', renaming: false, tab: null, task: null, taskDeck: null }))
+      const threadBot = threadSessionBot(sessionId)
+      if (threadBot === undefined) forgetThreadPage()
+      else rememberThreadPage({ botId: threadBot, sessionId })
+      ui.set(state => ({ ...state, newChat: null, exchange: null, menu: null, palette: null, groupSearch: null, details: null, view: 'details', renaming: false, tab: null }))
       setPlain(true)
       show(sessionId)
     },
+    // A Thread row: Main is the Bot page, a Thread with its own Session is the plain
+    // Session page. The cache decides; a row that is not loaded yet falls back to the
+    // Bot page rather than a wrong Session.
+    openThread: async (botId, threadId) => {
+      const thread = threadsStore.get(threadId)
+      const target = threadTargetOf(thread, botId)
+      if (target.kind !== 'session') return actions.openSession(botId)
+      const opened = await openThreadSession(target.id)
+      if (opened) rememberThreadPage({ botId, threadId: thread?.id ?? threadId, sessionId: target.id })
+      return opened
+    },
+    loadThreads: (botId, force = false) => threadsStore.load(botId, { force: force === true }),
+    createThread: (botId) => threadsStore.create(botId),
     addAgent: async () => {
       const agent = await after(call('add-agent'))
       if (agent?.sessions?.[0] !== undefined) actions.openAgentSession(agent.sessions[0])
@@ -725,7 +840,7 @@ export function apply(ctx) {
         return
       }
       if (mode === 'agent') {
-        ui.set(state => ({ ...state, details: null, view: 'details', task: null, taskDeck: null, settings: null, palette: null, groupSearch: null, newChat: null, menu: null, voice: null, exchange: null, memory: null, toast: null, goalOpen: null, goalCompose: null, approvalOpen: null }))
+        ui.set(state => ({ ...state, details: null, view: 'details', settings: null, palette: null, groupSearch: null, newChat: null, menu: null, voice: null, exchange: null, memory: null, toast: null }))
       }
       writeMode(mode)
       surface.set(state => ({ ...state, mode }))
@@ -807,17 +922,13 @@ export function apply(ctx) {
         await bridge.views.hold(botId, false)
         return result
       } : undefined,
-      // Cookie imports, only where the bridge offers them (the desktop app): an installed
-      // browser profile, a file, or pasted cookies/cURL is previewed, then applied into
-      // the Bot's storage key.
+      // Cookie imports, only where the bridge offers them (the desktop app): a file or an
+      // installed browser's profile is previewed, then applied into the Bot's storage key.
       browserImport: typeof bridge.importSources === 'function' ? {
         sources: () => bridge.importSources(),
-        probe: typeof bridge.importProbe === 'function' ? (source) => bridge.importProbe(source) : null,
         pick: () => bridge.importPick(),
-        paste: typeof bridge.importPaste === 'function' ? (text, defaultUrl) => bridge.importPaste(text, defaultUrl) : null,
-        launch: typeof bridge.importLaunch === 'function' ? (source) => bridge.importLaunch(source) : null,
-        live: (source, close, requestId) => bridge.importLive(source, close, requestId),
-        apply: (botId, pending, options) => bridge.importApply(`bot:${botId}`, pending, options),
+        live: (source, close) => bridge.importLive(source, close),
+        apply: (botId, pending) => bridge.importApply(`bot:${botId}`, pending),
         cancel: (pending) => bridge.importCancel(pending),
       } : null,
     })
@@ -974,7 +1085,7 @@ export function apply(ctx) {
   const face = () => ({ actions, hooks: { roster, ui, activity, work, memoryNews, registry, turnClock, live, computer, cards, heldCards, browserPages, browserTabs, browserHolds, surface, update, frame, sidebarPref, settingsShellHeld } })
   // Since DSH 0.2.1-alpha.3 user text is drawn by rules and a content factory, not the
   // primitives' text projection; the user's bubble draws with either (user-message.js).
-  const hostDrawsUserText = typeof ctx.uiConversation.userText?.register === 'function'
+  const hostDrawsUserText = typeof ctx.uiConversation?.userText?.register === 'function'
   // DS Bot's own rows in the `/` menu of a Bot chat and a group chat (the DSH rows stay;
   // the host module stops their execution there).
   ctx.effect(() => installCommandActions(ctx, { roster, actions }), 'ds-bot: bot command actions')
@@ -992,17 +1103,6 @@ export function apply(ctx) {
     updateQueue: async (itemId, action) => (await ctx.sessions.binding(sessionId)?.session?.updateQueue(itemId, action)) ?? { ok: false },
     loadImage: (attachment) => ctx.uiConversation.imageUrl(sessionId, attachment),
   })
-  // A deleted Bot or group takes its kept draft with it.
-  ctx.effect(() => {
-    let chats = null
-    return roster.subscribe(() => {
-      const snapshot = roster.getSnapshot()
-      if (!snapshot.ready) return
-      const now = new Set([...snapshot.bots.map(bot => bot.id), ...snapshot.rooms.map(room => room.id)])
-      if (chats !== null) pruneDrafts([...chats].filter(id => !now.has(id)))
-      chats = now
-    })
-  }, 'ds-bot: drafts of removed chats')
   ctx.effect(() => noticeApprovals({
     work,
     roster,
@@ -1061,27 +1161,9 @@ export function apply(ctx) {
       actions.reportError(new Error(t('Couldn’t steer the queued messages. Try again.')), 'steer-queue')
     }
   }
-  // The shell's own draft intake, for files a chat's draft gets back (draft-keep.js).
-  actions.draftFiles = (ids) => {
-    const conversation = ctx.get('conversation')
-    if (ids.length === 0 || typeof conversation?.resolveDraftAttachments !== 'function') return []
-    return conversation.resolveDraftAttachments(ids).map(item => ({ kind: item.kind, file: item.file }))
-  }
-  actions.restoreDraftFiles = (sessionId, files) => {
-    const conversation = ctx.get('conversation')
-    if (typeof conversation?.createDrafts !== 'function') return []
-    return conversation.createDrafts(sessionId, files, true).map(item => item.id)
-  }
-  actions.releaseDraftFiles = (ids) => {
-    const conversation = ctx.get('conversation')
-    if (typeof conversation?.releaseDraftAttachment !== 'function') return
-    for (const id of ids) conversation.releaseDraftAttachment(id)
-  }
   // A terminal tab in DSH's right column, only where the terminal plugin
   // registered its type and the column face is there.
   actions.canOpenTerminal = () => ctx.get('sidebarRight') !== undefined && ctx.get('sidebarRightTabs')?.get('terminal') !== undefined
-  // The tabs of the terminals a shown Bot starts, as DSH's own header opens them.
-  actions.watchAgentTerminals = sessionId => watchAgentTerminals(ctx.slots, sessionId, error => actions.reportError(error, 'right-sidebar'))
   actions.newTerminal = () => {
     // The column takes the drawer's space: hand it over first.
     actions.closePanel()
@@ -1150,7 +1232,7 @@ export function apply(ctx) {
   const shadow = (name, options, component) => ctx.slots.inject(name, () => ctx.slots.register({
     name, ...options, ...(options.priority === undefined ? {} : { priority: freePriority(ctx.slots.entries(name), options) }),
   }, component))
-  const installHeader = () => ctx.slots.inject('conversation.session.header', () => installHeaderNavigation(ctx.slots, () => ({ ...face(), PendingLearning }), HeaderPill, BOT_PRIORITY))
+  const installHeader = () => ctx.slots.inject('conversation.session.header', () => installHeaderNavigation(ctx.slots, face, HeaderPill, BOT_PRIORITY))
 
   // The "@" menu's Bot group and the chats "+" references. The composer's controller
   // for a Session is the shell's own, so the chats open at its caret.
@@ -1216,7 +1298,7 @@ export function apply(ctx) {
   const SHELL_SHEETS = [
     [SHELL_CSS, 'shell'],
     [SIDEBAR_CSS, 'sidebar'],
-    [SECRET_CSS + CONNECTOR_CSS + CONNECTORS_PAGE_CSS + PROVIDERS_CSS, 'secrets'],
+    [SECRET_CSS + CONNECTOR_CSS + CONNECTORS_PAGE_CSS, 'secrets'],
     [LEARNING_CSS, 'learning'],
     [MODEL_CSS + FOLDER_CSS + BOT_SETTINGS_CSS + BOT_MODELS_CSS + AGENT_CARDS_CSS + GROUP_SETTINGS_CSS + AVATAR_LIBRARY_CSS, 'models'],
     [USAGE_CSS, 'usage'],
@@ -1229,7 +1311,6 @@ export function apply(ctx) {
     [OPENING_CSS, 'opening'],
     [IM_CSS, 'im'],
     [GOAL_CSS, 'goal'],
-    [TASKS_CSS, 'tasks'],
     [USER_MESSAGE_CSS, 'user-messages'],
     [WIDGET_CSS, 'widgets'],
     [CHANGES_CSS, 'changes'],
@@ -1245,7 +1326,6 @@ export function apply(ctx) {
     const syncEffects = () => {
       const current = roster.getSnapshot()
       document.body.dataset.btEffects = effectsOf(current.ready ? current.prefs ?? {} : savedPrefs)
-      if (WINDOWS) document.body.dataset.btOs = 'windows'
     }
     syncEffects()
     const snapshot = roster.getSnapshot()
@@ -1259,7 +1339,6 @@ export function apply(ctx) {
     ]
     return () => {
       delete document.body.dataset.btEffects
-      delete document.body.dataset.btOs
       for (const off of offs) off()
     }
   }
@@ -1321,7 +1400,7 @@ export function apply(ctx) {
     // DSH 0.2.2-rc.1 draws user text by rules, and its file rule cuts "@新 Bot" at the
     // space. A rule of ours claims a whole Bot name first; releases that still have the
     // text projection (above) have no such registry.
-    ...(typeof ctx.uiConversation.userText?.register === 'function' ? [
+    ...(hostDrawsUserText ? [
       () => installBotMentionRule(ctx.uiConversation.userText, roster),
       () => shadow('conversation.user.text.node', { key: BOT_MENTION_ID, inject: face }, BotMention),
     ] : []),
@@ -1333,7 +1412,6 @@ export function apply(ctx) {
     () => shadow('conversation.composer.dock', { id: 'activity', order: 0, priority: BOT_PRIORITY }, Nothing),
     () => shadow('conversation.composer.dock', { id: 'usage', order: 1, priority: BOT_PRIORITY }, Nothing),
     () => shadow('conversation.composer.dock', { id: 'btw', order: 2, priority: BOT_PRIORITY, inject: face }, BtwDock),
-    () => shadow('conversation.input.left', { id: 'bot-draft', order: -120, inject: face }, DraftKeeper),
     () => shadow('conversation.input.left', { id: 'bot-paste', order: -110, inject: face }, PasteGuard),
     () => shadow('conversation.input.left', { id: 'bot-plus', order: -100, inject: face }, ComposerPlus),
     () => shadow('conversation.input.right', { id: 'bot-voice', order: 100, inject: face }, ComposerVoice),
@@ -1364,41 +1442,19 @@ export function apply(ctx) {
   ctx.effect(() => installCompiledStyles(COMPUTER_CSS, 'computer'), 'ds-bot: computer styles')
   shadow('sidebar.footer.action', { id: 'bot-return', order: -300, inject: face }, BotReturn)
 
-  ctx.effect(() => {
-    const forks = installAgentForks({
-      sessions: ctx.sessions,
-      ownerOf: id => roster.getSnapshot().agentOf[id],
-      hasAgent: id => roster.getSnapshot().agentsById[id] !== undefined,
-      pending: pendingAdopt,
-      ready: async () => { if (!roster.getSnapshot().ready) await pull() },
-      adopt: (agentId, sessionId) => call('agent-adopt', { agentId, sessionId }),
-      refresh: pull,
-      report: (error, source) => actions.reportError(error, source),
-      storage: globalThis.localStorage,
-    })
-    const reconcile = () => { void forks.reconcile().catch(error => actions.reportError(error, 'agent-fork-reconcile')) }
-    const offRoster = roster.subscribe(reconcile)
-    const offList = ctx.sessions.list.subscribe(reconcile)
-    const timer = setInterval(reconcile, 5000)
-    reconcile()
-    return () => {
-      offRoster()
-      offList()
-      clearInterval(timer)
-      return forks.dispose()
-    }
-  }, 'ds-bot: Agent forks')
-
   // The main view decides `plain`: a DSH Agent Session keeps the Bot shell but
-  // withdraws the conversation replacements, so the native dsh page shows. The
-  // hero's workspace picker creates a blank Session, adopted into the same Agent;
-  // forks are captured at creation above, without depending on list metadata.
+  // withdraws the conversation replacements, so the native dsh page shows. A jump
+  // this plugin did not start — the hero's workspace picker or a fork — opens an
+  // unowned Session; coming from a DSH Agent Session it is adopted into that Agent.
   ctx.effect(() => {
     let previous
     const sync = () => {
       const list = ctx.sessions.list.getSnapshot()
       const main = Object.values(list.byId ?? {}).find(session => (session?.retainedBy?.mainView ?? 0) > 0)?.id
-      const plain = isAgentSessionId(main)
+      // A Thread Session is one of a Bot's team conversations, so it keeps the Bot
+      // surface withdrawn exactly like an Agent Session does — otherwise the skin's
+      // composer and its landing check treat the Thread page as an outside Session.
+      const plain = isAgentSessionId(main) || threadSessionBot(main) !== undefined
       setPlain(plain)
       if (plain) dropPanels()
       if (main === previous) return
@@ -1414,13 +1470,18 @@ export function apply(ctx) {
       if (agentId === undefined) return
       const snapshot = roster.getSnapshot()
       if (snapshot.byId[main] !== undefined || snapshot.roomsById[main] !== undefined || agentOfSession(main) !== undefined) return
-      // Only a blank Session from the workspace picker joins here. Existing
-      // Sessions opened from the native sidebar keep their tools and stay out.
+      // Only a Session this jump created joins the Agent: a blank one from the
+      // workspace picker, or a fork of a Session the same Agent owns. An existing
+      // Session the user opened from the sidebar keeps its team tools and stays out.
       const row = list.byId[main]
       // A subagent child reports the Agent Session as its parent, but adopting it
       // would steal it from subagent routing — the Host refuses anyway, so skip.
       if (row?.origin === 'subagent') return
-      if (row?.blank !== true) return
+      // The client list maps the fork's parent to `parentId`; the raw field is
+      // the fallback for shapes that skip the mapping.
+      const parent = row?.parentId ?? row?.parentSessionId
+      const forkedFromAgent = parent !== undefined && agentOfSession(parent) === agentId
+      if (row?.blank !== true && !forkedFromAgent) return
       pendingAdopt.set(main, agentId)
       setPlain(true)
       void call('agent-adopt', { agentId, sessionId: main }).then(() => pull()).catch((error) => {
@@ -1440,8 +1501,11 @@ export function apply(ctx) {
     }
     const offList = ctx.sessions.list.subscribe(sync)
     const offRoster = roster.subscribe(sync)
+    // `plain` reads the Thread cache; teaching it (or a Thread list load) must
+    // recompute the surface without waiting for the next Session or roster change.
+    const offThreads = threadsStore.subscribe(sync)
     sync()
-    return () => { offList(); offRoster() }
+    return () => { offList(); offRoster(); offThreads() }
   }, 'ds-bot: agent surface')
 
   ctx.effect(() => {

@@ -34,18 +34,20 @@ const roster = { byId: { b: { id: 'b', name: 'Writer' } }, roomsById: {} }
 const MINUTE = 60_000
 const shape = rows => [...rows].map(row => (row.props.className === 'bt-time-sep' ? 'clock' : row.type.name === 'Bubbles' ? `bot:${row.props.texts.join('+')}` : row.type.name))
 
-test('stored duplicate bubbles stay visible, with reactions on indexes 1 and 3', () => {
+test('adjacent identical stored bubbles are hidden, and reactions keep their original indexes', () => {
   const tree = Bubbles({
     texts: ['...', '...', 'other', '...', '...'], roster, selfId: 'b', actions: {}, msgKey: 'room:1',
     useUi: select => select({ reactions: { 'room:1': { 1: ['👍'], 3: ['😂'] } } }),
     streaming: true, lead: 'avatar',
   })
   const bubbles = tree.children.filter(child => child?.type?.name === 'Bubble')
+  // Indexes 1 and 4 repeat the text just before them and are not drawn; the shown ones keep
+  // the index their reactions are stored under.
   assert.deepEqual(bubbles.map(bubble => [bubble.props.text, bubble.props.index, bubble.props.picked[0] ?? null]), [
-    ['...', 0, null], ['...', 1, '👍'], ['other', 2, null], ['...', 3, '😂'], ['...', 4, null],
+    ['...', 0, null], ['other', 2, null], ['...', 3, '😂'],
   ])
-  assert.deepEqual(bubbles.map(bubble => bubble.props.live), [false, false, false, false, true])
-  assert.deepEqual(bubbles.map(bubble => bubble.props.lead), [null, null, null, null, 'avatar'])
+  assert.deepEqual(bubbles.map(bubble => bubble.props.live), [false, false, true])
+  assert.deepEqual(bubbles.map(bubble => bubble.props.lead), [null, null, 'avatar'])
 })
 
 test('whitespace variants stay separate bubbles', () => {
