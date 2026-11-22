@@ -480,8 +480,25 @@ export function install(rt) {
     }, delay)
     migrateTimer.unref?.()
   }
+  // Nodes that reported since this process started. A shadow row loaded from disk keeps the
+  // `online: true` it was saved with; until its node reports again that is only a memory.
+  const reportedNodes = new Set()
+  let sweptStale = false
+  const sweepStale = () => {
+    if (sweptStale) return
+    sweptStale = true
+    let swept = false
+    for (const bot of Object.values(rt.state?.bots ?? {})) {
+      if (bot?.origin !== 'joined' || bot.worker?.home !== 'remote') continue
+      if (reportedNodes.has(bot.worker.nodeId) || bot.worker.online === false) continue
+      bot.worker.online = false
+      swept = true
+    }
+    if (swept) void rt.save?.()
+  }
   const onRoster = (report) => {
     if (stopped) return
+    if (typeof report?.nodeId === 'string') reportedNodes.add(report.nodeId)
     let changed = false
     applyRosterReport(rt.state, report, Date.now(), value => { changed = value })
     if (typeof report?.nodeId === 'string' && report.nodeId.trim() !== '') {
@@ -516,6 +533,7 @@ export function install(rt) {
     if (typeof report !== 'function') return
     await rt.load?.()
     if (stopped) return
+    sweepStale()
     await rt.loadSecrets?.()
     if (stopped) return
     report({ bots: reportableBots(rt.state?.bots, rt.taskViewOf, rt.nodeCardsOf), skills: sharedSkillSnapshot(rt) })

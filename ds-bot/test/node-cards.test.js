@@ -204,3 +204,18 @@ test('the hub keeps the reported cards on the shadow row, clears them on an empt
   applyRosterReport(state, report([]))
   assert.deepEqual(Object.values(state.bots)[0].nodeCards, [])
 })
+
+test('a task started or followed up from the hub makes the Bot owe that hub its report', async () => {
+  const { rt, calls } = nodeRt({ startTask: async () => ({ id: 't-new' }) })
+  const receive = createBotActionReceiver(rt)
+  assert.equal(rt.state.bots.b1.hubAskedAt, undefined)
+  const started = await receive({ remoteBotId: 'b1', action: 'task-start', params: { text: 'look into it' } })
+  assert.equal(started.ok, true)
+  assert.equal(typeof rt.state.bots.b1.hubAskedAt, 'number', 'task-start marks the hub as having asked')
+
+  const { rt: rt2 } = nodeRt()
+  const receive2 = createBotActionReceiver(rt2)
+  await receive2({ remoteBotId: 'b1', action: 'task-send', params: { taskId: 't1', text: 'and this' } })
+  assert.equal(typeof rt2.state.bots.b1.hubAskedAt, 'number', 'task-send marks it too')
+  assert.equal(calls.length, 0)
+})
