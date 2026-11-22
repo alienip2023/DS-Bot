@@ -580,7 +580,7 @@ export function install(rt) {
         // this Bot is settled as stopped by its own exchange, so a nodeOffline or a result that
         // arrives afterwards is dropped instead of being reported as a bridge that went down.
         // The deliver below opens a new exchange and is not one of those.
-        rt.stopJoinedTurn?.(target.id)
+        rt.stopJoinedTurn?.(target.id, { notifyNode: false })   // the node already confirmed the stop above
         settleStoppedTurns(registry, nodeId, remoteBotId)
         // The receipt below opens a new exchange after the settle. A node drop before the node
         // answers it is the stop taking effect, so that one exchange closes as stopped. Nothing

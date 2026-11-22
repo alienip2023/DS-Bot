@@ -190,6 +190,29 @@ export function listenBotStopResult(registry, requestId, nodeId, timeoutMs) {
   return { pending, cancel: () => finish({ ok: false, stopped: false, error: 'bridge-down' }) }
 }
 
+/**
+ * Ask a node to end the turn of one of its Bots (bot/stop) and wait for its receipt. This is what the page's
+ * Stop button does for a node Bot, as for a local one: the work on the node really ends (and stops spending),
+ * not only the wait for it on this host. Resolves { ok, stopped, error? }; a node that is offline, old or
+ * slow gets an honest answer instead of a hang.
+ */
+export async function stopOnNode(rt, bot, { timeoutMs = 15_000 } = {}) {
+  const nodeId = trimmed(bot?.worker?.nodeId)
+  const remoteBotId = trimmed(bot?.worker?.remoteBotId)
+  if (nodeId === '' || remoteBotId === '') return { ok: false, stopped: false, error: 'no-remote-identity' }
+  let registry
+  try { registry = rt.ctx?.get?.('remote-agent:registry') } catch { registry = undefined }
+  if (!registry || typeof registry.send !== 'function') return { ok: false, stopped: false, error: 'bridge-down' }
+  const requestId = randomUUID()
+  const wait = listenBotStopResult(registry, requestId, nodeId, timeoutMs)
+  let sent
+  try { sent = registry.send(nodeId, 'bot/stop', { nodeId, remoteBotId, requestId }) } catch { sent = false }
+  if (sent !== true) { wait.cancel(); return { ok: false, stopped: false, error: 'bridge-down' } }
+  const answer = await wait.pending
+  if (answer === undefined) return { ok: false, stopped: false, error: 'no-answer' }
+  return { ok: answer.ok === true, stopped: answer.stopped === true, ...(answer.error ? { error: answer.error } : {}) }
+}
+
 // Node side of bot/stop: the node's own ds-bot cancels the turn of the named local Bot.
 // `rt.stopChat` covers both a local Agent turn and a joined page turn (turns.js).
 export function createBotStopReceiver(rt) {

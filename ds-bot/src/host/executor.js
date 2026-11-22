@@ -651,11 +651,11 @@ export function startSideTurn({ rt, bot, text, requestId, session, state = {}, t
  * Bot's answer about it reached the hub as a bot/message. It is written to the page as a turn of
  * its own (marked), after any turn that is open — the same wait a late reply has.
  */
-export function writeNodeReport({ rt, bot, session, state = {}, text }) {
+export function writeNodeReport({ rt, bot, session, state = {}, text, mark = TASK_RESULT_MARK }) {
   if (rt.joinedLateClosed === true) return false
   const write = () => {
     try {
-      mirrorLateReply(session, { botText: text, botId: bot.id, mark: TASK_RESULT_MARK, closedTurns: state.closedTurns })
+      mirrorLateReply(session, { botText: text, botId: bot.id, mark, closedTurns: state.closedTurns })
     } catch (error) {
       rt.warn?.('ds-bot: a background task result of Bot %s was not written: %s', bot.id, error?.message ?? error)
     }
