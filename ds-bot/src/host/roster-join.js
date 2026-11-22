@@ -86,6 +86,7 @@ export function cardSummaryOf(cards) {
       kind: typeof card.kind === 'string' ? card.kind.slice(0, 32) : 'other',
       title: String(card.title ?? '').slice(0, 120),
       body: String(card.body ?? '').slice(0, 2000),
+      ...(typeof card.data === 'string' && card.data.length <= 6000 ? { data: card.data } : {}),
       options: (Array.isArray(card.options) ? card.options : []).slice(0, 8)
         .filter(option => typeof option?.id === 'string' && option.id !== '').map(option => ({ id: option.id.slice(0, 64), label: String(option.label ?? option.id).slice(0, 60) })),
       input: card.input === true,

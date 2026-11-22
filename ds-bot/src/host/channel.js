@@ -392,7 +392,7 @@ export function install(rt) {
     privateArchives: rt.archivesView(),
     exchangeTurns: state.exchangeTurns,
     questions: publicCards({ ...state.questions, ...rt.nodeQuestionsView?.() }),
-    views: publicCards(state.views),
+    views: publicCards({ ...state.views, ...rt.nodeViewsView?.() }),
     closedCards: state.closedCards ?? {},
     // Aside answers of each Bot's current part, newest first. Not part of the
     // model-visible history; earlier parts send their cards on their own pages.

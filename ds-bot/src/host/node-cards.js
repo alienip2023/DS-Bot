@@ -12,8 +12,11 @@ import { randomUUID } from 'node:crypto'
 import { clampNodeTime, joinedShadow } from './roster-join.js'
 import { nodeCan, refusalFor } from './node-compat.js'
 import { markHubAsked } from './joined-turn.js'
+import { viewCardText } from './parts.js'
+import { validateViewAnswer } from 'deep-view/core'
 
 const BODY_MAX = 1900
+const DATA_MAX = 6000
 const clip = (text, max) => String(text ?? '').slice(0, max)
 
 const APPROVAL = { allow: '允许', reject: '拒绝' }
@@ -41,6 +44,30 @@ export function nodeCardsOf(rt, bot) {
       body: clip([question.detail, ...lines].filter(Boolean).join('\n'), BODY_MAX),
       options: (question.options ?? []).slice(0, 8).map((option, index) => ({ id: String(index), label: clip(option.label, 60) })),
       input: question.allowCustom === true, at: question.askedAt ?? 0,
+    })
+  }
+  // A form the Bot put on screen and waits on (show_view). The hub needs its definition to draw and
+  // answer it, so the view travels whole as `data` (when it is too big for the report the card stays
+  // readable but cannot be answered from the hub).
+  const view = rt.state?.views?.[rt.chatOf?.(bot.id)]
+  if (view !== undefined && view.id) {
+    const data = JSON.stringify({ title: view.title, view: view.view })
+    cards.push({
+      id: `view:${view.id}`, kind: 'view', title: clip(view.title ?? '', 120),
+      body: clip(viewCardText({ title: view.title, view: view.view }) ?? '', BODY_MAX),
+      options: [], input: false, at: view.askedAt ?? 0,
+      ...(data.length <= DATA_MAX ? { data } : {}),
+    })
+  }
+  // A request for a secret is answered where secrets live (the node's own store); the hub tells the
+  // user it is waiting, it never carries the value.
+  for (const request of rt.state?.secretRequests?.[bot.id] ?? []) {
+    if (request?.status !== 'pending') continue
+    cards.push({
+      id: `secret:${request.id}`, kind: 'secret',
+      title: clip(`${request.kind === 'fill' ? '需要密钥的值' : '请求使用密钥'}：${request.name ?? ''}`, 120),
+      body: clip(`${request.purpose ?? ''}\n\n请在这台节点的 ds-bot 里处理这个请求（密钥不会经过主控）。`.trim(), BODY_MAX),
+      options: [], input: false, at: request.askedAt ?? 0,
     })
   }
   for (const proposal of rt.learningView?.()?.[bot.id] ?? []) {
@@ -94,6 +121,17 @@ export function createBotActionReceiver(rt) {
       const picked = params.choice === undefined ? undefined : question.options?.[Number(params.choice)]
       if (params.choice !== undefined && picked === undefined) return refuse('choice-invalid')
       await rt.answerQuestion(sessionId, id, { selected: picked === undefined ? [] : [picked.label], ...(params.text ? { custom: params.text } : {}) })
+      return { ok: true }
+    }
+
+    if (kind === 'view') {
+      const sessionId = rt.chatOf?.(bot.id)
+      const pending = rt.state?.views?.[sessionId]
+      if (pending === undefined || pending.id !== id) return refuse('card-stale')
+      let answer
+      try { answer = JSON.parse(String(params.text ?? '')) } catch { return refuse('view-answer-invalid') }
+      if (typeof answer?.action !== 'string' || answer.action === '') return refuse('view-answer-invalid')
+      await rt.answerView(sessionId, id, answer.action, answer.values ?? {})
       return { ok: true }
     }
 
@@ -257,6 +295,33 @@ export function installHub(rt) {
         if (proposals.length > 0) byBot[bot.id] = [...(byBot[bot.id] ?? []), ...proposals]
       }
       return byBot
+    }
+  }
+  // The forms node Bots wait on, in the shape the page draws for a local Bot's show_view.
+  rt.nodeViewsView = () => Object.fromEntries(remoteBots(rt).flatMap((bot) => {
+    const card = (bot.nodeCards ?? []).find(item => item.kind === 'view' && typeof item.data === 'string')
+    const sessionId = mirrorSessionOf(rt, bot)
+    if (card === undefined || !sessionId) return []
+    let parsed
+    try { parsed = JSON.parse(card.data) } catch { return [] }
+    if (parsed?.view === undefined) return []
+    return [[sessionId, { id: card.id.slice('view:'.length), title: parsed.title ?? card.title, view: parsed.view, askedAt: seenAt(bot, card), remote: true }]]
+  }))
+  const answerView = rt.answerView
+  if (typeof answerView === 'function') {
+    rt.answerView = async function (sessionRef, viewId, action, values, ...rest) {
+      const found = remoteCard(rt, `view:${String(viewId ?? '')}`)
+      if (found === undefined) return answerView.call(this, sessionRef, viewId, action, values, ...rest)
+      let parsed
+      try { parsed = JSON.parse(found.card.data ?? '') } catch { parsed = undefined }
+      if (parsed?.view === undefined) throw Object.assign(new Error('这张表单太大，请在节点上回答'), { code: 'bot/invalid' })
+      const checked = validateViewAnswer(parsed.view, action, values)
+      if (checked.error !== undefined) throw Object.assign(new Error(checked.error), { code: 'bot/invalid' })
+      const text = JSON.stringify({ action, values: values ?? {} })
+      if (text.length > 4000) throw Object.assign(new Error('答案太长，无法发送到节点'), { code: 'bot/invalid' })
+      await sendBotAction(rt, found.bot, 'card-answer', { cardId: found.card.id, text })
+      await dropCard(rt, found.bot, found.card.id)
+      return true
     }
   }
   rt.nodeTaskOf = (bot, taskId) => (joinedShadow(bot) ? (bot.nodeTasks ?? []).find(task => task.id === taskId) : undefined)
