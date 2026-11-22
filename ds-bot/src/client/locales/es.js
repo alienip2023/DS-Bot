@@ -64,6 +64,12 @@ export const ES = {
   // Shared
   'Main Bot': 'Bot principal',
   'Running on {host}': 'Se ejecuta en {host}',
+  'This Bot runs on a node: change it there': 'Este Bot se ejecuta en un nodo: cámbialo allí',
+  'A node Bot cannot be copied here: create a new Bot on the node instead': 'Un Bot de un nodo no se puede copiar aquí: crea un Bot nuevo en el nodo',
+  'A folder on the node: type its path': 'Una carpeta del nodo: escribe su ruta',
+  'The node\'s default folder': 'Carpeta predeterminada del nodo',
+  'Browser, computer use and connectors': 'Navegador, uso del ordenador y conectores',
+  'Not available for a node Bot: edit the entries in the list': 'No disponible para un Bot de nodo: edita las entradas en la lista',
   Working: 'En curso',
   'Waiting for your answer': 'Esperando tu respuesta',
   'Waiting for {names}': 'Esperando a {names}',

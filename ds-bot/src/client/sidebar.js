@@ -265,8 +265,13 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
   const remoteHome = remoteHomeOf(bot)
   // Another machine's Bot, mirrored read-only: it has no local Session to open.
   const peer = bot.origin === 'peer' && bot.worker?.home === 'hub'
+  // A node Bot's row shows what a hub Bot's row shows (waiting, working, the last message); where the
+  // Bot runs is only the line of a quiet row, and an offline node or one that needs an update rides
+  // on whichever line is shown.
+  const nodeFlags = joined ? [bot.worker.online === false ? '离线' : '', bot.nodeCompat?.length ? t('Node needs an AC update') : ''].filter(Boolean) : []
+  const flagged = text => (nodeFlags.length > 0 ? [text, ...nodeFlags].join(' · ') : text)
   const machine = joined
-    ? [joinedMachineLabel(bot.worker, t), bot.worker.online === false ? '离线' : '', bot.nodeCompat?.length ? t('Node needs an AC update') : ''].filter(Boolean).join(' · ')
+    ? [joinedMachineLabel(bot.worker, t), ...nodeFlags].join(' · ')
     : peer
       ? [bot.worker?.hostname || bot.worker?.nodeId || '', bot.worker?.online === false ? '离线' : '在线'].filter(Boolean).join(' · ')
       : ''
@@ -302,13 +307,14 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
   pinned && !wide ? h(PinMark) : null,
   wide ? h('span', { className: 'bt-row-body' },
     h('span', { className: 'bt-row-name' }, h('span', { className: 'bt-row-title' }, bot.name), bot.engine ? h(AgentBadge, { engine: bot.engine }) : null, pinned ? h(PinMark) : null, h(SidebarTaskPill, { active: taskCounts.active, waitingApproval: taskCounts.waitingApproval, onClick: openTasks })),
-    waitLine ? h('span', { className: 'bt-row-preview bt-row-preview-wait' }, waitLine)
-      : machine ? h('span', { className: 'bt-row-preview', 'data-machine': bot.worker.hostname || bot.worker.nodeId || '' }, machine)
+    peer && machine ? h('span', { className: 'bt-row-preview', 'data-machine': bot.worker.hostname || bot.worker.nodeId || '' }, machine)
+      : waitLine ? h('span', { className: 'bt-row-preview bt-row-preview-wait' }, flagged(waitLine))
         : runningLine ? h('span', { className: 'bt-row-preview' }, runningLine)
           : awayLine ? h('span', { className: 'bt-row-preview' }, awayLine)
-            : deferredWaitLine ? h('span', { className: 'bt-row-preview bt-row-preview-wait' }, deferredWaitLine)
-              : waitsFor ? h('span', { className: 'bt-row-preview' }, waitsFor)
-                : preview ? h('span', { className: 'bt-row-preview' }, preview) : null) : null,
+            : deferredWaitLine ? h('span', { className: 'bt-row-preview bt-row-preview-wait' }, flagged(deferredWaitLine))
+              : waitsFor ? h('span', { className: 'bt-row-preview' }, flagged(waitsFor))
+                : preview ? h('span', { className: 'bt-row-preview' }, flagged(preview))
+                  : machine ? h('span', { className: 'bt-row-preview', 'data-machine': bot.worker.hostname || bot.worker.nodeId || '' }, machine) : null) : null,
   wide && alert && !active ? h('span', { className: 'bt-unread bt-unread-wait', 'aria-hidden': true })
     : wide && unread && !active ? h('span', { className: 'bt-unread', 'aria-hidden': true })
       : !wide && !active && (alert || unread) ? h('span', { className: `bt-dot${alert ? ' bt-dot-wait' : ''}`, 'aria-hidden': true }) : null,
