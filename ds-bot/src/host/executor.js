@@ -112,7 +112,7 @@ function prepareRemote({ bot, text, rt, tracker, timeoutOverride, lateWindowMs =
         remoteBotId,
         exchangeId: turnId,
         text: text ?? '',
-        // How a busy node Bot takes it (AC 0.4.19+; an older node ignores it and queues).
+        // How a busy node Bot takes it (AC 0.4.20+; an older node ignores it and queues).
         ...(mode === 'steer' || mode === 'queue' ? { mode } : {}),
       })
     } catch (sendErr) {

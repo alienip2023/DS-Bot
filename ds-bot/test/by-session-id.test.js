@@ -47,3 +47,13 @@ test('a send to a Session that is no joined Bot\'s mirror takes the ordinary pro
   assert.equal(w.originalCalls.length, 1, 'the ordinary prompt is called once')
   assert.equal(w.originalCalls[0][0].sessionId, 'ordinary-1')
 })
+
+test('an image or a file sent to a node Bot is refused with the reason, not dropped so that only the words go out', async () => {
+  const w = makeWorld({ tracker: true })
+  const sendUser = createSendUser(withLocalPath(w.rt), { ctx: w.rt.ctx })
+  await assert.rejects(
+    sendUser({ sessionId: w.bot.sessionId, content: [{ type: 'text', text: 'look' }, { type: 'image', url: 'x' }], requestId: 'req-img' }),
+    error => error.code === 'session/joined-attachment-unsupported' && /暂不支持附件/.test(error.message),
+  )
+  assert.equal(w.frames.length, 0, 'nothing was sent')
+})

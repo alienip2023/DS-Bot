@@ -27,6 +27,8 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { GROUP_LINE_READ, HISTORY_PAGE, HISTORY_TIMEOUT_MS, LATE_ANSWER, ROOM_IDLE_RELAY_LIMIT, ROOM_REPLY_TIMEOUT_MS, ROOM_STEP_GAP_MS, ROOM_WORK_GRACE_MS, SOURCE_KIND, TEAM_TOOLS, TEXT_KEPT } from './constants.js'
 import { escapeRegExp, headOf, reminderPrompts, splitRef, textOf } from './text.js'
+import { joinedShadow } from './roster-join.js'
+import { joinedTurnsRunning } from './joined-turn.js'
 import { viaOf } from '../shared/im-platforms.js'
 import { REPLY_ELISION, parseReplies, relayRange } from '../shared/group-replies.js'
 import { mentionSpans, speakerOf } from '../shared/mentions.js'
@@ -2402,13 +2404,18 @@ export function install(rt) {
     const room = rt.roomOf(roomId)
     const member = rt.botOf(botId)
     const sessionId = rt.own(room?.sessions, botId)
-    const turnRunning = sessionId !== undefined && (sessionLiveTurn(rt, sessionId) || rt.joinedInFlight?.has(botId) === true)
+    const onNode = joinedShadow(member) && member.worker?.home === 'remote'
+    const turnRunning = sessionId !== undefined && (sessionLiveTurn(rt, sessionId) || rt.joinedInFlight?.has(botId) === true || (onNode && joinedTurnsRunning(rt, member)))
     const subRunning = sessionId !== undefined && rt.hasSubagents?.(sessionId) === true
     const taskRunning = rt.hasRoomTasks?.(roomId, botId) === true
     if (room === undefined || member === undefined || (!turnRunning && !subRunning && !taskRunning)) return false
     if (sessionId !== undefined) await rt.stopSubagents?.(sessionId)
     if (taskRunning) await rt.stopMemberRoomTasks?.(roomId, botId, 'stopped in group')
-    if (turnRunning && sessionId !== undefined) {
+    if (turnRunning && onNode) {
+      // A node member's turn runs on its node: the stop goes there (and ends the wait for it here).
+      rt.stopJoinedTurn?.(botId)
+      rt.failRoomTurn?.(sessionId, { code: 'STOPPED', message: 'stopped' })
+    } else if (turnRunning && sessionId !== undefined) {
       const agent = await rt.resolveAgent(sessionId)
       agent.cancel({ kind: 'user' })
     }
