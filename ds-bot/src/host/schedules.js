@@ -9,7 +9,6 @@
 // accept that target kind. Session targets keep the compatibility paths below.
 
 import { installBotRoutines } from './bot-routines.js'
-import { installWebhookServer, generateWebhookId, generateWebhookToken } from './webhook-server.js'
 import { threadCurrentOfPart, threadOfPart } from './threads.js'
 
 const MAX_TITLE = 120
@@ -98,29 +97,6 @@ export function install(rt) {
   const routines = installBotRoutines(rt)
   let service = null
 
-  // Webhook server: start it and expose webhook delivery to the webhook-server module.
-  installWebhookServer(rt)
-  // Deliver a webhook's prompt to the target Bot or group chat Session.
-  rt.webhookDeliver = async ({ botId, roomId, prompt, payload }) => {
-    const target = botId !== undefined ? rt.botOf(botId) : undefined
-    const room = roomId !== undefined ? rt.roomOf(roomId) : undefined
-    if (target === undefined && room === undefined) throw invalid('No such Bot or group chat')
-    const sessionId = target !== undefined ? rt.chatOf(target.id) : rt.sessionOfRoom(room)
-    if (sessionId === undefined) throw invalid('The target has no active Session')
-    // Send the prompt as a user message to the target Session, the same way a scheduled
-    // task does. DSH's schedule service is the delivery path; without it, deliver direct.
-    if (service !== null && typeof service.send === 'function') {
-      await service.send({ sessionId, prompt })
-      return
-    }
-    // Fallback: inject via the turn pipeline if available.
-    if (typeof rt.deliverUserMessage === 'function') {
-      await rt.deliverUserMessage(sessionId, prompt, { source: 'webhook', payload })
-      return
-    }
-    throw invalid('Automation tasks are off in DSH; cannot deliver webhook')
-  }
-
   const attach = (sub) => {
     const own = sub.schedule
     service = own
@@ -138,6 +114,8 @@ export function install(rt) {
     if (room !== undefined) return { roomId: room.id }
     return rt.groupOwners.get(sessionId) ?? rt.pastOwners.get(sessionId)
   }
+  const known = owner => owner !== undefined && (owner.botId === undefined ? rt.roomOf(owner.roomId) !== undefined : rt.botOf(owner.botId) !== undefined)
+
   // The part that now carries the thread a task's Session belongs to: a Bot's chat and an
   // older chat still open beside it each go on in their own thread. A group member's own
   // part has none here.
@@ -155,7 +133,6 @@ export function install(rt) {
     const room = rt.roomOf(owner.roomId)
     return room === undefined ? undefined : rt.sessionOfRoom(room)
   }
-  const known = owner => owner !== undefined && (owner.botId === undefined ? rt.roomOf(owner.roomId) !== undefined : rt.botOf(owner.botId) !== undefined)
 
   // A Host-wide task delivering to this team Session, or nothing.
   const teamTask = async (id, sessionId) => {
@@ -180,6 +157,7 @@ export function install(rt) {
       tasks.push({ ...entry, sessionId, ...owner, state })
     }
     tasks.push(...await routines.view())
+    // DSH 0.2.1 keeps tasks by Session and has no pause.
     return { available: true, canPause: hostWide(service), tasks }
   }
 
@@ -206,22 +184,6 @@ export function install(rt) {
       else await service.create(sessionId, { title, prompt, ...selector })
       return schedulesView()
     },
-    async 'schedule-delete'(body) {
-      if (service === null) throw invalid('Automation tasks are off in DSH')
-      if (body.target?.kind === 'bot') {
-        await routines.remove(body)
-        return schedulesView()
-      }
-      if (ownerOf(body.sessionId) === undefined) throw invalid('No such task')
-      if (hostWide(service)) {
-        // Ids are Host-wide here, so the task must still deliver to the team Session named.
-        if (await teamTask(body.id, body.sessionId) === undefined) throw invalid('No such task')
-        await service.edit({ id: body.id, action: 'delete' })
-      } else {
-        await service.delete({ sessionId: body.sessionId, id: body.id })
-      }
-      return schedulesView()
-    },
     // Pause keeps the task and its timing; resume picks the next time it comes round.
     // The edit names the version it read, so a delivery that ended a one-time task or a
     // Bot's own change in between is not overwritten; a conflict reads the task again.
@@ -235,7 +197,7 @@ export function install(rt) {
         if (entry.status === (active ? 'active' : 'paused')) return schedulesView()
         // A one-time task whose time has come is about to be delivered: paused now, it
         // would never run and could never resume.
-        if (!active && (entry.kind === 'at' || entry.kind === 'after') && Date.parse(entry.scheduledAt) <= Date.now()) throw invalid('This task is due now and can’t be paused.')
+        if (!active && (entry.kind === 'at' || entry.kind === 'after') && Date.parse(entry.scheduledAt) <= Date.now()) throw invalid("This task is due now and can’t be paused.")
         const patch = { active }
         // A task left on an earlier part (a move that failed) resumes on the chat's
         // current part: DSH refuses to resume onto an archived Session.
@@ -247,7 +209,7 @@ export function install(rt) {
         } catch (error) {
           // A one-time task whose time has passed has nothing left to resume to.
           if (error?.code === 'not_future' || error?.details?.code === 'not_future' || /no future occurrence/i.test(error?.message ?? '')) throw invalid('Pick a time in the future')
-          if (/is archived/i.test(error?.message ?? '')) throw invalid('This task’s chat has ended. Delete the task and make it again.')
+          if (/is archived/i.test(error?.message ?? '')) throw invalid("This task’s chat has ended. Delete the task and make it again.")
           throw error
         }
         if (result?.code === 'schedule_conflict') continue
@@ -256,59 +218,22 @@ export function install(rt) {
       }
       throw invalid('The task just changed. Try again.')
     },
-    async webhooks() {
-      const out = []
-      for (const [id, webhook] of Object.entries(rt.state.webhooks ?? {})) {
-        if (!webhook || typeof webhook !== 'object') continue
-        out.push({
-          id, botId: webhook.botId, roomId: webhook.roomId,
-          title: webhook.title ?? '', prompt: webhook.prompt ?? '',
-          disabled: webhook.disabled === true,
-          fireCount: webhook.fireCount ?? 0, lastFiredAt: webhook.lastFiredAt,
-          createdAt: webhook.createdAt,
-          url: rt.webhookPort() ? `http://127.0.0.1:${rt.webhookPort()}/webhook/${id}` : undefined,
-        })
+    async 'schedule-delete'(body) {
+      if (service === null) throw invalid('Automation tasks are off in DSH')
+      if (body.target?.kind === 'bot') {
+        await routines.remove(body)
+        return schedulesView()
       }
-      return { available: rt.webhookPort() !== null, port: rt.webhookPort(), webhooks: out }
-    },
-    async 'webhook-create'(body) {
-      const bot = rt.botOf(body.target?.kind === 'bot' ? body.target.botId : body.target)
-      const room = rt.roomOf(body.target)
-      if (bot === undefined && room === undefined) throw invalid('No such Bot or group chat')
-      const title = String(body.title ?? '').trim()
-      const prompt = String(body.prompt ?? '').trim()
-      if (title === '') throw invalid('Give the webhook a name')
-      if (prompt === '') throw invalid('Say what the webhook should send')
-      const id = generateWebhookId()
-      const secret = generateWebhookToken()
-      const now = Date.now()
-      rt.state.webhooks ??= {}
-      rt.state.webhooks[id] = {
-        id, title, prompt,
-        botId: bot?.id, roomId: room?.id,
-        secret, createdAt: now, fireCount: 0, lastFiredAt: null,
+      if (ownerOf(body.sessionId) === undefined) throw invalid('No such task')
+      if (hostWide(service)) {
+        // Ids are Host-wide here, so the task must still deliver to the team Session named.
+        const entry = (await service.catalog()).find(task => task.id === body.id)
+        if (entry === undefined || sessionOf(entry) !== body.sessionId) throw invalid('No such task')
+        await service.edit({ id: body.id, action: 'delete' })
+      } else {
+        await service.delete({ sessionId: body.sessionId, id: body.id })
       }
-      await rt.save()
-      await rt.syncWebhookServer?.()
-      const url = rt.webhookPort() ? `http://127.0.0.1:${rt.webhookPort()}/webhook/${id}` : undefined
-      return { webhook: { id, title, secret, url, createdAt: now } }
-    },
-    async 'webhook-delete'(body) {
-      const id = String(body.id ?? '').trim()
-      if (!rt.state.webhooks?.[id]) throw invalid('No such webhook')
-      delete rt.state.webhooks[id]
-      await rt.save()
-      await rt.syncWebhookServer?.()
-      return { removed: id }
-    },
-    async 'webhook-pause'(body) {
-      const id = String(body.id ?? '').trim()
-      const webhook = rt.state.webhooks?.[id]
-      if (!webhook) throw invalid('No such webhook')
-      webhook.disabled = body.active !== true
-      await rt.save()
-      await rt.syncWebhookServer?.()
-      return { webhook: { id, disabled: webhook.disabled } }
+      return schedulesView()
     },
   }
 
@@ -343,7 +268,7 @@ export function install(rt) {
 
   // DSH 0.2.2's task ids are Host-wide, so a Bot's schedule tools reach only the tasks
   // that deliver to its own chat, or to the same group place, in any of its parts.
-  ctx.on('tools/pre-execute', async (exec, next) => {
+  ctx.on('tools/pre-execute', async function ownTaskGate(exec, next) {
     const decision = await next()
     if (decision.kind !== 'allow' || !OWN_TASK_TOOLS.includes(exec.name) || service === null || !hostWide(service)) return decision
     await rt.load()

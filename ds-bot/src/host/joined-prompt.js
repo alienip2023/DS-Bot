@@ -109,7 +109,10 @@ export function install(rt) {
     if (hasPromptRequest(session, request.requestId)) return { accepted: true }
 
     const timeoutMs = rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS
-    const isBusy = () => rt.joinedInFlight?.has(bot.id) || mirrorTurnOpen(rt, bot.id)
+    // isBusy: a page turn is already in-flight on this Bot's mirror Session.
+    // A Bot-to-Bot exchange is NOT considered busy here — waitForJoinedMirror
+    // below blocks until the exchange turn is closed, so the page starts after.
+    const isBusy = () => rt.joinedInFlight?.has(bot.id)
 
     // mode: 'steer' means "interrupt the current turn at its next step" — deliver
     // the message as a steer into the in-flight page turn via the node's steer path.

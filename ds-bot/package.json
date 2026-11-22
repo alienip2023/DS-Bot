@@ -1,6 +1,6 @@
 {
   "name": "ds-bot",
-  "version": "0.3.9",
+  "version": "0.3.9-ac.93",
   "description": "DS Bot: a team of long-lived Bots for DeepSeek Harness, with Main Bots, Bot-to-Bot messages and group chats",
   "keywords": [
     "dsh-plugin",
@@ -11,13 +11,13 @@
     "multi-agent",
     "agents"
   ],
-  "homepage": "https://github.com/Fei2411/DS-Bot#readme",
+  "homepage": "https://github.com/alienip2023/DS-Bot#readme",
   "bugs": {
-    "url": "https://github.com/Fei2411/DS-Bot/issues"
+    "url": "https://github.com/alienip2023/DS-Bot/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Fei2411/DS-Bot.git",
+    "url": "git+https://github.com/alienip2023/DS-Bot.git",
     "directory": "ds-bot"
   },
   "license": "Apache-2.0",
@@ -34,9 +34,9 @@
     "plugin.js",
     "index.js",
     "src/host/",
+    "src/gateway/",
     "src/shared/",
     "src/office/",
-    "src/gateway/",
     "client.js",
     "link.js",
     "office.js",
@@ -48,7 +48,6 @@
   "scripts": {
     "build": "node scripts/build-client.mjs && node scripts/build-link.mjs",
     "test": "node --import ./test/harness-resolve.mjs --test --test-timeout=120000 --test-force-exit \"test/*.test.js\"",
-    "test:browser": "node --import ./test/harness-resolve.mjs --test --test-concurrency=1 --test-timeout=120000 --test-force-exit \"test/browser/*.test.js\"",
     "lint": "node scripts/lint.mjs",
     "harness": "npm install --prefix dev/harness --legacy-peer-deps=false --no-package-lock --no-fund --no-audit",
     "check": "sh dev/check.sh"
@@ -88,7 +87,6 @@
     "ws": "8.18.3"
   },
   "bin": {
-    "ds-bot": "./bin/ds-bot-doctor.mjs",
-    "ds-bot-mcp": "./bin/ds-bot-mcp.mjs"
+    "ds-bot": "./bin/ds-bot-doctor.mjs"
   }
 }

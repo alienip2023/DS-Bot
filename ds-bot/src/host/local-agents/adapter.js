@@ -6,16 +6,13 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { LlmAdapter, LlmError, offloadedImageText, resolveImageAttachmentAccess, textOnlyImageText } from '@deepseek-ai/dsh-llm'
 import { textOf } from '../text.js'
-import { engineOf, cliMode, signInFor } from './engines.js'
+import { engineOf, cliMode } from './engines.js'
 import { LoopbackMcp } from './mcp.js'
+import { mayReplay } from './resume-safety.js'
 
 export const DEFAULT_CONTEXT_WINDOW = 200_000
-// A window belongs to the model, not to the Session that reported it, and the model
-// card reads it from resolveModel rather than from the Session's own figures.
-const windowKey = (route, model) => `${route}\u0000${model}`
-// The replay window when a CLI session is new or its resume failed.
-const REPLAY_MESSAGES = 12
-const REPLAY_BYTES = 24 * 1024
+const BACKGROUND_IMAGE_WINDOW = 12
+const HANDOFF_HISTORY_BYTES = 24 * 1024
 const IDLE_CLOSE_MS = 10 * 60_000
 const APPROVE_TOOL = 'approve_agent_action'
 // A CLI that answers its compaction command first and condenses after (Devin) says
@@ -35,18 +32,23 @@ function titleChunk(text) {
   ]
 }
 
+function digestLine(message) {
+  const flat = textOf(message.content).replace(/\s+/g, ' ').trim()
+  return flat === '' ? '' : `${message.role}: ${flat.slice(0, 300)}`
+}
+
 // A compaction request neither: a deterministic digest of the messages.
-function digestChunks(messages) {
+export function digestChunks(messages, finalLine = '') {
   const lines = []
   let used = 0
   for (const message of messages ?? []) {
-    const text = textOf(message.content).replace(/\s+/g, ' ').trim()
-    if (text === '') continue
-    const line = `${message.role}: ${text.slice(0, 300)}`
+    const line = digestLine(message)
+    if (line === '') continue
     if (used + line.length > 8 * 1024) break
     lines.push(line)
     used += line.length
   }
+  if (finalLine !== '') lines.push(finalLine)
   const text = `[Earlier conversation, condensed]\n${lines.join('\n')}`
   return [
     { type: 'block-start', index: 0, blockType: 'text' },
@@ -56,12 +58,132 @@ function digestChunks(messages) {
   ]
 }
 
+// The bounded compaction digest (DS-P2-W2-1). UTF-8 byte budget for header, the omitted
+// marker reserve, folded lines and protected text; the final synthetic prompt is outside it.
+export const COMPACTION_FOLD_BUDGET = 8192
+const DIGEST_HEADER = '[Earlier conversation, condensed]'
+const DIGEST_MARKER_RESERVE = 64
+const DIGEST_OVERSIZE_MARKER = '[digest: protected text exceeds budget; earlier history omitted]'
+const CITATION = /\[\d+\]|\bsrc:[^\s\]]+|https?:\/\/[^\s)\]]+|[\w./-]+:\d+(?:-\d+)?/g
+const byteLength = text => Buffer.byteLength(text, 'utf8')
+
+// One older message, normalized and cut like digestChunks does, except that a cut never
+// lands inside a citation token: that token is kept whole.
+function foldLine(role, text) {
+  const flat = text.replace(/\s+/g, ' ').trim()
+  let cut = 300
+  for (const match of flat.matchAll(CITATION)) {
+    const end = match.index + match[0].length
+    if (match.index < cut && end > cut) cut = end
+  }
+  return `${role}: ${flat.slice(0, cut)}`
+}
+
+// `genuine` is the history without the final synthetic prompt. Returns the digest text.
+function foldDigest(genuine) {
+  const rows = genuine.map(message => ({ role: message.role, text: textOf(message.content) }))
+  const last = rows.length - 1
+  const pendingIdx = last >= 0 && rows[last].role === 'user' ? last : -1
+  const starts = []
+  rows.forEach((row, index) => { if (row.role === 'user') starts.push(index) })
+  const exchanges = starts.map((start, k) => ({ start, end: k + 1 < starts.length ? starts[k + 1] : rows.length }))
+  const completed = exchanges.filter(exchange => exchange.start !== pendingIdx)
+  const kept = new Set()
+  if (completed.length < 2) rows.forEach((_, index) => kept.add(index))
+  else for (const exchange of completed.slice(-2)) for (let i = exchange.start; i < exchange.end; i++) kept.add(i)
+  if (pendingIdx >= 0) kept.add(pendingIdx)
+
+  const folded = []
+  const protectedLines = []
+  rows.forEach((row, index) => {
+    if (row.text === '') return
+    if (kept.has(index)) protectedLines.push(`${row.role}: ${row.text}`)
+    else folded.push(foldLine(row.role, row.text))
+  })
+  const protectedText = protectedLines.join('\n')
+  const fixed = byteLength(DIGEST_HEADER) + 1 + DIGEST_MARKER_RESERVE
+  const protectedBytes = protectedLines.reduce((sum, line) => sum + byteLength(line) + 1, 0)
+  if (fixed + protectedBytes > COMPACTION_FOLD_BUDGET) {
+    return [DIGEST_HEADER, DIGEST_OVERSIZE_MARKER, protectedText].join('\n')
+  }
+  const entries = folded.slice()
+  let total = fixed + protectedBytes + entries.reduce((sum, line) => sum + byteLength(line) + 1, 0)
+  let dropped = 0
+  while (total > COMPACTION_FOLD_BUDGET && entries.length > 0) {
+    total -= byteLength(entries.shift()) + 1
+    dropped++
+  }
+  const marker = dropped > 0 ? [`[digest: ${dropped} earlier lines omitted]`] : []
+  return [DIGEST_HEADER, ...marker, ...entries, ...(protectedText === '' ? [] : [protectedText])].join('\n')
+}
+
+// The compaction answer: the bounded digest, or the plain digestChunks one when the
+// bounded helper throws. The signal carries a code only, never message text.
+export function compactionChunks(messages) {
+  const all = messages ?? []
+  const finalLine = () => all.length === 0 ? '' : digestLine(all.at(-1))
+  try {
+    const folded = foldDigest(all.slice(0, -1))
+    const final = finalLine()
+    const text = final === '' ? folded : `${folded}\n${final}`
+    return [
+      { type: 'block-start', index: 0, blockType: 'text' },
+      { type: 'text-delta', index: 0, text },
+      { type: 'block-end', index: 0, block: { type: 'text', text } },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ]
+  } catch {
+    process.emitWarning('omb-w2-1 digest fallback', { code: 'DS_DIGEST_FALLBACK' })
+    return digestChunks(all.slice(0, -1), finalLine())
+  }
+}
+
+// Events a driver (or this adapter) puts on a live Session's queue. Anything else is
+// discarded by screenEvent: warned about, counted, never taken for `done`.
+// @typedef {{type:'text'|'thought'|'activity', text:string}} TextEvent
+// @typedef {{type:'usage', usage:object}} UsageEvent
+// @typedef {{type:'call', name:string, args?:any, dshCallId:string}} CallEvent
+// @typedef {{type:'permission', id:string, reply:(optionId:string|null)=>void, action?:string, detail?:string, options?:object[], changes?:boolean}} PermissionEvent
+// @typedef {{type:'done', reason?:string, usage?:object, turnId?:string}} DoneEvent
+// @typedef {{type:'error', error:any, turnId?:string}} ErrorEvent
+// @typedef {{type:'compaction', status:'started'|'completed'|'failed'}} CompactionEvent
+// @typedef {{type:'context', used?:number, size?:number}|{type:'effort', effort?:string, defaultEffort?:string}} StateEvent
+// Local only, never from a driver: {type:'abort', error} (the stream's own stop) and {type:'quiet'} (a compaction that said nothing).
+const isText = value => typeof value === 'string'
+const EVENT_CHECKS = new Map([
+  ['text', event => isText(event.text)],
+  ['thought', event => isText(event.text)],
+  ['activity', event => isText(event.text)],
+  ['usage', event => event.usage !== null && typeof event.usage === 'object'],
+  ['call', event => isText(event.name) && isText(event.dshCallId)],
+  ['permission', event => isText(event.id) && event.id !== '' && typeof event.reply === 'function'
+    && (event.options === undefined || Array.isArray(event.options))],
+  ['done', () => true],
+  ['error', event => event.error !== undefined && event.error !== null],
+  ['compaction', event => event.status === 'started' || event.status === 'completed' || event.status === 'failed'],
+  ['context', () => true],
+  ['effort', () => true],
+  ['abort', () => true],
+  ['quiet', () => true],
+])
+// Why an event cannot be used, or undefined when it can. Never includes payload text.
+export function eventProblem(event) {
+  if (event === null || typeof event !== 'object' || Array.isArray(event)) return { kind: 'non-object', label: event === null ? 'null' : Array.isArray(event) ? 'array' : typeof event }
+  if (typeof event.type !== 'string') return { kind: 'bad-type', label: typeof event.type }
+  const check = EVENT_CHECKS.get(event.type)
+  if (check === undefined) return { kind: 'unknown-type', label: event.type.slice(0, 32) }
+  if (!check(event)) return { kind: 'malformed', label: event.type.slice(0, 32) }
+  return undefined
+}
+// Repeats within this window are counted, not warned.
+const EVENT_WARN_EVERY_MS = 60_000
+
 // Marks the one retry of a turn whose saved Claude conversation was gone.
 const RESUME_RETRIED = Symbol('resume retried')
 
 export class LocalAgentAdapter extends LlmAdapter {
   // deps: {rt, findExecutable, spawnEngine(kind,route,engine), record(sessionId),
-  //        saveRecord, dropRecord, presetFor(sessionId), toolsFor(options), signInHint(route),
+  //        saveRecord, dropRecord, presetFor(sessionId), forceAskFor?(sessionId), toolsFor(options), signInHint(route),
   //        usedModels(route)}
   constructor(deps) {
     super()
@@ -69,7 +191,6 @@ export class LocalAgentAdapter extends LlmAdapter {
     this.engines = new Map()   // route -> engine driver
     this.live = new Map()      // sessionId -> live session
     this.modelCache = new Map()
-    this.windows = new Map()   // route\0model -> the window the CLI reported for it
     this.probes = new Map()    // route -> the probe under way
     this.sideRequests = new Set()
     this.disposed = false
@@ -96,14 +217,10 @@ export class LocalAgentAdapter extends LlmAdapter {
   // What DS Bot knows of a route without starting its CLI: the CLI's default, what a
   // probe found, and what a Bot runs on. DSH and the catalog ask this for every route.
   async listModels(route) {
-    const spec = engineOf(route, this.deps.customAgents())
-    if (spec === undefined) return []
-    const supportsImage = spec.kind !== 'acp' || this.engines.get(route)?.supportsImages?.() !== false
-    const inputModalities = supportsImage ? ['text', 'image'] : ['text']
+    if (engineOf(route, this.deps.customAgents()) === undefined) return []
     const listed = [{ provider: route, id: 'default', name: 'CLI default' }, ...(this.modelCache.get(route) ?? [])]
     const used = (this.deps.usedModels?.(route) ?? []).filter(id => !listed.some(model => model.id === id))
     return [...listed, ...used.map(id => ({ provider: route, id, name: id }))]
-      .map(entry => ({ ...entry, inputModalities }))
   }
 
   // Asks one CLI what it serves, once. A failure is not kept, so the next look tries
@@ -127,7 +244,7 @@ export class LocalAgentAdapter extends LlmAdapter {
       this.modelCache.set(route, (models ?? []).filter(model => model.id !== 'default')
         .map(model => ({ provider: route, id: model.id, name: model.name ?? model.id, ...(model.reasoning ? { reasoning: model.reasoning } : {}) })))
     } catch { /* the menu still has the CLI's default */ }
-    if (!this.engineInUse(engine, route)) await engine.close?.().catch(() => {})
+    if (!this.engineInUse(engine)) await engine.close?.().catch(() => {})
   }
 
   dropModelCache(route) {
@@ -144,7 +261,7 @@ export class LocalAgentAdapter extends LlmAdapter {
       id: model,
       name: listed?.name ?? model,
       inputModalities: supportsImage ? ['text', 'image'] : ['text'],
-      context: { contextWindow: spec?.contextWindow ?? this.windows.get(windowKey(route, model)) ?? DEFAULT_CONTEXT_WINDOW },
+      context: { contextWindow: spec?.contextWindow ?? DEFAULT_CONTEXT_WINDOW },
       // The thinking levels the engine advertises for this model, if any.
       ...(listed?.reasoning ? { reasoning: listed.reasoning } : {}),
     }
@@ -155,7 +272,7 @@ export class LocalAgentAdapter extends LlmAdapter {
   async liveFor(options, preset) {
     const sessionId = String(options.sessionId)
     let live = this.live.get(sessionId)
-    const record = this.deps.record(sessionId)
+    let record = this.deps.record(sessionId)
     const route = options.provider
     if (live !== undefined && !live.dead && live.route === route) {
       // An agent CLI can exit between the spawn and its first message (a failed
@@ -163,6 +280,7 @@ export class LocalAgentAdapter extends LlmAdapter {
       // new process instead of writing into the one that is gone.
       if (live.engineSession?.dead === true) {
         this.rollbackUnread(live, sessionId)
+        record = this.deps.record(sessionId)
         live.engineSession = undefined
         live.pumpToken = {}
         // The queue belongs to the process that is gone: the retry starts clean
@@ -182,6 +300,9 @@ export class LocalAgentAdapter extends LlmAdapter {
       record,
       cliSessionId: record?.cliSessionId,
       handed: record?.handedId,
+      handedCliSessionId: record?.handedCliSessionId,
+      unresolvedMessageIds: record?.unresolvedMessageIds ?? [],
+      unresolvedCallIds: record?.unresolvedCallIds ?? [],
       promptHash: record?.promptHash,
       defaultEffort: record?.model === options.model ? record?.defaultEffort : undefined,
       effort: record?.effort,
@@ -224,6 +345,26 @@ export class LocalAgentAdapter extends LlmAdapter {
     return live
   }
 
+  // Every event a loop reads passes here first. false: the event was discarded and the
+  // loop goes on with the next one. Rollback (deps.eventValidation === 'warn-only'):
+  // warn, but keep what the loops could always handle; a permission is never kept.
+  screenEvent(live, event) {
+    const problem = eventProblem(event)
+    if (problem === undefined) return true
+    this.eventDiscards = (this.eventDiscards ?? 0) + 1
+    const now = this.deps.now?.() ?? Date.now()
+    if (this.eventWarnedAt === undefined || now - this.eventWarnedAt >= EVENT_WARN_EVERY_MS) {
+      this.eventWarnedAt = now
+      this.deps.rt?.warn?.(`local agent event discarded (${problem.kind}: ${problem.label}); ${this.eventDiscards} discarded so far`)
+    }
+    if (event?.type === 'permission' && typeof event.reply === 'function') {
+      try { event.reply(null) } catch { /* the CLI is gone */ }
+    }
+    // Rollback: an unknown type is kept, as it always was (`default: break`).
+    if (this.deps.eventValidation === 'warn-only' && problem.kind === 'unknown-type') return true
+    return false
+  }
+
   // A Session's record: its CLI session, what was handed to it, and what the CLI said
   // about its context.
   recordOf(live, extra = {}) {
@@ -232,6 +373,9 @@ export class LocalAgentAdapter extends LlmAdapter {
       cliSessionId: live.cliSessionId,
       cwd: live.cwd,
       handedId: live.handed,
+      ...(live.handedCliSessionId === undefined ? {} : { handedCliSessionId: live.handedCliSessionId }),
+      ...(live.unresolvedCallIds?.length > 0 ? { unresolvedCallIds: live.unresolvedCallIds } : {}),
+      ...(live.unresolvedMessageIds?.length > 0 ? { unresolvedMessageIds: live.unresolvedMessageIds } : {}),
       promptHash: live.promptHash,
       model: live.model,
       ...(live.defaultEffort === undefined ? {} : { defaultEffort: live.defaultEffort }),
@@ -253,20 +397,10 @@ export class LocalAgentAdapter extends LlmAdapter {
       return
     }
     if (event?.type === 'context') {
-      // A size the CLI reports now, as against one carried by the Session from its
-      // record: only the former is this model's window.
-      const reported = Number.isFinite(event.size) && event.size > 0 ? event.size : undefined
-      const size = reported ?? live.context?.size
+      const size = Number.isFinite(event.size) && event.size > 0 ? event.size : live.context?.size
       live.context = Number.isFinite(event.used)
         ? { used: event.used, ...(size === undefined ? {} : { size }) }
         : { ...live.context, ...(size === undefined ? {} : { size }) }
-      // The same figure is the model's window: the model card and the percentage it
-      // renders read it from resolveModel, so it is kept for the route and model this
-      // Session runs, not for this Session alone (#1823). A usage-only report carries
-      // no size, and the Session may still hold the size of the model it ran before:
-      // publishing that one under this model's key would give the new model a window
-      // nothing has reported for it.
-      if (reported !== undefined) this.windows.set(windowKey(live.route, live.model), reported)
       this.deps.patchRecord?.(live.sessionId, { context: live.context })
       return
     }
@@ -308,7 +442,6 @@ export class LocalAgentAdapter extends LlmAdapter {
   engineInUse(engine, except) {
     return [...this.live.values()].some(other => other.engine === engine && !other.dead)
       || [...this.sideRequests].some(request => request !== except && request.engine === engine)
-      || [...this.probes.keys()].some(route => route !== except && this.engines.get(route) === engine)
   }
 
   async closeLive(live, { idle = false } = {}) {
@@ -349,23 +482,31 @@ export class LocalAgentAdapter extends LlmAdapter {
     await this.closeLive(live, { idle: true })
   }
 
-  // A Claude CLI that died before `system/init` never read the prompt it was
-  // handed: roll the marker back in the live state and in the saved record, so a
-  // host that restarts before the next call still replays the input. ACP and
-  // Codex create their session before the prompt, so theirs was read.
-  // A resume that found its conversation gone also drops the id: the next start
-  // opens a new conversation and replays the history, instead of failing every
-  // turn on the same id.
-  rollbackUnread(live, sessionId) {
+  // Failure before init says nothing about whether stdin reached the CLI. Only
+  // an explicit refusal before the write permits replay of the unresolved input.
+  rollbackUnread(live, sessionId, failed = false) {
     if (live.spec.kind !== 'claude') return
     const session = live.engineSession
-    if (session?.dead !== true || session.cliSessionId !== undefined || session.rolledBack === true) return
-    session.rolledBack = true
-    if (session.resumeMissing === true) {
-      live.cliSessionId = undefined
+    if (session?.rolledBack === true) return
+    if (!failed && (session?.dead !== true || (session.cliSessionId !== undefined && live.state === 'idle'))) return
+    if (session !== undefined) session.rolledBack = true
+    live.resumeClass = session?.resumeClass ?? 'unknown'
+    live.cliSessionId = undefined
+    live.handedSessionAwaitingId = undefined
+    live.handed = live.handedBefore
+    live.handedCliSessionId = live.handedCliSessionBefore
+    if (mayReplay(live.resumeClass)) {
       live.handed = undefined
-      live.resumeLost = true
-    } else live.handed = live.handedBefore
+      live.handedCliSessionId = undefined
+    } else live.unresolvedMessageIds = [...new Set([...live.unresolvedMessageIds, ...(live.turnMessageIds ?? [])])]
+    // A new action must ask again: callbacks and decisions belong to the old turn.
+    live.unresolvedCallIds = [...new Set([...live.unresolvedCallIds, ...live.pending.keys()])]
+    live.pending.clear()
+    live.queue.length = 0
+    live.continuation = undefined
+    live.turnTag = undefined
+    live.state = 'idle'
+    live.engine.forget?.(String(sessionId))
     this.deps.saveRecord(sessionId, this.recordOf(live))
   }
 
@@ -397,7 +538,7 @@ export class LocalAgentAdapter extends LlmAdapter {
       return
     }
     if (options.purpose === 'compaction') {
-      yield* digestChunks(options.messages)
+      yield* compactionChunks(options.messages)
       return
     }
     const sessionId = options.sessionId
@@ -405,52 +546,49 @@ export class LocalAgentAdapter extends LlmAdapter {
     const preset = this.deps.presetFor(sessionId)
     const live = await this.liveFor(options, preset)
 
-    // What the request carries past the last handed message. When the marker is
-    // gone the CLI session is stale or new: it gets a replay instead of a delta.
-    const messages = options.messages ?? []
-    const at = live.handed === undefined ? -1 : messages.findIndex(message => message.id === live.handed)
-    const fresh = live.handed === undefined || at === -1
-    const delta = fresh ? [] : messages.slice(at + 1)
-
-    // Results of the calls the last step emitted answer the suspended CLI calls.
-    // A user message never resolves an approve_agent_action pending: only that
-    // tool's own result may. User text may answer a pending bridged MCP call
-    // whose DSH tool concluded the turn (a question-type card).
-    const settled = []
-    for (const message of delta) {
-      if (message.role !== 'tool') continue
-      const pending = live.pending.get(message.toolCallId)
-      if (pending === undefined) continue
-      live.pending.delete(message.toolCallId)
-      const text = textOf(message.content) || (message.isError ? 'the call failed' : '')
-      pending.resolve({ text, isError: message.isError === true })
-      settled.push({ name: pending.name, text, isError: message.isError === true })
+    // The unresolved ids cover both accepted actions and actions with unknown outcomes.
+    const excluded = new Set(live.unresolvedMessageIds)
+    const excludedCalls = new Set(live.unresolvedCallIds)
+    let unresolved = false
+    const messages = (options.messages ?? []).filter(message => {
+      if (message.role === 'tool' && excludedCalls.has(message.toolCallId)) return false
+      if (excluded.size > 0 && excluded.has(message.id)) { unresolved = true; return false }
+      if (message.role === 'user') unresolved = false
+      return !unresolved || message.role === 'system'
+    })
+    const latestUser = (options.messages ?? []).findLast(message => message.role === 'user')
+    if (latestUser !== undefined && !messages.includes(latestUser)) {
+      yield { type: 'finish', reason: { kind: 'stop' } }
+      return
     }
-    // The loop's runtime-context user messages are context, not input: they
-    // fold into the next prompt or steer, never start a prompt on their own.
-    const contextText = delta
-      .filter(message => message.role === 'user' && message.source?.kind === 'runtime-context')
-      .map(message => textOf(message.content)).filter(text => text !== '').join('\n')
-    const users = delta.filter(message => message.role === 'user' && message.source?.kind !== 'runtime-context')
-    // The first open bridged call that is not an approval may take the user's
-    // next message as its answer; the rest of the input is new.
-    const openCall = [...live.pending.entries()].find(([, entry]) => entry.name !== APPROVE_TOOL)
-    const remaining = []
-    let answered = openCall === undefined
-    for (const message of users) {
-      if (!answered && openCall !== undefined) {
-        const [id, pending] = openCall
-        live.pending.delete(id)
-        const answer = textOf(message.content)
-        pending.resolve({ text: answer })
-        // The CLI may have finished while this call waited; the answer is then a
-        // settled result the turn below has to carry, like a tool result (#1513).
-        settled.push({ name: openCall[1].name, text: answer, isError: false })
-        answered = true
-      } else {
-        remaining.push(message)
-      }
+    let at = -1
+    let lookupFailed = false
+    try {
+      if (live.handed !== undefined) at = messages.findIndex(message => message.id === live.handed)
+    } catch {
+      lookupFailed = true
+      this.deps.rt?.warn?.('LOCAL_AGENT_CONTEXT_REBUILD')
     }
+    const needsRebuild = () => live.handed === undefined || live.handedCliSessionId === undefined
+      || live.handedCliSessionId !== live.cliSessionId || at === -1
+    let fresh = needsRebuild()
+    const currentAt = messages.findLastIndex(message => message.role === 'user' && message.source?.kind !== 'runtime-context')
+    const hasCurrentInput = currentAt > at
+    if ((fresh && (!hasCurrentInput || lookupFailed)) || (!fresh && live.state === 'idle' && at === messages.length - 1)) {
+      yield { type: 'finish', reason: { kind: 'stop' } }
+      return
+    }
+    const inputAt = () => fresh && at === -1 ? currentAt : at + 1
+    if (live.state === 'idle') {
+      live.handedBefore = live.handed
+      live.handedCliSessionBefore = live.handedCliSessionId
+      live.turnMessageIds = []
+    }
+    const rememberInput = () => {
+      const input = messages.slice(inputAt())
+      live.turnMessageIds = [...new Set([...(live.turnMessageIds ?? []), ...input.map(message => message.id).filter(id => id !== undefined)])]
+    }
+    rememberInput()
 
     const system = messages.filter(message => message.role === 'system').map(message => textOf(message.content)).join('\n').trim()
     const promptHash = system === '' ? undefined : createHash('sha256').update(system).digest('hex')
@@ -479,7 +617,11 @@ export class LocalAgentAdapter extends LlmAdapter {
         system: live.spec.kind === 'claude' ? instructions : undefined,
       }
       live.engineSession = await live.engine.open(sessionId, openArgs)
-        .catch(error => { throw toLlmError(error, live) })
+        .catch(error => {
+          this.rollbackUnread(live, sessionId, true)
+          const failure = toLlmError(error, live)
+          throw live.spec.kind === 'claude' ? unknownOutcome(failure) : failure
+        })
       // A resumed CLI reports its id only with `system/init`: keep the saved one
       // in the meantime, or a resume that fails would erase it.
       const reportedId = live.engineSession.acpSessionId ?? live.engineSession.threadId ?? live.engineSession.cliSessionId
@@ -507,17 +649,78 @@ export class LocalAgentAdapter extends LlmAdapter {
       const pendingId = session.whenSessionId?.()
       if (pendingId !== undefined) {
         void pendingId.then((id) => {
-          if (id === undefined || live.dead) return
+          if (id === undefined || live.dead || session.rolledBack === true) return
           live.cliSessionId = id
+          if (live.handedSessionAwaitingId === session) {
+            live.handedCliSessionId = id
+            live.handedSessionAwaitingId = undefined
+          }
           this.deps.saveRecord(sessionId, this.recordOf(live, { cliSessionId: id, cwd, promptHash: live.promptHash ?? promptHash, model: options.model }))
         })
       }
     }
 
+    // Opening a CLI may replace the saved session with a different one.
+    if (!fresh && needsRebuild()) {
+      fresh = true
+      if (!hasCurrentInput) {
+        yield { type: 'finish', reason: { kind: 'stop' } }
+        return
+      }
+      rememberInput()
+    }
+    const contextSessionId = live.cliSessionId
+    const delta = messages.slice(inputAt())
+    // Results of the calls the last step emitted answer the suspended CLI calls.
+    // A user message never resolves an approve_agent_action pending: only that
+    // tool's own result may. User text may answer a pending bridged MCP call
+    // whose DSH tool concluded the turn (a question-type card).
+    const settled = []
+    for (const message of fresh ? [] : delta) {
+      if (message.role !== 'tool') continue
+      const pending = live.pending.get(message.toolCallId)
+      if (pending === undefined) continue
+      live.pending.delete(message.toolCallId)
+      const text = textOf(message.content) || (message.isError ? 'the call failed' : '')
+      pending.resolve({ text, isError: message.isError === true })
+      settled.push({ name: pending.name, text, isError: message.isError === true })
+    }
+    // The loop's runtime-context user messages are context, not input: they
+    // fold into the next prompt or steer, never start a prompt on their own.
+    const contextText = delta
+      .filter(message => message.role === 'user' && message.source?.kind === 'runtime-context')
+      .map(message => textOf(message.content)).filter(text => text !== '').join('\n')
+    const users = delta.filter(message => message.role === 'user' && message.source?.kind !== 'runtime-context')
+    // The first open bridged call that is not an approval may take the user's
+    // next message as its answer; the rest of the input is new.
+    const openCall = [...live.pending.entries()].find(([, entry]) => entry.name !== APPROVE_TOOL)
+    const remaining = []
+    let answered = openCall === undefined
+    for (const message of users) {
+      if (message.source?.kind === 'bot') {
+        remaining.push(message)
+      } else if (!answered && openCall !== undefined && !fresh) {
+        const [id, pending] = openCall
+        live.pending.delete(id)
+        const answer = textOf(message.content)
+        pending.resolve({ text: answer })
+        // The CLI may have finished while this call waited; the answer is then a
+        // settled result the turn below has to carry, like a tool result (#1513).
+        settled.push({ name: openCall[1].name, text: answer, isError: false })
+        answered = true
+      } else {
+        remaining.push(message)
+      }
+    }
+
     const supportsImages = live.spec.kind !== 'acp' || live.engine.supportsImages?.(live.engineSession) !== false
     const resolveImage = block => this.resolveImageBlock(block, { supportsImages, signal: options.signal })
+    const history = fresh ? messages.filter((message, index) => index < inputAt() || message.role !== 'user') : []
+    // The explicit handoff is already the context package of a deliberately new part.
+    const openingPart = freshCli && live.record === undefined && live.handed === undefined && excluded.size === 0
+      && history.some(message => message.source?.handoff === true)
     let promptBlocks = fresh
-      ? await renderReplay(messages, system, resolveImage)
+      ? await renderRebuild(history, system, resolveImage, { contextText, remaining, currentCount: delta.length, openingPart })
       : await renderDelta(contextText, remaining, resolveImage)
     let sentInstructions = live.spec.kind !== 'acp' && freshCli && instructions !== undefined
     // A new CLI session gets its instructions in the open args or the replay;
@@ -570,24 +773,24 @@ export class LocalAgentAdapter extends LlmAdapter {
     // The marker before it is kept: a start that fails before the CLI reads
     // anything must not count that message as delivered.
     const last = messages.at(-1)
-    if (last !== undefined) {
-      live.handedBefore = live.handed
+    if (last?.id !== undefined) {
       live.handed = last.id
+      live.handedCliSessionId = fresh ? live.cliSessionId : contextSessionId
+      live.handedSessionAwaitingId = live.handedCliSessionId === undefined ? live.engineSession : undefined
       this.deps.saveRecord(sessionId, this.recordOf(live, { cwd, promptHash: live.promptHash ?? promptHash, model: options.model }))
     }
 
     try {
       yield* this.drain(live, options)
     } catch (error) {
-      // The caller sees the failure now: a start that died before reading its
-      // prompt must not count as delivered, in case the host restarts next.
-      this.rollbackUnread(live, sessionId)
-      // The saved conversation is gone: start over in a new one with the
-      // history, once, so the user sees the answer instead of this failure.
-      if (live.resumeLost === true && options[RESUME_RETRIED] !== true) {
-        live.resumeLost = false
+      this.rollbackUnread(live, sessionId, true)
+      if (mayReplay(live.resumeClass) && options[RESUME_RETRIED] !== true) {
+        live.resumeClass = undefined
         yield* this.stream({ ...options, [RESUME_RETRIED]: true })
         return
+      }
+      if (live.spec.kind === 'claude' && !mayReplay(live.resumeClass)) {
+        throw unknownOutcome(error)
       }
       throw error
     }
@@ -643,7 +846,7 @@ export class LocalAgentAdapter extends LlmAdapter {
 
   discardTurnOutput(live) {
     // Requests retain their reply callbacks until surfaced and answered.
-    live.events = live.events.filter(event => event.type === 'permission' || event.type === 'call')
+    live.events = live.events.filter(event => event?.type === 'permission' || event?.type === 'call')
   }
 
   // Codex resolves on acceptance; ACP resolves only when the entire turn ends.
@@ -743,6 +946,8 @@ export class LocalAgentAdapter extends LlmAdapter {
     try {
     for (;;) {
       const event = await Promise.race([live.next(), abortPromise]).catch(error => ({ type: 'abort', error }))
+      // Screened before the stale-turn filter, so a stale malformed event is warned once too.
+      if (!this.screenEvent(live, event)) continue
       if (event.type === 'abort') {
         this.stopTurn(live, 'the turn was stopped')
         yield { type: 'finish', reason: { kind: 'aborted', failure: { code: 'ABORTED', message: 'the turn was stopped' } } }
@@ -765,7 +970,11 @@ export class LocalAgentAdapter extends LlmAdapter {
         case 'activity': {
           // An activity line stands on its own line of the reasoning, which is
           // how the chat tells it from the thought around it.
-          const text = event.type === 'activity' ? `${thinkBuf === '' || thinkBuf.endsWith('\n') ? '' : '\n'}${event.text}\n` : event.text
+          let text = event.text
+          if (event.type === 'activity') {
+            if (text.includes('— failed') && !text.startsWith('FAILED_CALL ')) text = `FAILED_CALL ${text}`
+            text = `${thinkBuf === '' || thinkBuf.endsWith('\n') ? '' : '\n'}${text}\n`
+          }
           if (thinkIndex === -1) {
             if (textIndex !== -1) { yield { type: 'block-end', index: textIndex, block: { type: 'text', text: textBuf } }; textIndex = -1; textBuf = '' }
             yield { type: 'block-start', index: index++, blockType: 'reasoning' }
@@ -787,7 +996,9 @@ export class LocalAgentAdapter extends LlmAdapter {
         case 'permission': {
           // The preset answers what it already decides, also on an agent with no
           // matching mode of its own: full access allows, read-only refuses a change.
-          const answer = presetAnswer(this.deps.presetFor(live.sessionId), event)
+          const answer = presetAnswer(
+            this.deps.presetFor(live.sessionId), event, this.deps.forceAskFor?.(live.sessionId),
+          )
           if (answer !== undefined) { event.reply(answer); break }
           yield* closeBlocks()
           live.state = 'suspended'
@@ -966,6 +1177,7 @@ export class LocalAgentAdapter extends LlmAdapter {
           clearTimeout(timer)
           next.drop()
         }
+        if (!this.screenEvent(live, event)) continue
         switch (event.type) {
           case 'text': text += event.text; break
           case 'call': {
@@ -1001,18 +1213,17 @@ export class LocalAgentAdapter extends LlmAdapter {
   }
 
   // What a request DS Bot made for itself spent, on the Session it served.
-  meter(live, result, kind = 'compaction') {
-    if (result.usage !== undefined) this.deps.recordUsage?.({ sessionId: live.sessionId, kind, provider: live.route, model: live.model, usage: result.usage })
+  meter(live, result) {
+    if (result.usage !== undefined) this.deps.recordUsage?.({ sessionId: live.sessionId, kind: 'compaction', provider: live.route, model: live.model, usage: result.usage })
     return result
   }
 
   // A one-off request on the CLI a Session runs on, in a session of its own with no
   // team tools and read-only access, which is let go of after: the context steward's
-  // call, and the memory review's. `route` and `model` name the CLI when the
-  // request serves a Bot rather than one of its conversations.
-  async ask(sessionId, { system, prompt, signal, route: named, model: namedModel, kind }) {
+  // call for a Bot whose team has no model of its own.
+  async ask(sessionId, { system, prompt, signal }) {
     if (this.disposed) throw new LlmError('the local agents adapter is disposed', 'NO_ADAPTER')
-    const record = named !== undefined ? { route: named, model: namedModel } : this.live.get(sessionId) ?? this.deps.record(sessionId)
+    const record = this.live.get(sessionId) ?? this.deps.record(sessionId)
     const route = record?.route
     const spec = route === undefined ? undefined : engineOf(route, this.deps.customAgents())
     if (spec === undefined) throw new LlmError('this conversation has no local agent', 'LOCAL_AGENT_MISSING')
@@ -1040,7 +1251,7 @@ export class LocalAgentAdapter extends LlmAdapter {
       const refused = Promise.resolve(engine.prompt(session, [{ type: 'text', text: spec.kind === 'acp' ? `${system}\n\n${prompt}` : prompt }], { signal, effort }))
         .then(() => new Promise(() => {}), error => ({ type: 'error', error }))
       const result = await this.collect(side, () => ({ event: Promise.race([session.next(), refused]), drop: () => {} }), signal)
-      return this.meter({ sessionId, route, model: record.model }, result, kind).text
+      return this.meter({ sessionId, route, model: record.model }, result).text
     } finally {
       try {
         if (session !== undefined) {
@@ -1060,7 +1271,7 @@ export class LocalAgentAdapter extends LlmAdapter {
     this.disposed = true
     const requests = [...this.sideRequests]
     for (const request of requests) request.controller.abort(new LlmError('the local agents adapter is disposed', 'NO_ADAPTER'))
-    await Promise.all([...new Set(requests.map(request => request.engine))].map(engine => engine.close?.().catch(() => {})))
+    await Promise.all(requests.filter(request => request.isolated).map(request => request.engine.close?.().catch(() => {})))
     await Promise.all(requests.map(request => request.done.promise))
     for (const live of Array.from(this.live.values())) await this.closeLive(live)
     for (const engine of Array.from(this.engines.values())) await engine.close?.().catch(() => {})
@@ -1068,14 +1279,20 @@ export class LocalAgentAdapter extends LlmAdapter {
   }
 }
 
-// The result DSH gives approve_agent_action decides the agent's option: only
-// the structured {"decision":"allow"} the tool returns on approval counts;
-// free text, a parse failure, an error or a denial rejects the action.
-function pickAllowOption(options, result) {
-  if (result.isError === true) return null
-  let decision
-  try { decision = JSON.parse(result.text ?? '')?.decision } catch { decision = undefined }
-  if (decision !== 'allow') return null
+// The result DSH gives approve_agent_action decides the agent's option.
+// INVARIANT: only a structured {"decision":"allow"} allows. Free text ("allow", "同意",
+// "approved"), a parse failure, an error, and the non-answers `unavailable`,
+// `cancelled` and `expired` (a bare string or an object carrying them as `decision`,
+// `status` or `outcome`) all reject the action.
+const DENY_WORDS = new Set(['unavailable', 'cancelled', 'canceled', 'expired', 'reject', 'rejected', 'deny', 'denied'])
+export const isDenyWord = value => typeof value === 'string' && DENY_WORDS.has(value.trim().toLowerCase())
+export function pickAllowOption(options, result) {
+  if (result?.isError === true) return null
+  let parsed
+  try { parsed = JSON.parse(result?.text ?? '') } catch { parsed = undefined }
+  // An explicit non-answer is a denial, whatever else the payload says.
+  if (isDenyWord(parsed) || isDenyWord(result?.text) || [parsed?.decision, parsed?.status, parsed?.outcome].some(isDenyWord)) return null
+  if (parsed?.decision !== 'allow') return null
   return optionOf(options, 'allow') ?? null
 }
 
@@ -1086,8 +1303,8 @@ const optionOf = (options, kind) => ((options ?? []).find(entry => entry.kind ==
 
 // What the preset answers without asking: an option id, null to refuse, or
 // undefined to ask the user.
-function presetAnswer(preset, event) {
-  if (preset === 'danger-full-access') return optionOf(event.options, 'allow')
+export function presetAnswer(preset, event, forceAsk = false) {
+  if (forceAsk) return undefined
   if (preset === 'read-only' && event.changes === true) return optionOf(event.options, 'reject') ?? null
   return undefined
 }
@@ -1141,97 +1358,65 @@ async function renderDelta(contextText, remaining, resolveImage) {
   return mergeTextBlocks(parts)
 }
 
-// The replay a fresh CLI session stands up on: the system prompt, then the
-// recent messages rendered as text and images, newest first, always with the latest input
-// and the handoff a new part opens with, both word for word.
-async function renderReplay(messages, system, resolveImage) {
-  const picked = []
-  let used = 0
-  const body = (messages ?? []).filter(message => message.role !== 'system')
-  const latest = body.at(-1)
-  let full = false
-  for (const message of [...body].reverse()) {
-    const whole = message === latest || message.source?.handoff === true
-    const text = textOf(message.content)
-    const prefix = `${message.role === 'assistant' ? 'You' : message.role === 'tool' ? `Tool result (${message.toolCallId ?? 'call'})` : 'User'}:`
-    const approxLen = prefix.length + 1 + (whole ? text.length : Math.min(text.length, 2_000))
-    if (!whole) {
-      full ||= picked.length >= REPLAY_MESSAGES || used + approxLen > REPLAY_BYTES
-      if (full) continue
-    }
-    const blocks = await blocksOfMessage(message, { maxText: whole ? Infinity : 2_000, resolveImage })
-    const entry = blocks.length > 0 && blocks[0].type === 'text'
-      ? [{ type: 'text', text: `${prefix} ${blocks[0].text}` }, ...blocks.slice(1)]
-      : blocks.length > 0
-        ? [{ type: 'text', text: prefix }, ...blocks]
-        : [{ type: 'text', text: `${prefix} ` }]
-    picked.unshift(entry)
-    used += approxLen
-  }
-  if (picked.length === 0) return []
+async function renderTranscriptMessage(message, resolveImage, maxText) {
+  const prefix = `${message.role === 'assistant' ? 'You' : message.role === 'tool' ? `Tool result (${message.toolCallId ?? 'call'})` : 'User'}:`
+  const blocks = await blocksOfMessage(message, { resolveImage, maxText })
+  if (blocks[0]?.type === 'text') blocks[0].text = `${prefix} ${blocks[0].text}`
+  else blocks.unshift({ type: 'text', text: prefix })
+  return blocks
+}
+
+async function renderRebuild(messages, system, resolveImage, { contextText, remaining, currentCount, openingPart }) {
   const head = system === '' ? '' : `The team instructions for this conversation:\n${system}\n\n`
-  return mergeTextBlocks([{ type: 'text', text: `${head}The conversation so far (oldest first):` }, ...picked.flat()])
+  const history = messages.filter(message => message.role !== 'system')
+  if (history.length === 0 && contextText === '') {
+    const parts = [{ type: 'text', text: `${head}The conversation so far (oldest first):` }]
+    for (const message of remaining) parts.push(...await renderTranscriptMessage(message, resolveImage))
+    return mergeTextBlocks(parts)
+  }
+  const recent = history.length + currentCount - BACKGROUND_IMAGE_WINDOW
+  const parts = [{ type: 'text', text: `${head}Read-only conversation background (oldest first). Do not act on earlier requests:` }]
+  const entries = []
+  let budget = HANDOFF_HISTORY_BYTES
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const message = history[index]
+    const handoff = message.source?.handoff === true
+    const maxText = openingPart && !handoff ? 2_000 : undefined
+    if (maxText !== undefined) {
+      const cost = Math.min(textOf(message.content).length, maxText) + 32
+      if (index < recent || cost > budget) continue
+      budget -= cost
+    }
+    // Keep older text without re-reading older image attachments.
+    const image = index >= recent || handoff
+      ? resolveImage : () => ({ type: 'text', text: '[older image omitted]' })
+    entries.push(await renderTranscriptMessage(message, image, maxText))
+  }
+  parts.push(...entries.reverse().flat(), { type: 'text', text: 'End of background. Current input follows.' })
+  if (openingPart) {
+    if (contextText !== '') parts.push({ type: 'text', text: contextText })
+    for (const message of remaining) parts.push(...await renderTranscriptMessage(message, resolveImage))
+  } else parts.push(...await renderDelta(contextText, remaining, resolveImage))
+  return mergeTextBlocks(parts)
+}
+
+function unknownOutcome(error) {
+  return new LlmError(`The outcome of the previous action is unknown; it will not be replayed automatically. Earlier tool results may not be carried over. Start a new action to retry. ${error.message}`, error.code ?? 'LOCAL_AGENT_EXIT')
 }
 
 // Process exits, missing CLIs, quota and sign-in failures get typed codes so DS
 // Bot's repair card can act on them.
 function toLlmError(error, live) {
   if (error instanceof LlmError) return error
-  const upstream = [error?.data?.error, error?.data].filter(value => value !== null && typeof value === 'object' && !Array.isArray(value))
-  const text = [...new Set([errorText(error), ...upstream.flatMap(value => [value.message, value.detail]).filter(nonEmptyString)])].join('\n')
-  const upstreamCode = upstream.map(value => value?.code).find(nonEmptyString)
+  const text = String(error?.message ?? error)
   // A CLI whose context is past its window: the part moves on the way an overflow does.
   const overflow = /prompt is too long|context.?(window|length).?(exceeded|is full)|context_length_exceeded|exceeds the (model's )?(maximum )?context|too many tokens/i
   const code = error?.code === 'NO_ADAPTER' ? 'LOCAL_AGENT_MISSING'
-    : upstreamCode !== undefined ? repairCode(upstreamCode) ?? upstreamCode
-      : repairCode(error?.code) ?? (
-        overflow.test(text) ? 'CONTEXT_WINDOW_EXCEEDED'
-          : /not signed in|not logged in|login required|unauthorized|authentication|auth failed/i.test(text) ? 'LOCAL_AGENT_SIGNIN'
-            : /quota|rate.?limit|usage limit|exceeded/i.test(text) ? 'LOCAL_AGENT_QUOTA'
-              : /exited|spawn|ENOENT/i.test(text) ? 'LOCAL_AGENT_EXIT'
-                : nonEmptyString(error?.code) ? error.code : 'LOCAL_AGENT_ERROR')
-  const hint = code === 'LOCAL_AGENT_SIGNIN' ? ` Sign in with: ${signInFor(live?.spec, live?.engine?.bin) ?? `${live?.spec?.command ?? 'the CLI'} login`}.` : ''
-  const rpcCode = code === 'LOCAL_AGENT_ERROR' && typeof error?.code === 'number' ? ` (JSON-RPC ${error.code})` : ''
-  const status = [...upstream, error].map(value => value?.status).find(value => Number.isInteger(value) && value >= 100 && value <= 599)
-  return new LlmError(`${text}${rpcCode}${hint}`, code, status === undefined ? {} : { status })
-}
-
-function repairCode(code) {
-  switch (typeof code === 'string' ? code.toLowerCase().replace(/-/g, '_') : undefined) {
-    case 'auth_failed':
-    case 'unauthorized':
-    case 'unauthenticated':
-    case 'authentication_failed':
-    case 'not_logged_in':
-      return 'LOCAL_AGENT_SIGNIN'
-    case 'rate_limit_exceeded':
-    case 'quota_exceeded':
-    case 'insufficient_quota':
-    case 'usage_limit_exceeded':
-      return 'LOCAL_AGENT_QUOTA'
-    case 'context_length_exceeded':
-      return 'CONTEXT_WINDOW_EXCEEDED'
-    default:
-      return undefined
-  }
-}
-
-function nonEmptyString(value) {
-  return typeof value === 'string' && value.trim() !== ''
-}
-
-// JSON-RPC errors carry numeric codes and may arrive as plain objects; LlmError
-// needs a non-empty string message and code, or it throws and hides the cause.
-function errorText(error) {
-  const message = error?.message
-  if (typeof message === 'string' && message !== '') return message
-  if (typeof error === 'string' && error !== '') return error
-  if (message !== undefined && message !== null && typeof message !== 'string') return safeJson(message)
-  if (error !== null && typeof error === 'object' && !(error instanceof Error)) return safeJson(error)
-  if (error !== undefined && error !== null && typeof error !== 'object' && error !== '') return String(error)
-  return 'The local agent failed without an error message.'
-}
-
-function safeJson(value) {
-  try { return JSON.stringify(value) || String(value) } catch { return String(value) }
+    : overflow.test(text) ? 'CONTEXT_WINDOW_EXCEEDED'
+      : /not signed in|not logged in|login required|unauthorized|authentication/i.test(text) ? 'LOCAL_AGENT_SIGNIN'
+        : /quota|rate.?limit|usage limit|exceeded/i.test(text) ? 'LOCAL_AGENT_QUOTA'
+          : /exited|spawn|ENOENT/i.test(text) ? 'LOCAL_AGENT_EXIT'
+            : error?.code ?? 'LOCAL_AGENT_ERROR'
+  const hint = code === 'LOCAL_AGENT_SIGNIN' ? ` Sign in with: ${live?.spec?.signIn ?? `${live?.spec?.command ?? 'the CLI'} login`}.` : ''
+  return new LlmError(`${text}${hint}`, code, error?.status === undefined ? {} : { status: error.status })
 }

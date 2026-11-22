@@ -5,39 +5,57 @@ import { createHash, randomBytes } from 'node:crypto'
 // Sizes, in characters of entry text: metadata does not count. Each MEMORY.md rides in
 // every request of a conversation, so its size is what a scope may always have in view;
 // the user can change these three (prefs.memoryLimits). A topic is read whole in one
-// bot_recall. An entry holds one fact.
-export const MEMORY_LIMITS = { entry: 300, group: 12_000, bot: 8_000, team: 4_000, topic: 16_000, topics: 40, snapshot: 32_000 }
-// What one MEMORY.md may take of the model's window, however large the size is set.
-export const WINDOW_SHARE = 0.02
-
-// fitSnapshot helpers. SNAPSHOT_RANK controls which sections are kept first when
-// the total exceeds the limit: team and node context before per-bot sections.
-export const SNAPSHOT_TRUNCATED = 'snapshot/truncated'
+// recall. An entry holds one fact. `node` and the remote `bot` scopes have no files on
+// this machine yet, but they are written by the same path when they do; `snapshot` is
+// the whole rendered memory a node receives, across team, node and Bot sections.
+export const MEMORY_LIMITS = { entry: 300, group: 12_000, bot: 8_000, node: 8_000, team: 4_000, topic: 16_000, topics: 40, snapshot: 32_768 }
+// The line a section carries when the snapshot budget cut it. It is markdown so a
+// model reads it as a note, not as another memory entry.
+export const SNAPSHOT_TRUNCATED = '[memory truncated: the rest did not fit the snapshot budget]'
+// The order sections are kept in when the snapshot does not fit: what everyone reads
+// first, then what the machine reads, then what one Bot reads.
 const SNAPSHOT_RANK = { team: 0, node: 1, bot: 2 }
 
-function cutSection(text, limit) {
-  if (text.length <= limit) return { text, truncated: false }
-  const cut = text.lastIndexOf('\n', limit)
-  return { text: cut > limit * 0.5 ? text.slice(0, cut) : text.slice(0, limit), truncated: true }
+// Cut `text` to `budget` characters without leaving half a line, then say it was cut.
+// A section that gets no budget at all still carries the marker, so a reader can tell
+// "nothing here" from "left out".
+function cutSection(text, budget) {
+  if (budget <= 0) return SNAPSHOT_TRUNCATED
+  const head = text.slice(0, budget)
+  const at = head.lastIndexOf('\n')
+  const kept = (at === -1 ? head : head.slice(0, at + 1)).replace(/\s+$/, '')
+  return kept === '' ? SNAPSHOT_TRUNCATED : `${kept}\n\n${SNAPSHOT_TRUNCATED}`
 }
 
-// Fit a snapshot's sections within `limit` characters. Sections are ordered by
-// SNAPSHOT_RANK (team first, then node, then bots) so the most important context
-// survives when space is tight. Returns { sections, truncated? }.
+// Fit rendered memory sections into the snapshot budget. Sections are taken in
+// team → node → bot order whatever order they arrive in; the first one that does not
+// fit is cut at a line boundary and marked, and every later section is dropped with
+// `truncated: true`. `size` counts the characters kept.
 export function fitSnapshot(sections, limit = MEMORY_LIMITS.snapshot) {
-  const ordered = [...sections].sort((a, b) => (SNAPSHOT_RANK[a.kind] ?? 9) - (SNAPSHOT_RANK[b.kind] ?? 9))
-  let budget = limit
-  let anyTruncated = false
-  const result = []
-  for (const section of ordered) {
-    if (budget <= 0) { anyTruncated = true; break }
-    const { text, truncated } = cutSection(section.text, budget)
-    budget -= text.length
-    if (truncated) anyTruncated = true
-    result.push(truncated ? { ...section, text, truncated: true } : { ...section, text })
-  }
-  return { sections: result, ...(anyTruncated ? { truncated: true } : {}) }
+  const ordered = sections
+    .map((section, index) => ({ section, index }))
+    .sort((a, b) => (SNAPSHOT_RANK[a.section?.kind] ?? 3) - (SNAPSHOT_RANK[b.section?.kind] ?? 3) || a.index - b.index)
+    .map(({ section }) => section)
+  let left = Math.max(0, limit)
+  let truncated = false
+  let size = 0
+  const kept = ordered.map((section) => {
+    const text = typeof section?.text === 'string' ? section.text : ''
+    if (!truncated && text.length <= left) {
+      left -= text.length
+      size += text.length
+      return { ...section, text, truncated: false }
+    }
+    truncated = true
+    const cut = cutSection(text, left)
+    size += cut.length
+    left = 0
+    return { ...section, text: cut, truncated: true }
+  })
+  return { sections: kept, truncated, size }
 }
+// What one MEMORY.md may take of the model's window, however large the size is set.
+export const WINDOW_SHARE = 0.02
 
 export const MAIN = 'MEMORY.md'
 // Where the team's entries wait for whoever needs them. MEMORY.md is for what every Bot
@@ -94,7 +112,7 @@ const DAY = /^\d{4}-\d{2}-\d{2}$/
 export const cleanDay = raw => (DAY.test(String(raw ?? '').trim()) ? String(raw).trim() : undefined)
 export const isExpired = (entry, today) => DAY.test(String(entry.meta?.until ?? '')) && entry.meta.until < today
 
-// An entry as the prompt shows it: its id and the day it was saved. bot_recall shows the rest.
+// An entry as the prompt shows it: its id and the day it was saved. recall shows the rest.
 export function promptEntry(entry) {
   const day = /^\d{4}-(\d{2}-\d{2})$/.exec(String(entry.meta?.added ?? ''))?.[1]
   return `- ${entry.text} [${[entryId(entry), day].filter(Boolean).join(' · ')}]`

@@ -3,23 +3,25 @@
 // shutdown also cancels the messages still waiting in a Session's inbox; nothing would
 // ever run either again, and whoever waited for them was not told. DS Bot notes each
 // running Bot turn and each message it delivers until a turn takes it up, in
-// inflight.json; what is still noted at the next start is picked up once.
+// inflight.json; queued deliveries are recovered, but a turn can replay only if
+// it was rejected before the engine accepted it.
 //
 // A turn that ends while DS Bot is not watching it (the plugin reloaded, DSH went on)
 // is settled from the Session's durable log: an answer that was produced goes to the Bot
 // that waits for it, and an outcome that cannot be read is said to be unknown. The
 // request itself is never sent again there.
 import { randomUUID } from 'node:crypto'
-import { readFileSync } from 'node:fs'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { readFileSync, renameSync } from 'node:fs'
+import fsp from 'node:fs/promises'
 import { join } from 'node:path'
 import { HISTORY_TIMEOUT_MS, MESSAGE_INLINE_MAX, SOURCE_KIND, STEER_CUT } from './constants.js'
 import { answerSender, cutOffText, failureLine, turnFailure } from './turns.js'
 import { textOf } from './text.js'
-import { threadCurrentOfPart, threadOfPart } from './threads.js'
+import { threadCurrentOfPart } from './threads.js'
 
 // Long enough for DSH to finish opening its workspaces after a start.
 export const RESUME_DELAY_MS = 3000
+export const QUEUED_TTL_MS = 30 * 60 * 1000
 
 export const resumeText = record => [
   'DeepSeek Harness restarted while you were working on this, so your last turn stopped before it finished.',
@@ -103,14 +105,87 @@ const triggerOf = info => ({
   ...(info.senderRoomId ? { senderRoomId: info.senderRoomId } : {}),
 })
 
-const readNotes = (file) => {
+// Written into inflight.json so a later format can tell itself apart. A file without it is
+// the legacy format and loads as is; `turns` and `queued` keep their names and shapes, so
+// an older reader still reads a newer file.
+export const NOTES_VERSION = 1
+
+const object = value => (value !== null && typeof value === 'object' && !Array.isArray(value) ? value : {})
+
+// A missing file is a first start. A file that cannot be read as notes is kept under
+// another name (its bytes untouched), reported once, and read as empty: nothing is guessed
+// from it and nothing is delivered from it.
+const readNotes = (file, rt) => {
+  let text
   try {
-    const parsed = JSON.parse(readFileSync(file, 'utf8'))
-    const object = value => (value !== null && typeof value === 'object' && !Array.isArray(value) ? value : {})
-    return { turns: object(parsed?.turns), queued: object(parsed?.queued) }
-  } catch {
+    text = readFileSync(file, 'utf8')
+  } catch (error) {
+    if (error?.code !== 'ENOENT') rt?.warn?.('ds-bot: reading the noted running turns failed: %s', error)
     return { turns: {}, queued: {} }
   }
+  try {
+    const parsed = JSON.parse(text)
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new TypeError('inflight.json is not an object')
+    return { turns: object(parsed.turns), queued: object(parsed.queued) }
+  } catch (error) {
+    let kept = 'left in place'
+    // A read-only host writes nothing, a rename included.
+    if (rt?.readOnly?.() === undefined) {
+      const target = `${file}.corrupt-${Date.now()}`
+      try {
+        renameSync(file, target)
+        kept = target
+      } catch { /* the file stays where it is */ }
+    }
+    rt?.noteFailure?.({
+      level: 'warn',
+      source: 'resume',
+      text: `the noted running turns could not be read (${error?.message ?? error}); nothing from them will be picked up (${kept})`,
+    })
+    return { turns: {}, queued: {} }
+  }
+}
+
+export function classifyResume(record) {
+  if (record.producedOutput || record.promptSubmitted) return 'after-accept'
+  // A pre-accept rejection needs explicit negatives for both flags.
+  if (record.attempted === true && record.rejected === true
+    && record.producedOutput === false && record.promptSubmitted === false) return 'before-accept'
+  return 'unknown'
+}
+
+export const mayReplay = cls => cls === 'before-accept'
+
+export async function resumeTurn(rt, sessionId, record) {
+  const alreadyResumed = record.resumed
+  const cls = alreadyResumed ? 'unknown' : classifyResume(record)
+  if (!alreadyResumed && !mayReplay(cls)) return cls
+  const bot = rt.botOf(record.botId)
+  if (bot === undefined) return cls
+  const room = record.roomId === undefined ? undefined : rt.roomOf(record.roomId)
+  if (record.roomId !== undefined && (room === undefined || !room.members.includes(bot.id))) return cls
+  // Claim before any await so concurrent recovery cannot replay the same turn.
+  record.resumed = true
+  if (room !== undefined) await rt.postToRoom(room, bot, '', { resumed: true, quiet: true, ...(alreadyResumed ? { again: true } : {}) })
+  if (alreadyResumed) return cls
+  const text = resumeText(record)
+  if (room !== undefined) {
+    await rt.deliver({ toId: bot.id, sessionId: room.sessions?.[bot.id] ?? sessionId, role: 'room', roomId: room.id, note: 'picking up after a restart', resumed: true, text, ...(record.trigger?.askedBy ? { askedBy: record.trigger.askedBy } : {}) })
+    return cls
+  }
+  // The turn ran in a part that is still one of the Bot's: it goes on there, not in the
+  // foreground chat when that part is a background one. A part gone since (archived and
+  // dropped) falls back to the Bot's current chat.
+  const ownPart = rt.selfOf(sessionId) === bot.id && rt.isBotSession(sessionId) ? { sessionId } : {}
+  const trigger = record.trigger
+  if ((trigger?.role === 'request' || trigger?.role === 'stopped') && trigger.senderSessionId && trigger.audience !== 'user' && rt.botOf(trigger.senderSessionId)) {
+    // The sender still waits for this turn's answer, so it goes on under the same exchange.
+    await rt.deliver({ fromId: trigger.senderSessionId, toId: bot.id, ...ownPart, ...(trigger.senderPart ? { fromPart: trigger.senderPart } : {}), role: trigger.role, ...(trigger.exchangeId ? { exchangeId: trigger.exchangeId } : {}), ...(trigger.senderRoomId ? { fromRoomId: trigger.senderRoomId } : {}), resumed: true, text })
+    return cls
+  }
+  // A turn that went on with work another Bot asked for still owes that Bot its answer.
+  await rt.deliver({ toId: bot.id, ...ownPart, role: 'resume', resumed: true, text, ...(trigger?.work ? { work: trigger.work } : {}) })
+  return cls
 }
 
 export function install(rt) {
@@ -118,9 +193,9 @@ export function install(rt) {
   const file = join(home, 'inflight.json')
 
   // What the last run left; read before this run notes anything.
-  let interrupted = readNotes(file)
+  let interrupted = readNotes(file, rt)
 
-  /** @type {Record<string, {botId:string, roomId?:string, since:number, trigger?:any, approval?:{tool:string, reason:string}, resumed?:boolean}>} */
+  /** @type {Record<string, {botId:string, roomId?:string, since:number, trigger?:any, approval?:{tool:string, reason:string}, resumed?:boolean, attempted?:boolean, rejected?:boolean, promptSubmitted?:boolean, producedOutput?:boolean}>} */
   let turns = {}
   // A new delivery can persist before recovery runs; it must keep the old queue.
   /** @type {Record<string, {at:number, args:any}[]>} deliveries no turn has taken up, by Session */
@@ -132,18 +207,27 @@ export function install(rt) {
   const persist = () => {
     // Only the host that saves the team runs its work again.
     if (stopped || rt.readOnly() !== undefined) return
-    latest = JSON.stringify({ turns, queued })
+    latest = JSON.stringify({ version: NOTES_VERSION, turns, queued })
     // One write waits at a time and takes the latest notes, so a busy round does not
     // write the file once per change.
     if (due) return
     due = true
-    // Written in place: a rename over the file fails on Windows while anything reads
-    // it, and a torn write only loses what one restart would pick up.
+    // Written to a temp file and renamed over the target, so the target holds either the
+    // old bytes or the complete new ones. Where the rename is refused (Windows, while
+    // something reads the file) the old bytes stay and the next change writes again; the
+    // file is never rewritten in place, since a torn write would lose the notes.
     writing = writing.then(async () => {
       due = false
       const snapshot = latest
-      await mkdir(home, { recursive: true })
-      await writeFile(file, snapshot, 'utf8')
+      await fsp.mkdir(home, { recursive: true })
+      const temp = `${file}.tmp-${process.pid}`
+      try {
+        await fsp.writeFile(temp, snapshot, 'utf8')
+        await fsp.rename(temp, file)
+      } catch (error) {
+        await fsp.rm(temp, { force: true }).catch(() => {})
+        throw error
+      }
     }).catch(error => rt.warn('ds-bot: noting running turns failed: %s', error))
   }
   const update = (id, change) => {
@@ -154,6 +238,17 @@ export function install(rt) {
     else turns[id] = next
     persist()
   }
+  const noteFailure = rt.noteFailure
+  rt.noteFailure = function (failure) {
+    if (failure?.source === 'prompt' && failure.sessionId !== undefined) {
+      update(failure.sessionId, record => {
+        if (record === undefined || record.promptSubmitted || record.producedOutput) return record
+        return { ...record, attempted: true, rejected: true, promptSubmitted: false, producedOutput: false }
+      })
+    }
+    return noteFailure?.call(this, failure)
+  }
+
   const forgetQueued = (exchangeId) => {
     for (const [sessionId, list] of Object.entries(queued)) {
       const at = list.findIndex(item => item.args.exchangeId === exchangeId)
@@ -229,49 +324,36 @@ export function install(rt) {
           : { ...record, trigger: triggerOf(info), ...(info.resumed ? { resumed: true } : {}) }))
         break
       }
+      case 'tool/call':
+        update(id, record => (record === undefined || record.promptSubmitted ? record : { ...record, promptSubmitted: true }))
+        break
+      case 'assistant/message':
+        if (textOf(event.data?.message?.content) !== '') {
+          update(id, record => (record === undefined || record.producedOutput ? record : { ...record, producedOutput: true }))
+        }
+        break
       case 'turn/end': {
-        // DSH stops every turn as it shuts down; that one is picked up at the next start.
+        // Keep notes for a turn that DSH stops during shutdown.
         const reason = event.data?.reason
         if (reason?.kind === 'aborted' && reason.reason?.kind === 'disposed') break
         update(id, () => undefined)
+        // The turn is over: its saved approval resume position goes with it (coalesced
+        // save; the position only matters while the turn is unfinished).
+        if (rt.readOnly() === undefined && rt.state?.resumeCursor !== null && typeof rt.state?.resumeCursor === 'object' && Object.hasOwn(rt.state.resumeCursor, id)) {
+          rt.state.resumeCursor = { ...rt.state.resumeCursor }
+          delete rt.state.resumeCursor[id]
+          void rt.save?.({ immediate: false })?.catch?.(() => {})
+        }
         break
       }
     }
   })
 
+  // When the Session's unfinished turn started, for the approval resume position.
+  rt.turnSince = sessionId => turns[sessionId]?.since
   // An approval the restart drops is named when the turn is picked up.
   rt.noteApproval = (sessionId, approval) => update(sessionId, record => (record === undefined ? record
     : approval === undefined ? (({ approval: _, ...rest }) => rest)(record) : { ...record, approval }))
-
-  async function resumeTurn(sessionId, record) {
-    const bot = rt.botOf(record.botId)
-    if (bot === undefined) return false
-    const text = resumeText(record)
-    if (record.roomId !== undefined) {
-      const room = rt.roomOf(record.roomId)
-      if (room === undefined || !room.members.includes(bot.id)) return false
-      await rt.postToRoom(room, bot, '', { resumed: true, quiet: true, ...(record.resumed ? { again: true } : {}) })
-      // A turn already picked up once and cut off again stays stopped: a restart loop
-      // must not run it forever.
-      if (record.resumed) return false
-      await rt.deliver({ toId: bot.id, sessionId: room.sessions?.[bot.id] ?? sessionId, role: 'room', roomId: room.id, note: 'picking up after a restart', resumed: true, text, ...(record.trigger?.askedBy ? { askedBy: record.trigger.askedBy } : {}) })
-      return true
-    }
-    if (record.resumed) return false
-    // The turn ran in a part that is still one of the Bot's: it goes on there, not in the
-    // foreground chat when that part is a background one. A part gone since (archived and
-    // dropped) falls back to the Bot's current chat.
-    const ownPart = rt.selfOf(sessionId) === bot.id && rt.isBotSession(sessionId) ? { sessionId } : {}
-    const trigger = record.trigger
-    if ((trigger?.role === 'request' || trigger?.role === 'stopped') && trigger.senderSessionId && trigger.audience !== 'user' && rt.botOf(trigger.senderSessionId)) {
-      // The sender still waits for this turn's answer, so it goes on under the same exchange.
-      await rt.deliver({ fromId: trigger.senderSessionId, toId: bot.id, ...ownPart, ...(trigger.senderPart ? { fromPart: trigger.senderPart } : {}), role: trigger.role, ...(trigger.exchangeId ? { exchangeId: trigger.exchangeId } : {}), ...(trigger.senderRoomId ? { fromRoomId: trigger.senderRoomId } : {}), resumed: true, text })
-      return true
-    }
-    // A turn that went on with work another Bot asked for still owes that Bot its answer.
-    await rt.deliver({ toId: bot.id, ...ownPart, role: 'resume', resumed: true, text, ...(trigger?.work ? { work: trigger.work } : {}) })
-    return true
-  }
 
   // Where a queued note goes now: its Session if it still is one, else the
   // current Session of its Bot, or of its group when the message went to one.
@@ -283,19 +365,14 @@ export function install(rt) {
   // up, so a send that fails here, or a Session that cannot be opened, leaves them
   // for the next start instead of losing them.
   async function resendQueued(sessionId, list) {
-    const active = new Set()
     const fresh = list.filter(item => rt.botOf(item.args?.toId) !== undefined
       && sessionFor(sessionId, item.args) !== undefined && taken?.has(item.args.exchangeId) !== true)
-    if (fresh.length === 0) return active
+    if (fresh.length === 0) return
     const target = sessionFor(sessionId, fresh[0].args)
     const agent = await rt.resolveAgent(target)
     const waiting = new Set([...(agent.inbox?.nextStep ?? []), ...(agent.inbox?.nextTurn ?? [])].map(message => message.source?.exchangeId))
     for (const { args } of fresh) {
-      const dest = sessionFor(sessionId, args)
-      if (waiting.has(args.exchangeId)) {
-        if (dest !== undefined) active.add(dest)
-        continue
-      }
+      if (waiting.has(args.exchangeId)) continue
       if (taken?.has(args.exchangeId) === true) {
         forgetQueued(args.exchangeId)
         continue
@@ -303,11 +380,9 @@ export function install(rt) {
       // A request that waited through a restart reaches its target late: the work
       // it is for is marked, so the answer that comes back says so.
       if (args.role === 'request' || args.role === 'stopped') rt.lateWork?.(args.exchangeId)
-      const ok = await deliver({ ...args, sessionId: dest, steer: false, resent: true })
-        .then(() => true, (error) => { rt.warn('ds-bot: sending again what %s was sent failed: %s', sessionId, error); return false })
-      if (ok && dest !== undefined) active.add(dest)
+      await deliver({ ...args, sessionId: sessionFor(sessionId, args), steer: false, resent: true })
+        .catch(error => rt.warn('ds-bot: sending again what %s was sent failed: %s', sessionId, error))
     }
-    return active
   }
 
   // A Session's durable log, as DSH keeps it: what happened there, and what it said.
@@ -319,79 +394,26 @@ export function install(rt) {
     return Array.isArray(seen?.events) ? seen.events : undefined
   }
 
-  const isTerminalReason = reason => reason !== undefined && reason.kind !== 'interrupted'
-    && !(reason.kind === 'aborted' && reason.reason?.kind === 'disposed')
-
-  const whereFor = (asker) => {
-    const sender = asker?.senderSessionId
-    if (sender === undefined) return { sender: undefined, back: undefined, where: undefined }
-    const back = rt.roomOf(asker.senderRoomId)?.sessions?.[sender]
-    // The answer would have gone to the part of the asking Bot's chat the request came
-    // from, which is not its foreground chat when that part is a background one.
-    const where = back ?? (asker.senderPart === undefined ? undefined : threadCurrentOfPart(rt.botOf(sender), asker.senderPart)) ?? rt.chatOf(sender)
-    return { sender, back, where }
-  }
-
-  async function deliveredAnswer(botId, sender, workId) {
-    const delivered = rt.deliveredReplyOf?.(botId, sender, workId)
-    if (delivered === undefined) {
-      return { answered: rt.deliveredReplyOf === undefined && sender !== undefined && rt.wasReplyDelivered?.(botId, sender, workId) === true }
-    }
-    const file = delivered.files?.[0]
-    const stored = file === undefined ? undefined : await rt.fileText(file, delivered.length)
-    if (stored?.whole !== true) return { answered: true, text: delivered.text }
-    // Delivery warnings are prepended to the preview and included in its declared length.
-    const prefixLength = (delivered.length ?? stored.text.length) - stored.text.length
-    const prefix = prefixLength > 0 ? delivered.text.slice(0, prefixLength) : ''
-    return { answered: true, text: prefix + stored.text }
-  }
-
-  async function alreadyAnswered(botId, sender, where, back, roomId, workId) {
-    const delivered = await deliveredAnswer(botId, sender, workId)
-    if (delivered.answered) return delivered
-    if (where === undefined) return { answered: false }
-    const sent = await logOf(where)
-    if (sent !== undefined && answeredIn(sent, workId)) return { answered: true }
-    const segments = back === undefined
-      ? (threadOfPart(rt.botOf(sender), where)?.segments ?? [])
-      : (rt.roomOf(roomId)?.segments?.[sender] ?? [])
-    for (const segment of [...segments].reverse()) {
-      if (segment?.sessionId === undefined || segment.sessionId === where) continue
-      const earlier = await logOf(segment.sessionId)
-      if (earlier !== undefined && answeredIn(earlier, workId)) return { answered: true }
-    }
-    return { answered: false }
-  }
-
   // A turn that ended while DS Bot was not watching it: its answer may exist and never
   // have gone to the Bot that waits for it. The Session's durable log says what it did;
   // the work it was for is settled once, the way a finished turn settles it.
-  async function reconcileEnded(sessionId, record, ended, prefetchedEvents) {
+  async function reconcileEnded(sessionId, record, ended) {
     const trigger = record.trigger
     if (trigger === undefined) return
     const workId = rt.workOf(trigger)
-    const ownsPrimary = rt.ownsWork(record.botId, workId)
-    const hasOwnedWork = ownsPrimary || Object.values(rt.state?.works ?? {}).some(work => work.to === record.botId)
-    if (!hasOwnedWork) return
+    if (!rt.ownsWork(record.botId, workId)) return
     const exchangeId = trigger.exchangeId
-    if (exchangeId === undefined) return
-    const primaryAsker = ownsPrimary ? rt.workAsker(workId) : undefined
-    const primarySender = primaryAsker?.senderSessionId
-    const canSettlePrimary = ownsPrimary && primarySender !== undefined && rt.botOf(primarySender) !== undefined
-    const name = rt.botOf(rt.selfOf(sessionId))?.name ?? rt.botOf(record.botId)?.name ?? 'The other Bot'
-    // DSH stopped that turn as it shut down: it is picked up at the next start.
+    const asker = rt.workAsker(workId)
+    const sender = asker?.senderSessionId
+    if (exchangeId === undefined || sender === undefined || rt.botOf(sender) === undefined) return
+    const name = rt.botOf(rt.selfOf(sessionId))?.name ?? 'The other Bot'
+    // Keep the notes for a turn that DSH stopped during shutdown.
     if (ended.reason?.kind === 'aborted' && ended.reason.reason?.kind === 'disposed') {
       update(sessionId, () => record)
       return
     }
-    const events = prefetchedEvents ?? await logOf(sessionId)
+    const events = await logOf(sessionId)
     if (events === undefined) {
-      if (!canSettlePrimary) return
-      const delivered = await deliveredAnswer(record.botId, primarySender, workId)
-      if (delivered.answered) {
-        rt.closeWork?.(workId, name, delivered.text || rt.answerText(workId, '', name))
-        return
-      }
       // The record of that work cannot be read: whether it answered cannot be
       // established. The sender is told that, and the work is not run again.
       const why = 'the record of that work could not be read'
@@ -405,7 +427,7 @@ export function install(rt) {
         where: room === undefined ? 'own chat' : `group "${room.name}"`,
         sessionId,
       })
-      answerSender(rt, sessionId, primaryAsker, text)
+      answerSender(rt, sessionId, asker, text)
       return
     }
     const turn = turnOf(events, exchangeId)
@@ -413,65 +435,36 @@ export function install(rt) {
     // waiting for it keeps what it had.
     if (turn === undefined) return
     const said = turn.texts.join('\n\n')
-    let primarySettled = !canSettlePrimary
-    if (canSettlePrimary) {
-      // The answer went up in another run (even before a part switch): the work closes
-      // with what it said, and nothing is sent twice.
-      const { sender, back, where } = whereFor(primaryAsker)
-      const answered = await alreadyAnswered(record.botId, sender, where, back, primaryAsker.senderRoomId, workId)
-      if (answered.answered) {
-        rt.closeWork?.(workId, name, answered.text || rt.answerText(workId, said, name))
-        primarySettled = true
-      }
+    // The answer went up in another run: the work closes with what it said, and
+    // nothing is sent twice.
+    const back = rt.roomOf(asker.senderRoomId)?.sessions?.[sender]
+    // The answer would have gone to the part of the asking Bot's chat the request came
+    // from, which is not its foreground chat when that part is a background one.
+    const where = back ?? (asker.senderPart === undefined ? undefined : threadCurrentOfPart(rt.botOf(sender), asker.senderPart)) ?? rt.chatOf(sender)
+    const sent = await logOf(where)
+    if (sent !== undefined && answeredIn(sent, workId)) {
+      rt.closeWork?.(workId, name, rt.answerText(workId, said, name))
+      return
     }
     const reason = turn.reason
     // A turn that went on to a fresh part goes on there; it is not settled here.
     if (reason?.kind === 'blocked') return
-    // The turn was cut off before it finished: the work is picked up again, as after
-    // a restart that cut it off.
+    // Check whether the interrupted turn can be replayed, as after a restart.
     if (reason === undefined || reason.kind === 'interrupted') {
-      if (!primarySettled) await resumeTurn(sessionId, record)
+      await resumeTurn(rt, sessionId, record)
       return
     }
-    const failure = reason.kind === 'error' ? turnFailure(reason.error) : undefined
-    const dedupKey = failure !== undefined
-      ? `reconcile:${sessionId}:${turn.turn ?? ''}:error:${failure.requestId ?? failure.code}`
-      : reason.kind === 'aborted'
-        ? `reconcile:${sessionId}:${turn.turn ?? ''}:aborted`
-        : undefined
-    const settleFailureOrAbort = (asker) => {
-      if (failure !== undefined) {
-        answerSender(rt, sessionId, asker, `${name} could not answer your message: its model call failed (${failureLine(failure)}). Tell the user if it matters; do not retry right away.`, undefined, { failure, dedupKey })
-      } else {
-        // The turn was stopped before it could answer: the sender is told, as it is told
-        // when DS Bot watches the turn end.
-        answerSender(rt, sessionId, asker, `${name} was stopped before it could answer your message.`, undefined, { dedupKey })
-      }
-    }
-    if (reason.kind === 'error' || reason.kind === 'aborted') {
-      if (!primarySettled) settleFailureOrAbort(primaryAsker)
-      // Steered requests that joined the same failed or aborted turn also owe their own
-      // callers settlement, so distinct parent works cannot stall across a restart.
-      const seen = new Set([workId, exchangeId])
-      for (const took of turn.took) {
-        if (took?.kind !== SOURCE_KIND || (took.role !== 'request' && took.role !== 'stopped') || took.audience === 'user') continue
-        const joinedId = took.exchangeId
-        if (typeof joinedId !== 'string' || joinedId === '' || seen.has(joinedId)) continue
-        seen.add(joinedId)
-        if (!rt.ownsWork(record.botId, joinedId)) continue
-        const joinedAsker = rt.workAsker(joinedId)
-        const { sender, back, where } = whereFor(joinedAsker)
-        if (sender === undefined || rt.botOf(sender) === undefined) continue
-        const answered = await alreadyAnswered(record.botId, sender, where, back, joinedAsker.senderRoomId, joinedId)
-        if (answered.answered) {
-          rt.closeWork?.(joinedId, name, answered.text || rt.answerText(joinedId, '', name))
-          continue
-        }
-        settleFailureOrAbort(joinedAsker)
-      }
+    if (reason.kind === 'error') {
+      const failure = turnFailure(reason.error)
+      answerSender(rt, sessionId, asker, `${name} could not answer your message: its model call failed (${failureLine(failure)}). Tell the user if it matters; do not retry right away.`)
       return
     }
-    if (primarySettled) return
+    if (reason.kind === 'aborted') {
+      // The turn was stopped before it could answer: the sender is told, as it is told
+      // when DS Bot watches the turn end.
+      answerSender(rt, sessionId, asker, `${name} was stopped before it could answer your message.`)
+      return
+    }
     // A turn cut off at the output limit is not a finish: the answer says so, and the
     // diagnostics record it, with the route the Session's log holds for it.
     const cutOff = reason?.kind === 'max-tokens'
@@ -503,51 +496,7 @@ export function install(rt) {
     }
     const text = rt.answerText(workId, answer, name)
     const long = text.length > MESSAGE_INLINE_MAX ? await rt.attachLong(text, `Answer from ${name}.txt`) : undefined
-    answerSender(rt, sessionId, primaryAsker, text, long)
-  }
-
-  // Checks whether the work or reply-expecting trigger a stale inflight turn names has
-  // already been answered in the pair ledger or the asker's session log. For a
-  // continuation turn (`role: 'reply' | 'report' | 'resume'`), the owed answer is the
-  // upstream work and its asker, never the child reply that triggered the turn.
-  async function settleDeliveredTrigger(record, trigger) {
-    const workId = rt.workOf(trigger)
-    if (workId !== undefined) {
-      const owns = rt.ownsWork(record.botId, workId)
-      const asker = owns ? rt.workAsker(workId) : undefined
-      const sender = asker?.senderSessionId
-        ?? (trigger.role === 'request' && trigger.audience !== 'user' ? trigger.senderSessionId : undefined)
-      const name = rt.botOf(record.botId)?.name ?? 'The other Bot'
-      if (owns && asker !== undefined && sender !== undefined && rt.botOf(sender) !== undefined) {
-        const { back, where } = whereFor(asker)
-        const answered = await alreadyAnswered(record.botId, sender, where, back, asker.senderRoomId, workId)
-        if (answered.answered) {
-          rt.closeWork?.(workId, name, answered.text || rt.answerText(workId, '', name))
-          return true
-        }
-        return false
-      }
-      const delivered = await deliveredAnswer(record.botId, sender, workId)
-      if (delivered.answered) {
-        if (owns) rt.closeWork?.(workId, name, delivered.text || rt.answerText(workId, '', name))
-        return true
-      }
-      return false
-    }
-    if (trigger.role === 'stopped' && trigger.exchangeId !== undefined && trigger.senderSessionId !== undefined) {
-      return rt.wasReplyDelivered?.(record.botId, trigger.senderSessionId, trigger.exchangeId) === true
-    }
-    return false
-  }
-
-  async function settleEnded(sessionId, record, ended, events) {
-    const task = rt.taskOwners?.has(sessionId)
-    if (!task || isTerminalReason(ended.reason)) {
-      await reconcileEnded(sessionId, record, ended, events).catch(error => rt.warn('ds-bot: settling the work of %s failed: %s', sessionId, error))
-    }
-    if (task) {
-      await rt.reconcileEndedTask?.(sessionId, ended).catch(error => rt.warn('ds-bot: settling task %s failed: %s', sessionId, error))
-    }
+    answerSender(rt, sessionId, asker, text, long)
   }
 
   async function resumeAll() {
@@ -560,81 +509,57 @@ export function install(rt) {
     // A Bot that is gone takes its notes with it; what a turn already read here
     // is done with.
     const pending = queued
+    const now = Date.now()
+    const stale = new Set()
     queued = {}
     for (const [oldId, list] of Object.entries(pending)) {
       if (!Array.isArray(list)) continue
       for (const item of list) {
+        if (Number.isFinite(item?.at) && now - item.at > QUEUED_TTL_MS) {
+          stale.add(item)
+          continue
+        }
         if (item?.args?.exchangeId === undefined || taken?.has(item.args.exchangeId) === true || rt.botOf(item.args.toId) === undefined) continue
         const key = sessionFor(oldId, item.args) ?? oldId
         queued = { ...queued, [key]: [...(queued[key] ?? []), item] }
       }
     }
     persist()
+    if (stale.size > 0) rt.warn?.('ds-bot: dropped %d stale queued notes older than 30 minutes', stale.size)
     // Agents and inboxes are read before anything wakes their Sessions.
     const cut = []
-    const keepTaskSessions = new Set()
     for (const [sessionId, record] of Object.entries(noted)) {
       const first = firstTurn.get(sessionId)
       if (first?.type === 'turn/end') {
         // The turn ended while DS Bot was not watching it: what it did is settled from
         // the Session's durable log.
-        await settleEnded(sessionId, record, first)
+        await reconcileEnded(sessionId, record, first).catch(error => rt.warn('ds-bot: settling the work of %s failed: %s', sessionId, error))
         continue
       }
       // Still running: noted again, as if it had started here.
-      if (first === undefined && (await rt.resolveAgent(sessionId).catch(() => undefined))?.status === 'running') {
-        update(sessionId, () => record)
-        keepTaskSessions.add(sessionId)
-        continue
-      }
-      // If inflight.json still held a turn whose durable log already shows a finished
-      // turn/end, or whose owed reply is already recorded in the pair ledger, settle it
-      // instead of re-running via resumeTurn.
-      if (first === undefined && record.roomId === undefined && record.trigger !== undefined) {
-        const trigger = record.trigger
-        const events = trigger.exchangeId !== undefined ? await logOf(sessionId) : undefined
-        const turn = events === undefined ? undefined : turnOf(events, trigger.exchangeId)
-        if (isTerminalReason(turn?.reason)) {
-          await settleEnded(sessionId, record, { reason: turn.reason }, events)
-          continue
-        }
-        if (await settleDeliveredTrigger(record, trigger)) continue
-      }
-      cut.push([sessionId, record])
+      if (first === undefined && (await rt.resolveAgent(sessionId).catch(() => undefined))?.status === 'running') update(sessionId, () => record)
+      else cut.push([sessionId, record])
     }
     firstTurn = undefined
     for (const [sessionId, list] of Object.entries(dropped)) {
       if (!Array.isArray(list)) continue
-      const active = await resendQueued(sessionId, list).catch((error) => {
-        rt.warn('ds-bot: sending again what %s was sent failed: %s', sessionId, error)
-        return new Set()
-      })
-      for (const dest of active ?? []) keepTaskSessions.add(dest)
+      // Resends read the original notes, which still include the expired items.
+      await resendQueued(sessionId, list.filter(item => !stale.has(item))).catch(error => rt.warn('ds-bot: sending again what %s was sent failed: %s', sessionId, error))
     }
     taken = undefined
     for (const [sessionId, record] of cut) {
-      const resumed = await resumeTurn(sessionId, record).catch((error) => {
-        rt.warn('ds-bot: picking up the turn of %s failed: %s', sessionId, error)
-        return false
-      })
-      if (resumed === true) keepTaskSessions.add(sessionId)
+      await resumeTurn(rt, sessionId, record).catch(error => rt.warn('ds-bot: picking up the turn of %s failed: %s', sessionId, error))
     }
-    // Reconcile orphaned background tasks before settling room batches so a zombie
-    // group task does not keep `hasRoomTasks` true and mask a stuck batch.
-    await rt.reconcileTasksAfterRestart?.(keepTaskSessions).catch(error => rt.warn('ds-bot: reconciling background tasks failed: %s', error))
     // What a group's members were asked for and will not pick up is settled now.
     await rt.settleRoomBatches?.()
   }
 
   ctx.effect(() => {
     const pending = Object.keys(interrupted.turns).length > 0 || Object.keys(interrupted.queued).length > 0
-    // With nothing to pick up, orphaned tasks and group batches a restart left are settled at once.
+    // With nothing to pick up, the group batches a restart left are settled at once.
     const timer = pending
       ? setTimeout(() => void resumeAll().catch(error => rt.warn('ds-bot: picking up interrupted work failed: %s', error)), RESUME_DELAY_MS)
-      : setTimeout(() => void rt.load()
-        .then(() => rt.reconcileTasksAfterRestart?.(new Set()))
-        .then(() => rt.settleRoomBatches?.())
-        .catch(error => rt.warn('ds-bot: settling group batches failed: %s', error)), 0)
+      : setTimeout(() => void rt.load().then(() => rt.settleRoomBatches?.()).catch(error => rt.warn('ds-bot: settling group batches failed: %s', error)), 0)
     timer?.unref?.()
     // What the turns stopped by this shutdown left stays as last noted.
     return () => {

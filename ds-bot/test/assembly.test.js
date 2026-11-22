@@ -121,15 +121,32 @@ describe('S24-asm: the takeover is installed in the running chain', () => {
     await w.mirror()
     // The turns wrapper rewrites rejections of Bot Sessions (message + details.reason + a noted failure).
     // The takeover's own refusals must come out exactly as joined-prompt wrote them, so it sits outside it.
+    // (A busy Bot no longer refuses — the second message is queued — so the refusal checked here is the one
+    // joined-prompt still makes: an attachment part, which a node turn cannot carry.)
     assert.equal(w.rt.isBotSession('mirror-1'), true, 'the turns wrapper would treat this Session as a Bot Session')
     const noted = []
     const original = w.rt.noteFailure
     w.rt.noteFailure = (...args) => { noted.push(args); return original?.(...args) }
-    await w.prompt(textRequest('mirror-1', 'first', 'req-1'))
-    const error = await w.prompt(textRequest('mirror-1', 'second', 'req-2')).then(() => assert.fail('busy expected'), e => e)
-    assert.equal(error.code, 'session/agent-busy')
-    assert.equal(error.message, '副机 Bot 正在回复上一条，请稍候再发', 'message not suffixed by the turns wrapper')
+    const withImage = { requestId: 'req-img', sessionId: 'mirror-1', mode: 'queue', content: [{ type: 'text', text: 'look' }, { type: 'image', data: 'x' }] }
+    const error = await w.prompt(withImage).then(() => assert.fail('refusal expected'), e => e)
+    assert.equal(error.code, 'session/joined-attachment-unsupported')
+    assert.equal(error.details.reason, 'JOINED_ATTACHMENT_UNSUPPORTED')
     assert.equal(noted.length, 0, 'the turns wrapper never saw the refusal')
+    assert.equal(w.frames.filter(f => f.type === 'bot/turn').length, 0, 'a refused prompt never reaches the node')
+  })
+
+  it('S24-asm-queue: on the real chain a second message while a turn runs is accepted and queued, not refused', async () => {
+    const w = world()
+    await w.mirror()
+    const noted = []
+    const original = w.rt.noteFailure
+    w.rt.noteFailure = (...args) => { noted.push(args); return original?.(...args) }
+    await w.prompt(textRequest('mirror-1', 'first', 'req-1'))
+    const ack = await w.prompt(textRequest('mirror-1', 'second', 'req-2'))
+    assert.deepEqual(ack, { accepted: true }, 'the user is never blocked')
+    assert.equal(w.frames.filter(f => f.type === 'bot/turn').length, 1, 'the second message waits for the first turn')
+    assert.equal(w.rt.joinedUserQueue.get(w.bot.id).length, 1, 'it sits in the user queue')
+    assert.equal(noted.length, 0)
   })
 })
 

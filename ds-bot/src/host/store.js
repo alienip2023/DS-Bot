@@ -23,7 +23,7 @@ export function install(rt) {
   const { ctx, home, statePath } = rt
 
   /** @type {{version:2, workspaceId?:string, mainBotIds:string[], bots:Record<string,any>, threads:Record<string,any>, privateArchives:any[], rooms:Record<string,any>, agents:Record<string,any>, sections:any[], capabilities:{items:Record<string,any>}, exchanges:any[], exchangeTurns:Record<string,number[]>, revision:number}} */
-  const state = { version: STATE_VERSION, mainBotIds: [], bots: {}, threads: {}, privateArchives: [], rooms: {}, agents: {}, sections: [], capabilities: { items: {} }, exchanges: [], exchangeTurns: {}, works: {}, requests: {}, questions: {}, views: {}, closedCards: {}, prefs: {}, nodeLimits: {}, switching: {}, federation: { version: 1, hubId: null, peersAt: 0, inbox: {}, outbox: {}, seen: {}, seq: 0, allowPeerToMain: false, lastError: null }, memoryFederation: { seq: 0, schemaVersion: 1, nodes: {}, inbox: {} }, approvalResults: {}, resumeCursor: {}, webhooks: {}, revision: 0 }
+  const state = { version: STATE_VERSION, mainBotIds: [], bots: {}, threads: {}, privateArchives: [], rooms: {}, agents: {}, sections: [], capabilities: { items: {} }, exchanges: [], exchangeTurns: {}, works: {}, requests: {}, questions: {}, views: {}, closedCards: {}, prefs: {}, nodeLimits: {}, switching: {}, federation: { version: 1, hubId: null, peersAt: 0, inbox: {}, outbox: {}, seen: {}, seq: 0, allowPeerToMain: false, lastError: null }, memoryFederation: { seq: 0, schemaVersion: 1, nodes: {}, inbox: {} }, approvalResults: {}, resumeCursor: {}, revision: 0 }
   let loaded = null
   let storeReady = false
   let writing = Promise.resolve()
@@ -302,7 +302,7 @@ export function install(rt) {
       state.prefs.theme = LEGACY_THEMES[state.prefs.theme]
       migrated = true
     }
-    for (const key of ['works', 'approvalResults', 'resumeCursor', 'webhooks']) if (state[key] === null || typeof state[key] !== 'object' || Array.isArray(state[key])) state[key] = {}
+    for (const key of ['works', 'approvalResults', 'resumeCursor']) if (state[key] === null || typeof state[key] !== 'object' || Array.isArray(state[key])) state[key] = {}
     if (state.requests === null || typeof state.requests !== 'object' || Array.isArray(state.requests)) state.requests = {}
     // Group call batches (groups.js); a batch that is not whole is dropped.
     if (state.roomBatches === null || typeof state.roomBatches !== 'object' || Array.isArray(state.roomBatches)) state.roomBatches = {}
@@ -711,6 +711,18 @@ export function install(rt) {
         indexOwn(partSid)
         for (const segment of part?.segments ?? []) indexOwn(segment?.sessionId)
         indexPast(part?.segments, { botId })
+      }
+      // Background tasks keep their own stable records separate from openParts. Only
+      // active tasks stay in chatOwners; settled tasks move to pastOwners so schedule
+      // tools can still find and move a task left behind on a finished task Session.
+      for (const task of bot.tasks ?? []) {
+        const taskSid = sessionIdOf(task?.sessionId)
+        if (taskSid === undefined) continue
+        if (task.status === 'running') {
+          chatOwners.set(taskSid, botId)
+        } else {
+          pastOwners.set(taskSid, { botId })
+        }
       }
     }
     // Every Thread's Session resolves to that Thread, including a thread beyond Main and a
