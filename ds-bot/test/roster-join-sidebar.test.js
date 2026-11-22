@@ -145,6 +145,8 @@ function propsFor(roster, opened) {
   const names = ['openAgent', 'openAgentSession', 'newAgentSession', 'openPalette', 'openNewChat', 'toggleSidebar', 'toggleLeftHidden', 'clearUnread', 'setLeftDrawer', 'landOn']
   const actions = Object.fromEntries(names.map(name => [name, () => {}]))
   actions.openSession = (id) => { opened.push(id) }
+  // A joined Bot's row opens its node home (row-actions.js botRowClick).
+  actions.openJoinedHome = (id) => { opened.push(id) }
   actions.openMenu = () => {}
   return {
     wide: true,
@@ -220,8 +222,9 @@ test('disk source: a roster report becomes two sidebar rows and cannot dispatch'
   const beta = drawn.map(row => buttonOf(row, betaId)).find(Boolean)
   assert.ok(alpha, '侧栏没有这行')
   assert.ok(beta, '侧栏没有这行')
-  assert.equal(previewOf(alpha), 'desk-1')
-  assert.equal(previewOf(beta), 'desk-1')
+  // The row's line names the machine (joinedMachineLabel): "Running on desk-1".
+  assert.equal(previewOf(alpha), 'Running on desk-1')
+  assert.equal(previewOf(beta), 'Running on desk-1')
   assert.equal(drawn.map(row => buttonOf(row, shadowId(nodeId, 'shadow'))).find(Boolean), undefined)
   assert.equal(state.bots.worker.name, 'Old worker')
   assert.equal(Object.values(state.bots).filter(bot => bot.origin === 'joined').length, 2)
@@ -234,8 +237,9 @@ test('disk source: a roster report becomes two sidebar rows and cannot dispatch'
   assert.ok(offline, '侧栏没有这行')
   assert.match(previewOf(offline), /desk-1/)
   assert.match(previewOf(offline), /离线/)
+  // Offline or not, the row opens the Bot's home, where its earlier chat can be read.
   offline.props.onClick()
-  assert.deepEqual(opened, [])
+  assert.deepEqual(opened, [alphaId])
 
   const empty = controller(install, withIngest, 'node-b')
   feed(bindRosterReport, { bots: [] }, empty.registry, 'node-b')
