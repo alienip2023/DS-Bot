@@ -161,6 +161,23 @@ this.session.append("assistant/message", { turn, step, message, usage?, stream }
 - **assistant/message**：data = `{ turn, step, message: createAssistantMessage({content, source}), usage?, stream? }`，带 `surfaceOp: 'append'`。`turn`/`step` 可从 0 起单调递增（镜像专用计数器，不与本地 agent 共用）。
 - **错误提示**：`assistant/message` + 纯文本 content，`source: { kind: 'model', provider: 'mirror', model: 'relay' }`，带 `surfaceOp: 'append'`。
 
+### 节点的思考过程与工具步骤（bot/trace，AC 0.4.21）
+
+节点 Bot 的页面要和本地 Bot 一样显示「思考过程」与工具步骤，所以镜像回合里除了开头的用户消息与结尾的答案，中间写的是**本地回合同样的事件**（`src/host/hub-trace.js`）：
+
+```
+turn/start → step/start 1 → user/message
+  assistant/message { content: [reasoning?, tool-call…] }, tool/call…, tool/result…   ← 节点的第 1 步
+step/end 1 → step/start 2 → …                                                          ← 每个模型步一个 step
+step/start N → assistant/message { content: [reasoning?, text] } → step/end N → turn/end  ← 答案（带它前面的思考）
+```
+
+- 步骤来自节点自己 Session 的 `assistant/message`（reasoning、tool-call 块）与 `tool/result`，由节点 ds-bot 压缩（`node-trace.js`，文本与条数有上限，截断处写「…[已截断 N 字]」，密钥用 `rt.redactSecrets` 抹掉）后经 AC 的 `bot/trace` 帧送来；帧里每条步骤有回合内序号 `i`，hub 按 `i` 去重、排序，所以重复帧、乱序帧、丢了一批（由节点最后发的 `final` 整份列表修补）都不会写两遍或写乱。
+- 没有工具调用的那一步（`end`）的思考不单独成消息，写在答案那条 `assistant/message` 里作为 `reasoning` 块；它的正文（以及每步带工具调用时顺带写的正文）在 `bot/turn-result` 的 `text` 里，不在步骤里重复。
+- 回合以任何方式结束（答案、失败、Stop、链路断）都先收尾：没拿到结果的工具调用补一条错误结果，打开的 step 用 `step/end` 关掉，才写结尾消息，页面不会留下悬着的思考或步骤。
+- 镜像 Session 同一时间只有一个打开的回合，所以步骤只写进「它自己的」回合：页面回合与 Bot 间回合边收边写；排在别的回合后面的 Bot 间回合先攒着，轮到它写回合时一起写；并入已打开页面回合的插话（steer）没有自己的步骤，节点那一轮的事件（含插话之后的）都在页面回合的步骤里；单独成回合的插话把步骤写在它自己的回合里。
+- **没覆盖**：节点答案在页面不再等待之后才到（Stop、超时、链路断后的迟到回复）时只写文本，不带步骤；`bot/history` 导入的历史回合只有文本。
+
 ---
 
 ## Q4 渲染器认识的 event type；未知类型处理；系统条目类型
