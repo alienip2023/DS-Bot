@@ -462,6 +462,8 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
     if (remoteBotId === '' || exchangeId === '') return { ok: false, error: 'bot-turn-missing', ...roomFields }
     const bot = findLocal(rt, remoteBotId)
     if (!bot || bot.type === 'remote-worker' || bot.origin === 'joined') return { ok: false, error: 'bot-not-on-roster', ...roomFields }
+    // The hub asked this Bot: what its background tasks report later is owed to that hub's page.
+    ;(rt.hubAskedBots ??= new Set()).add(bot.id)
     const done = new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(exchangeId)
@@ -558,7 +560,25 @@ export function exposeBotTurnReceiver(ctx, accept) {
   try { ctx?.provide?.('remote-agent:bot-turn', accept) } catch { /* registry plugin may be absent */ }
 }
 
+/**
+ * A node Bot's background task finished and the Bot answered what it brought back: the answer goes
+ * to the hub as one bot/message (kind reply, the Bot as both ends, depth at the cap — the hub reads
+ * that as a report; an older hub drops it). Only a Bot the hub has asked, and only while the link
+ * is up; the page of that Bot on the hub shows it as a marked turn. Returns whether it was sent.
+ */
+export function reportTaskToHub(rt, bot, text) {
+  const network = rt.botNetwork
+  const body = typeof text === 'string' ? text.trim() : ''
+  if (body === '' || !bot || !rt.hubAskedBots?.has(bot.id)) return false
+  if (typeof network?.send !== 'function' || typeof network.nodeId !== 'string') return false
+  const identity = { id: bot.id, name: bot.name || bot.id, nodeId: network.nodeId }
+  try {
+    return network.send({ from: identity, to: { ...identity, nodeId: 'hub' }, exchangeId: randomUUID(), kind: 'reply', text: body.slice(0, 60000), depth: 3 }) === true
+  } catch { return false }
+}
+
 export function install(rt) {
+  rt.reportTaskToHub = (bot, text) => reportTaskToHub(rt, bot, text)
   rt.handleJoinedTurn = (msg) => handleJoinedTurn(rt, msg)
   const accept = createBotTurnReceiver(rt)
   exposeBotTurnReceiver(rt.ctx, accept)

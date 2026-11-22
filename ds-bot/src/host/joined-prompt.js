@@ -17,7 +17,7 @@
 // is `${message} (${code})` except for the two attachment-invalid codes.
 import { joinedShadow } from './roster-join.js'
 import { ensureMirrorSession, mirrorStateOf, hasPromptRequest } from './mirror.js'
-import { startPageTurn, stopPageTurn, failureText, flushLateReplies } from './executor.js'
+import { startPageTurn, startSideTurn, stopPageTurn, failureText, flushLateReplies } from './executor.js'
 import { JOINED_TURN_TIMEOUT_MS } from './joined-turn.js'
 import { dropJoinedMirrorQueues, waitForJoinedMirror, mirrorTurnOpen } from './joined-mirror-writer.js'
 import { installRunning } from './joined-running.js'
@@ -112,7 +112,7 @@ export function install(rt) {
     // isBusy: a page turn is already in-flight on this Bot's mirror Session.
     // A Bot-to-Bot exchange is NOT considered busy here — waitForJoinedMirror
     // below blocks until the exchange turn is closed, so the page starts after.
-    const isBusy = () => rt.joinedInFlight?.has(bot.id)
+    const isBusy = () => rt.joinedInFlight?.has(bot.id) === true
 
     // mode: 'steer' means "interrupt the current turn at its next step" — deliver
     // the message as a steer into the in-flight page turn via the node's steer path.
@@ -138,7 +138,17 @@ export function install(rt) {
         }
         // Bridge unavailable — fall through to queue so the message is not lost.
       }
-      // Queue: message runs after the current in-flight work ends.
+      // Default: the message goes to the node at once and runs next to the work in flight (the
+      // node moves a busy foreground into a background task and starts this one). Only when it
+      // cannot — too many already, or the setting is off — it waits for the turn in flight.
+      if (rt.joinedConcurrent !== false) {
+        try {
+          startSideTurn({ rt, bot, text, requestId: request.requestId, session, state: mirrorStateOf(rt, bot.id, session), tracker: rt.turnTracker, timeoutMs })
+          return { accepted: true }
+        } catch (error) {
+          if (error?.code !== 'E_BUSY') throw await remoteError('session/agent-unavailable', `无法送达节点：${failureText(error)}`, { reason: `JOINED_NODE_${error?.code ?? 'ERROR'}` })
+        }
+      }
       if (!rt.joinedUserQueue) rt.joinedUserQueue = new Map()
       const q = rt.joinedUserQueue.get(bot.id) ?? []
       q.push({ text, requestId: request.requestId, session, state: mirrorStateOf(rt, bot.id, session) })

@@ -13,7 +13,7 @@
 import { randomUUID } from 'node:crypto'
 import { joinedShadow } from './roster-join.js'
 import { listenBotTurnResult, JOINED_TURN_TIMEOUT_MS, JOINED_LATE_WINDOW_MS, PENDING_TURN_TEXT } from './joined-turn.js'
-import { mirrorTurn, allocateTurn, mirrorTurnStart, mirrorTurnFinish, mirrorTurnFail, mirrorTurnAbort, mirrorTurnPending, mirrorLateReply } from './mirror.js'
+import { mirrorTurn, allocateTurn, mirrorTurnStart, mirrorTurnFinish, mirrorTurnFail, mirrorTurnAbort, mirrorTurnPending, mirrorLateReply, TASK_RESULT_MARK } from './mirror.js'
 import { drainJoinedMirror, mirrorTurnOpen } from './joined-mirror-writer.js'
 
 /**
@@ -489,5 +489,132 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
  * is not refused as in flight. Returns whether a turn was stopped.
  */
 export function stopPageTurn(rt, botId) {
-  return rt.joinedInFlight?.get(botId)?.abort?.() === true
+  let stopped = rt.joinedInFlight?.get(botId)?.abort?.() === true
+  for (const side of [...(rt.joinedSide?.get(botId) ?? [])]) if (side.abort() === true) stopped = true
+  return stopped
+}
+
+// How many page messages may run on one node Bot at the same time. One more is queued on the hub
+// (rt.joinedUserQueue) and starts when a slot frees.
+export const JOINED_SIDE_LIMIT = 4
+
+/** Is anything of this joined Bot running on its node for the page (the main turn or a side turn)? */
+export function joinedBusy(rt, botId) {
+  return rt.joinedInFlight?.has(botId) === true || (rt.joinedSide?.get(botId)?.size ?? 0) > 0
+}
+
+/**
+ * A page message to a node Bot that is already busy: it goes to the node at once, without waiting
+ * for the turn in flight. The node runs it next to the other work (DS Bot 0.3.10 moves the busy
+ * foreground into a background task and starts this one); an older node queues it on its side.
+ *
+ * The mirror Session holds one open turn, so a side turn is written whole when its answer arrives
+ * (the user's message, then the reply), and it waits while a page turn or a Bot-to-Bot turn is open
+ * — the same wait a late reply has (joinedLateQueue). Returns { turnId, done }; `done` resolves
+ * { ok, turnId } and rejects with an ExecutorError when the node did not take the message.
+ */
+export function startSideTurn({ rt, bot, text, requestId, session, state = {}, tracker, timeoutMs }) {
+  if (!rt.joinedSide) rt.joinedSide = new Map()
+  const sides = rt.joinedSide.get(bot.id) ?? new Set()
+  if (sides.size >= JOINED_SIDE_LIMIT) throw new ExecutorError('E_BUSY', 'too many concurrent turns for this Bot')
+  const lateWindowMs = Number.isFinite(rt.joinedLateWindowMs) ? Math.max(1, rt.joinedLateWindowMs) : JOINED_LATE_WINDOW_MS
+  const prepared = prepareRemote({ bot, text, rt, tracker, timeoutOverride: timeoutMs, lateWindowMs })
+  const { seenKeys, closedKeys, seenSteps, closedTurns } = state
+  const record = { requestId, abort: undefined }
+  let over = false
+  let announced = false
+
+  const writeWhenFree = (write) => {
+    if (rt.joinedLateClosed === true) return
+    const guarded = () => {
+      try { write() } catch (error) { rt.warn?.('ds-bot: a concurrent turn of Bot %s was not written: %s', bot.id, error?.message ?? error) }
+    }
+    if (rt.joinedInFlight?.has(bot.id) || mirrorTurnOpen(rt, bot.id)) {
+      if (!rt.joinedLateQueue) rt.joinedLateQueue = new Map()
+      rt.joinedLateQueue.set(bot.id, [...(rt.joinedLateQueue.get(bot.id) ?? []), guarded])
+    } else guarded()
+  }
+  const writeTurn = (finish) => writeWhenFree(() => {
+    const turn = allocateTurn(session)
+    mirrorTurnStart(session, { turn, step: 1, userText: text, rpcId: requestId })
+    finish(turn)
+  })
+  const release = () => {
+    sides.delete(record)
+    if (sides.size === 0) rt.joinedSide.delete(bot.id)
+    if (announced) {
+      announced = false
+      if (!joinedBusy(rt, bot.id)) rt.joinedRunning?.(bot, false)
+    }
+    flushLateReplies(rt, bot.id)
+  }
+  sides.add(record)
+  rt.joinedSide.set(bot.id, sides)
+  announced = true
+  rt.joinedRunning?.(bot, true)
+
+  record.abort = () => {
+    if (over || prepared.received()) return false
+    over = true
+    prepared.stop()
+    writeTurn(turn => mirrorTurnAbort(session, { turn, step: 1, closedTurns }))
+    release()
+    return true
+  }
+  if (!rt.joinedLate) rt.joinedLate = new Set()
+  const dispose = () => record.abort()
+  rt.joinedLate.add(dispose)
+
+  const done = (async () => {
+    try {
+      try {
+        prepared.send()
+      } catch (error) {
+        over = true
+        throw error
+      }
+      let result
+      try {
+        result = await prepared.settle()
+      } catch (error) {
+        if (error?.code === 'E_ABORTED') return { ok: false, aborted: true, turnId: prepared.turnId }
+        over = true
+        writeTurn(turn => mirrorTurnFail(session, { turn, step: 1, code: error?.code, message: failureText(error), closedTurns }))
+        throw error
+      }
+      over = true
+      writeTurn(turn => mirrorTurnFinish(session, { turn, step: 1, botText: result.text, botId: bot.id, nodeSeq: result.seq, seenKeys, closedKeys, seenSteps, closedTurns }))
+      return { ok: true, turnId: prepared.turnId }
+    } finally {
+      rt.joinedLate.delete(dispose)
+      release()
+    }
+  })()
+  if (!rt.joinedPromptTasks) rt.joinedPromptTasks = new Set()
+  const task = done
+    .catch(error => { rt.warn?.('ds-bot: concurrent joined Bot %s turn failed: %s', bot.id, error?.message ?? error) })
+    .finally(() => { rt.joinedPromptTasks.delete(task) })
+  rt.joinedPromptTasks.add(task)
+  return { turnId: prepared.turnId, done }
+}
+
+/**
+ * A node Bot's background task finished after the turn that asked for it was answered, and the
+ * Bot's answer about it reached the hub as a bot/message. It is written to the page as a turn of
+ * its own (marked), after any turn that is open — the same wait a late reply has.
+ */
+export function writeNodeReport({ rt, bot, session, state = {}, text }) {
+  if (rt.joinedLateClosed === true) return false
+  const write = () => {
+    try {
+      mirrorLateReply(session, { botText: text, botId: bot.id, mark: TASK_RESULT_MARK, closedTurns: state.closedTurns })
+    } catch (error) {
+      rt.warn?.('ds-bot: a background task result of Bot %s was not written: %s', bot.id, error?.message ?? error)
+    }
+  }
+  if (rt.joinedInFlight?.has(bot.id) || mirrorTurnOpen(rt, bot.id)) {
+    if (!rt.joinedLateQueue) rt.joinedLateQueue = new Map()
+    rt.joinedLateQueue.set(bot.id, [...(rt.joinedLateQueue.get(bot.id) ?? []), write])
+  } else write()
+  return true
 }

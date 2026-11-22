@@ -218,6 +218,8 @@ export function mirrorTurnAbort(session, { turn, step = 1, closedTurns } = {}) {
 
 /** The line a late reply starts with: the page shows which message it answers is already behind it. */
 export const LATE_REPLY_MARK = '↩ 节点迟到回复'
+/** The first line of what a node Bot's background task reports after its turn was answered. */
+export const TASK_RESULT_MARK = '↩ 节点后台任务结果'
 
 /**
  * The node answered AFTER the page turn ended with E_TIMEOUT. The answer is written as a NEW
@@ -227,7 +229,7 @@ export const LATE_REPLY_MARK = '↩ 节点迟到回复'
  * stream:[] (I4), and (botId,nodeSeq) makes a repeated delivery write nothing (I3).
  * The caller makes sure no page turn is open on this Session: allocateTurn would close it.
  */
-export function mirrorLateReply(session, { step = 1, botText, botId, nodeSeq, seenKeys, closedKeys, seenSteps, closedTurns, usage } = {}) {
+export function mirrorLateReply(session, { step = 1, botText, botId, nodeSeq, seenKeys, closedKeys, seenSteps, closedTurns, usage, mark = LATE_REPLY_MARK } = {}) {
   const nodeKey = (botId != null && nodeSeq != null && seenKeys instanceof Set) ? String(botId) + ':' + String(nodeSeq) : null
   if (nodeKey !== null && (seenKeys.has(nodeKey) || (closedKeys instanceof Set && closedKeys.has(nodeKey)))) {
     return { skipped: true, reason: 'already-written:nodeSeq' }
@@ -236,7 +238,7 @@ export function mirrorLateReply(session, { step = 1, botText, botId, nodeSeq, se
   session.append('turn/start', { turn })
   try {
     session.append('step/start', { turn, step })
-    appendAssistant(session, turn, step, `${LATE_REPLY_MARK}\n\n${String(botText ?? '')}`, usage)
+    appendAssistant(session, turn, step, `${mark}\n\n${String(botText ?? '')}`, usage)
     session.append('step/end', { turn, step })
     session.append('turn/end', { turn, reason: turnEnd.completed() })
   } catch (err) {

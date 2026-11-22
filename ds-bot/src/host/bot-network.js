@@ -1,5 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { classify } from './msg-classes.js'
+import { joinedShadow } from './roster-join.js'
+import { ensureMirrorSession, mirrorStateOf } from './mirror.js'
+import { writeNodeReport } from './executor.js'
 // The hub publishes destinations; nodes keep the directory in remote-agent memory.
 const DIRECTORY_DELAY_MS = 1_000
 const REFRESH_MS = 60_000
@@ -155,7 +158,29 @@ function pruneAsks(rt) {
   for (const [id, at] of seen) if (now - at >= REFRESH_MS) seen.delete(id)
 }
 
+// A node Bot reporting a result to the hub (its background task finished): the message names the
+// Bot as both sender and recipient, on the hub's side of the link, at the depth cap. An older hub
+// drops it at the depth check, so it never reaches a Bot as a turn.
+const isNodeReport = payload => payload?.kind === 'reply' && payload.depth >= 3
+  && payload.to?.nodeId === HUB_NODE && payload.to.id === payload.from?.id && typeof payload.text === 'string' && payload.text.trim() !== ''
+const reports = new WeakMap()
+
+export async function handleNodeReport(rt, payload) {
+  await rt.load?.()
+  const bot = Object.values(rt.state.bots ?? {}).find(item => joinedShadow(item)
+    && item.worker?.nodeId === payload.from.nodeId && item.worker?.remoteBotId === payload.from.id)
+  if (!bot) { rt.warn?.('ds-bot: a node report for an unknown Bot %s was dropped', payload.from.id); return }
+  let seen = reports.get(rt)
+  if (!seen) { seen = new Set(); reports.set(rt, seen) }
+  if (seen.has(payload.exchangeId)) return
+  seen.add(payload.exchangeId)
+  if (seen.size > 512) seen.delete(seen.values().next().value)
+  const session = await ensureMirrorSession(rt, bot)
+  writeNodeReport({ rt, bot, session, state: mirrorStateOf(rt, bot.id, session), text: payload.text })
+}
+
 export async function handleNodeMessage(rt, payload) {
+  if (isNodeReport(payload)) return handleNodeReport(rt, payload)
   if (!payload || !['ask', 'reply'].includes(payload.kind) || payload.depth >= 3) return
   await rt.load?.()
   const to = Object.hasOwn(rt.state.bots, payload.to?.id) ? rt.state.bots[payload.to.id] : undefined

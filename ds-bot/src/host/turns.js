@@ -1684,6 +1684,11 @@ export function install(rt) {
             : replyText()
           const settled = settleJoinForTurn(rt, joinInfo, reply, failure)
           if (!settled && info !== undefined) finish(info, replyText())
+          // A node Bot answering what its background task brought back: the hub's page that asked
+          // for the work is told too (it would otherwise never see the result).
+          if (!settled && info?.role === 'task-report' && failure === undefined && reason?.kind !== 'aborted') {
+            rt.reportTaskToHub?.(rt.botOf(rt.chatOwners.get(id) ?? rt.taskOwners?.get(id)?.botId), replyText())
+          }
         }
         for (const request of joined) {
           if (request.info.role === 'room' && stoppedRoomTurns.delete(request.info.exchangeId)) continue

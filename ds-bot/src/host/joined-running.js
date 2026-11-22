@@ -21,7 +21,7 @@ import { wrapControllerMethod } from './controller-wrap.js'
 /** The in-flight joined Bot of this Session, or undefined. */
 export function runningJoinedBot(rt, sessionId, joinedBotOf) {
   const bot = joinedBotOf(rt, sessionId)
-  return bot !== undefined && rt.joinedInFlight?.has(bot.id) === true ? bot : undefined
+  return bot !== undefined && (rt.joinedInFlight?.has(bot.id) === true || (rt.joinedSide?.get(bot.id)?.size ?? 0) > 0) ? bot : undefined
 }
 
 export function installRunning(rt, controller, joinedBotOf) {
@@ -41,7 +41,7 @@ export function installRunning(rt, controller, joinedBotOf) {
   wrapControllerMethod(ctx, controller, 'list', original => async function (...args) {
     const result = await original.apply(this, args)
     const items = result?.items
-    if (!Array.isArray(items) || !(rt.joinedInFlight?.size > 0)) return result
+    if (!Array.isArray(items) || !(rt.joinedInFlight?.size > 0 || rt.joinedSide?.size > 0)) return result
     let changed = false
     const next = items.map((item) => {
       if (item?.running === true || runningJoinedBot(rt, item?.sessionId, joinedBotOf) === undefined) return item

@@ -135,7 +135,7 @@ describe('S24-asm: the takeover is installed in the running chain', () => {
     assert.equal(w.frames.filter(f => f.type === 'bot/turn').length, 0, 'a refused prompt never reaches the node')
   })
 
-  it('S24-asm-queue: on the real chain a second message while a turn runs is accepted and queued, not refused', async () => {
+  it('S24-asm-queue: on the real chain a second message while a turn runs is accepted and goes to the node at once, not refused', async () => {
     const w = world()
     await w.mirror()
     const noted = []
@@ -144,8 +144,9 @@ describe('S24-asm: the takeover is installed in the running chain', () => {
     await w.prompt(textRequest('mirror-1', 'first', 'req-1'))
     const ack = await w.prompt(textRequest('mirror-1', 'second', 'req-2'))
     assert.deepEqual(ack, { accepted: true }, 'the user is never blocked')
-    assert.equal(w.frames.filter(f => f.type === 'bot/turn').length, 1, 'the second message waits for the first turn')
-    assert.equal(w.rt.joinedUserQueue.get(w.bot.id).length, 1, 'it sits in the user queue')
+    assert.equal(w.frames.filter(f => f.type === 'bot/turn').length, 2, 'the second message runs next to the first')
+    assert.equal(w.rt.joinedSide.get(w.bot.id).size, 1, 'it is a concurrent turn of the Bot')
+    assert.equal(w.rt.joinedUserQueue?.get(w.bot.id)?.length ?? 0, 0, 'nothing waits on the hub')
     assert.equal(noted.length, 0)
   })
 })

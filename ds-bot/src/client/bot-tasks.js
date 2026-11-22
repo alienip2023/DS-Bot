@@ -267,7 +267,7 @@ export function TaskIslandPanel({ bot, room, roster, approvals = [], focusTaskId
   }
 
   const stopFocusedTask = () => {
-    if (busy || !task || !ownerBot) return
+    if (busy || !task || !ownerBot || task.remote) return
     setBusy(true)
     setError('')
     void Promise.resolve(actions.stopTask(ownerBot.id, task.id))
@@ -276,7 +276,7 @@ export function TaskIslandPanel({ bot, room, roster, approvals = [], focusTaskId
   }
 
   const openTaskReader = () => {
-    if (!task || !ownerBot) return
+    if (!task || !ownerBot || task.remote) return
     actions.closeTaskDeck?.()
     actions.openTask?.(panelSubject, ownerBot.id, task.id)
   }
@@ -343,7 +343,7 @@ export function TaskIslandPanel({ bot, room, roster, approvals = [], focusTaskId
                 : task.brief && task.brief !== task.title ? h('div', { className: 'bt-btask-desc' }, task.brief) : null)
           : null,
 
-        task && taskActive && !isApproval && typeof actions.sendTask === 'function'
+        task && taskActive && !task.remote && !isApproval && typeof actions.sendTask === 'function'
           ? h('div', { className: 'bt-btask-reply' },
               h('textarea', {
                 ref: inputRef,
@@ -373,7 +373,7 @@ export function TaskIslandPanel({ bot, room, roster, approvals = [], focusTaskId
         sentNote ? h('div', { className: 'bt-btask-ok', role: 'status' }, h(CheckIcon), sentNote) : null)),
 
     h('div', { className: 'bt-goal-foot bt-btask-foot' },
-      task
+      task && !task.remote
         ? h('button', { type: 'button', className: 'bt-goal-checks', onClick: openTaskReader },
             t('View details'),
             h('span', { className: 'bt-task-foot-go', 'aria-hidden': true }, h(ChevronRightIcon)))
@@ -388,7 +388,7 @@ export function TaskIslandPanel({ bot, room, roster, approvals = [], focusTaskId
             ? h(Fragment, null,
                 h('button', { type: 'button', className: 'bt-btask-btn', disabled: busy, onClick: () => answerApproval('reject') }, t('Reject')),
                 h('button', { type: 'button', className: 'bt-btask-btn is-primary', disabled: busy, onClick: () => answerApproval('allow') }, t('Allow once')))
-            : taskActive
+            : taskActive && !task.remote
               ? h('button', { type: 'button', className: 'bt-btask-btn is-danger', disabled: busy, onClick: stopFocusedTask }, t('Stop'))
               : null)))
 }
@@ -598,9 +598,9 @@ export function DetailsTaskList({ tasks, sessionId, showBot = false, actions, ru
             className: `bt-tlist-row${active ? ' is-active' : ''}`,
             role: 'button',
             tabIndex: 0,
-            onClick: () => actions.openTask?.(sessionId, ownerId, task.id),
+            onClick: () => { if (!task.remote) actions.openTask?.(sessionId, ownerId, task.id) },
             onKeyDown: (event) => {
-              if (event.target !== event.currentTarget) return
+              if (event.target !== event.currentTarget || task.remote) return
               if (event.key === 'Enter' || event.key === ' ') {
                 event.preventDefault()
                 actions.openTask?.(sessionId, ownerId, task.id)
@@ -618,7 +618,7 @@ export function DetailsTaskList({ tasks, sessionId, showBot = false, actions, ru
               active && typeof task.startedAt === 'number'
                 ? h(Elapsed, { at: task.startedAt, className: 'bt-task-row-time' })
                 : task.endedAt ? h(Fragment, null, h('span', { 'aria-hidden': true }, '·'), h('span', { className: 'bt-task-row-time' }, relativeShort(task.endedAt))) : null)),
-          active
+          active && !task.remote
             ? h('button', {
                 type: 'button',
                 className: 'bt-task-row-stop',

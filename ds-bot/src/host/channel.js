@@ -364,11 +364,11 @@ export function install(rt) {
     // `sessionId` is the Bot's current own-chat part; `parts` its earlier ones.
     // `waiting`: the Bot holds its greeting until the user picks its model or fixes
     // what failed it. `blocked`: the facts of a failure only the user can fix (turns.js).
-    bots: Object.values(state.bots).map(({ segments, kickoff, tasks: _rawTasks, ...bot }) => {
+    bots: Object.values(state.bots).map(({ segments, kickoff, tasks: _rawTasks, nodeTasks, ...bot }) => {
       const peer = bot.origin === 'peer'
       const own = peer ? null : rt.chatOf(bot.id)
       const tail = peer ? undefined : rt.chatTail(own)
-      const botTasks = rt.taskViewOf?.(state.bots[bot.id]) ?? []
+      const botTasks = joinedShadow(bot) ? remoteTasksOf(bot, nodeTasks) : rt.taskViewOf?.(state.bots[bot.id]) ?? []
       return {
         ...bot, sessionId: own, parts: (peer ? [] : segments ?? []).map(segment => segment.sessionId),
         ...(botTasks.length > 0 ? { tasks: botTasks } : {}),
@@ -1653,4 +1653,10 @@ export function install(rt) {
     // next owner.
     return () => Promise.all([rt.btwDispose?.(), rt.sideDispose?.()])
   }, 'ds-bot: load state')
+}
+
+// A joined Bot's tasks run on its node: shown read-only (no Session here) while the node is up.
+function remoteTasksOf(bot, nodeTasks) {
+  if (bot.worker?.online === false || !Array.isArray(nodeTasks)) return []
+  return nodeTasks.map(task => ({ ...task, remote: true, updatedAt: task.startedAt }))
 }

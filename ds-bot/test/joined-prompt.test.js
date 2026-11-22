@@ -15,6 +15,8 @@ async function rejection(promise) {
   assert.fail('expected the prompt to be rejected')
 }
 
+const ticks = async () => { for (let i = 0; i < 8; i += 1) await new Promise(resolve => setImmediate(resolve)) }
+
 describe('S24: joined Bot page prompt takeover', () => {
   it('S24-a joined mirror prompt: original prompt never, bot/turn once, user message (with rpcId) on the page BEFORE the node answers', async () => {
     const w = makeWorld()
@@ -165,22 +167,57 @@ describe('S24: joined Bot page prompt takeover', () => {
     assert.deepEqual(types(w.sessionOf('mirror-1')), [])
   })
 
-  it('S24-e a second prompt while a turn is in flight is queued (not refused) and runs after the first turn ends', async () => {
+  it('S24-e a second prompt while a turn is in flight goes to the node at once and is written whole when its answer arrives', async () => {
     const w = makeWorld()
     await w.prompt(textRequest('first', 'req-1'))
     const ack = await w.prompt(textRequest('second', 'req-2'))
     assert.deepEqual(ack, { accepted: true }, 'accepted at once: the user is never blocked')
-    assert.equal(w.frames.length, 1, 'the queued message is not sent while the first turn runs')
+    assert.equal(w.frames.length, 2, 'the second message is not held back: it runs next to the first')
+    assert.equal(w.frames[1].payload.text, 'second')
     assert.equal(w.originalCalls.length, 0)
+    assert.equal(w.rt.joinedUserQueue?.get(w.bot.id)?.length ?? 0, 0, 'nothing waits on the hub')
+    w.reply(1)   // the second answers first
+    await ticks()
+    const session = w.sessionOf('mirror-1')
+    assert.deepEqual(session.log.filter(event => event.type === 'turn/start').map(event => event.data.turn), [1], 'its turn waits while the first page turn is open')
     w.reply(0)
     await w.idle()
-    assert.equal(w.frames.length, 2, 'the queued message goes to the node once the first turn ends')
+    assert.deepEqual(session.log.filter(event => event.type === 'turn/start').map(event => event.data.turn), [1, 2])
+    assert.deepEqual(session.log.filter(event => event.type === 'turn/end').map(event => event.data.reason.kind), ['completed', 'completed'])
+    const users = session.log.filter(event => event.type === 'user/message').map(event => event.data.message?.content?.[0]?.text ?? event.data.content?.[0]?.text)
+    assert.deepEqual(users, ['first', 'second'])
+    assert.equal(w.rt.joinedSide?.size ?? 0, 0, 'no side turn is left')
+  })
+
+  it('S24-e1 with concurrency off the second prompt waits on the hub and runs after the first turn ends', async () => {
+    const w = makeWorld()
+    w.rt.joinedConcurrent = false
+    await w.prompt(textRequest('first', 'req-1'))
+    assert.deepEqual(await w.prompt(textRequest('second', 'req-2')), { accepted: true })
+    assert.equal(w.frames.length, 1, 'the queued message is not sent while the first turn runs')
+    w.reply(0)
+    await w.idle()
+    assert.equal(w.frames.length, 2)
     assert.equal(w.frames[1].payload.text, 'second')
     w.reply(1)
     await w.idle()
-    const session = w.sessionOf('mirror-1')
-    assert.deepEqual(session.log.filter(event => event.type === 'turn/start').map(event => event.data.turn), [1, 2])
-    assert.deepEqual(session.log.filter(event => event.type === 'turn/end').map(event => event.data.reason.kind), ['completed', 'completed'])
+    assert.deepEqual(w.sessionOf('mirror-1').log.filter(event => event.type === 'turn/start').map(event => event.data.turn), [1, 2])
+  })
+
+  it('S24-e3 more concurrent messages than the limit wait on the hub; Stop ends the page turn and the side turns', async () => {
+    const w = makeWorld()
+    await w.prompt(textRequest('m0', 'req-0'))
+    for (let i = 1; i <= 5; i += 1) await w.prompt(textRequest(`m${i}`, `req-${i}`))
+    assert.equal(w.frames.length, 5, 'one page turn and four side turns are out; the fifth message waits')
+    assert.equal(w.rt.joinedUserQueue.get(w.bot.id).length, 1)
+    await w.rt.ctx.sessionController.cancel({ sessionId: 'mirror-1' })
+    await ticks()
+    assert.equal(w.rt.joinedSide?.size ?? 0, 0, 'Stop released every side turn')
+    assert.equal(w.frames.length, 6, 'the waiting message started once the slots were free')
+    assert.equal(w.frames[5].payload.text, 'm5')
+    w.reply(5)
+    await w.idle()
+    assert.equal(w.rt.joinedInFlight.size, 0)
   })
 
   it('S24-e2 mode:steer while a turn is in flight sends a bot/steer frame to the node and starts no second turn', async () => {

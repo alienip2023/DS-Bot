@@ -19,7 +19,18 @@ export function shadowId(nodeId, remoteBotId) {
   return `joined:${encodeURIComponent(nodeId)}:${encodeURIComponent(remoteBotId)}`
 }
 
-export function reportableBots(bots) {
+const TASK_REPORT_MAX = 8
+const ACTIVE_TASK_STATUS = new Set(['running', 'waiting_approval', 'waiting_work'])
+
+// The running background tasks of a Bot, small enough to ride a roster report.
+export function taskSummaryOf(taskView) {
+  return (Array.isArray(taskView) ? taskView : [])
+    .filter(task => task && ACTIVE_TASK_STATUS.has(task.status) && !task.roomId && typeof task.id === 'string')
+    .slice(0, TASK_REPORT_MAX)
+    .map(task => ({ id: task.id.slice(0, 64), title: String(task.title ?? '').slice(0, 80), status: task.status, startedAt: Number.isFinite(task.startedAt) ? task.startedAt : 0 }))
+}
+
+export function reportableBots(bots, taskViewOf) {
   return Object.values(bots ?? {}).flatMap((bot) => {
     if (!bot || typeof bot !== 'object') return []
     if (bot.type === 'remote-worker' || bot.origin === 'peer') return []
@@ -36,6 +47,9 @@ export function reportableBots(bots) {
     const clusterBotId = typeof bot.clusterBotId === 'string' ? bot.clusterBotId.trim() : ''
     if (clusterBotId !== '' && clusterBotId.length <= 64 && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(clusterBotId)) {
       entry.clusterBotId = clusterBotId
+    }
+    if (typeof taskViewOf === 'function') {
+      try { entry.tasks = taskSummaryOf(taskViewOf(bot)) } catch { /* a task view must not take the roster down */ }
     }
     return [entry]
   })
@@ -85,6 +99,14 @@ export function applyRosterReport(state, report, now = Date.now(), onChange) {
     }
     // No model in this report keeps existing?.model. Do not write null or ''.
     if (reportedModel !== '') row.model = reportedModel
+    // The node's running background tasks (read-only on the hub). A report from an older node has
+    // none: what was known stays; an empty list clears it. Equal lists keep the old array so an
+    // unchanged report does not count as a change.
+    if (Array.isArray(bot.tasks)) {
+      const next = taskSummaryOf(bot.tasks)
+      row.nodeTasks = JSON.stringify(next) === JSON.stringify(existing?.nodeTasks ?? []) ? (existing?.nodeTasks ?? next) : next
+      if (next.length === 0 && existing?.nodeTasks === undefined) delete row.nodeTasks
+    }
     if (clusterBotId !== '' && clusterBotId.length <= 64 && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(clusterBotId)) {
       row.clusterBotId = clusterBotId
     }
@@ -438,7 +460,7 @@ export function install(rt) {
     if (stopped) return
     await rt.loadSecrets?.()
     if (stopped) return
-    report({ bots: reportableBots(rt.state?.bots), skills: sharedSkillSnapshot(rt) })
+    report({ bots: reportableBots(rt.state?.bots, rt.taskViewOf), skills: sharedSkillSnapshot(rt) })
   }
   rt.publishSkillRoster = publish
   // Backfill homeNodeId for joined bots written before this field was introduced.

@@ -33740,13 +33740,13 @@ function TaskIslandPanel({ bot, room: room2, roster, approvals = [], focusTaskId
     void Promise.resolve(promise).catch((err) => setError(hostText(err?.message ?? String(err)))).finally(() => setBusy(false));
   };
   const stopFocusedTask = () => {
-    if (busy || !task || !ownerBot) return;
+    if (busy || !task || !ownerBot || task.remote) return;
     setBusy(true);
     setError("");
     void Promise.resolve(actions.stopTask(ownerBot.id, task.id)).catch((err) => setError(hostText(err?.message ?? String(err)))).finally(() => setBusy(false));
   };
   const openTaskReader = () => {
-    if (!task || !ownerBot) return;
+    if (!task || !ownerBot || task.remote) return;
     actions.closeTaskDeck?.();
     actions.openTask?.(panelSubject, ownerBot.id, task.id);
   };
@@ -33820,7 +33820,7 @@ function TaskIslandPanel({ bot, room: room2, roster, approvals = [], focusTaskId
           task.error ? (0, import_react36.createElement)("div", { className: "bt-btask-err" }, task.error) : null,
           task.summary ? (0, import_react36.createElement)("div", { className: "bt-btask-desc" }, task.summary) : task.brief && task.brief !== task.title ? (0, import_react36.createElement)("div", { className: "bt-btask-desc" }, task.brief) : null
         ) : null,
-        task && taskActive && !isApproval && typeof actions.sendTask === "function" ? (0, import_react36.createElement)(
+        task && taskActive && !task.remote && !isApproval && typeof actions.sendTask === "function" ? (0, import_react36.createElement)(
           "div",
           { className: "bt-btask-reply" },
           (0, import_react36.createElement)("textarea", {
@@ -33856,7 +33856,7 @@ function TaskIslandPanel({ bot, room: room2, roster, approvals = [], focusTaskId
     (0, import_react36.createElement)(
       "div",
       { className: "bt-goal-foot bt-btask-foot" },
-      task ? (0, import_react36.createElement)(
+      task && !task.remote ? (0, import_react36.createElement)(
         "button",
         { type: "button", className: "bt-goal-checks", onClick: openTaskReader },
         t("View details"),
@@ -33876,7 +33876,7 @@ function TaskIslandPanel({ bot, room: room2, roster, approvals = [], focusTaskId
           null,
           (0, import_react36.createElement)("button", { type: "button", className: "bt-btask-btn", disabled: busy, onClick: () => answerApproval("reject") }, t("Reject")),
           (0, import_react36.createElement)("button", { type: "button", className: "bt-btask-btn is-primary", disabled: busy, onClick: () => answerApproval("allow") }, t("Allow once"))
-        ) : taskActive ? (0, import_react36.createElement)("button", { type: "button", className: "bt-btask-btn is-danger", disabled: busy, onClick: stopFocusedTask }, t("Stop")) : null
+        ) : taskActive && !task.remote ? (0, import_react36.createElement)("button", { type: "button", className: "bt-btask-btn is-danger", disabled: busy, onClick: stopFocusedTask }, t("Stop")) : null
       )
     )
   );
@@ -34113,9 +34113,11 @@ function DetailsTaskList({ tasks, sessionId, showBot = false, actions, run: run2
               className: `bt-tlist-row${active ? " is-active" : ""}`,
               role: "button",
               tabIndex: 0,
-              onClick: () => actions.openTask?.(sessionId, ownerId, task.id),
+              onClick: () => {
+                if (!task.remote) actions.openTask?.(sessionId, ownerId, task.id);
+              },
               onKeyDown: (event) => {
-                if (event.target !== event.currentTarget) return;
+                if (event.target !== event.currentTarget || task.remote) return;
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault();
                   actions.openTask?.(sessionId, ownerId, task.id);
@@ -34140,7 +34142,7 @@ function DetailsTaskList({ tasks, sessionId, showBot = false, actions, run: run2
                 active && typeof task.startedAt === "number" ? (0, import_react36.createElement)(Elapsed, { at: task.startedAt, className: "bt-task-row-time" }) : task.endedAt ? (0, import_react36.createElement)(import_react36.Fragment, null, (0, import_react36.createElement)("span", { "aria-hidden": true }, "·"), (0, import_react36.createElement)("span", { className: "bt-task-row-time" }, relativeShort(task.endedAt))) : null
               )
             ),
-            active ? (0, import_react36.createElement)("button", {
+            active && !task.remote ? (0, import_react36.createElement)("button", {
               type: "button",
               className: "bt-task-row-stop",
               disabled: stoppingId === task.id,
