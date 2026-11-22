@@ -74,10 +74,12 @@ for (const role of ['request', 'default', 'mystery']) {
     assert.equal(w.remote.length, 0)
     assert.deepEqual(w.messages, [])
     if (role === 'request') {
-      assert.deepEqual(w.events, [`book:${book}`, 'written', 'joined'])
-      assert.equal(w.records.length, 1)
+      // Written before it leaves, then marked delivered once the node has it.
+      assert.deepEqual(w.events, [`book:${book}`, 'written', 'joined', `book:${book}`, 'written'])
+      assert.equal(w.records.length, 2, 'the request, then its delivered mark')
       assert.equal(w.records[0].id, exchangeId)
       assert.equal(w.records[0].to, target.id)
+      assert.deepEqual([w.records[1].event, w.records[1].id], ['delivered', exchangeId])
     } else {
       assert.deepEqual(w.events, ['joined'])
       assert.deepEqual(w.records, [])

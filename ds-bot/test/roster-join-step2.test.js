@@ -173,7 +173,8 @@ test('a joined turn is in the book before it goes out', async () => {
   installDelivery(rt)
   assert.equal(await rt.deliver({ fromId: 'local', toId: shadow.id, text: 'go', role: 'request', exchangeId: 'ex-9' }), 'routed')
   // The record is written and flushed before the turn leaves this machine.
-  assert.deepEqual(events, [`book:${book}`, 'written', 'joined'])
+  // Then, once the node has it, the request is marked delivered (the pair's view shows it from then on).
+  assert.deepEqual(events, [`book:${book}`, 'written', 'joined', `book:${book}`, 'written'])
   assert.equal(records.length, 1)
   assert.equal(records[0].id, 'ex-9')
   assert.equal(records[0].to, shadow.id)
