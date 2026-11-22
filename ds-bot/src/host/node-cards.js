@@ -9,7 +9,7 @@
 //
 // Card ids carry their kind: `approval:<id>`, `question:<id>`, `learning:<id>`.
 import { randomUUID } from 'node:crypto'
-import { joinedShadow } from './roster-join.js'
+import { clampNodeTime, joinedShadow } from './roster-join.js'
 import { nodeCan, refusalFor } from './node-compat.js'
 
 const BODY_MAX = 3800
@@ -157,6 +157,9 @@ const REASONS = {
 function remoteBots(rt) {
   return Object.values(rt.state?.bots ?? {}).filter(bot => joinedShadow(bot) && bot.worker?.online !== false)
 }
+// A card's age is read against the hub's clock: a node timestamp in the hub's future or a month old
+// shows as the time the report that carried it arrived (applyRosterReport already stored it so).
+const seenAt = (bot, card) => (Number.isFinite(bot.worker?.lastSeen) ? clampNodeTime(card.at, bot.worker.lastSeen) : card.at)
 const mirrorSessionOf = (rt, bot) => rt.chatOf?.(bot.id) ?? bot.sessionId
 function remoteCard(rt, cardId) {
   for (const bot of remoteBots(rt)) {
@@ -228,7 +231,7 @@ export function installHub(rt) {
     if (card === undefined || !sessionId) return []
     return [[sessionId, {
       id: card.id, question: card.title, options: card.options.map(option => ({ label: option.label })),
-      multiSelect: false, ...(card.input ? { allowCustom: true } : {}), askedAt: card.at, remote: true,
+      multiSelect: false, ...(card.input ? { allowCustom: true } : {}), askedAt: seenAt(bot, card), remote: true,
     }]]
   }))
 
@@ -236,7 +239,7 @@ export function installHub(rt) {
   if (typeof approvalsView === 'function') {
     rt.approvalsView = () => [...approvalsView(), ...remoteBots(rt).flatMap(bot => (bot.nodeCards ?? []).filter(card => card.kind === 'approval').map(card => ({
       id: card.id, botId: bot.id, sessionId: mirrorSessionOf(rt, bot), tool: card.title, reason: '', detail: { text: card.body },
-      fingerprint: card.id, at: card.at, answerable: true, remote: true,
+      fingerprint: card.id, at: seenAt(bot, card), answerable: true, remote: true,
     })))]
   }
   const learningView = rt.learningView
@@ -245,7 +248,7 @@ export function installHub(rt) {
       const byBot = { ...learningView() }
       for (const bot of remoteBots(rt)) {
         const proposals = (bot.nodeCards ?? []).filter(card => card.kind === 'skill' || card.kind === 'rule').map(card => ({
-          id: card.id, kind: 'skill', action: 'create', botId: bot.id, name: card.title, description: '', content: card.body, at: card.at, remote: true,
+          id: card.id, kind: 'skill', action: 'create', botId: bot.id, name: card.title, description: '', content: card.body, at: seenAt(bot, card), remote: true,
         }))
         if (proposals.length > 0) byBot[bot.id] = [...(byBot[bot.id] ?? []), ...proposals]
       }

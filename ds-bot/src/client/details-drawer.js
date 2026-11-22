@@ -25,6 +25,7 @@ import { DetailsTaskList, isActiveTask, tasksForChat } from './bot-tasks.js'
 import { BotConnectors } from './connectors.js'
 import { ComputerView } from './computer.js'
 import { useEscape } from './overlay-hooks.js'
+import { isJoinedRemote, nodeOnlyReason } from './joined-errors.js'
 import { t } from './i18n.js'
 
 function transcriptOf(list, id, name, hiddenTurns = []) {
@@ -49,6 +50,12 @@ const EMPTY_TABS = { ids: [], active: null }
 function PermissionRow({ bot, roster, actions, run }) {
   const catalog = roster.permissions
   if (!catalog?.options?.length) return null
+  // A node Bot's permissions are the node's: the hub's preset does not reach it.
+  if (isJoinedRemote(bot)) {
+    return h('div', { className: 'bt-drawer-permission' },
+      h('div', { className: 'bt-section-title' }, t('Permissions')),
+      h('div', { className: 'bt-note' }, nodeOnlyReason()))
+  }
   return h('div', { className: 'bt-drawer-permission' },
     h('div', { className: 'bt-section-title' }, t('Permissions')),
     // A Bot without its own preset may run on another one set in DSH, so its first pick always applies.
@@ -242,8 +249,8 @@ export function DetailsDrawer({ sessionId, startRenaming, startTab, hasStrip, ro
   const isMainBot = isMainOf(roster, owner?.id)
   const [tab, setTab] = useState(
     startTab === 'tasks' ? 'tasks'
-      : startTab === 'computer' && owner && roster.computer?.enabled === true ? 'computer'
-      : startTab === 'browser' && owner ? 'browser'
+      : startTab === 'computer' && owner && !isJoinedRemote(owner) && roster.computer?.enabled === true ? 'computer'
+      : startTab === 'browser' && owner && !isJoinedRemote(owner) ? 'browser'
       : 'details',
   )
   const room = roster.roomsById[sessionId]
@@ -263,8 +270,9 @@ export function DetailsDrawer({ sessionId, startRenaming, startTab, hasStrip, ro
   const tabs = [
     'details',
     ...(chatTasks.length > 0 ? ['tasks'] : []),
-    ...(bot ? ['browser'] : []),
-    ...(bot && roster.computer?.enabled === true ? ['computer'] : []),
+    // The browser and the computer belong to the machine the Bot runs on: a node Bot has none here.
+    ...(bot && !isJoinedRemote(bot) ? ['browser'] : []),
+    ...(bot && !isJoinedRemote(bot) && roster.computer?.enabled === true ? ['computer'] : []),
   ]
   const activeTab = tabs.includes(tab) ? tab : 'details'
   const glide = useGlide(`${activeTab}:${tabs.join(',')}`)
@@ -305,7 +313,7 @@ export function DetailsDrawer({ sessionId, startRenaming, startTab, hasStrip, ro
   const more = drawerMenuKeys({
     bot: bot !== undefined,
     room: room !== undefined,
-    canBrowse: bot !== undefined && roster.browser === true && actions.openBrowser !== undefined,
+    canBrowse: bot !== undefined && !isJoinedRemote(bot) && roster.browser === true && actions.openBrowser !== undefined,
     canTerminal: actions.canOpenTerminal?.() === true,
     canFiles: actions.canOpenFiles?.() === true,
   }).map(key => menuItemFor(key, actions, sessionId))
@@ -372,10 +380,14 @@ export function DetailsDrawer({ sessionId, startRenaming, startTab, hasStrip, ro
           modelOf(bot, roster) ? null : h('div', { className: 'bt-note' }, t('Pick a model and {name} can start.', { name: bot.name })),
         ),
         h(PermissionRow, { key: 'permission', bot, roster, actions, run }),
-        h(BotConnectors, { key: 'connectors', bot, roster, actions, run }),
+        isJoinedRemote(bot)
+          ? h('div', { key: 'node-only', className: 'bt-drawer-model' },
+              h('div', { className: 'bt-section-title' }, t('Browser, computer use and connectors')),
+              h('div', { className: 'bt-note' }, nodeOnlyReason()))
+          : h(BotConnectors, { key: 'connectors', bot, roster, actions, run }),
         h('div', { key: 'folder', className: 'bt-drawer-model' },
           h('div', { className: 'bt-section-title' }, t('Working folder')),
-          h(FolderMenu, { value: bot.workDir, actions, run, wide: true, onPick: workDir => run(actions.updateBot(bot.id, { workDir })) })),
+          h(FolderMenu, { value: bot.workDir, node: isJoinedRemote(bot), actions, run, wide: true, onPick: workDir => run(actions.updateBot(bot.id, { workDir })) })),
         roster.readOnly
           ? (bot.instructions ? h(About, { key: `about:${bot.id}`, text: bot.instructions }) : null)
           : h(About, {

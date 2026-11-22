@@ -16,6 +16,12 @@ const ZH = {
   // Shared
   'Main Bot': '主 Bot',
   'Running on {host}': '运行于 {host}',
+  'This Bot runs on a node: change it there': '这个 Bot 运行在节点上：请在节点上修改',
+  'A node Bot cannot be copied here: create a new Bot on the node instead': '节点上的 Bot 不能在这里复制：请直接在节点上新建',
+  'A folder on the node: type its path': '节点上的文件夹：请输入它的路径',
+  'The node\'s default folder': '节点的默认文件夹',
+  'Browser, computer use and connectors': '浏览器、电脑操控和连接器',
+  'Not available for a node Bot: edit the entries in the list': '节点上的 Bot 不可用：请直接在列表里编辑条目',
   Working: '进行中',
   'A new reply is waiting': "有一条新回复",
   'Waiting for your answer': '等你回答',

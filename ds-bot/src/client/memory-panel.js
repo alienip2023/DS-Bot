@@ -215,7 +215,7 @@ function historyLine(row) {
   return row.scope === 'team' ? t('Added to team memory: {text}', { text }) : t('Added: {text}', { text })
 }
 
-export function HistoryRow({ row, undo, now }) {
+export function HistoryRow({ row, undo, now, node = false }) {
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
   useEffect(() => {
@@ -237,8 +237,8 @@ export function HistoryRow({ row, undo, now }) {
     row.restored
       ? h('span', { className: 'bt-mem-undone' }, t('Undone'))
       : h('button', {
-        type: 'button', className: 'bt-mem-remove', 'data-confirm': confirming || undefined, disabled: busy,
-        'aria-label': confirming ? t('Click again to undo') : t('Undo this change'), title: confirming ? undefined : t('Undo this change'), onClick: click,
+        type: 'button', className: 'bt-mem-remove', 'data-confirm': confirming || undefined, disabled: busy || node,
+        'aria-label': confirming ? t('Click again to undo') : t('Undo this change'), title: node ? t('Not available for a node Bot: edit the entries in the list') : confirming ? undefined : t('Undo this change'), onClick: click,
       }, t('Undo')))
 }
 
@@ -269,7 +269,7 @@ export function History({ owner, actions, undo, now }) {
   if (loadError) return h('div', { className: 'bt-error', role: 'alert' }, hostText(loadError))
   if (rows.length === 0) return h('div', { className: 'bt-mem-none' }, t('No changes yet'))
   return h('div', { className: 'bt-mem-entries' },
-    h('ul', { className: 'bt-mem-list' }, rows.map(row => h(HistoryRow, { key: row.id, row, undo: undoRow, now }))),
+    h('ul', { className: 'bt-mem-list' }, rows.map(row => h(HistoryRow, { key: row.id, row, undo: undoRow, now, node: owner.node === true }))),
     more ? h('button', { type: 'button', className: 'bt-soft bt-soft-sm', disabled: paging, onClick: () => void moreClick() }, t('Load more')) : null)
 }
 
@@ -332,7 +332,8 @@ function useNow(every) {
 
 export function MemoryDialog({ owner, actions, leaving = false }) {
   const { view, error, load, show } = useMemoryView(owner.id, actions)
-  const [page, setPage] = useState('summary')
+  // No model on this machine writes a node Bot's summary: its page is the list of entries.
+  const [page, setPage] = useState(owner.node === true ? 'entries' : 'summary')
   const [menu, setMenu] = useState(false)
   const [menuShown, menuLeaving] = useLinger(menu, MENU_EXIT_MS)
   const [moving, setMoving] = useState(null)
@@ -451,7 +452,7 @@ export function MemoryDialog({ owner, actions, leaving = false }) {
     h('div', { className: 'bt-scrim bt-mem-scrim', onMouseDown: close }),
     h('div', { className: 'bt-mem', role: 'dialog', 'aria-modal': true, 'aria-label': t("{name}'s memory", { name: owner.name }) },
       h('div', { className: 'bt-mem-head' },
-        page === 'summary' ? null : h('button', { type: 'button', className: 'bt-icon-btn', 'aria-label': t('Back to the summary'), onClick: backToSummary }, h(ChevronLeftIcon)),
+        page === 'summary' || owner.node === true ? null : h('button', { type: 'button', className: 'bt-icon-btn', 'aria-label': t('Back to the summary'), onClick: backToSummary }, h(ChevronLeftIcon)),
         h('h2', null, page === 'entries' ? t('All entries') : page === 'history' ? t('Change history') : t('Memory summary')),
         h('span', { className: 'bt-mem-status' }, page === 'summary' ? [owner.name, status].filter(Boolean).join(' · ') : page === 'entries' ? status : ''),
         h('span', { className: 'bt-mem-head-gap' }),
@@ -462,7 +463,7 @@ export function MemoryDialog({ owner, actions, leaving = false }) {
             h('span', { className: 'bt-menu-label' }, t('All entries')), h('span', { className: 'bt-menu-hint' }, String(count))),
           h('button', { type: 'button', role: 'menuitem', onClick: openHistory },
             h('span', { className: 'bt-menu-label' }, t('Change history'))),
-          h('button', { type: 'button', role: 'menuitem', disabled: count === 0 || view?.summarizing, onClick: regenerate },
+          owner.node === true ? null : h('button', { type: 'button', role: 'menuitem', disabled: count === 0 || view?.summarizing, onClick: regenerate },
             h('span', { className: 'bt-menu-label' }, t('Regenerate summary')))) : null),
       h('div', { className: 'bt-mem-body' },
         error ? h('div', { className: 'bt-error', role: 'alert', style: { padding: 0 } }, hostText(error)) : null,
@@ -474,8 +475,8 @@ export function MemoryDialog({ owner, actions, leaving = false }) {
         answer ? h(Reply, { answer, dismiss: () => setAnswer(null) }) : null,
         h('form', { className: 'bt-mem-ask', onSubmit: ask },
           h('input', {
-            ref: inputRef, className: 'bt-mem-input', value: text, maxLength: 2000, disabled: view === null,
-            placeholder: t('Ask or update'), 'aria-label': t("Ask about or update {name}'s memory", { name: owner.name }),
+            ref: inputRef, className: 'bt-mem-input', value: text, maxLength: 2000, disabled: view === null || owner.node === true,
+            placeholder: owner.node === true ? t('Not available for a node Bot: edit the entries in the list') : t('Ask or update'), 'aria-label': t("Ask about or update {name}'s memory", { name: owner.name }),
             onChange: event => setText(event.target.value),
           }),
           h('button', { type: 'submit', className: 'bt-mem-send', disabled: busy || text.trim() === '', 'aria-label': t('Send') },

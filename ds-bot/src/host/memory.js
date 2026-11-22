@@ -43,6 +43,7 @@ import { GROUP_HEADING, GROUP_MEMORY_SOURCE, MEMORY_RECALL_SOURCE, MEMORY_UPDATE
 import { installReview } from './memory-review.js'
 import { installTidy } from './memory-tidy.js'
 import { output } from './tools.js'
+import { joinedShadow } from './roster-join.js'
 
 export { MEMORY_LIMITS, addLink, cleanEntry, cleanTopic, formatEntry, insertEntry, looksLikeKey, looksSecret, matchEntries, parseAsk, parseMemory, parseReview, removeLink, reviewEntries, splitMeta } from './memory-entries.js'
 export { writtenIn } from './memory-copy.js'
@@ -1902,8 +1903,19 @@ export function install(rt) {
     }
     const bot = rt.botOf(String(body.botId ?? ''))
     if (bot === undefined) throw new Error('Unknown Bot')
-    return { id: bot.id, name: bot.name, group: false, keeper: bot, tag: { sessionId: rt.chatOf(bot.id), kind: 'memory' }, scopes: { own: ownScope(bot.id), team: TEAM } }
+    // A node Bot's memory is the node scope the federation reads and writes, not an empty local
+    // folder named after the shadow. Its model runs on the node, so no keeper writes a summary here.
+    const remote = remoteOwnScope(bot)
+    return { id: bot.id, name: bot.name, group: false, keeper: remote === undefined ? bot : undefined, remote, tag: { sessionId: rt.chatOf(bot.id), kind: 'memory' }, scopes: { own: remote ?? ownScope(bot.id), team: TEAM } }
   }
+  const remoteOwnScope = bot => (joinedShadow(bot) ? { kind: 'bot', nodeId: bot.worker.nodeId, botId: bot.worker.remoteBotId } : undefined)
+  const remoteScopeOfKey = key => {
+    const bot = typeof key === 'string' && key.startsWith('joined:') ? Object.values(state.bots).find(item => joinedShadow(item) && remoteBotKey(item.worker.nodeId, item.worker.remoteBotId) === key) : undefined
+    return bot === undefined ? undefined : remoteOwnScope(bot)
+  }
+  const NODE_MEMORY_ASSISTANT = 'Not available for a node Bot: edit the entries in the list'
+  // A change the panel made to a node Bot's memory reaches the node through the federation snapshot.
+  const afterPanelChange = scope => (scope.nodeId === undefined ? undefined : rt.memoryHub?.afterPanelChange?.(scope))
   const panelBody = panel => (panel.group ? { roomId: panel.id } : { botId: panel.id })
   const panelLabel = (panel, scope) => (scope.kind === 'team' ? 'the team memory' : panel.group ? 'the group memory' : `${panel.name}'s memory`)
 
@@ -1949,9 +1961,9 @@ export function install(rt) {
       fresh: entries.length === 0 || saved?.hash === hash,
       summarizing: summarizing.has(panel.id),
       tidy: tidyView(panel.scopes),
-      keys: Object.fromEntries(Object.entries(panel.scopes).map(([tag, scope]) => [tag, scopeKey(scope)])),
+      keys: Object.fromEntries(Object.entries(panel.scopes).map(([tag, scope]) => [tag, logKeyOf(scope)])),
       places: [
-        ...Object.values(state.bots).map(bot => ({ key: scopeKey(ownScope(bot.id)), kind: 'bot', name: bot.name })),
+        ...Object.values(state.bots).map(bot => ({ key: logKeyOf(remoteOwnScope(bot) ?? ownScope(bot.id)), kind: 'bot', name: bot.name })),
         ...Object.values(state.rooms).map(room => ({ key: scopeKey(groupScope(room.id)), kind: 'group', name: room.name })),
       ],
       error: failed !== undefined && !summarizing.has(panel.id) ? failed.message : null,
@@ -1960,6 +1972,7 @@ export function install(rt) {
 
   async function memoryAsk(body) {
     const panel = panelOf(body)
+    if (panel.remote !== undefined) throw Object.assign(new Error(NODE_MEMORY_ASSISTANT), { code: 'bot/refused' })
     if (panel.keeper === undefined) throw new Error('No Bot is left in this group chat')
     const text = String(body.text ?? '').trim().slice(0, ASK_TEXT_MAX)
     if (text === '') throw new Error('Type a question or a change first')
@@ -1998,7 +2011,8 @@ export function install(rt) {
     const panel = panelOf(body)
     const scope = panel.scopes[body.scope] ?? panel.scopes[panel.group ? 'group' : 'own']
     const topic = body.topic === null || body.topic === undefined ? undefined : cleanTopic(body.topic)
-    await removeEntry({ scope, topic, match: String(body.text ?? ''), actor: USER, label: panelLabel(panel, scope) })
+    const result = await removeEntry({ scope, topic, match: String(body.text ?? ''), actor: USER, label: panelLabel(panel, scope) })
+    if (result?.changed === true) await afterPanelChange(scope)
     return await memoryView(panelBody(panel))
   }
 
@@ -2016,7 +2030,8 @@ export function install(rt) {
     const scope = panel.scopes[body.scope] ?? panel.scopes[panel.group ? 'group' : 'own']
     const text = userEntry(body.next)
     const meta = { source: 'memory panel', by: 'user', added: today() }
-    await replaceEntry({ scope, topic: userTopic(body.topic), match: String(body.text ?? ''), text, meta, actor: USER, label: panelLabel(panel, scope) })
+    const result = await replaceEntry({ scope, topic: userTopic(body.topic), match: String(body.text ?? ''), text, meta, actor: USER, label: panelLabel(panel, scope) })
+    if (result?.changed === true) await afterPanelChange(scope)
     return memoryView(panelBody(panel))
   }
   async function memoryAdd(body) {
@@ -2024,7 +2039,8 @@ export function install(rt) {
     const scope = panel.scopes[body.scope] ?? panel.scopes[panel.group ? 'group' : 'own']
     const text = userEntry(body.text)
     const meta = { source: 'memory panel', by: 'user', added: today() }
-    await addEntry({ scope, topic: userTopic(body.topic), text, meta, actor: USER, label: panelLabel(panel, scope) })
+    const result = await addEntry({ scope, topic: userTopic(body.topic), text, meta, actor: USER, label: panelLabel(panel, scope) })
+    if (result?.changed === true) await afterPanelChange(scope)
     return memoryView(panelBody(panel))
   }
 
@@ -2074,9 +2090,9 @@ export function install(rt) {
   async function memoryMove(body) {
     const panel = panelOf(body)
     const from = panel.scopes[body.scope] ?? panel.scopes[panel.group ? 'group' : 'own']
-    const to = journalScope(body.to)
+    const to = journalScope(body.to) ?? remoteScopeOfKey(body.to)
     if (to === undefined) throw new Error('Choose where to move the entry')
-    if (scopeKey(to) !== scopeKey(from)) {
+    if (logKeyOf(to) !== logKeyOf(from)) {
       await queued(async () => {
         await recoverPending()
         writable(from, USER)
@@ -2088,6 +2104,8 @@ export function install(rt) {
         await addEntryNow({ scope: to, topic: to.kind === 'team' ? TEAM_SHARED : undefined, text: old.text, meta: { ...old.meta, id: entryId(old) }, actor: USER, label: labelOf(to), moving: true })
         await removeEntryNow({ scope: from, files, old, actor: USER, label: panelLabel(panel, from) })
       })
+      await afterPanelChange(to)
+      await afterPanelChange(from)
     }
     return await memoryView(panelBody(panel))
   }
@@ -2109,6 +2127,7 @@ export function install(rt) {
       lines[old.line] = line
       await publish({ op: 'replace', scope: scopeKey(scope), steps: [writeStep(old.file.path, joinLines(lines))], row: { op: 'replace', scope: logKeyOf(scope), ...logPlaceOf(scope), file: old.file.file, ...actorOf(USER), before, after: line } })
     })
+    await afterPanelChange(scope)
     return await memoryView(panelBody(panel))
   }
 
@@ -2134,7 +2153,7 @@ export function install(rt) {
 
   // The logs a panel's scopes write to: the shared log, plus a private Bot's own
   // for its `bot:` scope. journalFor decides which, exactly as it does for writes.
-  const journalPathsOf = panel => [...new Set(Object.values(panel.scopes).map(scope => journalFor(scopeKey(scope), 'restore').path))]
+  const journalPathsOf = panel => [...new Set(Object.values(panel.scopes).map(scope => journalFor(logKeyOf(scope), 'restore', scope.nodeId).path))]
 
   const journalRows = (path) => {
     const rows = []
@@ -2150,7 +2169,7 @@ export function install(rt) {
   // Every change the owner's scopes made, oldest first across the logs they
   // landed in. A row outside those scopes is not the owner's to see or undo.
   function ownerRows(panel) {
-    const keys = new Set(Object.values(panel.scopes).map(scopeKey))
+    const keys = new Set(Object.values(panel.scopes).map(logKeyOf))
     const rows = []
     for (const path of journalPathsOf(panel)) {
       for (const row of journalRows(path)) if (keys.has(row.scope)) rows.push(row)
@@ -2201,6 +2220,7 @@ export function install(rt) {
 
   async function memoryRestore(body) {
     const panel = panelOf(body)
+    if (panel.remote !== undefined) throw Object.assign(new Error(NODE_MEMORY_ASSISTANT), { code: 'bot/refused' })
     const id = String(body.id ?? '')
     if (id === '') throw new Error('Give the change log id of the change to restore.')
     await queued(async () => {

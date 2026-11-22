@@ -64,6 +64,12 @@ export const DE = {
   // Shared
   'Main Bot': 'Haupt-Bot',
   'Running on {host}': 'Läuft auf {host}',
+  'This Bot runs on a node: change it there': 'Dieser Bot läuft auf einem Knoten: Änderungen dort vornehmen',
+  'A node Bot cannot be copied here: create a new Bot on the node instead': 'Ein Knoten-Bot kann hier nicht kopiert werden: Erstelle stattdessen einen neuen Bot auf dem Knoten',
+  'A folder on the node: type its path': 'Ein Ordner auf dem Knoten: Pfad eingeben',
+  'The node\'s default folder': 'Standardordner des Knotens',
+  'Browser, computer use and connectors': 'Browser, Computersteuerung und Konnektoren',
+  'Not available for a node Bot: edit the entries in the list': 'Für einen Knoten-Bot nicht verfügbar: Einträge in der Liste bearbeiten',
   Working: 'Arbeitet',
   'Waiting for your answer': 'Wartet auf deine Antwort',
   'Waiting for {names}': 'Wartet auf {names}',

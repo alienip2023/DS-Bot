@@ -15,6 +15,25 @@ export function refuseJoinedDispatch(bot) {
   return { ok: false, error: 'joined shadow cannot dispatch' }
 }
 
+// A control that cannot act on a node Bot says so instead of returning ok and changing only the
+// hub's shadow row. The sentence is also the client's i18n key (error-text / hostText).
+export const NODE_ONLY_REASON = 'This Bot runs on a node: change it there'
+// update-bot fields that only mean something on the machine the Bot runs on.
+const NODE_ONLY_UPDATE_KEYS = ['permission', 'private', 'type', 'worker', 'browserGrants']
+const NODE_ONLY_ENDPOINTS = new Set([
+  'bot-capability', 'browser-takeover', 'browser-give-back', 'browser-stop',
+  'computer-set-level', 'computer-revoke-app', 'computer-takeover', 'computer-handback', 'computer-allow-foreground',
+])
+
+// The refusal text for a client call that would only edit a node Bot's shadow row, or undefined.
+export function joinedRouteRefusal(rt, endpoint, body) {
+  const id = endpoint === 'update-bot' ? body?.id : NODE_ONLY_ENDPOINTS.has(endpoint) ? (body?.botId ?? body?.id) : undefined
+  if (typeof id !== 'string' || id === '') return undefined
+  if (!joinedShadow(rt.botOf?.(id))) return undefined
+  if (endpoint === 'update-bot') return NODE_ONLY_UPDATE_KEYS.some(key => body[key] !== undefined) ? NODE_ONLY_REASON : undefined
+  return NODE_ONLY_REASON
+}
+
 export function shadowId(nodeId, remoteBotId) {
   return `joined:${encodeURIComponent(nodeId)}:${encodeURIComponent(remoteBotId)}`
 }
@@ -75,6 +94,18 @@ export function cardSummaryOf(cards) {
   })
 }
 
+// A node's clock is not the hub's. A timestamp the node reports (a task's start, a card's age) that
+// is in the hub's future by more than 5 s, or older than 30 days, would show a nonsense age; the hub
+// uses the time it received the report instead, and keeps that first receive time (`previous`) so the
+// row does not change on every report. 0 stays "unknown".
+const NODE_CLOCK_FUTURE_MS = 5_000
+const NODE_CLOCK_STALE_MS = 30 * 24 * 60 * 60 * 1000
+export function clampNodeTime(at, now, previous) {
+  if (!Number.isFinite(at) || at <= 0) return 0
+  if (at <= now + NODE_CLOCK_FUTURE_MS && at >= now - NODE_CLOCK_STALE_MS) return at
+  return Number.isFinite(previous) && previous > 0 ? previous : now
+}
+
 export function applyRosterReport(state, report, now = Date.now(), onChange) {
   if (!state.bots || typeof state.bots !== 'object') state.bots = {}
   const nodeId = typeof report?.nodeId === 'string' ? report.nodeId.trim() : ''
@@ -123,12 +154,14 @@ export function applyRosterReport(state, report, now = Date.now(), onChange) {
     // none: what was known stays; an empty list clears it. Equal lists keep the old array so an
     // unchanged report does not count as a change.
     if (Array.isArray(bot.cards)) {
-      const nextCards = cardSummaryOf(bot.cards)
+      const knownAt = new Map((existing?.nodeCards ?? []).map(card => [card.id, card.at]))
+      const nextCards = cardSummaryOf(bot.cards).map(card => ({ ...card, at: clampNodeTime(card.at, now, knownAt.get(card.id)) }))
       row.nodeCards = JSON.stringify(nextCards) === JSON.stringify(existing?.nodeCards ?? []) ? (existing?.nodeCards ?? nextCards) : nextCards
       if (nextCards.length === 0 && existing?.nodeCards === undefined) delete row.nodeCards
     }
     if (Array.isArray(bot.tasks)) {
-      const next = taskSummaryOf(bot.tasks)
+      const knownStart = new Map((existing?.nodeTasks ?? []).map(task => [task.id, task.startedAt]))
+      const next = taskSummaryOf(bot.tasks).map(task => ({ ...task, startedAt: clampNodeTime(task.startedAt, now, knownStart.get(task.id)) }))
       row.nodeTasks = JSON.stringify(next) === JSON.stringify(existing?.nodeTasks ?? []) ? (existing?.nodeTasks ?? next) : next
       if (next.length === 0 && existing?.nodeTasks === undefined) delete row.nodeTasks
     }

@@ -65,7 +65,7 @@ export function Overlays({ useRoster, useUi, useSessions, useSessionStatus, useA
   // The memory dialog shows a Bot's memory or a group chat's.
   const memoryOwner = (id) => {
     const bot = roster.byId[id]
-    if (bot) return { id: bot.id, name: bot.name }
+    if (bot) return { id: bot.id, name: bot.name, ...(bot.origin === 'joined' && bot.worker?.home === 'remote' ? { node: true } : {}) }
     const room = roster.roomsById[id]
     return room ? { id: room.id, name: room.name, group: true } : null
   }
