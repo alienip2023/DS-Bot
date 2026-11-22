@@ -4,6 +4,10 @@ All notable changes to DS Bot are listed here. The format follows [Keep a Change
 
 ## [Unreleased]
 
+### Added
+
+- **Node Bots show their thinking and tool steps**: the page of a node Bot on the hub now has the "思考过程" row and the tool steps a local Bot's page has, live while the turn runs. The node reads the steps from its Bot's own Session, compacts them (text and step caps with a visible "…[已截断 N 字]" marker, secrets removed) and sends them as AC's new `bot/trace` frame; the hub writes them into the mirror Session as the events a local turn writes (`src/host/node-trace.js`, `src/host/hub-trace.js`, `docs/mirror-contract.md`). Steps are deduplicated and ordered by their index, a lost batch is repaired by the final list, and a turn that ends by an answer, a failure, Stop or a lost link never leaves a step or a thinking block open. Needs AC 0.4.21 (a placeholder: the number is set when AC is released) on the node and the hub; an older node is said so once on the Bot's page and flagged in the Bot list, and a node whose steps did not arrive is said so too. Not covered: late replies after the page stopped waiting, and history imported by `bot/history`, carry text only.
+
 ## [0.3.10] - 2026-11-22
 
 ### Added

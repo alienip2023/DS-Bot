@@ -16,6 +16,7 @@ import { joinedShadow } from './roster-join.js'
 import { listenBotTurnResult, JOINED_TURN_TIMEOUT_MS, JOINED_LATE_WINDOW_MS, LINK_LOST_TEXT, PENDING_TURN_TEXT } from './joined-turn.js'
 import { mirrorTurn, allocateTurn, mirrorTurnStart, mirrorTurnFinish, mirrorTurnFail, mirrorTurnAbort, mirrorTurnPending, mirrorLateReply, TASK_RESULT_MARK, STEER_REPLY_MARK } from './mirror.js'
 import { deferMirrorWrite, drainJoinedMirror, mirrorTurnOpen } from './joined-mirror-writer.js'
+import { noteTraceGap, openTraceSink } from './hub-trace.js'
 
 /**
  * Error codes thrown by send() / deliverTurn():
@@ -452,10 +453,16 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
   rt.joinedRunning?.(bot, true)
   // Open on the page: a steer sent meanwhile is written into this turn, in the order it happened.
   Object.assign(claim, { turn, step, session })
+  // The node's thinking and tool steps (bot/trace) are written into this turn while it runs; closeTrace() ends them
+  // and says which step the closing message goes in (hub-trace.js). A node that cannot send them has no sink.
+  const sink = openTraceSink(rt, { bot, exchangeId: prepared.turnId, nodeId: prepared.nodeId, binding: { session, turn, step, closedTurns } })
+  const closeTrace = () => sink?.close() ?? { step }
+  // The step the page turn is in now: a steer's answer written into this turn goes there (the steps moved it on).
+  claim.currentStep = () => sink?.step() ?? step
 
-  const fail = (err) => mirrorTurnFail(session, { turn, step, code: err?.code, message: failureText(err), closedTurns })
+  const fail = (err) => mirrorTurnFail(session, { turn, step, ...closeTrace(), code: err?.code, message: failureText(err), closedTurns })
   const markPending = text => {
-    try { mirrorTurnPending(session, { turn, step, text }) } catch (error) {
+    try { mirrorTurnPending(session, { turn, step: sink?.step() ?? step, text }) } catch (error) {
       rt.warn?.('ds-bot: a pending page turn for %s was not marked: %s', bot.id, error?.message ?? error)
     }
   }
@@ -470,7 +477,7 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
     if (over || prepared.received()) return false
     over = true
     prepared.stop()
-    mirrorTurnAbort(session, { turn, step, closedTurns })
+    mirrorTurnAbort(session, { turn, step, ...closeTrace(), closedTurns })
     armLateReply({ rt, bot, session, state, prepared })
     release()
     return true
@@ -495,7 +502,7 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
         result = await prepared.settle()
       } catch (err) {
         if (err?.code === 'E_ABORTED') {
-          if (!over) { over = true; mirrorTurnAbort(session, { turn, step, closedTurns }) }
+          if (!over) { over = true; mirrorTurnAbort(session, { turn, step, ...closeTrace(), closedTurns }) }
           for (const groupSessionId of rt.groupSessionsOf?.(bot.id) ?? []) rt.failRoomTurn?.(groupSessionId, { code: 'ABORTED', message: 'stopped' })
           return { ok: false, aborted: true, turnId: prepared.turnId }
         }
@@ -504,18 +511,21 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
         // keep listening for that answer — it is written as a late reply when it arrives.
         const linkLost = err?.code === 'E_OFFLINE' && err?.message === 'bridge-down'
         if (linkLost) armLateReply({ rt, bot, session, state, prepared })
-        mirrorTurnFail(session, { turn, step, code: err?.code, message: linkLost ? LINK_LOST_TEXT : failureText(err), closedTurns })
+        mirrorTurnFail(session, { turn, step, ...closeTrace(), code: err?.code, message: linkLost ? LINK_LOST_TEXT : failureText(err), closedTurns })
         throw err
       }
       over = true
       rememberReply(rt, bot.id, result.text)
-      const mirrorResult = mirrorTurnFinish(session, { turn, step, botText: result.text, botId: bot.id, nodeSeq: result.seq, seenKeys, closedKeys, seenSteps, closedTurns })
+      const mirrorResult = mirrorTurnFinish(session, { turn, step, ...closeTrace(), botText: result.text, botId: bot.id, nodeSeq: result.seq, seenKeys, closedKeys, seenSteps, closedTurns })
+      // A node that sent no thinking is said so on the page, once (hub-trace.js).
+      noteTraceGap(rt, bot, sink, { session, state })
       // Notify group round waiters that the joined bot's turn has produced output.
       // turns.js does this via session/event which never fires for mirror sessions.
       for (const groupSessionId of rt.groupSessionsOf?.(bot.id) ?? []) rt.touchRoomTurn?.(groupSessionId)
       return { ok: true, turnId: prepared.turnId, mirrorResult }
     } finally {
       rt.joinedLate.delete(dispose)
+      sink?.dispose()
       release()
     }
   })()
@@ -572,6 +582,9 @@ export function startSideTurn({ rt, bot, text, requestId, session, state = {}, t
   const openTurn = rt.joinedInFlight?.get(bot.id)
   const hostTurn = openTurn?.session === session && Number.isInteger(openTurn?.turn) ? openTurn : undefined
   let userWritten = false
+  // A steer written as a turn of its own carries the node's thinking and tool steps inside that turn (hub-trace.js).
+  // One that joins the page turn already open has none: that turn's own trace holds the node's events, the steer's too.
+  const sink = hostTurn === undefined ? openTraceSink(rt, { bot, exchangeId: prepared.turnId, nodeId: prepared.nodeId }) : undefined
 
   const writeWhenFree = (write) => {
     if (rt.joinedLateClosed === true) return
@@ -583,18 +596,20 @@ export function startSideTurn({ rt, bot, text, requestId, session, state = {}, t
       rt.joinedLateQueue.set(bot.id, [...(rt.joinedLateQueue.get(bot.id) ?? []), guarded])
     } else guarded()
   }
+  // `finish(turn, trace)`: trace is { step, reasoning } — where the closing message goes after the node's steps.
   const writeTurn = (finish) => writeWhenFree(() => {
     const turn = allocateTurn(session)
     mirrorTurnStart(session, { turn, step: 1, userText: text, rpcId: requestId })
-    finish(turn)
+    finish(turn, sink?.bindAndClose({ session, turn, step: 1, closedTurns }) ?? { step: 1 })
   })
   // The answer lands in the turn that is still open on the page (right after the steer it answers);
   // if that turn is over, it is a reply of its own (its question is already on the page).
   const answerInline = (answer, mark) => {
     if (!userWritten) return false
+    sink?.dispose()
     const stillOpen = rt.joinedInFlight?.get(bot.id) === hostTurn
     if (stillOpen) {
-      try { mirrorTurnPending(session, { turn: hostTurn.turn, step: hostTurn.step, text: answer }); return true } catch { /* falls back below */ }
+      try { mirrorTurnPending(session, { turn: hostTurn.turn, step: hostTurn.currentStep?.() ?? hostTurn.step, text: answer }); return true } catch { /* falls back below */ }
     }
     writeWhenFree(() => mirrorLateReply(session, { botText: answer, botId: bot.id, mark, closedTurns }))
     return true
@@ -623,7 +638,7 @@ export function startSideTurn({ rt, bot, text, requestId, session, state = {}, t
     if (over || prepared.received()) return false
     over = true
     prepared.stop()
-    if (!userWritten) writeTurn(turn => mirrorTurnAbort(session, { turn, step: 1, closedTurns }))
+    if (!userWritten) writeTurn((turn, trace) => mirrorTurnAbort(session, { turn, step: trace.step, reasoning: trace.reasoning, closedTurns }))
     // The node was told to stop, but if it still answers (the work was past the point of no return) the answer
     // is written as a late reply, as for the page turn.
     armSideLateReply()
@@ -658,7 +673,7 @@ export function startSideTurn({ rt, bot, text, requestId, session, state = {}, t
         over = true
         // The steer never left: the page was told it was accepted and its message is on the page, so say what
         // happened on the page instead of leaving a question that nobody will ever answer.
-        if (!answerInline(`⚠ 无法送达节点：${failureText(error)}`, STEER_REPLY_MARK)) writeTurn(turn => mirrorTurnFail(session, { turn, step: 1, code: error?.code, message: failureText(error), closedTurns }))
+        if (!answerInline(`⚠ 无法送达节点：${failureText(error)}`, STEER_REPLY_MARK)) writeTurn((turn, trace) => mirrorTurnFail(session, { turn, step: trace.step, reasoning: trace.reasoning, code: error?.code, message: failureText(error), closedTurns }))
         throw error
       }
       let result
@@ -669,12 +684,17 @@ export function startSideTurn({ rt, bot, text, requestId, session, state = {}, t
         over = true
         // A link lost after the node had the steer is not a failure: its answer is still waited for.
         if (error?.code === 'E_OFFLINE' && error?.message === 'bridge-down') armSideLateReply()
-        if (!answerInline(`⚠ 无法送达节点：${failureText(error)}`, STEER_REPLY_MARK)) writeTurn(turn => mirrorTurnFail(session, { turn, step: 1, code: error?.code, message: failureText(error), closedTurns }))
+        if (!answerInline(`⚠ 无法送达节点：${failureText(error)}`, STEER_REPLY_MARK)) writeTurn((turn, trace) => mirrorTurnFail(session, { turn, step: trace.step, reasoning: trace.reasoning, code: error?.code, message: failureText(error), closedTurns }))
         throw error
       }
       over = true
       rememberReply(rt, bot.id, result.text)
-      if (!answerInline(result.text, STEER_REPLY_MARK)) writeTurn(turn => mirrorTurnFinish(session, { turn, step: 1, botText: result.text, botId: bot.id, nodeSeq: result.seq, seenKeys, closedKeys, seenSteps, closedTurns }))
+      if (!answerInline(result.text, STEER_REPLY_MARK)) {
+        writeTurn((turn, trace) => {
+          mirrorTurnFinish(session, { turn, step: trace.step, reasoning: trace.reasoning, botText: result.text, botId: bot.id, nodeSeq: result.seq, seenKeys, closedKeys, seenSteps, closedTurns })
+          noteTraceGap(rt, bot, sink, { session, state })
+        })
+      }
       return { ok: true, turnId: prepared.turnId }
     } finally {
       rt.joinedLate.delete(dispose)
