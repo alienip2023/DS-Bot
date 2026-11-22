@@ -293,6 +293,18 @@ test('run-stats on a joined Bot reports the remote turn state without a mirror S
   assert.equal(running.value.startedAt, 1234)
 })
 
+test('run-stats says a node Bot is running while only a side (steer) turn runs', async (t) => {
+  const w = await start(team())
+  t.after(w.stop)
+  w.rt.joinedSide = new Map([[REMOTE, new Set([{ requestId: 's1', abort() {} }])]])
+  const result = await w.call('run-stats', { botId: REMOTE })
+  assert.equal(result.value.running, true)
+  assert.equal(result.value.startedAt, null, 'no start time is invented for a side turn')
+  assert.equal(result.value.remote, true)
+  w.rt.joinedSide = new Map()
+  assert.equal((await w.call('run-stats', { botId: REMOTE })).value.running, false)
+})
+
 test('run-stats leaves a worker-bridge Bot on its local projection path', async (t) => {
   const w = await start(team())
   t.after(w.stop)

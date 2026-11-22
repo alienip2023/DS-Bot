@@ -667,7 +667,7 @@ export function install(rt) {
               remote: true,
               nodeId: bot.worker?.nodeId ?? null,
               hostname: bot.worker?.hostname ?? null,
-              running: claim !== undefined,
+              running: claim !== undefined || (rt.joinedSide?.get(bot.id)?.size ?? 0) > 0,
               startedAt: Number.isFinite(claim?.startedAt) ? claim.startedAt : null,
             })
           }
