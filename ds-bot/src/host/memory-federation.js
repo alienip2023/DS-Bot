@@ -926,6 +926,7 @@ export function install(rt) {
       cleanInbox,
       scopes,
       view,
+      afterPanelChange,
     }),
     // The node half. `enabled` answers whether federation is allowed here at all;
     // `status` says whether the hub can be reached right now. Tools and the prompt
