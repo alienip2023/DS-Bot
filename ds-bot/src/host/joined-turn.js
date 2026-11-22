@@ -7,7 +7,7 @@ import {
   ensureMirrorSession, hasPromptRequest, mirrorLateReply, mirrorStateOf,
 } from './mirror.js'
 import { classify } from './msg-classes.js'
-import { beginJoinedMirror, closeJoinedMirror, markJoinedMirrorPending, mirrorTurnOpen } from './joined-mirror-writer.js'
+import { beginJoinedMirror, closeJoinedMirror, deferMirrorWrite, markJoinedMirrorPending, mirrorTurnOpen } from './joined-mirror-writer.js'
 
 export const BRIDGE_DOWN_TEXT = '副机仍在执行，桥已断'
 // The link dropped after the node had the work: that is not a failure. The node keeps working and sends
@@ -15,7 +15,7 @@ export const BRIDGE_DOWN_TEXT = '副机仍在执行，桥已断'
 export const LINK_LOST_TEXT = `${BRIDGE_DOWN_TEXT}。这不是失败：任务仍在节点上执行，连接恢复后结果会自动送回。请不要重复派发，也不要取消它的任务。`
 // What the sender is told when its exchange was settled by a stop, not by the node going away.
 export const STOPPED_TEXT = '已停止'
-export const PENDING_TURN_TEXT = 'Node is still running; its result will be delivered later.'
+export const PENDING_TURN_TEXT = '节点仍在运行，结果会在完成后送到这里。'
 // The foreground result deadline. Both page and Bot-to-Bot turns stay open after it;
 // executor.js's separate late-reply writer handles results after the user presses Stop.
 export const JOINED_TURN_TIMEOUT_MS = 600_000
@@ -124,7 +124,9 @@ export function listenBotTurnResult(registry, exchangeId, nodeId, timeoutMs, rem
     if (lateWindowMs <= 0) { finish(undefined); return }
     // The answer window is bounded, but a still-open turn must remain stoppable and must
     // report a real bridge loss even after that window expires.
-    timer = setTimeout(() => registry.off?.('botTurnResult', onResult), lateWindowMs)
+    // The window for the answer is bounded. When it ends without one the exchange fails with its own code:
+    // left open it would hold the Bot's in-flight slot (and every later message) for ever.
+    timer = setTimeout(() => finish({ ok: false, error: 'bot-turn-timeout', exchangeId }), lateWindowMs)
     timer.unref?.()
     resolve(undefined)
     onTimeout?.()
@@ -320,7 +322,11 @@ function armAnswerAfterLinkLoss(rt, { registry, nodeId, xid, fromId, toId, work,
         await replyToSender(rt, { fromId, toId, exchangeId: xid, work, roomId, text: `↩ 连接恢复后，节点送回了结果：\n\n${text}` })
         const session = await ensureMirrorSession(rt, to)
         const state = mirrorStateOf(rt, to.id, session)
-        mirrorLateReply(session, { botText: text, botId: to.id, nodeSeq: Number.isInteger(payload.seq) ? payload.seq : undefined, ...state })
+        // Another turn may be open on the page by now (the user kept talking): wait for it, never close it under itself.
+        deferMirrorWrite(rt, to.id, () => {
+          try { mirrorLateReply(session, { botText: text, botId: to.id, nodeSeq: Number.isInteger(payload.seq) ? payload.seq : undefined, ...state }) }
+          catch (error) { rt.warn?.('ds-bot: the answer that came after the link was lost was not written: %s', error?.message ?? error) }
+        })
       } catch (error) { rt.warn?.('ds-bot: the answer that came after the link was lost was not delivered: %s', error?.message ?? error) }
     })()
   }

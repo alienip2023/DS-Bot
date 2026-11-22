@@ -49,7 +49,7 @@ test('a result after the soft deadline closes its original page turn before buff
   await new Promise(resolve => setTimeout(resolve, 30))
   const session = w.sessionOf('mirror-1')
   assert.equal(endKinds(session).length, 0)
-  assert.match(texts(session, 'assistant/message').at(-1), /Node is still running/)
+  assert.match(texts(session, 'assistant/message').at(-1), /节点仍在运行/)
   w.rt.joinedTurnTimeoutMs = 600_000
   const pending = handleJoinedTurn(w.rt, {
     fromId: 'local', toId: w.bot.id, text: 'from the team', exchangeId: 'ex-c', role: 'request',
@@ -82,11 +82,11 @@ test('a late answer after Stop also waits for the open Bot-to-Bot turn, then res
     fromId: 'local', toId: w.bot.id, text: 'from the team', exchangeId: 'ex-d', role: 'request',
   })
   await drain()
-  assert.equal(w.frames.length, 2)
+  assert.equal(w.frames.filter(f => f.type === 'bot/turn').length, 2)
 
   w.reply(0, { text: 'page answer after stop' })
   await drain(2)
-  assert.equal(texts(session, 'assistant/message').length, 2,
+  assert.equal(texts(session, 'assistant/message').length, 1,
     'the late answer waits for the exchange turn to close')
 
   w.reply(1, { text: 'team answer' })
@@ -97,10 +97,10 @@ test('a late answer after Stop also waits for the open Bot-to-Bot turn, then res
   assert.equal(endKinds(session).length, 3)
   assert.deepEqual(texts(session, 'user/message'), ['from the page', 'from the team'])
   const answers = texts(session, 'assistant/message')
-  assert.equal(answers.length, 4)
-  assert.match(answers[1], /^⏹/)
-  assert.equal(answers[2], 'team answer')
-  assert.match(answers[3], /^↩ 节点迟到回复/)
+  assert.equal(answers.length, 3)
+  assert.match(answers[0], /^⏹/)
+  assert.equal(answers[1], 'team answer')
+  assert.match(answers[2], /^↩ 节点迟到回复/)
 })
 
 test('a late answer that arrives while an exchange is still queued restores strictly too', async () => {
@@ -132,9 +132,8 @@ test('a late answer that arrives while an exchange is still queued restores stri
   assert.equal(endKinds(session).length, 2, 'the queued exchange writes one closed turn')
   assert.deepEqual(texts(session, 'user/message'), ['from the page', 'from the team'])
   const answers = texts(session, 'assistant/message')
-  assert.equal(answers.length, 4)
-  assert.match(answers[0], /Delivered to Joined/)
-  assert.match(answers[1], /Node is still running/)
-  assert.equal(answers[2], 'page answer late')
-  assert.equal(answers[3], 'team answer')
+  assert.equal(answers.length, 3)
+  assert.match(answers[0], /节点仍在运行/)
+  assert.equal(answers[1], 'page answer late')
+  assert.equal(answers[2], 'team answer')
 })

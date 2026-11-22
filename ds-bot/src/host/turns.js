@@ -1219,6 +1219,10 @@ export function install(rt) {
           entry.joined = carry.joined
           entry.later = carry.later
           entry.toolCount = carry.toolCount ?? 0
+          // The messages the cut turn had taken (a hub exchange among them) are still owed this turn's answer.
+          // turn/start cleared them just above; without this the first exchange is never settled.
+          if (carry.userRpcId !== undefined) entry.userRpcId = carry.userRpcId
+          if (carry.userRpcIds !== undefined) entry.userRpcIds = new Set([...carry.userRpcIds, ...(entry.userRpcIds ?? [])])
           entry.opened = true
           entry.carried = true
           if (carry.info !== undefined) claimTrigger(id, entry, carry.info)
@@ -1450,7 +1454,7 @@ export function install(rt) {
         const steerCut = cut !== undefined && event.data?.reason?.kind === 'aborted'
           && event.data.reason.reason?.kind === 'hook' && event.data.reason.reason.reason === STEER_CUT
         if (steerCut) {
-          entry.carry = { info: entry.info, joined: entry.joined ?? [], later: entry.later ?? [], texts: entry.texts.slice(0, cut.texts), shown: entry.shown, answers: entry.answers, toolCount: entry.toolCount ?? 0 }
+          entry.carry = { info: entry.info, joined: entry.joined ?? [], later: entry.later ?? [], texts: entry.texts.slice(0, cut.texts), shown: entry.shown, answers: entry.answers, toolCount: entry.toolCount ?? 0, userRpcId: entry.userRpcId, userRpcIds: entry.userRpcIds }
         }
         const info = entry.info
         const joined = entry.joined ?? []
