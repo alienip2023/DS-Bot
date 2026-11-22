@@ -15,6 +15,25 @@ export function refuseJoinedDispatch(bot) {
   return { ok: false, error: 'joined shadow cannot dispatch' }
 }
 
+// A control that cannot act on a node Bot says so instead of returning ok and changing only the
+// hub's shadow row. The sentence is also the client's i18n key (error-text / hostText).
+export const NODE_ONLY_REASON = 'This Bot runs on a node: change it there'
+// update-bot fields that only mean something on the machine the Bot runs on.
+const NODE_ONLY_UPDATE_KEYS = ['permission', 'private', 'type', 'worker', 'browserGrants']
+const NODE_ONLY_ENDPOINTS = new Set([
+  'bot-capability', 'browser-takeover', 'browser-give-back', 'browser-stop',
+  'computer-set-level', 'computer-revoke-app', 'computer-takeover', 'computer-handback', 'computer-allow-foreground',
+])
+
+// The refusal text for a client call that would only edit a node Bot's shadow row, or undefined.
+export function joinedRouteRefusal(rt, endpoint, body) {
+  const id = endpoint === 'update-bot' ? body?.id : NODE_ONLY_ENDPOINTS.has(endpoint) ? (body?.botId ?? body?.id) : undefined
+  if (typeof id !== 'string' || id === '') return undefined
+  if (!joinedShadow(rt.botOf?.(id))) return undefined
+  if (endpoint === 'update-bot') return NODE_ONLY_UPDATE_KEYS.some(key => body[key] !== undefined) ? NODE_ONLY_REASON : undefined
+  return NODE_ONLY_REASON
+}
+
 export function shadowId(nodeId, remoteBotId) {
   return `joined:${encodeURIComponent(nodeId)}:${encodeURIComponent(remoteBotId)}`
 }
