@@ -1116,11 +1116,25 @@ export function install(rt) {
     await rt.save()
   }
 
+  // The node must take bot/delete before the hub forgets a joined Bot. A Bot the node no longer
+  // lists (missingFromReport) or no longer has is already gone there; any other failure
+  // (offline, bridge down, timeout, refusal) refuses the delete so the row stays visible.
+  async function nodeDeleteFirst(bot) {
+    if (typeof rt.joinedDeleteBot !== 'function' || bot.worker?.missingFromReport === true) return
+    const result = await rt.joinedDeleteBot(bot).catch(error => ({ ok: false, error: error?.message ?? String(error) }))
+    if (result?.ok === true || /unknown bot|not.?found/i.test(String(result?.error ?? ''))) return
+    rt.warn?.('ds-bot: node delete for joined Bot %s failed: %s', bot.id, result?.error ?? 'unknown')
+    throw codedError('bot/refused', `${bot.name} was not deleted: the node did not confirm it (${result?.error ?? 'no answer'}). Delete it again when the node is online`)
+  }
+
   async function deleteBot(id) {
     const bot = liveBot(id)
     if (bot === undefined) throw new Error('Unknown Bot')
     if (rt.isMain(id)) throw new Error('A Main Bot cannot be deleted; remove its Main Bot role first')
     if (bot.origin === 'peer') throw codedError('E_SHADOW_READONLY', 'This Bot belongs to another machine and is read-only')
+    // A node Bot lives on its node: deleting only the hub's row would leave it running there
+    // while the hub forgets it. The node deletes first; no answer means the Bot stays.
+    if (bot.origin === 'joined') await nodeDeleteFirst(bot)
     deleting.add(id)
     try {
       for (const hook of botDeleteHooks) await hook(id)
@@ -1153,17 +1167,7 @@ export function install(rt) {
       if (bot.origin === 'joined') {
         if (!Array.isArray(state.deletedJoinedIds)) state.deletedJoinedIds = []
         if (!state.deletedJoinedIds.includes(id)) state.deletedJoinedIds.push(id)
-        // Best-effort: notify the node to delete its local Bot; failures are logged but do not
-        // block the host-side delete (the tombstone in deletedJoinedIds prevents re-import).
-        // Pass the captured bot object (not the id) — by this point state.bots[id] is already
-        // gone, so rt.botOf(id) would return undefined.
-        if (typeof rt.joinedDeleteBot === 'function') {
-          rt.joinedDeleteBot(bot).then((result) => {
-            if (!result?.ok) rt.warn?.('ds-bot: node delete for joined Bot %s failed: %s', id, result?.error ?? 'unknown')
-          }).catch((err) => {
-            rt.warn?.('ds-bot: node delete for joined Bot %s threw: %s', id, err?.message ?? String(err))
-          })
-        }
+        // The node already deleted its Bot (nodeDeleteFirst); the tombstone keeps a late roster report from re-importing it.
       }
       // The shared capability list is the user's and keeps its items; only a
       // still-unapproved local MCP this Bot alone asked for leaves with it.
