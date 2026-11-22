@@ -16,7 +16,7 @@ test('capabilities: known, missing and unknown', () => {
   assert.equal(nodeCapsOf(rtWith(undefined), 'n1'), undefined)
   assert.equal(nodeCapsOf({ ctx: { get: () => { throw new Error('no registry') } } }, 'n1'), undefined)
   assert.deepEqual(nodeMissing(rtWith(ALL), bot), [])
-  assert.deepEqual(nodeMissing(rtWith(['bot-turn-mode/1']), bot), ['actions', 'cards'])
+  assert.deepEqual(nodeMissing(rtWith(['bot-turn-mode/1']), bot), ['actions', 'cards', 'trace'])
   assert.deepEqual(nodeMissing(rtWith(undefined), bot), [], 'unknown is not a reason to hold anything back')
   assert.equal(nodeCan(rtWith(undefined), bot, 'steer'), true)
   assert.equal(nodeCan(rtWith([]), bot, 'steer'), false)
@@ -24,7 +24,8 @@ test('capabilities: known, missing and unknown', () => {
 })
 
 test('the Bot list says which node needs an update, only for a node that is up and behind', () => {
-  assert.deepEqual(compatOf(rtWith(['bot-turn-mode/1']), bot), { nodeCompat: ['actions', 'cards'] })
+  assert.deepEqual(compatOf(rtWith(['bot-turn-mode/1']), bot), { nodeCompat: ['actions', 'cards', 'trace'] })
+  assert.deepEqual(compatOf(rtWith(ALL.filter(cap => cap !== 'bot-trace/1')), bot), { nodeCompat: ['trace'] }, 'a 0.4.20 node: everything but the thinking and tool steps')
   assert.deepEqual(compatOf(rtWith(ALL), bot), {})
   assert.deepEqual(compatOf(rtWith([]), { ...bot, worker: { ...bot.worker, online: false } }), {}, 'an offline node is just offline')
   assert.deepEqual(compatOf(rtWith([]), { id: 'local', name: 'Local' }), {}, 'a local Bot is never behind')

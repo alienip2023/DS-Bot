@@ -88,7 +88,7 @@ export function markJoinedMirrorPending(rt, mirror, text) {
     return
   }
   try {
-    mirrorTurnPending(mirror.session, { turn: mirror.turn, text })
+    mirrorTurnPending(mirror.session, { turn: mirror.turn, step: mirror.sink?.step() ?? 1, text })
   } catch (error) {
     rt.warn?.('ds-bot: a pending node turn for %s was not marked: %s', mirror.botId, error?.message ?? error)
   }
@@ -108,12 +108,15 @@ export function closeJoinedMirror(rt, mirror, { text, seq, error, stopped } = {}
   const writerId = mirror.writerId ?? mirror.botId
   const writer = writerOf(rt, writerId)
   try {
+    // The node's thinking and tool steps (bot/trace) are closed first: `trace` is where the closing message goes.
+    const trace = mirror.sink?.close() ?? { step: 1 }
     if (stopped === true) {
-      mirrorTurnAbort(mirror.session, { turn: mirror.turn, step: 1, closedTurns: mirror.state?.closedTurns })
+      mirrorTurnAbort(mirror.session, { turn: mirror.turn, step: trace.step, reasoning: trace.reasoning, closedTurns: mirror.state?.closedTurns })
     } else if (error) {
       mirrorTurnFail(mirror.session, {
         turn: mirror.turn,
-        step: 1,
+        step: trace.step,
+        reasoning: trace.reasoning,
         code: error.code,
         message: error.message,
         closedTurns: mirror.state?.closedTurns,
@@ -121,7 +124,8 @@ export function closeJoinedMirror(rt, mirror, { text, seq, error, stopped } = {}
     } else {
       mirrorTurnFinish(mirror.session, {
         turn: mirror.turn,
-        step: 1,
+        step: trace.step,
+        reasoning: trace.reasoning,
         botText: text ?? '',
         botId: mirror.botId,
         nodeSeq: seq,
@@ -144,14 +148,17 @@ function writeQueued(rt, item) {
   mirrorTurnStart(item.session, { turn, step: 1, userText: item.text ?? '', rpcId: item.rpcId })
   if (item.pendingText) mirrorTurnPending(item.session, { turn, text: item.pendingText })
   const outcome = item.outcome ?? {}
+  // What the node showed of its work while this exchange waited is written now, ahead of the closing message.
+  const trace = item.sink?.bindAndClose({ session: item.session, turn, step: 1, closedTurns: item.state?.closedTurns }) ?? { step: 1 }
   if (outcome.stopped === true) {
-    mirrorTurnAbort(item.session, { turn, step: 1, closedTurns: item.state?.closedTurns })
+    mirrorTurnAbort(item.session, { turn, step: trace.step, reasoning: trace.reasoning, closedTurns: item.state?.closedTurns })
     return
   }
   if (outcome.error) {
     mirrorTurnFail(item.session, {
       turn,
-      step: 1,
+      step: trace.step,
+      reasoning: trace.reasoning,
       code: outcome.error.code,
       message: outcome.error.message,
       closedTurns: item.state?.closedTurns,
@@ -160,7 +167,8 @@ function writeQueued(rt, item) {
   }
   mirrorTurnFinish(item.session, {
     turn,
-    step: 1,
+    step: trace.step,
+    reasoning: trace.reasoning,
     botText: outcome.text ?? '',
     botId: item.botId,
     nodeSeq: outcome.seq,

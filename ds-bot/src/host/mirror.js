@@ -137,11 +137,15 @@ export function mirrorTurnStart(session, { turn, step = 1, userText, rpcId } = {
   }
 }
 
-function appendAssistant(session, turn, step, text, usage) {
+// `reasoning` is what the node Bot thought before this message (bot/trace): a reasoning block ahead of the text,
+// the same content a local model step has, which is what the page folds into its "思考过程" row.
+function appendAssistant(session, turn, step, text, usage, reasoning) {
+  const content = typeof reasoning === 'string' && reasoning.trim() !== '' ? [{ type: 'reasoning', text: reasoning }] : []
+  content.push({ type: 'text', text: String(text ?? '') })
   session.append('assistant/message', {
     turn,
     step,
-    message: createAssistantMessage({ content: [{ type: 'text', text: String(text ?? '') }], source: mirrorSource }),
+    message: createAssistantMessage({ content, source: mirrorSource }),
     stream: [],   // required by dsh-session assertAssistantSettlementShape
     ...(usage ?? {}),
   }, { surfaceOp: 'append' })
@@ -157,7 +161,7 @@ export function mirrorTurnPending(session, { turn, step = 1, text } = {}) {
  * ((botId,nodeSeq) in seenKeys/closedKeys) still closes the turn — as aborted, without a
  * second answer. `closedTurns` guarantees exactly one turn/end per Start.
  */
-export function mirrorTurnFinish(session, { turn, step = 1, botText, botId, nodeSeq, seenKeys, closedKeys, seenSteps, closedTurns, usage } = {}) {
+export function mirrorTurnFinish(session, { turn, step = 1, botText, botId, nodeSeq, seenKeys, closedKeys, seenSteps, closedTurns, usage, reasoning } = {}) {
   if (closedTurns instanceof Set && closedTurns.has(turn)) return { skipped: true, reason: 'already-closed:turn' }
   const nodeKey = (botId != null && nodeSeq != null && seenKeys instanceof Set) ? String(botId) + ':' + String(nodeSeq) : null
   const duplicate = nodeKey !== null && (seenKeys.has(nodeKey) || (closedKeys instanceof Set && closedKeys.has(nodeKey)))
@@ -168,7 +172,7 @@ export function mirrorTurnFinish(session, { turn, step = 1, botText, botId, node
     return { skipped: true, reason: 'already-written:nodeSeq' }
   }
   try {
-    appendAssistant(session, turn, step, botText, usage)
+    appendAssistant(session, turn, step, botText, usage, reasoning)
     session.append('step/end', { turn, step })
     session.append('turn/end', { turn, reason: turnEnd.completed() })
   } catch (err) {
@@ -189,10 +193,10 @@ export function mirrorTurnFinish(session, { turn, step = 1, botText, botId, node
  * turn/end {kind:'error', error:{message, code}}, so the turn never stays open.
  * `visible:false` only closes (used when the write itself failed).
  */
-export function mirrorTurnFail(session, { turn, step = 1, code, message, visible = true, closedTurns } = {}) {
+export function mirrorTurnFail(session, { turn, step = 1, code, message, visible = true, closedTurns, reasoning } = {}) {
   if (closedTurns instanceof Set && closedTurns.has(turn)) return { skipped: true, reason: 'already-closed:turn' }
   const text = String(message ?? 'unknown')
-  if (visible) { try { appendAssistant(session, turn, step, `⚠ 无法送达节点：${text}`) } catch {} }
+  if (visible) { try { appendAssistant(session, turn, step, `⚠ 无法送达节点：${text}`, undefined, reasoning) } catch {} }
   try { session.append('step/end', { turn, step }) } catch {}
   try { session.append('turn/end', { turn, reason: turnEnd.error(text, code) }) } catch {}
   if (closedTurns instanceof Set) closedTurns.add(turn)
@@ -207,9 +211,9 @@ export const STOPPED_TEXT = '已停止等待节点'
  * "⏹ 已停止等待节点（…）", step/end, turn/end {kind:'aborted', reason:{kind:'user'}}. `closedTurns` keeps it to one
  * turn/end per Start, whichever of Finish / Fail / Abort comes first.
  */
-export function mirrorTurnAbort(session, { turn, step = 1, closedTurns } = {}) {
+export function mirrorTurnAbort(session, { turn, step = 1, closedTurns, reasoning } = {}) {
   if (closedTurns instanceof Set && closedTurns.has(turn)) return { skipped: true, reason: 'already-closed:turn' }
-  try { appendAssistant(session, turn, step, `⏹ ${STOPPED_TEXT}（节点之后若回复，会补在这里）`) } catch {}
+  try { appendAssistant(session, turn, step, `⏹ ${STOPPED_TEXT}（节点之后若回复，会补在这里）`, undefined, reasoning) } catch {}
   try { session.append('step/end', { turn, step }) } catch {}
   try { session.append('turn/end', { turn, reason: turnEnd.stopped() }) } catch {}
   if (closedTurns instanceof Set) closedTurns.add(turn)
