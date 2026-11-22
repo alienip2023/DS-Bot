@@ -79,13 +79,13 @@ export function reportableBots(bots, taskViewOf, cardsOf) {
 
 // The cards a node Bot is waiting on, as the hub keeps them: plain strings, small, nothing else.
 export function cardSummaryOf(cards) {
-  return (Array.isArray(cards) ? cards : []).slice(0, 16).flatMap((card) => {
+  return (Array.isArray(cards) ? cards : []).slice(0, 8).flatMap((card) => {
     if (!card || typeof card.id !== 'string' || card.id === '') return []
     return [{
       id: card.id.slice(0, 200),
       kind: typeof card.kind === 'string' ? card.kind.slice(0, 32) : 'other',
       title: String(card.title ?? '').slice(0, 120),
-      body: String(card.body ?? '').slice(0, 4000),
+      body: String(card.body ?? '').slice(0, 2000),
       options: (Array.isArray(card.options) ? card.options : []).slice(0, 8)
         .filter(option => typeof option?.id === 'string' && option.id !== '').map(option => ({ id: option.id.slice(0, 64), label: String(option.label ?? option.id).slice(0, 60) })),
       input: card.input === true,

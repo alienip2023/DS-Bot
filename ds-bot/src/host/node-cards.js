@@ -12,7 +12,7 @@ import { randomUUID } from 'node:crypto'
 import { clampNodeTime, joinedShadow } from './roster-join.js'
 import { nodeCan, refusalFor } from './node-compat.js'
 
-const BODY_MAX = 3800
+const BODY_MAX = 1900
 const clip = (text, max) => String(text ?? '').slice(0, max)
 
 const APPROVAL = { allow: '允许', reject: '拒绝' }

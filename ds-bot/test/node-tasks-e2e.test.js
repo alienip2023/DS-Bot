@@ -15,6 +15,7 @@ const candidates = [process.env.REMOTE_AGENT_REPO, resolve(PLUGIN, '../../dsh-ai
 const repo = candidates.find(dir => existsSync(join(dir, 'lib/roster-report.js')))
 const skip = repo === undefined ? 'AC repo not found (set REMOTE_AGENT_REPO)' : false
 
+const STARTED = Date.now() - 60_000   // a believable time: the hub replaces an absurd one (a skewed node clock)
 const load = async (file) => import(pathToFileURL(join(repo, 'lib', file)).href)
 
 function hubRegistry(withIngest, nodeId) {
@@ -40,7 +41,7 @@ test('running tasks of a node Bot reach the hub row through the real AC roster p
   const nodeBots = { k1: { id: 'k1', name: 'Worker', role: 'dev' }, k2: { id: 'k2', name: 'Idle', role: '' } }
   const views = {
     k1: [
-      { id: 'task-1', title: 'Build the site', status: 'running', startedAt: 111, sessionId: 'session-secret' },
+      { id: 'task-1', title: 'Build the site', status: 'running', startedAt: STARTED, sessionId: 'session-secret' },
       { id: 'task-2', title: 'Old', status: 'completed', startedAt: 1, endedAt: 2 },
     ],
     k2: [],
@@ -54,7 +55,7 @@ test('running tasks of a node Bot reach the hub row through the real AC roster p
   const rows = Object.values(hubState.bots)
   const busy = rows.find(row => row.worker.remoteBotId === 'k1')
   const idle = rows.find(row => row.worker.remoteBotId === 'k2')
-  assert.deepEqual(busy.nodeTasks, [{ id: 'task-1', title: 'Build the site', status: 'running', startedAt: 111 }])
+  assert.deepEqual(busy.nodeTasks, [{ id: 'task-1', title: 'Build the site', status: 'running', startedAt: STARTED }])
   assert.deepEqual(idle.nodeTasks ?? [], [])
 
   // the task ends: the next report clears it
