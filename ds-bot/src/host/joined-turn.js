@@ -8,6 +8,8 @@ import {
 } from './mirror.js'
 import { classify } from './msg-classes.js'
 import { beginJoinedMirror, closeJoinedMirror, deferMirrorWrite, markJoinedMirrorPending, mirrorTurnOpen } from './joined-mirror-writer.js'
+import { createTraceFeed } from './node-trace.js'
+import { noteTraceGap, openTraceSink } from './hub-trace.js'
 
 export const BRIDGE_DOWN_TEXT = '副机仍在执行，桥已断'
 // The link dropped after the node had the work: that is not a failure. The node keeps working and sends
@@ -388,6 +390,13 @@ export async function handleJoinedTurn(rt, msg = {}) {
     lateWindowMs,
     onTimeout: () => markJoinedMirrorPending(rt, mirror, PENDING_TURN_TEXT),
   })
+  // The node's thinking and tool steps (bot/trace) go into this exchange's turn: now if it is open on the page, or
+  // when it is written if the exchange waits behind another turn (the sink keeps the steps until then).
+  const sink = mirror === undefined ? undefined : openTraceSink(rt, {
+    bot: to, exchangeId: xid, nodeId,
+    ...(mirror.queued ? {} : { binding: { session: mirror.session, turn: mirror.turn, step: 1, closedTurns: mirror.state?.closedTurns } }),
+  })
+  if (sink !== undefined) { if (mirror.queued) mirror.item.sink = sink; else mirror.sink = sink }
   let sent = false
   try {
     sent = registry.send(nodeId, 'bot/turn', {
@@ -423,6 +432,7 @@ export async function handleJoinedTurn(rt, msg = {}) {
       return { ok: false, error }
     }
     closeMirrorTurn(rt, mirror, to.id, { text: result.text, seq: result.seq })
+    if (mirror !== undefined) noteTraceGap(rt, to, sink, { session: mirror.session ?? mirror.item?.session, state: mirror.state ?? mirror.item?.state })
     await replyToSender(rt, { fromId, toId, exchangeId: xid, work, roomId, text: result.text ?? '' })
     return xid
   }
@@ -529,7 +539,20 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
     }
     pendingBySession.delete(sessionId)
   }
-  return async function acceptJoinedTurn(turn) {
+  // bot/trace (AC 0.4.21): the node's thinking and tool steps of an exchange, read from the Bot's own Session
+  // while it runs and handed to AC (live through control.trace, whole in the result's `trace`). See node-trace.js.
+  const feed = createTraceFeed(rt)
+  return async function acceptJoinedTurn(turn, control) {
+    const tracking = {}
+    let result
+    try {
+      result = await acceptTurn(turn, control, tracking)
+    } finally {
+      tracking.final = tracking.tracer?.finish()
+    }
+    return tracking.final === undefined ? result : { ...result, trace: tracking.final }
+  }
+  async function acceptTurn(turn, control, tracking) {
     const remoteBotId = trimmed(turn?.remoteBotId)
     const exchangeId = trimmed(turn?.exchangeId)
     const roomId = trimmed(turn?.roomId)
@@ -559,6 +582,8 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
       // when the turn finishes, resolving `done`.
       if (typeof rt.sendUser !== 'function') throw new Error('sendUser unavailable')
       const sessionIdForTurn = roomId ? await groupSessionFor(bot, roomId, trimmed(turn.roomName)) : rt.chatOf?.(bot.id)
+      // Before anything is sent: the exchange's own user/message is what opens the trace.
+      tracking.tracer = feed.start({ sessionId: sessionIdForTurn, exchangeId, control })
       const send = () => {
         const name = typeof turn.senderName === 'string' ? turn.senderName.trim() : ''
         const header = name === '' ? '' : '[Message from ' + name + ']'
