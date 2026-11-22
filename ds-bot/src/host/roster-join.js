@@ -505,6 +505,7 @@ export function install(rt) {
     if (typeof report?.nodeId === 'string' && report.nodeId.trim() !== '') {
       void applySharedSkills(rt, `node:${report.nodeId}`, report.skills, { isActive: () => !stopped }).catch(error => rt.warn?.('ds-bot: skill roster not applied: %s', error?.message))
       void rt.save?.({ immediate: changed })?.catch(error => rt.warn?.('ds-bot: joined roster not saved: %s', error))
+      void Promise.resolve(rt.noticeNodeCards?.(report.nodeId)).catch(() => {})
     }
     for (const bot of Object.values(rt.state.bots ?? {})) {
       if (bot?.origin === 'joined' && (!settled.has(bot.id) || bot.mirrorHistory)) pending.add(bot.id)

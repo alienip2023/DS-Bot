@@ -13,6 +13,8 @@ import { clampNodeTime, joinedShadow } from './roster-join.js'
 import { nodeCan, refusalFor } from './node-compat.js'
 import { markHubAsked } from './joined-turn.js'
 import { viewCardText } from './parts.js'
+import { writeNodeReport } from './executor.js'
+import { ensureMirrorSession, mirrorStateOf } from './mirror.js'
 import { validateViewAnswer } from 'deep-view/core'
 
 const BODY_MAX = 1900
@@ -387,4 +389,41 @@ export function install(rt) {
   // AC's node plugin finds the receiver under this name (an older AC never asks).
   try { rt.ctx?.provide?.('remote-agent:bot-action', receiver) } catch { /* registry plugin may be absent */ }
   installHub(rt)
+  rt.noticeNodeCards = nodeId => noticeUnanswerableCards(rt, nodeId)
+}
+
+// ── Cards the hub cannot answer: say so on the page, once each ───────────────────────────────────
+
+const NOTICE_MARK = '⚠ 节点在等你'
+const NOTICE_KEPT = 40
+const answerableHere = card => card.kind === 'approval' || card.kind === 'question' || card.kind === 'skill' || card.kind === 'rule'
+  || (card.kind === 'view' && typeof card.data === 'string')
+
+/**
+ * A card that cannot be answered from here (a secret request, a form too large to ship, a kind this
+ * hub does not know) would sit on the node unseen. It is written once into the Bot's conversation, so
+ * the user learns the node is waiting; the ids already told are kept on the Bot's row so a restart
+ * does not tell them again.
+ */
+export async function noticeUnanswerableCards(rt, nodeId) {
+  for (const bot of remoteBots(rt)) {
+    if (bot.worker?.nodeId !== nodeId) continue
+    const told = new Set(bot.noticedCardIds ?? [])
+    const fresh = (bot.nodeCards ?? []).filter(card => !answerableHere(card) && !told.has(card.id))
+    if (fresh.length === 0) continue
+    bot.noticedCardIds = [...told, ...fresh.map(card => card.id)].slice(-NOTICE_KEPT)
+    try {
+      const session = await ensureMirrorSession(rt, bot)
+      for (const card of fresh) {
+        const where = card.kind === 'secret' ? '' : '\n（这张卡太大或类型不支持，主控没法回答，请在节点上处理。）'
+        writeNodeReport({
+          rt, bot, session, state: mirrorStateOf(rt, bot.id, session), mark: NOTICE_MARK,
+          text: `${card.title}${card.body ? `\n${card.body}` : ''}${where}`,
+        })
+      }
+      await rt.save?.()
+    } catch (error) {
+      rt.warn?.('ds-bot: a node card notice was not written: %s', error?.message ?? error)
+    }
+  }
 }

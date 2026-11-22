@@ -110,3 +110,31 @@ test('the node applies the hub\'s form answer; a stale or malformed one is refus
   const stale = await receive({ remoteBotId: 'k1', action: 'card-answer', params: { cardId: 'view:v1', text: JSON.stringify({ action: 'pick', values: {} }) } })
   assert.deepEqual(stale, { ok: false, error: 'card-stale' })
 })
+
+// ── what the hub cannot answer is still said on the page ────────────────────────────────────────
+
+import { noticeUnanswerableCards } from '../src/host/node-cards.js'
+import { makeWorld, types } from './joined-world.js'
+
+const settle = async () => { for (let i = 0; i < 8; i += 1) await new Promise(resolve => setImmediate(resolve)) }
+
+test('a secret request or an unsendable form is written once into the Bot\'s conversation', async () => {
+  const w = makeWorld({ tracker: true })
+  w.bot.worker.online = true
+  w.bot.nodeCards = [
+    { id: 'secret:s1', kind: 'secret', title: '需要密钥的值：GITHUB_TOKEN', body: '请在这台节点的 ds-bot 里处理这个请求', options: [], input: false, at: 1 },
+    { id: 'view:v9', kind: 'view', title: '大表单', body: 'a form', options: [], input: false, at: 2 },
+    { id: 'view:v1', kind: 'view', title: '能答的表单', body: '', options: [], input: false, at: 3, data: '{}' },
+  ]
+  await noticeUnanswerableCards(w.rt, w.bot.worker.nodeId)
+  await settle()
+  const log = JSON.stringify(w.sessionOf(w.bot.sessionId).log)
+  assert.ok(log.includes('GITHUB_TOKEN'), 'the secret request is on the page')
+  assert.ok(log.includes('大表单') && log.includes('节点在等你'))
+  assert.equal(log.includes('能答的表单'), false, 'an answerable form is drawn as a form, not announced')
+  const before = types(w.sessionOf(w.bot.sessionId)).length
+  await noticeUnanswerableCards(w.rt, w.bot.worker.nodeId)
+  await settle()
+  assert.equal(types(w.sessionOf(w.bot.sessionId)).length, before, 'the same cards are not announced twice')
+  assert.deepEqual(w.bot.noticedCardIds, ['secret:s1', 'view:v9'])
+})
