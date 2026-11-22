@@ -19,10 +19,58 @@ export const STEER_ASK_CHOICES = Object.freeze({
   queue: '排队，等正在做的做完再做',
 })
 
+const NOTICE_ACK = '知道了'
+
 export function install(rt) {
   const { state } = rt
   /** card id → { sessionId, settle } for the cards waiting on an answer */
   const open = new Map()
+
+  // A card of ours that survived a restart has no waiter: nothing would carry its answer out, and
+  // while it sits in state.questions the Session cannot be asked again. Drop it.
+  const dropOrphans = () => {
+    let dropped = false
+    for (const [sessionId, card] of Object.entries(state.questions ?? {})) {
+      if (typeof card?.id !== 'string' || !card.id.startsWith('ask-') || open.has(card.id)) continue
+      delete state.questions[sessionId]
+      dropped = true
+    }
+    // A notice the user closed another way no longer needs its entry.
+    for (const [id, entry] of open) if (entry.notice === true && state.questions?.[entry.sessionId]?.id !== id) open.delete(id)
+    if (dropped) void rt.save?.().catch(() => {})
+  }
+  const originalLoad = rt.load?.bind(rt)
+  if (typeof originalLoad === 'function') {
+    let ready
+    rt.load = () => (ready ??= (async () => { await originalLoad(); dropOrphans() })())
+  }
+
+  // The message was asked about and then did not go: the user must see that, not a card that
+  // just vanishes. It is the page's ordinary question card with one button, read once.
+  const failedNotice = (sessionId, text, error) => {
+    if (state.questions[sessionId] !== undefined) return
+    const reason = oneLine(error?.message ?? error, 120)
+    const card = {
+      id: `ask-${randomUUID()}`,
+      question: '这条消息没有送出',
+      detail: oneLine(`${reason}：${text}`, 200),
+      options: [{ label: NOTICE_ACK }],
+      multiSelect: false,
+      askedAt: Date.now(),
+    }
+    state.questions[sessionId] = card
+    open.set(card.id, {
+      sessionId, choices: [], notice: true,
+      settle: () => {
+        if (!open.delete(card.id)) return false
+        if (state.questions[sessionId]?.id === card.id) delete state.questions[sessionId]
+        void rt.save?.().catch(() => {})
+        return true
+      },
+    })
+    void rt.save?.().catch(() => {})
+    rt.cardShown?.(sessionId, 'question', card.question)
+  }
 
   /**
    * Put the question to the user. `choices` says which of the four apply (a node Bot has no
@@ -31,6 +79,7 @@ export function install(rt) {
    * on that Session) — the caller then does what a plain steer does.
    */
   rt.askSteer = ({ sessionId, text, choices = Object.keys(STEER_ASK_CHOICES), apply }) => {
+    dropOrphans()
     if (typeof sessionId !== 'string' || sessionId === '' || state.questions[sessionId] !== undefined) return false
     const card = {
       id: `ask-${randomUUID()}`,
@@ -47,7 +96,10 @@ export function install(rt) {
       clearTimeout(timer)
       if (state.questions[sessionId]?.id === card.id) delete state.questions[sessionId]
       void rt.save?.().catch(() => {})
-      Promise.resolve().then(() => apply(choice)).catch(error => rt.warn?.('ds-bot: a steer sent after asking did not go: %s', error?.message ?? error))
+      Promise.resolve().then(() => apply(choice)).catch((error) => {
+        rt.warn?.('ds-bot: a steer sent after asking did not go: %s', error?.message ?? error)
+        failedNotice(sessionId, text, error)
+      })
       return true
     }
     open.set(card.id, { sessionId, choices, settle })
@@ -68,6 +120,7 @@ export function install(rt) {
     rt.answerQuestion = async function (sessionRef, questionId, answer, ...rest) {
       const entry = open.get(String(questionId ?? ''))
       if (entry === undefined) return answerQuestion.call(this, sessionRef, questionId, answer, ...rest)
+      if (entry.notice === true) { entry.settle(); return true }
       const label = Array.isArray(answer?.selected) ? answer.selected[0] : undefined
       const choice = entry.choices.find(id => STEER_ASK_CHOICES[id] === label)
       if (choice === undefined) throw Object.assign(new Error('Nothing to send'), { code: 'bot/invalid' })
