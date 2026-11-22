@@ -126,7 +126,7 @@ test('a page retry with the same requestId dispatches once while results are pen
   assert.equal(w.frames.length, 1)
 })
 
-test('offline after the soft deadline fails once; results from another node are ignored', async t => {
+test('offline after the soft deadline fails once and keeps the answer that follows; results from another node are ignored', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const w = pageWorld(t)
   await w.send()
@@ -139,11 +139,15 @@ test('offline after the soft deadline fails once; results from another node are 
   w.emitter.emit('nodeOffline', { nodeId: 'n1' })
   await w.idle()
   assert.equal(failures(session).length, 1)
+  // The link dropped, not the work: the node's answer, sent once it is back, is still written (a late reply).
   w.reply(0, { text: 'after disconnect' })
   w.emitter.emit('nodeOffline', { nodeId: 'n1' })
   await drain()
-  assert.equal(failures(session).length, 1)
-  assert.doesNotMatch(JSON.stringify(session.log), /after disconnect/)
+  assert.equal(failures(session).length, 1, 'the turn failed once')
+  assert.match(JSON.stringify(session.log), /节点迟到回复[^"]*after disconnect/, 'and the answer that came after the link was lost is on the page')
+  w.reply(0, { text: 'after disconnect', seq: 0 })
+  await drain()
+  assert.equal((JSON.stringify(session.log).match(/after disconnect/g) ?? []).length, 1, 'written once')
 })
 
 test('late window expiry is still pending and stoppable, with no invented bridge loss', async t => {

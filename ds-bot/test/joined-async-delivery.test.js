@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import { Session } from '@deepseek-ai/dsh-session'
 import { install as installDelivery } from '../src/host/delivery.js'
 import { install as installQueue } from '../src/host/thread-queue.js'
-import { handleJoinedTurn, createBotTurnReceiver, BRIDGE_DOWN_TEXT, JOINED_TURN_TIMEOUT_MS } from '../src/host/joined-turn.js'
+import { handleJoinedTurn, createBotTurnReceiver, BRIDGE_DOWN_TEXT, LINK_LOST_TEXT, JOINED_TURN_TIMEOUT_MS } from '../src/host/joined-turn.js'
 import { install as installWorkerBridge } from '../src/host/worker-bridge.js'
 import { fakeContext } from './fake-ctx.js'
 
@@ -149,7 +149,7 @@ test('nodeOffline after a deferred timeout reports a real bridge loss', async t 
   assert.equal(w.replies.length, 0)
   w.registry.emit('nodeOffline', { nodeId: 'n1' })
   await drain()
-  assert.deepEqual(w.replies.map(msg => msg.text), [BRIDGE_DOWN_TEXT])
+  assert.deepEqual(w.replies.map(msg => msg.text), [LINK_LOST_TEXT])
 })
 
 test('expiry of the late window still leaves real disconnects observable', async t => {
@@ -165,7 +165,7 @@ test('expiry of the late window still leaves real disconnects observable', async
   assert.equal(w.registry.listenerCount('botTurnResult'), 0, 'the late result window is bounded')
   w.registry.emit('nodeOffline', { nodeId: 'n1' })
   await drain()
-  assert.deepEqual(w.replies.map(msg => msg.text), [BRIDGE_DOWN_TEXT])
+  assert.deepEqual(w.replies.map(msg => msg.text), [LINK_LOST_TEXT])
   assert.equal(w.session.log.filter(e => e.type === 'turn/end').length, 1)
 })
 
@@ -215,4 +215,31 @@ test('the node receiver can return a real result after the hub soft timeout', as
   await drain()
   assert.equal(rt.settleJoinedTurn('long-turn', 'long work finished'), true)
   assert.deepEqual(await pending, { ok: true, exchangeId: 'long-turn', text: 'long work finished' })
+})
+
+test('the link drops while the node works: the sender is told it is not a failure, and the answer that comes after is delivered to it', async t => {
+  const w = joinedWorld(t)
+  await w.send({ joinedAsync: true })
+  assert.equal(w.frames.length, 1, 'the node had the work')
+  w.registry.emit('nodeOffline', { nodeId: 'n1' })
+  await drain()
+  assert.deepEqual(w.replies.map(msg => msg.text), [LINK_LOST_TEXT])
+  assert.match(LINK_LOST_TEXT, /不是失败/)
+  assert.match(LINK_LOST_TEXT, /不要取消它的任务/)
+  assert.equal(w.registry.listenerCount('botTurnResult'), 1, 'still waiting for the answer')
+  // the node is back and sends what it finished while the link was down
+  w.reply(0, 'finished while the link was down')
+  await drain()
+  assert.equal(w.replies.length, 2)
+  assert.match(w.replies[1].text, /连接恢复后，节点送回了结果[^]*finished while the link was down/)
+  assert.equal(w.registry.listenerCount('botTurnResult'), 0, 'one answer, then done')
+  assert.match(JSON.stringify(w.session.log), /节点迟到回复[^"]*finished while the link was down/, 'and it is on the Bot\'s page')
+})
+
+test('a link loss before the node had the work is a failure and nothing is waited for', async t => {
+  const w = joinedWorld(t, { sendResult: false })
+  const result = await w.send()
+  assert.deepEqual(result, { ok: false, error: 'bridge-down' })
+  assert.equal(w.registry.listenerCount('botTurnResult'), 0)
+  assert.equal(w.replies[0].text, BRIDGE_DOWN_TEXT, 'the short text: the work never left')
 })

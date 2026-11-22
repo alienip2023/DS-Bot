@@ -88,6 +88,7 @@ test('apply registers listeners and effects in a fixed order', (t) => {
     'on subagent/end',
     'on tools/result',
     'on session/event',
+    'on session/event',
     'effect ds-bot: lost hand-offs',
     'effect ds-bot: visible delivery turns',
     'effect ds-bot: remote worker waits',

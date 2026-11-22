@@ -11,9 +11,10 @@
 //   (mirrorTurn skips idempotency when nodeSeq is null). This is a known S2 obligation.
 
 import { randomUUID } from 'node:crypto'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { joinedShadow } from './roster-join.js'
-import { listenBotTurnResult, JOINED_TURN_TIMEOUT_MS, JOINED_LATE_WINDOW_MS, PENDING_TURN_TEXT } from './joined-turn.js'
-import { mirrorTurn, allocateTurn, mirrorTurnStart, mirrorTurnFinish, mirrorTurnFail, mirrorTurnAbort, mirrorTurnPending, mirrorLateReply, TASK_RESULT_MARK } from './mirror.js'
+import { listenBotTurnResult, JOINED_TURN_TIMEOUT_MS, JOINED_LATE_WINDOW_MS, LINK_LOST_TEXT, PENDING_TURN_TEXT } from './joined-turn.js'
+import { mirrorTurn, allocateTurn, mirrorTurnStart, mirrorTurnFinish, mirrorTurnFail, mirrorTurnAbort, mirrorTurnPending, mirrorLateReply, TASK_RESULT_MARK, STEER_REPLY_MARK } from './mirror.js'
 import { drainJoinedMirror, mirrorTurnOpen } from './joined-mirror-writer.js'
 
 /**
@@ -346,6 +347,22 @@ export function flushLateReplies(rt, botId) {
   }
 }
 
+// What the page already shows for a node Bot: a result that comes again — a background task report
+// whose text is the answer a turn just delivered — is not shown twice.
+const REMEMBER_MS = 600_000
+export function rememberReply(rt, botId, text) {
+  const body = String(text ?? '').trim()
+  if (body === '') return
+  const book = (rt._shownReplies ??= new Map())
+  const list = (book.get(botId) ?? []).filter(item => Date.now() - item.at < REMEMBER_MS)
+  list.push({ text: body, at: Date.now() })
+  book.set(botId, list.slice(-12))
+}
+export function repliedAlready(rt, botId, text) {
+  const body = String(text ?? '').trim()
+  return body !== '' && (rt._shownReplies?.get(botId) ?? []).some(item => item.text === body && Date.now() - item.at < REMEMBER_MS)
+}
+
 /**
  * Start one turn that came from the Bot's page (S2-4 contract §2–§3).
  *
@@ -414,6 +431,8 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
   }
   announced = true
   rt.joinedRunning?.(bot, true)
+  // Open on the page: a steer sent meanwhile is written into this turn, in the order it happened.
+  Object.assign(claim, { turn, step, session })
 
   const fail = (err) => mirrorTurnFail(session, { turn, step, code: err?.code, message: failureText(err), closedTurns })
   const markPending = text => {
@@ -462,10 +481,15 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
           return { ok: false, aborted: true, turnId: prepared.turnId }
         }
         over = true
-        fail(err)
+        // The link dropped after the node had the turn (its answer comes when it is back): say so, and
+        // keep listening for that answer — it is written as a late reply when it arrives.
+        const linkLost = err?.code === 'E_OFFLINE' && err?.message === 'bridge-down'
+        if (linkLost) armLateReply({ rt, bot, session, state, prepared })
+        mirrorTurnFail(session, { turn, step, code: err?.code, message: linkLost ? LINK_LOST_TEXT : failureText(err), closedTurns })
         throw err
       }
       over = true
+      rememberReply(rt, bot.id, result.text)
       const mirrorResult = mirrorTurnFinish(session, { turn, step, botText: result.text, botId: bot.id, nodeSeq: result.seq, seenKeys, closedKeys, seenSteps, closedTurns })
       // Notify group round waiters that the joined bot's turn has produced output.
       // turns.js does this via session/event which never fires for mirror sessions.
@@ -525,6 +549,10 @@ export function startSideTurn({ rt, bot, text, requestId, session, state = {}, t
   const record = { requestId, abort: undefined }
   let over = false
   let announced = false
+  // The page turn open right now (if any): the steer is written into it at once, where it happened.
+  const openTurn = rt.joinedInFlight?.get(bot.id)
+  const hostTurn = openTurn?.session === session && Number.isInteger(openTurn?.turn) ? openTurn : undefined
+  let userWritten = false
 
   const writeWhenFree = (write) => {
     if (rt.joinedLateClosed === true) return
@@ -541,6 +569,17 @@ export function startSideTurn({ rt, bot, text, requestId, session, state = {}, t
     mirrorTurnStart(session, { turn, step: 1, userText: text, rpcId: requestId })
     finish(turn)
   })
+  // The answer lands in the turn that is still open on the page (right after the steer it answers);
+  // if that turn is over, it is a reply of its own (its question is already on the page).
+  const answerInline = (answer, mark) => {
+    if (!userWritten) return false
+    const stillOpen = rt.joinedInFlight?.get(bot.id) === hostTurn
+    if (stillOpen) {
+      try { mirrorTurnPending(session, { turn: hostTurn.turn, step: hostTurn.step, text: answer }); return true } catch { /* falls back below */ }
+    }
+    writeWhenFree(() => mirrorLateReply(session, { botText: answer, botId: bot.id, mark, closedTurns }))
+    return true
+  }
   const release = () => {
     sides.delete(record)
     if (sides.size === 0) rt.joinedSide.delete(bot.id)
@@ -554,12 +593,18 @@ export function startSideTurn({ rt, bot, text, requestId, session, state = {}, t
   rt.joinedSide.set(bot.id, sides)
   announced = true
   rt.joinedRunning?.(bot, true)
+  if (hostTurn !== undefined) {
+    try {
+      session.append('user/message', createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user', rpcId: requestId } }), { surfaceOp: 'append' })
+      userWritten = true
+    } catch (error) { rt.warn?.('ds-bot: a steer to %s was not shown on the page: %s', bot.id, error?.message ?? error) }
+  }
 
   record.abort = () => {
     if (over || prepared.received()) return false
     over = true
     prepared.stop()
-    writeTurn(turn => mirrorTurnAbort(session, { turn, step: 1, closedTurns }))
+    if (!userWritten) writeTurn(turn => mirrorTurnAbort(session, { turn, step: 1, closedTurns }))
     release()
     return true
   }
@@ -581,11 +626,12 @@ export function startSideTurn({ rt, bot, text, requestId, session, state = {}, t
       } catch (error) {
         if (error?.code === 'E_ABORTED') return { ok: false, aborted: true, turnId: prepared.turnId }
         over = true
-        writeTurn(turn => mirrorTurnFail(session, { turn, step: 1, code: error?.code, message: failureText(error), closedTurns }))
+        if (!answerInline(`⚠ 无法送达节点：${failureText(error)}`, STEER_REPLY_MARK)) writeTurn(turn => mirrorTurnFail(session, { turn, step: 1, code: error?.code, message: failureText(error), closedTurns }))
         throw error
       }
       over = true
-      writeTurn(turn => mirrorTurnFinish(session, { turn, step: 1, botText: result.text, botId: bot.id, nodeSeq: result.seq, seenKeys, closedKeys, seenSteps, closedTurns }))
+      rememberReply(rt, bot.id, result.text)
+      if (!answerInline(result.text, STEER_REPLY_MARK)) writeTurn(turn => mirrorTurnFinish(session, { turn, step: 1, botText: result.text, botId: bot.id, nodeSeq: result.seq, seenKeys, closedKeys, seenSteps, closedTurns }))
       return { ok: true, turnId: prepared.turnId }
     } finally {
       rt.joinedLate.delete(dispose)

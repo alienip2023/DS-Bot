@@ -21,6 +21,7 @@ import { validateViewAnswer } from 'deep-view/core'
 import { BACKGROUND_AFTER_MAX_SEC, COLORS, EXTRA_COLORS, HISTORY_TIMEOUT_MS, ROUTE, THREAD_TITLE_MAX } from './constants.js'
 import { mainThreadId, ownerOfSession, threadOf, threadsOfBot } from './bot-store.js'
 import { joinedShadow } from './roster-join.js'
+import { compatOf } from './node-compat.js'
 import { ensureMirrorSession, mirrorStateOf, hasPromptRequest, mirrorTurnPending } from './mirror.js'
 import { mirrorTurnOpen } from './joined-mirror-writer.js'
 import { startPageTurn } from './executor.js'
@@ -372,7 +373,7 @@ export function install(rt) {
       const botTasks = joinedShadow(bot) ? remoteTasksOf(bot, nodeTasks) : rt.taskViewOf?.(state.bots[bot.id]) ?? []
       return {
         ...bot, sessionId: own, parts: (peer ? [] : segments ?? []).map(segment => segment.sessionId),
-        ...(botTasks.length > 0 ? { tasks: botTasks } : {}),
+        ...(botTasks.length > 0 ? { tasks: botTasks } : {}), ...compatOf(rt, bot),
         ...(kickoff && !peer ? { waiting: true } : {}),
         // `engine` is the Bot's local-agent route, present only on abots.
         ...(rt.localAgentBadge?.(bot.model ?? bot.appliedModel) !== undefined ? { engine: rt.localAgentBadge(bot.model ?? bot.appliedModel) } : {}),

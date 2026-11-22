@@ -23,6 +23,7 @@ import { dropJoinedMirrorQueues, waitForJoinedMirror, mirrorTurnOpen } from './j
 import { installRunning } from './joined-running.js'
 import { wrapControllerMethod } from './controller-wrap.js'
 import { sendBotAction } from './node-cards.js'
+import { nodeCan } from './node-compat.js'
 
 const BUSY = '副机 Bot 正在回复上一条，请稍候再发'
 const NO_ATTACHMENTS = '副机 Bot 暂不支持附件，请改为文字发送'
@@ -144,7 +145,8 @@ export function install(rt) {
       // Steer: the message goes to the node now and joins the turn there (the node's Bot takes it at
       // its next step, in the same Session with its whole context). Queue: it waits here until the
       // turn in flight ends — queue means wait, on a node as on this host.
-      if (mode === 'steer' && rt.joinedConcurrent !== false) {
+      // A node without bot-turn-mode would queue a steer on its side anyway: hold it here, honestly as a queue.
+      if (mode === 'steer' && rt.joinedConcurrent !== false && nodeCan(rt, bot, 'steer')) {
         try {
           startSideTurn({ rt, bot, text, requestId: request.requestId, session, state: mirrorStateOf(rt, bot.id, session), tracker: rt.turnTracker, timeoutMs, mode: 'steer' })
           return { accepted: true }

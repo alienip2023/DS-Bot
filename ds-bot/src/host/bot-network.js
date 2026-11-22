@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { classify } from './msg-classes.js'
 import { joinedShadow } from './roster-join.js'
 import { ensureMirrorSession, mirrorStateOf } from './mirror.js'
-import { writeNodeReport } from './executor.js'
+import { writeNodeReport, repliedAlready } from './executor.js'
 // The hub publishes destinations; nodes keep the directory in remote-agent memory.
 const DIRECTORY_DELAY_MS = 1_000
 const REFRESH_MS = 60_000
@@ -174,6 +174,7 @@ export async function handleNodeReport(rt, payload) {
   if (!seen) { seen = new Set(); reports.set(rt, seen) }
   if (seen.has(payload.exchangeId)) return
   seen.add(payload.exchangeId)
+  if (repliedAlready(rt, bot.id, payload.text)) return   // the answer a turn just delivered: already on the page
   if (seen.size > 512) seen.delete(seen.values().next().value)
   const session = await ensureMirrorSession(rt, bot)
   writeNodeReport({ rt, bot, session, state: mirrorStateOf(rt, bot.id, session), text: payload.text })

@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { handleNodeMessage } from '../src/host/bot-network.js'
-import { reportTaskToHub } from '../src/host/joined-turn.js'
+import { createBotTurnReceiver, reportTaskToHub } from '../src/host/joined-turn.js'
 import { TASK_RESULT_MARK } from '../src/host/mirror.js'
 import { makeWorld, textRequest, types } from './joined-world.js'
 
@@ -60,4 +60,32 @@ test('a report for a Bot the hub does not know, or a plain reply at the cap, is 
   await handleNodeMessage(w.rt, report(w, { exchangeId: 'rep-2', to: { id: 'rb1', name: 'Joined', nodeId: 'n1' } }))
   assert.equal(w.sessionOf('mirror-1').log.length, 0)
   assert.equal(w.frames.length, 0)
+})
+
+test('a report whose words a turn just delivered is not sent, and not shown twice on the hub', async () => {
+  // node side: the answer already went to the hub as a turn's result
+  const sent = []
+  const rt = { hubAskedBots: new Set(['b1']), botNetwork: { nodeId: 'n1', send: payload => { sent.push(payload); return true } }, state: { bots: {} } }
+  const accept = createBotTurnReceiver(rt, { timeoutMs: 1000 })
+  rt.state.bots.b1 = { id: 'b1', name: 'Worker', type: 'local' }
+  rt.chatOf = () => 's1'
+  rt.sendUser = async () => {}
+  const done = accept({ remoteBotId: 'b1', exchangeId: 'e1', text: 'go' })
+  await ticks()
+  rt.settleJoinedTurn('e1', 'P1 2026-11-22T19:56:45Z')
+  await done
+  assert.equal(reportTaskToHub(rt, { id: 'b1', name: 'Worker' }, 'P1 2026-11-22T19:56:45Z'), false, 'same words, already delivered')
+  assert.equal(sent.length, 0)
+  assert.equal(reportTaskToHub(rt, { id: 'b1', name: 'Worker' }, 'something new'), true)
+
+  // hub side (an older node sends it anyway): the page already has those words
+  const w = makeWorld({ tracker: true })
+  await w.prompt(textRequest('go', 'req-1'))
+  w.reply(0, { text: 'P1 2026-11-22T19:56:45Z' })
+  await ticks()
+  await handleNodeMessage(w.rt, report(w, { exchangeId: 'rep-dup', text: 'P1 2026-11-22T19:56:45Z' }))
+  const texts = w.sessionOf('mirror-1').log.filter(event => event.type === 'assistant/message').map(event => event.data.message.content[0].text)
+  assert.equal(texts.filter(text => text.includes('P1 2026-11-22T19:56:45Z')).length, 1, 'shown once')
+  await handleNodeMessage(w.rt, report(w, { exchangeId: 'rep-new', text: 'a different result' }))
+  assert.ok(w.sessionOf('mirror-1').log.some(event => event.type === 'assistant/message' && event.data.message.content[0].text.startsWith(TASK_RESULT_MARK)))
 })

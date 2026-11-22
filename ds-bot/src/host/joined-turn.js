@@ -4,12 +4,15 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { joinedShadow, shadowId } from './roster-join.js'
 import {
-  ensureMirrorSession, hasPromptRequest, mirrorStateOf,
+  ensureMirrorSession, hasPromptRequest, mirrorLateReply, mirrorStateOf,
 } from './mirror.js'
 import { classify } from './msg-classes.js'
 import { beginJoinedMirror, closeJoinedMirror, markJoinedMirrorPending, mirrorTurnOpen } from './joined-mirror-writer.js'
 
 export const BRIDGE_DOWN_TEXT = '副机仍在执行，桥已断'
+// The link dropped after the node had the work: that is not a failure. The node keeps working and sends
+// the answer when it is back (ds-bot keeps listening for it), so the sender is told to wait, not to redo.
+export const LINK_LOST_TEXT = `${BRIDGE_DOWN_TEXT}。这不是失败：任务仍在节点上执行，连接恢复后结果会自动送回。请不要重复派发，也不要取消它的任务。`
 // What the sender is told when its exchange was settled by a stop, not by the node going away.
 export const STOPPED_TEXT = '已停止'
 export const PENDING_TURN_TEXT = 'Node is still running; its result will be delivered later.'
@@ -208,7 +211,7 @@ export function exposeBotStopReceiver(ctx, accept) {
 
 // The texts this module sends when a dispatch produced no answer. A reply row with any other
 // text is the node's answer, and a later failure must never take its place.
-const saysNoAnswer = text => text === BRIDGE_DOWN_TEXT || text === STOPPED_TEXT || String(text ?? '').startsWith('副机没有接上：')
+const saysNoAnswer = text => text === BRIDGE_DOWN_TEXT || text === LINK_LOST_TEXT || text === STOPPED_TEXT || String(text ?? '').startsWith('副机没有接上：')
 
 // What the ledger already holds for an exchange. A retried delivery carries the same exchange
 // id, and after a restart it has to find the row the first one wrote.
@@ -276,6 +279,35 @@ export async function replyToSender(rt, { fromId, toId, exchangeId, work, text, 
   })
 }
 
+// After a link loss the exchange is closed for the sender (it was told), but the node keeps working and
+// retries its answer once it is back. Listen for it for the late window: the answer reaches the sender as a
+// reply of its own and lands on the Bot's page as a late reply, instead of being dropped unseen.
+function armAnswerAfterLinkLoss(rt, { registry, nodeId, xid, fromId, toId, work, roomId, to }) {
+  if (typeof registry?.on !== 'function' || rt.joinedLateClosed === true) return
+  const windowMs = Number.isFinite(rt.joinedLateWindowMs) ? Math.max(1, rt.joinedLateWindowMs) : JOINED_LATE_WINDOW_MS
+  let timer
+  const end = () => { clearTimeout(timer); registry.off?.('botTurnResult', onResult) }
+  const onResult = (payload) => {
+    if (payload?.exchangeId !== xid || (payload.nodeId && payload.nodeId !== nodeId)) return
+    if (payload.ok === false || typeof payload.text !== 'string') return   // not an answer: keep waiting for the real one
+    end()
+    const text = payload.text
+    void (async () => {
+      try {
+        await replyToSender(rt, { fromId, toId, exchangeId: xid, work, roomId, text: `↩ 连接恢复后，节点送回了结果：\n\n${text}` })
+        const session = await ensureMirrorSession(rt, to)
+        const state = mirrorStateOf(rt, to.id, session)
+        mirrorLateReply(session, { botText: text, botId: to.id, nodeSeq: Number.isInteger(payload.seq) ? payload.seq : undefined, ...state })
+      } catch (error) { rt.warn?.('ds-bot: the answer that came after the link was lost was not delivered: %s', error?.message ?? error) }
+    })()
+  }
+  registry.on('botTurnResult', onResult)
+  timer = setTimeout(end, windowMs)
+  timer.unref?.()
+  if (!rt.joinedLate) rt.joinedLate = new Set()
+  rt.joinedLate.add(end)
+}
+
 export async function handleJoinedTurn(rt, msg = {}) {
   const { fromId, toId, text, exchangeId, work } = msg
   const roomId = trimmed(msg.roomId)
@@ -338,8 +370,10 @@ export async function handleJoinedTurn(rt, msg = {}) {
       return { ok: false, error: 'stopped' }
     }
     if (result.error === 'bridge-down') {
-      closeMirrorTurn(rt, mirror, to.id, { error: { code: 'bridge-down', message: BRIDGE_DOWN_TEXT } })
-      await replyToSender(rt, { fromId, toId, exchangeId: xid, work, roomId, text: BRIDGE_DOWN_TEXT, answered: false })
+      closeMirrorTurn(rt, mirror, to.id, { error: { code: 'bridge-down', message: LINK_LOST_TEXT } })
+      await replyToSender(rt, { fromId, toId, exchangeId: xid, work, roomId, text: LINK_LOST_TEXT, answered: false })
+      // The frame was out, so the node may well finish: its answer is still taken when it comes.
+      armAnswerAfterLinkLoss(rt, { registry, nodeId, xid, fromId, toId, work, roomId, to })
       return { ok: false, error: 'bridge-down' }
     }
     if (result.ok === false) {
@@ -429,6 +463,7 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
   rt.settleJoinedTurn = (exchangeId, text, error) => {
     const waiter = pending.get(exchangeId)
     if (!waiter) return false
+    if (!error && typeof text === 'string' && text.trim() !== '') rememberDelivered(rt, waiter.sessionId, text)
     pending.delete(exchangeId)
     if (waiter.sessionId) {
       const bySession = pendingBySession.get(waiter.sessionId)
@@ -564,6 +599,17 @@ export function exposeBotTurnReceiver(ctx, accept) {
   try { ctx?.provide?.('remote-agent:bot-turn', accept) } catch { /* registry plugin may be absent */ }
 }
 
+// Answers this node already sent for a hub's turns (by Bot id), so a task report with the same words is not
+// sent a second time.
+const DELIVERED_MS = 600_000
+function rememberDelivered(rt, botId, text) {
+  const book = (rt._deliveredReplies ??= new Map())
+  const list = (book.get(botId) ?? []).filter(item => Date.now() - item.at < DELIVERED_MS)
+  list.push({ text: text.trim(), at: Date.now() })
+  book.set(botId, list.slice(-12))
+}
+const deliveredAlready = (rt, botId, body) => (rt._deliveredReplies?.get(botId) ?? []).some(item => item.text === body && Date.now() - item.at < DELIVERED_MS)
+
 /**
  * A node Bot's background task finished and the Bot answered what it brought back: the answer goes
  * to the hub as one bot/message (kind reply, the Bot as both ends, depth at the cap — the hub reads
@@ -574,6 +620,8 @@ export function reportTaskToHub(rt, bot, text) {
   const network = rt.botNetwork
   const body = typeof text === 'string' ? text.trim() : ''
   if (body === '' || !bot || !rt.hubAskedBots?.has(bot.id)) return false
+  // The same words were just sent to the hub as a turn's answer: nothing more to report.
+  if (deliveredAlready(rt, bot.id, body)) return false
   if (typeof network?.send !== 'function' || typeof network.nodeId !== 'string') return false
   const identity = { id: bot.id, name: bot.name || bot.id, nodeId: network.nodeId }
   try {

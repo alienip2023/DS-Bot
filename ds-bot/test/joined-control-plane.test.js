@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { createRuntime } from '../index.js'
 import { fakeContext } from './fake-ctx.js'
-import { install as installJoinedTurn, createBotStopReceiver, BRIDGE_DOWN_TEXT, STOPPED_TEXT } from '../src/host/joined-turn.js'
+import { install as installJoinedTurn, createBotStopReceiver, BRIDGE_DOWN_TEXT, LINK_LOST_TEXT, STOPPED_TEXT } from '../src/host/joined-turn.js'
 
 const { Session } = await import('@deepseek-ai/dsh-session')
 
@@ -263,7 +263,7 @@ test('a turn opened after the stop still reports a real bridge-down', async (t) 
   assert.deepEqual(await again, { ok: false, error: 'bridge-down' }, 'a turn opened after the stop reports a real bridge-down')
   const replies = w.rt.state.exchanges.filter(row => row.replyTo === later.payload.exchangeId)
   assert.equal(replies.length, 1, 'the sender is told once')
-  assert.equal(replies[0].text, BRIDGE_DOWN_TEXT, 'the receipt says the bridge went down, not that the turn was stopped')
+  assert.equal(replies[0].text, LINK_LOST_TEXT, 'the receipt says the bridge went down, not that the turn was stopped')
 })
 
 test('the node receiver stops the local turn and reports whether one was running', async () => {
