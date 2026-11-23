@@ -7,7 +7,7 @@ import { existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { test } from 'node:test'
-import { collectPrompt, createAttachReceiver, sendChunks } from '../src/host/joined-attachments.js'
+import { CHUNK_BYTES, MAX_ATTACHMENTS, MAX_TOTAL_BYTES, collectPrompt, createAttachReceiver, sendChunks } from '../src/host/joined-attachments.js'
 
 const PLUGIN = dirname(dirname(fileURLToPath(import.meta.url)))
 const candidates = [process.env.REMOTE_AGENT_REPO, resolve(PLUGIN, '../../dsh-ai-cluster'), resolve(PLUGIN, '../../../Projects/dsh-ai-cluster')]
@@ -64,7 +64,7 @@ test('an image and a 2 MB file cross the real AC frame path and arrive whole', {
   const parts = await node.assembleParts(turn)
   assert.deepEqual([parts[0].type, parts[0].mediaType, parts[0].name], ['image', 'image/png', 'shot.png'])
   assert.equal(Buffer.from(parts[0].data, 'base64').equals(png), true)
-  assert.deepEqual([parts[1].type, parts[1].attachment.name, parts[1].attachment.bytes], ['file', 'dump.bin', big.length])
+  assert.deepEqual([parts[1].type, parts[1].name, parts[1].data.length], ['file', 'dump.bin', big.length])
   assert.equal(sha(big), manifest[1].sha256)
 })
 
@@ -73,4 +73,32 @@ test('AC refuses a damaged manifest rather than dropping it: the turn is rejecte
   const bad = validateBotTurn({ nodeId: 'n1', remoteBotId: 'b1', exchangeId: 'e', text: 'x', attachments: [{ index: 0, name: 'a', kind: 'file', bytes: 5, sha256: 'nope', chunks: 1 }] })
   assert.equal(bad.ok, false)
   assert.equal(bad.error, 'bot-turn-attachments-invalid')
+})
+
+test('the largest message ds-bot lets through (8 attachments, 20 MiB) fits AC\'s validators, and a full chunk fits one sealed frame', { skip }, async () => {
+  const { validateBotAttach, validateBotTurn, BOT_ATTACH_LIMITS, MAX_CONTROL_FRAME_BYTES, encodeFrame } = await load('protocol.js')
+  const { generateEphemeral, createSession } = await load('e2e.js')
+  assert.deepEqual([BOT_ATTACH_LIMITS.maxAttachments, BOT_ATTACH_LIMITS.maxBytes], [MAX_ATTACHMENTS, MAX_TOTAL_BYTES], 'the hub\'s limits are AC\'s')
+  assert.ok(Math.ceil(MAX_TOTAL_BYTES / CHUNK_BYTES) <= BOT_ATTACH_LIMITS.maxChunks, 'one attachment of the whole budget is at most maxChunks chunks')
+  assert.ok(Math.ceil(CHUNK_BYTES / 3) * 4 <= BOT_ATTACH_LIMITS.maxChunkChars, 'a full chunk\'s base64 is within maxChunkChars')
+
+  // one 20 MiB file, and eight attachments that together are 20 MiB
+  for (const sizes of [[MAX_TOTAL_BYTES], Array.from({ length: 8 }, () => MAX_TOTAL_BYTES / 8)]) {
+    const items = sizes.map((size, index) => { const data = Buffer.alloc(size, index + 1); return { index, kind: 'file', name: `f${index}.bin`, data, sha256: sha(data) } })
+    const frames = []
+    const manifest = sendChunks({ send: (_n, _t, payload) => { frames.push(payload); return true } }, { nodeId: 'n1', remoteBotId: 'b1', exchangeId: 'ex', items })
+    assert.ok(frames.every(frame => validateBotAttach(frame).ok), 'AC accepts every chunk')
+    const checked = validateBotTurn({ nodeId: 'n1', remoteBotId: 'b1', exchangeId: 'ex', text: '', attachments: manifest })
+    assert.equal(checked.ok, true, 'AC accepts the manifest (an empty text is fine beside attachments)')
+  }
+
+  // a full chunk, sealed the way the hub link seals it, is one frame well under AC's control-frame limit
+  const node = generateEphemeral()
+  const hub = generateEphemeral()
+  const hubSide = createSession({ role: 'hub', ownPrivB64: hub.privateKeyB64, peerPubB64: node.publicKeyB64, nodePubB64: node.publicKeyB64, hubPubB64: hub.publicKeyB64 })
+  const full = Buffer.alloc(CHUNK_BYTES, 255)
+  let payload
+  sendChunks({ send: (_n, _t, body) => { payload ??= body; return true } }, { nodeId: 'n1', remoteBotId: 'b1', exchangeId: 'ex', items: [{ index: 0, kind: 'file', name: 'f', data: full, sha256: sha(full) }] })
+  const sealed = encodeFrame({ t: 'bot/attach', id: 'frame-1', d: hubSide.sealFrame('bot/attach', 'frame-1', payload), to: 'n1' })
+  assert.ok(Buffer.byteLength(sealed) < MAX_CONTROL_FRAME_BYTES / 2, `a sealed full chunk is ${Buffer.byteLength(sealed)} bytes, limit ${MAX_CONTROL_FRAME_BYTES}`)
 })

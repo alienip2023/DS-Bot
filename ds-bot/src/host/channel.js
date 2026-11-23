@@ -11,7 +11,7 @@ export function mapNodeModel(m) {
 
 // Client channel: the team view the browser renders, and the POST /api/bot endpoints.
 import { randomUUID } from 'node:crypto'
-import { collectPrompt, stashAttachments, userContentOf } from './joined-attachments.js'
+import { collectPrompt, forgetAttachments, hasAttachments, holdAttachments, stageFileParts, stashAttachments, userContentOf } from './joined-attachments.js'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { PUBLISH_ISSUE } from './issue-report.js'
 import { install as installBtw } from './btw.js'
@@ -151,6 +151,7 @@ function pumpJoinedQueue(rt, bot, session) {
           started.done.then(item.resolve, item.reject)
         } catch (error) {
           rt.warn?.('ds-bot: a queued message for %s did not start: %s', bot.id, error?.message ?? error)
+          forgetAttachments(item.requestId)
           item.reject(error)
         }
       }
@@ -177,19 +178,24 @@ export function createSendUser(rt, { textOfContent, getMirrorState, ctx, ownThre
       : joinedShadow(rt.bySessionId(ref)) ? rt.bySessionId(ref)
       : null
     if (joinedBot) {
+      // A message already taken is acknowledged, not run again (its upload receipts were spent the first time).
+      const session = await ensureMirrorSession(rt, joinedBot)
+      if (hasPromptRequest(session, requestId) || hasAttachments(requestId) || (rt._joinedNextQueues?.get(joinedBot.id)?.items ?? []).some(item => item.requestId === requestId)) return { accepted: true }
       const prompt = await collectPrompt(rt, joinedBot, content, { sessionId: joinedBot.sessionId, requestId })
       const text = prompt.text
       stashAttachments(requestId, prompt.collected)
-      const session = await ensureMirrorSession(rt, joinedBot)
-      if (hasPromptRequest(session, requestId)) return { accepted: true }
       const ms = _getMirrorState(rt, joinedBot.id, session)
       // A turn is running: accept now, show the message now, start it when that turn ends.
       const queuedBehind = joinedBusy(rt, joinedBot.id) || (rt._joinedNextQueues?.get(joinedBot.id)?.items.length ?? 0) > 0
       if (queuedBehind) {
-        session.append('user/message', createUserMessage({
-          content: userContentOf(requestId, text),
-          source: { kind: 'user', rpcId: requestId },
-        }), { surfaceOp: 'append' })
+        // It waits here with its attachments until its turn comes (the bytes are not let go by the clock).
+        holdAttachments(requestId)
+        try {
+          session.append('user/message', createUserMessage({
+            content: userContentOf(requestId, text),
+            source: { kind: 'user', rpcId: requestId },
+          }), { surfaceOp: 'append' })
+        } catch (error) { forgetAttachments(requestId); throw error }
         const item = { text, requestId }
         const finished = new Promise((resolve, reject) => { item.resolve = resolve; item.reject = reject })
         finished.catch(() => {})
@@ -235,7 +241,9 @@ export function createSendUser(rt, { textOfContent, getMirrorState, ctx, ownThre
       sessionId,
       // 'steer' joins the turn running on this Session (a node asked for it); everything else waits.
       mode: mode === 'steer' ? 'steer' : 'queue',
-      content,
+      // A file that came as bytes (a node Bot's attachment from the hub) is staged for the Session the message goes to
+      // now, after any move to a fresh chat above: the core's prompt resolves a receipt against that Session's Agent.
+      content: await stageFileParts(rt, sessionId, content),
     }
     // This turn already went through sendThreadTurn above (or is a joined turn); the
     // prompt gate must let it pass instead of queueing it behind itself.

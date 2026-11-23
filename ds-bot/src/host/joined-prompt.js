@@ -25,7 +25,7 @@ import { wrapControllerMethod } from './controller-wrap.js'
 import { sendBotAction } from './node-cards.js'
 import { nodeCan } from './node-compat.js'
 import { stopOnNode } from './joined-turn.js'
-import { collectPrompt, stashAttachments } from './joined-attachments.js'
+import { collectPrompt, forgetAttachments, hasAttachments, holdAttachments, stashAttachments } from './joined-attachments.js'
 import { writeNodeReport } from './executor.js'
 import { STOP_NOTE_MARK } from './mirror.js'
 
@@ -92,6 +92,14 @@ async function collectPromptOrReject(rt, bot, content, ids) {
   }
 }
 
+/** Is a message with this requestId already waiting behind the turn in front of it (here, or in the gate's queue)? */
+function isWaiting(rt, botId, requestId) {
+  if (typeof requestId !== 'string' || requestId === '') return false
+  if ((rt.joinedUserQueue?.get(botId) ?? []).some(item => item.requestId === requestId)) return true
+  if ((rt._joinedNextQueues?.get(botId)?.items ?? []).some(item => item.requestId === requestId)) return true
+  return hasAttachments(requestId)
+}
+
 export function install(rt) {
   const { ctx } = rt
   // The Bot-to-Bot writer closes turns in joined-mirror-writer.js; when a late node answer is
@@ -139,12 +147,16 @@ export function install(rt) {
     const bot = joinedBotOfSession(rt, request?.sessionId)
     if (bot === undefined) return original.call(this, request, ...rest)
 
+    // A message already taken (on the page, or waiting behind the turn in front of it) is acknowledged, not run
+    // again: its upload receipts were spent the first time, so reading them again would refuse a message that went.
+    const session = await ensureMirrorSession(rt, bot)
+    if (hasPromptRequest(session, request.requestId) || isWaiting(rt, bot.id, request.requestId)) return { accepted: true }
+
     // The words and, for a node Bot, the images / files of the message (refused with the reason when they cannot go).
     const prompt = await collectPromptOrReject(rt, bot, request.content, { sessionId: request.sessionId, requestId: request.requestId })
     const text = prompt.text
     stashAttachments(request.requestId, prompt.collected)
-    const session = await ensureMirrorSession(rt, bot)
-    if (hasPromptRequest(session, request.requestId)) return { accepted: true }
+    const withAttachments = prompt.collected !== undefined
 
     const timeoutMs = rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS
     // isBusy: a page turn is already in-flight on this Bot's mirror Session.
@@ -158,17 +170,22 @@ export function install(rt) {
     // Both are accepted immediately (accepted: true) — the user is never blocked.
     const mode = request.mode === 'steer' ? 'steer' : 'queue'
 
+    // Held behind the turn in front: its attachments wait with it.
     const hold = () => {
       if (!rt.joinedUserQueue) rt.joinedUserQueue = new Map()
       const q = rt.joinedUserQueue.get(bot.id) ?? []
       q.push({ text, requestId: request.requestId, session, state: mirrorStateOf(rt, bot.id, session) })
       rt.joinedUserQueue.set(bot.id, q)
+      holdAttachments(request.requestId)
     }
     const steerNow = () => startSideTurn({ rt, bot, text, requestId: request.requestId, session, state: mirrorStateOf(rt, bot.id, session), tracker: rt.turnTracker, timeoutMs, mode: 'steer' })
     if (isBusy() && mode === 'steer' && rt.state?.prefs?.steerAsk === true) {
       // Opt-in: ask where it goes (never blocks; unanswered, it steers). Only the composer reaches this.
       const asked = rt.askSteer?.({
         sessionId: request.sessionId, text,
+        // A separate task (bot/action task-start) carries words only: a message with attachments is offered the two
+        // ways that carry them, never one that would send the words and drop the files.
+        ...(withAttachments ? { choices: ['steer', 'queue'] } : {}),
         apply: async (choice) => {
           if (choice === 'queue') return hold()
           if (choice === 'independent' || choice === 'related') return sendBotAction(rt, bot, 'task-start', { text, relation: choice })
@@ -187,13 +204,13 @@ export function install(rt) {
           startSideTurn({ rt, bot, text, requestId: request.requestId, session, state: mirrorStateOf(rt, bot.id, session), tracker: rt.turnTracker, timeoutMs, mode: 'steer' })
           return { accepted: true }
         } catch (error) {
-          if (error?.code !== 'E_BUSY') throw await remoteError('session/agent-unavailable', `无法送达节点：${failureText(error)}`, { reason: `JOINED_NODE_${error?.code ?? 'ERROR'}` })
+          if (error?.code !== 'E_BUSY') {
+            forgetAttachments(request.requestId)
+            throw await remoteError('session/agent-unavailable', `无法送达节点：${failureText(error)}`, { reason: `JOINED_NODE_${error?.code ?? 'ERROR'}` })
+          }
         }
       }
-      if (!rt.joinedUserQueue) rt.joinedUserQueue = new Map()
-      const q = rt.joinedUserQueue.get(bot.id) ?? []
-      q.push({ text, requestId: request.requestId, session, state: mirrorStateOf(rt, bot.id, session) })
-      rt.joinedUserQueue.set(bot.id, q)
+      hold()
       return { accepted: true }
     }
 
@@ -207,12 +224,10 @@ export function install(rt) {
       })
     } catch (error) {
       if (error?.code === 'E_BUSY') {
-        if (!rt.joinedUserQueue) rt.joinedUserQueue = new Map()
-        const q = rt.joinedUserQueue.get(bot.id) ?? []
-        q.push({ text, requestId: request.requestId, session, state: mirrorStateOf(rt, bot.id, session) })
-        rt.joinedUserQueue.set(bot.id, q)
+        hold()
         return { accepted: true }
       }
+      forgetAttachments(request.requestId)
       throw await remoteError('session/agent-unavailable', `无法送达节点：${failureText(error)}`, { reason: `JOINED_NODE_${error?.code ?? 'ERROR'}` })
     }
     return { accepted: true }

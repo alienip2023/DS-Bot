@@ -560,7 +560,10 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
     const steering = turn?.mode === 'steer'
     if (remoteBotId === '' || exchangeId === '') return { ok: false, error: 'bot-turn-missing', ...roomFields }
     const bot = findLocal(rt, remoteBotId)
-    if (!bot || bot.type === 'remote-worker' || bot.origin === 'joined') return { ok: false, error: 'bot-not-on-roster', ...roomFields }
+    if (!bot || bot.type === 'remote-worker' || bot.origin === 'joined') {
+      rt.discardAttachmentParts?.(turn)   // its chunks came ahead of it and will never be used
+      return { ok: false, error: 'bot-not-on-roster', ...roomFields }
+    }
     // The hub asked this Bot: what its background tasks report later is owed to that hub's page.
     markHubAsked(rt, bot)
     // The images and files the hub sent ahead of this turn: all of them, intact, or the turn is refused.
@@ -581,6 +584,7 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
       if (!bySession) { bySession = new Set(); pendingBySession.set(bot.id, bySession) }
       bySession.add(exchangeId)
     })
+    done.catch(() => {})   // a failure that settles the wait before `await done` below is not an unhandled rejection
     try {
       // sendUser creates a real user bubble in chatPage (not an event entry).
       // The bot's reply lands as a bot bubble. turns.js calls settleJoinedTurn
@@ -589,19 +593,31 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
       const sessionIdForTurn = roomId ? await groupSessionFor(bot, roomId, trimmed(turn.roomName)) : rt.chatOf?.(bot.id)
       // Before anything is sent: the exchange's own user/message is what opens the trace.
       tracking.tracer = feed.start({ sessionId: sessionIdForTurn, exchangeId, control })
-      const send = () => {
+      const send = async () => {
         const name = typeof turn.senderName === 'string' ? turn.senderName.trim() : ''
         const header = name === '' ? '' : '[Message from ' + name + ']'
         const text = roomId
           ? '[群 ' + (trimmed(turn.roomName) || roomId) + ']' + (header === '' ? ' ' : '\n' + header + '\n') + (turn.text ?? '')
           : header === '' ? (turn.text ?? '') : header + '\n' + (turn.text ?? '')
-        return rt.sendUser({
-          sessionId: sessionIdForTurn,
-          content: [...(text === '' && attachedParts.length > 0 ? [] : [{ type: 'text', text }]), ...attachedParts],
-          requestId: exchangeId,
-          ...(steering ? { mode: 'steer' } : {}),
-        })
+        // A file goes in as bytes: sendUser uploads it for the Session the message really goes to and the prompt
+        // names its receipt (the core's prompt refuses a file part that is not a receipt of that Session's own upload).
+        try {
+          return await rt.sendUser({
+            sessionId: sessionIdForTurn,
+            content: [...(text === '' && attachedParts.length > 0 ? [] : [{ type: 'text', text }]), ...attachedParts],
+            requestId: exchangeId,
+            ...(steering ? { mode: 'steer' } : {}),
+          })
+        } catch (error) {
+          // A turn that waits behind another runs later, after acceptTurn has come back from the gate: nobody catches
+          // its failure there and the hub would wait out the whole timeout, so the failure settles the wait here.
+          // One that runs at once is thrown to the catch below, as it always was.
+          if (!gateReturned) throw error
+          const failure = Object.assign(new Error(String(error?.message ?? error)), { code: deliverFailure(error, attachedParts.length > 0) })
+          rt.settleJoinedTurn(exchangeId, '', failure)
+        }
       }
+      let gateReturned = false
       // A steer joins the turn already running on this Session; only what waits goes through the gate.
       const joinsRunning = steering && rt.threadQueueLive?.(bot.id)?.running?.sessionId === sessionIdForTurn
       if (typeof rt.sendThreadTurn === 'function' && !joinsRunning) {
@@ -609,8 +625,9 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
           botId: bot.id, kind: 'send', preview: turn.text, releaseOn: 'run', run: send,
           onCancel: () => rt.settleJoinedTurn(exchangeId, '', Object.assign(new Error('bot-turn-cancelled'), { code: 'bot-turn-cancelled' })),
         })
+        gateReturned = true
       } else await send()
-    } catch {
+    } catch (error) {
       const waiter = pending.get(exchangeId)
       if (waiter) {
         pending.delete(exchangeId)
@@ -622,7 +639,7 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
           if (bySession.size === 0) pendingBySession.delete(waiter.sessionId)
         }
       }
-      return { ok: false, error: 'bot-turn-deliver-failed', ...roomFields }
+      return { ok: false, error: deliverFailure(error, attachedParts.length > 0), ...roomFields }
     }
     try {
       const text = await done
@@ -631,6 +648,16 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
       return { ok: false, exchangeId, error: err?.code ?? 'bot-turn-failed', text: '', ...roomFields }
     }
   }
+}
+
+// Why a message with attachments did not reach the Bot, as a code the hub words for its page. The core's prompt names
+// the reason in `details.reason` ("MODEL_DOES_NOT_SUPPORT_IMAGES", "IMAGE_TOO_MANY_PIXELS", …); everything else stays the
+// generic delivery failure.
+export function deliverFailure(error, hadAttachments) {
+  if (typeof error?.code === 'string' && error.code.startsWith('bot-attach-')) return error.code
+  const reason = error?.details?.reason
+  if (hadAttachments && (error?.code === 'session/attachment-invalid' || typeof reason === 'string') && typeof reason === 'string' && /^[A-Z_]{3,40}$/.test(reason)) return `bot-attach-rejected:${reason}`
+  return 'bot-turn-deliver-failed'
 }
 
 function textOfContent(content) {
