@@ -16,9 +16,9 @@ export const NODE_FEATURES = Object.freeze({
   attach: { cap: 'bot-attach/1', label: '图片和文件附件' },
   models: { cap: 'config-models/1', label: '模型能力（图片、思考档位）' },
 })
-// The AC release that carries every capability above: ds-bot 0.3.10-fork.109 pairs with AC 0.4.29 (hub and nodes).
+// The AC release that carries every capability above: ds-bot 0.3.10-fork.110 pairs with AC 0.4.30 (hub and nodes).
 // The full version table is in docs/ac-pairing.md and in AC's README.
-export const AC_NEEDED = '0.4.29'
+export const AC_NEEDED = '0.4.30'
 
 /** The capabilities of a node, or undefined when they are not known. */
 export function nodeCapsOf(rt, nodeId) {

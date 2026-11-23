@@ -142,6 +142,8 @@ export const BOT_TYPE = {
 // Timeout for Bot-to-Bot delegation (message_bot): if the recipient does not reply
 // within this window, the sender is unblocked with a timeout notice (#919).
 export const DELEGATE_TIMEOUT_MS = 30 * 60 * 1_000   // 30 minutes
+// Nudge the delegatee this many ms after the work was opened, before the sender's timeout fires.
+export const DELEGATE_NUDGE_MS = 25 * 60 * 1_000     // 25 minutes (5 min before timeout)
 
 // 一个 Bot 的记忆后端可选项。'auto' 是默认值：这台机器装了 dsh-mneme 就用它，
 // 没装就用 ds-bot 自己的文件记忆。别的值一律不算后端。

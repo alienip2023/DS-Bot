@@ -10,6 +10,7 @@
 | 0.3.10-fork.107 | 0.4.27 | 节点模型能力落盘（节点上的模型能读图片）；节点没有主 Bot |
 | 0.3.10-fork.108 | 0.4.28 | `acVersion` 和 `config-models/1`：主控据此精确判断哪台节点的 AC 不够新 |
 | 0.3.10-fork.109 | 0.4.29 | 安全加固：@路径附件拒绝符号链接遍历（`lstat` 替代 `stat`）、扩充受保护目录名单（`.npm`/`.gitconfig`/`.cursor` 等）、TOCTOU 安全读取（同一 fd 的 open+fstat+read）、bot/attach 大附件背压、roster Bot id 上限 80→200、D2 lsof/ps 改异步防事件循环阻塞、node-team 首次检查 500ms→100ms |
+| 0.3.10-fork.110 | 0.4.30 | `bot/stream`（`bot-stream/1`）：节点 Bot 回答逐字流式到主控页面；`record_routine` 工具：一句话把当前任务固化为定时 routine；stalled handoff 双阶段定时器（25分钟 nudge delegatee，30分钟通知 sender）；`mirrorTurnStream` 增量写入镜像回合 |
 
 能力位与功能的对应（`src/host/node-compat.js` 的 `NODE_FEATURES`）：
 

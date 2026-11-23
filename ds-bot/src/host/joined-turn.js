@@ -549,6 +549,8 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
       result = await acceptTurn(turn, control, tracking)
     } finally {
       tracking.final = tracking.tracer?.finish()
+      // Flush any buffered stream deltas before the result is sent.
+      await tracking.streamer?.finish?.().catch(() => {})
     }
     return tracking.final === undefined ? result : { ...result, trace: tracking.final }
   }
@@ -591,8 +593,12 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
       // when the turn finishes, resolving `done`.
       if (typeof rt.sendUser !== 'function') throw new Error('sendUser unavailable')
       const sessionIdForTurn = roomId ? await groupSessionFor(bot, roomId, trimmed(turn.roomName)) : rt.chatOf?.(bot.id)
-      // Before anything is sent: the exchange's own user/message is what opens the trace.
+      // Before anything is sent: the exchange's own user/message is what opens the trace and stream.
       tracking.tracer = feed.start({ sessionId: sessionIdForTurn, exchangeId, control })
+      // bot/stream: wire the streaming forwarder if the hub supports it.
+      if (typeof control.stream?.start === 'function' && sessionIdForTurn) {
+        tracking.streamer = control.stream.start(ctx, sessionIdForTurn)
+      }
       const send = async () => {
         const name = typeof turn.senderName === 'string' ? turn.senderName.trim() : ''
         const header = name === '' ? '' : '[Message from ' + name + ']'
