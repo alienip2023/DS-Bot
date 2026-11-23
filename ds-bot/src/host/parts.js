@@ -2085,7 +2085,7 @@ export function install(rt) {
   const STEP_LABELS = {
     list_secrets: 'Checking the keys', ask_user_question: 'Waiting for your answer',
     message_bot: 'Asking another Bot', stop_bot: 'Stopping another Bot',
-    create_bot: 'Creating a Bot', update_bot: 'Updating a Bot',
+    create_bot: 'Creating a Bot', update_bot: 'Updating a Bot', delete_bot: 'Deleting a Bot',
     create_group: 'Creating a group', update_group: 'Updating the group',
     delete_group: 'Deleting the group', post_to_group: 'Posting in the group',
     list_bots: 'Checking the team', read_group_chat: 'Reading a group chat',

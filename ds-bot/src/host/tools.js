@@ -1,6 +1,8 @@
 // Team tools: the roster, bot-to-bot messages, group chat settings and posts, and the
 // question and view cards. Group rounds and reading chats are in groups.js.
 import { randomUUID } from 'node:crypto'
+import { NODE_NO_MAIN } from './node-team.js'
+import { deleteBotTool, isNodeBot, updateNodeBot } from './node-bot-tools.js'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { readAvatar } from './avatar.js'
 import { listenBotStopResult, settleStoppedTurns } from './joined-turn.js'
@@ -634,7 +636,9 @@ export function install(rt) {
       await rt.load()
       const workerErr = workerCreateBotCheck(args)
       if (workerErr) return workerErr
-      if (workerRole() !== 'worker' && !rt.isMain(rt.selfOf(exec.agent?.id))) return 'Only the Main Bot can create Bots. Ask the Main Bot instead.'
+      // A node has no Main Bot: its Bots are ordinary ones and the hub's Main Bot is the one that creates them there.
+      if (workerRole() === 'worker') return `${NODE_NO_MAIN}。To put a Bot on this machine, ask the hub's Main Bot (create_bot with node).`
+      if (!rt.isMain(rt.selfOf(exec.agent?.id))) return 'Only the Main Bot can create Bots. Ask the Main Bot instead.'
       try {
         // ── Node-side creation: create the Bot directly on a named node ──────
         const nodeArg = typeof args.node === 'string' ? args.node.trim() : ''
@@ -716,7 +720,11 @@ export function install(rt) {
       if (bot === undefined) return `No Bot named ${args.bot}.`
       const workerErrU = workerUpdateBotCheck(bot)
       if (workerErrU) return workerErrU
-      if (workerRole() !== 'worker' && bot.id !== caller.id && !rt.isMain(self)) return 'Only a Main Bot can change another Bot. Leave out bot to change yourself, or ask a Main Bot with message_bot.'
+      // On a node every Bot is ordinary: it changes itself, and only the hub's Main Bot changes another one.
+      if (workerRole() === 'worker' && bot.id !== caller.id) return `${NODE_NO_MAIN}。Leave out bot to change yourself.`
+      if (bot.id !== caller.id && !rt.isMain(self)) return 'Only a Main Bot can change another Bot. Leave out bot to change yourself, or ask a Main Bot with message_bot.'
+      // A Bot that lives on a node is changed there (bot/update), not only on this hub's row of it.
+      if (isNodeBot(bot)) return await updateNodeBot(rt, bot, args)
       try {
         const { name: newName, role, instructions, color, model, effort, section, type, worker } = args
         let image
@@ -738,6 +746,19 @@ export function install(rt) {
       } catch (error) {
         return `Could not update the Bot: ${error.message}`
       }
+    },
+  }))
+
+  rt.teamTools.push(defineTool({
+    name: 'delete_bot',
+    description: 'Main Bot only. Permanently delete a Bot, with its history and memory. For a Bot on a node it is deleted on that machine first; if the node does not confirm, the Bot stays. Only when the user asks for it, naming the Bot.',
+    parameters: {
+      bot: { type: 'string', required: true, description: 'Current name of the Bot to delete' },
+      confirm: { type: 'string', description: 'The Bot\'s exact name, repeated, once the user has asked for the deletion. Without it nothing is deleted and you are told what would go.' },
+    },
+    output,
+    async execute(args, exec) {
+      return deleteBotTool(rt, exec, args, { nodeRole: workerRole() === 'worker' })
     },
   }))
 
