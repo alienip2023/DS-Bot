@@ -327,3 +327,90 @@ test('NA-16: a node whose ds-bot cannot take attachments, or whose AC refuses th
   assert.match(words('bot-attach-no-receiver'), /ds-bot 版本太旧.*fork\.103/)
   assert.match(words('bot-turn-attachments-invalid'), /附件清单没有通过/)
 })
+
+// ── a file dragged in from the disk is a path mention (`@/abs/path`) in the words, not an upload ──────────────
+
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir, homedir } from 'node:os'
+import { join } from 'node:path'
+import { mentionedFiles } from '../src/host/joined-attachments.js'
+
+function files(t) {
+  const dir = mkdtempSync(join(tmpdir(), 'mention-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const plain = join(dir, '1100个tm.txt')
+  const spaced = join(dir, '公司 审批 规范.txt')
+  writeFileSync(plain, 'line one\nline two\n')
+  writeFileSync(spaced, 'approval rules')
+  mkdirSync(join(dir, 'folder'))
+  return { dir, plain, spaced, folder: join(dir, 'folder') }
+}
+
+test('NA-17: path mentions that name a file on this machine are found; everything else is left alone', async (t) => {
+  const f = files(t)
+  const text = `@${f.plain} 读取这个文档，再看 @"${f.spaced}" 和 @${f.folder}/ 还有 @${join(f.dir, 'missing.txt')} 以及 me@example.com @relative/path.txt`
+  const found = await mentionedFiles(text)
+  assert.deepEqual(found.map(item => item.name), ['1100个tm.txt', '公司 审批 规范.txt'])
+  assert.equal(text.slice(found[0].start, found[0].end), `@${f.plain}`)
+  assert.equal(text.slice(found[1].start, found[1].end), `@"${f.spaced}"`)
+  // punctuation right behind a path is not part of it
+  assert.deepEqual((await mentionedFiles(`看一下@${f.plain}，谢谢`)).length, 0, 'an @ inside a word is not a mention')
+  assert.deepEqual((await mentionedFiles(`看一下 @${f.plain}，谢谢`)).map(item => item.name), ['1100个tm.txt'])
+  assert.deepEqual((await mentionedFiles(`(see @${f.plain}).`)).map(item => item.name), ['1100个tm.txt'], 'closing punctuation is not part of the path')
+  assert.deepEqual((await mentionedFiles(`(@${f.plain})`)).length, 0, 'a mention must start a word')
+})
+
+test('NA-18: a message from the page that mentions a file sends its bytes and the file\'s name; the page keeps the mention', async (t) => {
+  const f = files(t)
+  const rt = rtWith(fakeStore)
+  const words = `@${f.plain} 读取这个文档`
+  const { text, collected } = await collectPrompt(rt, bot, [{ type: 'text', text: words }], { requestId: 'req-m', mentions: true })
+  assert.equal(text, words, 'the page shows what the user wrote')
+  assert.equal(collected.sendText, '1100个tm.txt 读取这个文档', 'the node reads the name, not a path on this machine')
+  assert.deepEqual(collected.items.map(item => [item.kind, item.name, item.data.toString()]), [['file', '1100个tm.txt', 'line one\nline two\n']])
+  assert.deepEqual(collected.blocks, [], 'no second chip on the page')
+  // without the flag (IM, a phone, another Bot) a mention is only words: nothing on this machine is read
+  assert.deepEqual(await collectPrompt(rt, bot, [{ type: 'text', text: words }], { requestId: 'req-n' }), { text: words })
+  // a message that names no file here is untouched
+  assert.deepEqual(await collectPrompt(rt, bot, [{ type: 'text', text: '@/root/work/x.txt hi' }], { requestId: 'req-o', mentions: true }), { text: '@/root/work/x.txt hi' })
+})
+
+test('NA-19: a mentioned file that is too big, empty, protected or on a node too old is refused with the reason', async (t) => {
+  const f = files(t)
+  const rt = rtWith(fakeStore)
+  const refused = (words, rtx = rt) => collectPrompt(rtx, bot, [{ type: 'text', text: words }], { requestId: 'r', mentions: true }).then(() => assert.fail('expected a refusal'), error => error)
+  writeFileSync(join(f.dir, 'empty.txt'), '')
+  assert.match((await refused(`@${join(f.dir, 'empty.txt')} x`)).message, /是空的/)
+  const big = join(f.dir, 'big.bin')
+  writeFileSync(big, Buffer.alloc(MAX_TOTAL_BYTES + 1))
+  const tooBig = await refused(`@${big} x`)
+  assert.equal(tooBig.code, 'session/joined-attachment-too-large')
+  assert.match(tooBig.message, /big\.bin 太大/)
+  const secret = join(homedir(), '.ssh', 'id_ed25519')
+  if ((await mentionedFiles(`@${secret}`)).length > 0) assert.match((await refused(`@${secret} x`)).message, /受保护/)
+  const old = await refused(`@${f.plain} x`, rtWith(fakeStore, ['bot-turn-mode/1']))
+  assert.match(old.message, /AC 0\.4\.25/)
+  const many = Array.from({ length: MAX_ATTACHMENTS + 1 }, (_, i) => { const file = join(f.dir, `m${i}.txt`); writeFileSync(file, 'x'); return `@${file}` }).join(' ')
+  assert.equal((await refused(many)).code, 'session/joined-attachment-too-large')
+})
+
+test('NA-20: the whole page path: a mentioned document reaches the node as chunks and the words name the file', async (t) => {
+  const f = files(t)
+  const w = makeWorld({ tracker: true })
+  const original = w.rt.ctx.get
+  w.rt.ctx.get = name => (name === 'attachments' ? fakeStore : original(name))
+  const words = `@${f.plain} 读取这个文档`
+  await w.prompt({ ...textRequest(words, 'req-doc'), content: [{ type: 'text', text: words }] })
+  await settle()
+  assert.deepEqual(w.frames.map(frame => frame.type), ['bot/attach', 'bot/turn'])
+  const turn = w.frames[1].payload
+  assert.equal(turn.text, '1100个tm.txt 读取这个文档')
+  assert.deepEqual(turn.attachments.map(item => [item.name, item.kind, item.bytes]), [['1100个tm.txt', 'file', 18]])
+  const message = w.sessionOf(w.bot.sessionId).log.find(event => event.type === 'user/message')
+  assert.deepEqual(message.data.content, [{ type: 'text', text: words }], 'the page shows the user\'s own words')
+  // the node puts the file back together
+  const node = createAttachReceiver(rtWith(fakeStore))
+  node.receive(w.frames[0].payload)
+  const [part] = await node.assembleParts(turn)
+  assert.deepEqual([part.type, part.name, part.data.toString()], ['file', '1100个tm.txt', 'line one\nline two\n'])
+})

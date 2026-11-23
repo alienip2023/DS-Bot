@@ -126,7 +126,8 @@ function prepareRemote({ bot, text, rt, tracker, timeoutOverride, lateWindowMs =
         nodeId,
         remoteBotId,
         exchangeId: turnId,
-        text: text ?? '',
+        // The words as the node reads them: a file mentioned by a path on this machine is its plain name now.
+        text: attachmentsOf(requestId)?.sendText ?? text ?? '',
         ...(attachments === undefined ? {} : { attachments }),
         // How a busy node Bot takes it (AC 0.4.20+; an older node ignores it and queues).
         ...(mode === 'steer' || mode === 'queue' ? { mode } : {}),

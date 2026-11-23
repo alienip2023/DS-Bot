@@ -104,7 +104,7 @@ Checked by `test/thread-model-anchors.test.js`: each row's line must contain its
 | Anchor | Token |
 |---|---|
 | `src/host/bot-store.js:155` | `thread-model.md §1.1` |
-| `src/host/executor.js:237` | `thread-model §4.5` |
+| `src/host/executor.js:238` | `thread-model §4.5` |
 | `src/host/store.js:509` | `chatOwners` |
 | `src/host/store.js:509` | `groupOwners` |
 | `src/host/store.js:813` | `thread-model.md §1.2` |

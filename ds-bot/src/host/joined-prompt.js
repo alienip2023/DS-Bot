@@ -153,7 +153,7 @@ export function install(rt) {
     if (hasPromptRequest(session, request.requestId) || isWaiting(rt, bot.id, request.requestId)) return { accepted: true }
 
     // The words and, for a node Bot, the images / files of the message (refused with the reason when they cannot go).
-    const prompt = await collectPromptOrReject(rt, bot, request.content, { sessionId: request.sessionId, requestId: request.requestId })
+    const prompt = await collectPromptOrReject(rt, bot, request.content, { sessionId: request.sessionId, requestId: request.requestId, mentions: true })
     const text = prompt.text
     stashAttachments(request.requestId, prompt.collected)
     const withAttachments = prompt.collected !== undefined
