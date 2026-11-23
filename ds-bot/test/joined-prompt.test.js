@@ -152,7 +152,8 @@ describe('S24: joined Bot page prompt takeover', () => {
     // the hub cannot read, is refused for what it is.
     const cases = [
       [{ type: 'audio', url: 'x' }, '节点 Bot 只能收文字、图片和文件'],
-      [{ type: 'file', receiptId: 'r1' }, '这台主控读不了已上传的文件'],
+      [{ type: 'file', receiptId: 'r1' }, '上传的附件已经失效，请重新添加后再发送'],
+      [{ type: 'file', name: 'x' }, '这台主控读不了已上传的文件'],
     ]
     for (const [part, message] of cases) {
       const error = await rejection(w.prompt({ requestId: 'req-a', sessionId: 'mirror-1', content: [{ type: 'text', text: 'look' }, part] }))

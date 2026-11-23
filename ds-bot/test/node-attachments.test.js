@@ -196,3 +196,64 @@ test('NA-9: attachments that did not arrive whole refuse the turn with the reaso
   assert.equal((await plain.accept({ remoteBotId: 'k1', exchangeId: 'ex-4', text: 'hi' }, {})).ok, true)
   assert.deepEqual(plain.sent[0].content, [{ type: 'text', text: 'hi' }])
 })
+
+// ── the page uploads first and sends receipts: { type: 'file', receiptId } for images and files alike ──────────
+
+function uploadsWith(staged) {
+  const agent = { session: { id: 'mirror-1' } }
+  const bound = []
+  const ctxExtras = {
+    agents: new Map([['mirror-1', agent]]),
+    fileUploads: {
+      resolve: (who, receiptId) => (who === agent ? staged[receiptId] : undefined),
+      bindPrompt: (who, ids, requestId) => { bound.push({ who, ids, requestId }); return { commit() { bound.at(-1).committed = true } } },
+    },
+  }
+  return { agent, bound, ctxExtras }
+}
+
+test('NA-10: the page\'s upload receipts are swapped for the staged image and file before they are collected', async () => {
+  const imageRef = { attachmentId: 'a1', mediaType: 'image/png', bytes: 8, name: 'shot.png' }
+  const fileRef = { attachmentId: 'f1', name: 'notes.txt', bytes: 5 }
+  const up = uploadsWith({ r1: { type: 'image', attachment: imageRef, encodedBytes: 8 }, r2: { type: 'file', attachment: fileRef } })
+  const rt = rtWith(fakeStore)
+  Object.assign(rt.ctx, up.ctxExtras)
+  const { text, collected } = await collectPrompt(rt, bot, [
+    { type: 'text', text: 'both of these' }, { type: 'file', receiptId: 'r1' }, { type: 'file', receiptId: 'r2' },
+  ], { sessionId: 'mirror-1', requestId: 'req-r' })
+  assert.equal(text, 'both of these')
+  assert.deepEqual(collected.items.map(item => [item.kind, item.name]), [['image', 'shot.png'], ['file', 'notes.txt']])
+  assert.deepEqual(collected.blocks.map(block => block.type), ['image', 'file'])
+  assert.deepEqual(up.bound, [{ who: up.agent, ids: ['r1', 'r2'], requestId: 'req-r', committed: true }], 'the receipts are bound to the message, so they are retired when it lands')
+})
+
+test('NA-11: a receipt that is no longer staged, or whose Session has no agent, is refused; nothing is skipped', async () => {
+  const up = uploadsWith({})
+  const rt = rtWith(fakeStore)
+  Object.assign(rt.ctx, up.ctxExtras)
+  const refused = (content, ids, rtx = rt) => collectPrompt(rtx, bot, content, ids).then(() => assert.fail('expected a refusal'), error => error)
+  const stale = await refused([{ type: 'file', receiptId: 'gone' }], { sessionId: 'mirror-1', requestId: 'r' })
+  assert.equal(stale.code, 'session/joined-attachment-unsupported')
+  assert.match(stale.message, /已经失效/)
+  const rt2 = rtWith(fakeStore)
+  Object.assign(rt2.ctx, { agents: new Map(), fileUploads: up.ctxExtras.fileUploads })
+  assert.match((await refused([{ type: 'file', receiptId: 'r1' }], { sessionId: 'other', requestId: 'r' }, rt2)).message, /已经失效/)
+})
+
+test('NA-12: a page prompt of receipts reaches the node as chunks and a turn, with the image on the page', async () => {
+  const w = makeWorld({ tracker: true })
+  const imageRef = { attachmentId: 'a1', mediaType: 'image/png', bytes: 8, name: 'shot.png' }
+  const up = uploadsWith({ r1: { type: 'image', attachment: imageRef, encodedBytes: 8 } })
+  w.rt.ctx.agents = up.ctxExtras.agents
+  w.rt.ctx.fileUploads = up.ctxExtras.fileUploads
+  const original = w.rt.ctx.get
+  w.rt.ctx.get = name => (name === 'attachments' ? fakeStore : original(name))
+  up.agent.session.id = 'mirror-1'
+  await w.prompt({ requestId: 'req-rcpt', sessionId: 'mirror-1', mode: 'queue', content: [{ type: 'text', text: 'what is this?' }, { type: 'file', receiptId: 'r1' }] })
+  await settle()
+  assert.deepEqual(w.frames.map(frame => frame.type), ['bot/attach', 'bot/turn'])
+  assert.equal(w.frames[1].payload.attachments[0].name, 'shot.png')
+  const message = w.sessionOf(w.bot.sessionId).log.find(event => event.type === 'user/message')
+  assert.deepEqual(message.data.content.map(block => block.type), ['text', 'image'])
+  assert.equal(up.bound[0].requestId, 'req-rcpt')
+})

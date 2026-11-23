@@ -81,9 +81,9 @@ export async function promptText(content) {
 }
 
 /** collectPrompt, with its refusal in the shape the page reads (a RemoteError with a code). */
-async function collectPromptOrReject(rt, bot, content) {
+async function collectPromptOrReject(rt, bot, content, ids) {
   try {
-    return await collectPrompt(rt, bot, content)
+    return await collectPrompt(rt, bot, content, ids)
   } catch (error) {
     if (typeof error?.code === 'string' && error.code.startsWith('session/joined-attachment')) {
       throw await remoteError(error.code, error.message, { reason: 'JOINED_ATTACHMENT_UNSUPPORTED' })
@@ -140,7 +140,7 @@ export function install(rt) {
     if (bot === undefined) return original.call(this, request, ...rest)
 
     // The words and, for a node Bot, the images / files of the message (refused with the reason when they cannot go).
-    const prompt = await collectPromptOrReject(rt, bot, request.content)
+    const prompt = await collectPromptOrReject(rt, bot, request.content, { sessionId: request.sessionId, requestId: request.requestId })
     const text = prompt.text
     stashAttachments(request.requestId, prompt.collected)
     const session = await ensureMirrorSession(rt, bot)

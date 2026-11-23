@@ -72,12 +72,41 @@ async function readFileBytes(store, ref) {
 }
 
 /**
+ * The page does not put an image or a file in the prompt itself: it uploads it first and the prompt carries a
+ * receipt (`{ type: 'file', receiptId }`, for images too). The core swaps each receipt for the staged part before
+ * its own admission; a node Bot's prompt is taken over here before that happens, so the receipts are swapped here
+ * the same way (the staging belongs to the Session's agent, `fileUploads.resolve`). A receipt that is no longer
+ * staged is refused, never skipped.
+ */
+async function resolveReceipts(rt, parts, sessionId) {
+  const receipts = parts.filter(part => part?.type === 'file' && part.attachment === undefined && part.receiptId !== undefined)
+  if (receipts.length === 0) return { parts, receiptIds: [] }
+  const uploads = rt.ctx?.fileUploads
+  let agent = typeof sessionId === 'string' && sessionId !== '' ? rt.ctx?.agents?.get?.(sessionId) : undefined
+  if (agent === undefined && typeof rt.resolveAgent === 'function' && typeof sessionId === 'string' && sessionId !== '') {
+    try { agent = await rt.resolveAgent(sessionId) } catch { agent = undefined }
+  }
+  const gone = () => refuse('session/joined-attachment-unsupported', '上传的附件已经失效，请重新添加后再发送')
+  if (agent === undefined || typeof uploads?.resolve !== 'function') throw gone()
+  const receiptIds = []
+  const resolved = parts.map((part) => {
+    if (!receipts.includes(part)) return part
+    const staged = uploads.resolve(agent, part.receiptId)
+    if (staged === undefined || staged === null || (staged.type !== 'file' && staged.type !== 'image')) throw gone()
+    receiptIds.push(part.receiptId)
+    return staged
+  })
+  return { parts: resolved, receiptIds, agent, uploads }
+}
+
+/**
  * The words of a prompt's parts and, for a node Bot, its attachments. Refuses (never drops) what cannot go:
  * a node too old for them, too many, too big, a part of a kind that is neither text, image nor file.
  * Returns { text, collected } — `collected` is undefined when the message has no attachment.
  */
-export async function collectPrompt(rt, bot, content) {
-  const parts = typeof content === 'string' ? [{ type: 'text', text: content }] : Array.isArray(content) ? content : []
+export async function collectPrompt(rt, bot, content, { sessionId, requestId } = {}) {
+  const given = typeof content === 'string' ? [{ type: 'text', text: content }] : Array.isArray(content) ? content : []
+  const { parts, receiptIds, agent, uploads } = await resolveReceipts(rt, given, sessionId)
   const text = parts.filter(part => part?.type === 'text').map(part => String(part.text ?? '')).join('\n')
   const attached = parts.filter(part => part?.type !== 'text')
   if (attached.length === 0) return { text }
@@ -129,6 +158,11 @@ export async function collectPrompt(rt, bot, content) {
     if (total > MAX_TOTAL_BYTES) throw refuse('session/joined-attachment-too-large', `附件加起来不能超过 ${mb(MAX_TOTAL_BYTES)}`)
     items.push({ index: items.length, kind: part.type, name: String(name).slice(0, 200), ...(mediaType ? { mediaType: String(mediaType).slice(0, 64) } : {}), data, sha256: sha256Of(data) })
     blocks.push(block)
+  }
+  // The receipts are spent: bound to this message, they are retired when its user message lands on the page
+  // (the core's own observer), instead of staying staged for the life of the Session.
+  if (receiptIds.length > 0 && requestId !== undefined) {
+    try { uploads.bindPrompt?.(agent, receiptIds, requestId)?.commit?.() } catch { /* a receipt that cannot be bound is only retired later */ }
   }
   return { text, collected: { items, blocks } }
 }
