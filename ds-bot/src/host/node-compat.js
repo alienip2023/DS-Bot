@@ -14,7 +14,7 @@ export const NODE_FEATURES = Object.freeze({
   cards: { cap: 'roster-cards/1', label: '节点卡片' },
   trace: { cap: 'bot-trace/1', label: '思考过程与工具步骤' },
 })
-// The AC release that carries every capability above (AC 0.4.21 pairs with ds-bot 0.3.10-fork.101).
+// The AC release that carries every capability above (AC 0.4.21 or newer pairs with ds-bot 0.3.10-fork.101 and later; AC 0.4.22 adds the link-stability fix).
 export const AC_NEEDED = '0.4.21'
 
 /** The capabilities of a node, or undefined when they are not known. */
