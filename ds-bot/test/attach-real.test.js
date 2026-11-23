@@ -385,3 +385,38 @@ describe('attach-real: a file from IM or the phone to a Bot whose page was never
     await real.dispose()
   })
 })
+
+describe('attach-real: the other shapes the page and the phone send', () => {
+  it('AR-13: an image sent inline (no upload: the phone, IM, or a composer that did not stage it) is admitted for the page and sent as the bytes it came with', async () => {
+    const real = await realUploadWorld()
+    await real.agent('mirror-1')
+    const png = makePng(64, 48)
+    const rt = { ctx: real.ctx, warn() {}, resolveAgent: async id => real.ctx.agents.get(id) }
+    const { collected } = await collectPrompt(rt, bot, [{ type: 'image', mediaType: 'image/png', data: png.toString('base64'), name: 'inline.png' }, { type: 'text', text: 'hi' }], { sessionId: 'mirror-1', requestId: 'inline-1' })
+    assert.equal(collected.items[0].data.equals(png), true)
+    assert.equal(collected.items[0].name, 'inline.png')
+    assert.deepEqual([collected.blocks[0].type, collected.blocks[0].attachment.name, collected.blocks[0].attachment.mediaType], ['image', 'inline.png', 'image/png'], 'the page shows the core\'s own stored image')
+    await real.dispose()
+  })
+
+  it('AR-14: a steer written as a turn of its own after a wait still shows its attachments on the page', async () => {
+    const w = makeWorld({ tracker: true })
+    const { startSideTurn } = await import('../src/host/executor.js')
+    const other = { id: 'other-session' }
+    w.rt.joinedInFlight = new Map([[w.bot.id, { requestId: 'running', session: other, startedAt: Date.now() }]])
+    stashAttachments('side-1', { items: [{ index: 0, kind: 'file', name: 'a.txt', data: Buffer.from('abc'), sha256: sha(Buffer.from('abc')) }], blocks: [{ type: 'file', attachment: { attachmentId: 'f1', name: 'a.txt', bytes: 3 } }] })
+    const session = w.sessionOf('mirror-1')
+    const started = startSideTurn({ rt: w.rt, bot: w.bot, text: 'the file', requestId: 'side-1', session, state: {}, tracker: w.rt.turnTracker, timeoutMs: 5000, mode: 'steer' })
+    await settle()
+    assert.equal(w.frames.filter(frame => frame.type === 'bot/attach').length, 1)
+    w.emitter.emit('botTurnResult', { exchangeId: w.frames.find(frame => frame.type === 'bot/turn').payload.exchangeId, ok: true, text: 'got it', seq: 0 })
+    await started.done
+    assert.equal(attachmentsOf('side-1'), undefined, 'the turn is over: the hub let the attachments go')
+    // the page write waited for the running turn; it still carries the file
+    assert.equal(session.log.some(event => event.type === 'user/message'), false)
+    w.rt.joinedInFlight.clear()
+    w.rt.flushLateReplies(w.bot.id)
+    const written = session.log.find(event => event.type === 'user/message').data.content
+    assert.deepEqual(written.map(block => block.type), ['text', 'file'])
+  })
+})
