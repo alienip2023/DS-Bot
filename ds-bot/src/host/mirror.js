@@ -122,14 +122,16 @@ const mirrorSource = { kind: 'model', provider: MIRROR_PROVIDER, model: MIRROR_M
 /**
  * turn/start, step/start, user/message. `rpcId` is the prompt's requestId: the client
  * retires its local echo only on a user/message whose source carries it (client.js
- * observeSubmissionMessage); imported history has no requestId and omits it.
+ * observeSubmissionMessage); imported history has no requestId and omits it. `content` is the message as the page shows
+ * it when the caller took it earlier (a write that waits for a turn in front of it must not look the attachments up
+ * after they were let go).
  */
-export function mirrorTurnStart(session, { turn, step = 1, userText, rpcId } = {}) {
+export function mirrorTurnStart(session, { turn, step = 1, userText, rpcId, content } = {}) {
   session.append('turn/start', { turn })
   try {
     session.append('step/start', { turn, step })
     session.append('user/message', createUserMessage({
-      content: userContentOf(rpcId, userText),
+      content: content ?? userContentOf(rpcId, userText),
       source: rpcId === undefined ? { kind: 'user' } : { kind: 'user', rpcId },
     }), { surfaceOp: 'append' })
   } catch (err) {
@@ -409,6 +411,19 @@ export async function ensureMirrorSession(rt, bot) {
   } finally {
     if (pending.get(bot.id) === job) pending.delete(bot.id)
   }
+}
+
+/**
+ * The Session a file for this Bot's chat is uploaded under. A joined Bot has no Session of its own until its page is
+ * first opened (`rt.chatOf` then answers the Bot's id, which no Agent lives under), so an IM or phone file sent
+ * before that would find nothing to be staged for: the mirror Session is created first.
+ */
+export async function uploadSessionOf(rt, botId) {
+  const bot = rt.botOf?.(botId)
+  if (bot?.origin === 'joined' && bot.worker?.home === 'remote' && !(typeof bot.sessionId === 'string' && bot.sessionId !== '')) {
+    try { await ensureMirrorSession(rt, bot) } catch { /* the upload says it cannot, as before */ }
+  }
+  return rt.chatOf(botId)
 }
 
 async function createMirrorSession(rt, bot) {

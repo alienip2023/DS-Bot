@@ -13,7 +13,7 @@
 import { randomUUID } from 'node:crypto'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { joinedShadow } from './roster-join.js'
-import { attachmentsOf, releaseBytes, sendChunks, userContentOf } from './joined-attachments.js'
+import { attachmentsOf, forgetAttachments, releaseBytes, sendChunks, userContentOf } from './joined-attachments.js'
 import { listenBotTurnResult, JOINED_TURN_TIMEOUT_MS, JOINED_LATE_WINDOW_MS, LINK_LOST_TEXT, PENDING_TURN_TEXT } from './joined-turn.js'
 import { mirrorTurn, allocateTurn, mirrorTurnStart, mirrorTurnFinish, mirrorTurnFail, mirrorTurnAbort, mirrorTurnPending, mirrorLateReply, TASK_RESULT_MARK, STEER_REPLY_MARK } from './mirror.js'
 import { deferMirrorWrite, drainJoinedMirror, mirrorTurnOpen } from './joined-mirror-writer.js'
@@ -300,6 +300,20 @@ const FAILURE_WORDS = {
   E_MIRROR_WRITE: '消息没能写入页面，已取消发送',
   'bot-attach-incomplete': '附件没有完整送到节点，请重新发送',
   'bot-attach-invalid': '附件在传输中损坏了，请重新发送',
+  'bot-attach-unsupported': '节点存不下这个附件（它的 DeepSeek Harness 没有文件上传服务，或存储失败）',
+}
+// The reason the node's own core gave for refusing an attachment (details.reason of its prompt), in words.
+const ATTACH_REJECTED_WORDS = {
+  MODEL_DOES_NOT_SUPPORT_IMAGES: '节点上这个 Bot 当前的模型不支持图片',
+  IMAGE_TOO_MANY_PIXELS: '图片像素太多，节点不收',
+  IMAGE_DIMENSION_TOO_LARGE: '图片尺寸太大，节点不收',
+  IMAGE_TOO_LARGE: '图片太大，节点不收',
+  IMAGES_TOO_LARGE: '图片加起来太大，节点不收',
+  TOO_MANY_IMAGES: '图片太多，节点不收',
+  INVALID_IMAGE: '节点认不出这张图片',
+  IMAGE_TYPE_MISMATCH: '图片内容和它的类型对不上',
+  UNSUPPORTED_IMAGE_TYPE: '节点不支持这种图片格式',
+  FILE_NOT_STAGED: '节点没有收到文件（上传已失效）',
 }
 
 /** The words the page shows after "⚠ 无法送达节点：" for a failed delivery. */
@@ -307,6 +321,8 @@ export function failureText(err) {
   const code = typeof err?.code === 'string' ? err.code : ''
   const detail = String(err?.message ?? err ?? '')
   // A node's refusal arrives as E_REJECTED with the node's own error name as its detail.
+  const rejected = /^bot-attach-rejected:([A-Z_]+)$/.exec(detail)
+  if (rejected !== null) return `${ATTACH_REJECTED_WORDS[rejected[1]] ?? `节点拒绝了附件（${rejected[1]}）`}（bot-attach-rejected）`
   const word = FAILURE_WORDS[detail] ?? FAILURE_WORDS[code]
   if (word === undefined) return detail || 'unknown'
   if (FAILURE_WORDS[detail] !== undefined) return `${word}（${detail}）`
@@ -455,6 +471,7 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
     })
   } catch (err) {
     release()
+    forgetAttachments(requestId)   // nothing was sent and the message is refused: its bytes are not needed again
     throw err
   }
 
@@ -466,6 +483,7 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
   } catch (err) {
     prepared.abandon()
     release()
+    forgetAttachments(requestId)
     throw new ExecutorError('E_MIRROR_WRITE', `page turn not written: ${err?.message ?? err}`)
   }
   announced = true
@@ -545,6 +563,7 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
     } finally {
       rt.joinedLate.delete(dispose)
       sink?.dispose()
+      forgetAttachments(requestId)   // the turn is over: neither its bytes nor its page blocks are needed any more
       release()
     }
   })()
@@ -592,7 +611,16 @@ export function startSideTurn({ rt, bot, text, requestId, session, state = {}, t
   const sides = rt.joinedSide.get(bot.id) ?? new Set()
   if (sides.size >= JOINED_SIDE_LIMIT) throw new ExecutorError('E_BUSY', 'too many concurrent turns for this Bot')
   const lateWindowMs = Number.isFinite(rt.joinedLateWindowMs) ? Math.max(1, rt.joinedLateWindowMs) : JOINED_LATE_WINDOW_MS
-  const prepared = prepareRemote({ bot, text, rt, requestId, tracker, timeoutOverride: timeoutMs, lateWindowMs, mode })
+  // The message as the page shows it, taken now: a write that waits for the turn in front of it runs after the
+  // attachments are let go.
+  const userContent = userContentOf(requestId, text)
+  let prepared
+  try {
+    prepared = prepareRemote({ bot, text, rt, requestId, tracker, timeoutOverride: timeoutMs, lateWindowMs, mode })
+  } catch (error) {
+    forgetAttachments(requestId)
+    throw error
+  }
   const { seenKeys, closedKeys, seenSteps, closedTurns } = state
   const record = { requestId, abort: undefined }
   let over = false
@@ -618,7 +646,7 @@ export function startSideTurn({ rt, bot, text, requestId, session, state = {}, t
   // `finish(turn, trace)`: trace is { step, reasoning } — where the closing message goes after the node's steps.
   const writeTurn = (finish) => writeWhenFree(() => {
     const turn = allocateTurn(session)
-    mirrorTurnStart(session, { turn, step: 1, userText: text, rpcId: requestId })
+    mirrorTurnStart(session, { turn, step: 1, userText: text, rpcId: requestId, content: userContent })
     finish(turn, sink?.bindAndClose({ session, turn, step: 1, closedTurns }) ?? { step: 1 })
   })
   // The answer lands in the turn that is still open on the page (right after the steer it answers);
@@ -648,7 +676,7 @@ export function startSideTurn({ rt, bot, text, requestId, session, state = {}, t
   rt.joinedRunning?.(bot, true)
   if (hostTurn !== undefined) {
     try {
-      session.append('user/message', createUserMessage({ content: userContentOf(requestId, text), source: { kind: 'user', rpcId: requestId } }), { surfaceOp: 'append' })
+      session.append('user/message', createUserMessage({ content: userContent, source: { kind: 'user', rpcId: requestId } }), { surfaceOp: 'append' })
       userWritten = true
     } catch (error) { rt.warn?.('ds-bot: a steer to %s was not shown on the page: %s', bot.id, error?.message ?? error) }
   }
@@ -717,6 +745,7 @@ export function startSideTurn({ rt, bot, text, requestId, session, state = {}, t
       return { ok: true, turnId: prepared.turnId }
     } finally {
       rt.joinedLate.delete(dispose)
+      forgetAttachments(requestId)
       release()
     }
   })()

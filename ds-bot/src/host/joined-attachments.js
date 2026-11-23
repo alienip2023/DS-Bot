@@ -9,9 +9,12 @@
 //          them in its `attachments` manifest. The same parts, as the hub's own references, are what the mirror
 //          Session's user message shows (`userContentOf`).
 //   node:  `bot/attach` chunks are kept here until the turn arrives; `assembleParts` waits for all of them, checks
-//          size and sha256, and returns the prompt parts the Bot's own Session takes (an image as an encoded
-//          image, a file saved in the node's attachment store). Anything missing or wrong is an error the hub
-//          shows ("bot-attach-incomplete"), never a message that goes on without its attachment.
+//          size and sha256 and returns the parts (an image as the encoded image the core's prompt takes, a file as
+//          bytes still to be staged). `rt.sendUser` then uploads each file through the node's own `fileUploads`
+//          for the Session the message really goes to and puts its receipt in the prompt (`{ type: 'file', receiptId }`
+//          — the core's prompt refuses a file part that names a stored file instead: FILE_NOT_STAGED). Anything
+//          missing or wrong is an error the hub shows ("bot-attach-incomplete"), never a message that goes on
+//          without its attachment.
 //
 // Needs AC 0.4.25 on the node (`bot-attach/1`, node-compat.js); an older node is refused with that reason.
 import { createHash } from 'node:crypto'
@@ -32,9 +35,12 @@ const EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'imag
 // ── what a message carries, by requestId ────────────────────────────────────────────────────────
 
 const stash = new Map()
+// A message that waits behind a running turn keeps its attachments for as long as it waits (a long queue outlives
+// the ordinary lifetime); anything else is let go after TTL_MS if nothing released it.
+const QUEUED_TTL_MS = 12 * 3600_000
 function sweep() {
   const now = Date.now()
-  for (const [id, entry] of stash) if (now - entry.at > TTL_MS) stash.delete(id)
+  for (const [id, entry] of stash) if (now - entry.at > (entry.queued === true ? QUEUED_TTL_MS : TTL_MS)) stash.delete(id)
 }
 
 /** Remember a collected prompt's attachments until its turn is sent (items) and its page message is written (blocks). */
@@ -44,10 +50,17 @@ export function stashAttachments(requestId, collected) {
   stash.set(requestId, { ...collected, at: Date.now() })
 }
 export const attachmentsOf = requestId => stash.get(requestId)
+/** The message waits for a turn in front of it: its attachments stay until it is sent. */
+export function holdAttachments(requestId) {
+  const entry = stash.get(requestId)
+  if (entry !== undefined) entry.queued = true
+}
+/** Is a message with this requestId already carrying attachments here (a repeated send of the same message)? */
+export const hasAttachments = requestId => stash.has(requestId)
 /** The heavy bytes are not needed once the frames are out; the page blocks stay for the message on the page. */
 export function releaseBytes(requestId) {
   const entry = stash.get(requestId)
-  if (entry !== undefined) entry.items = []
+  if (entry !== undefined) { entry.items = []; entry.queued = false }
 }
 export const forgetAttachments = requestId => { stash.delete(requestId) }
 
@@ -62,7 +75,9 @@ export function userContentOf(requestId, text) {
 // ── the hub: read what the user attached ────────────────────────────────────────────────────────
 
 // A Cordis service is read with ctx.get(name): a plain `ctx.fileUploads` throws "cannot get property … without inject"
-// for a service this plugin does not declare (the page's uploads live in the core's own `fileUploads`).
+// for a service this plugin does not declare (the page's uploads live in the core's own `fileUploads`). `get` is
+// strict: it answers undefined while the service's own plugin is not running (a reload), which callers must tell
+// apart from "the receipt is gone".
 function serviceOf(rt, name) {
   try { return rt.ctx?.get?.(name) } catch { return undefined }
 }
@@ -73,6 +88,10 @@ async function readFileBytes(store, ref) {
   for await (const chunk of store.readFileStream(ref, AbortSignal.timeout(60_000))) chunks.push(Buffer.from(chunk))
   return Buffer.concat(chunks)
 }
+
+// A bare error out of the store (a missing object, a read that timed out) would reach the page as the gateway's
+// "internal error"; say which attachment could not be read instead.
+const unreadable = (what, error) => refuse('session/joined-attachment-unsupported', `读取附件 ${what} 失败：${String(error?.message ?? error).slice(0, 120)}`)
 
 /**
  * The page does not put an image or a file in the prompt itself: it uploads it first and the prompt carries a
@@ -85,12 +104,13 @@ async function resolveReceipts(rt, parts, sessionId) {
   const receipts = parts.filter(part => part?.type === 'file' && part.attachment === undefined && part.receiptId !== undefined)
   if (receipts.length === 0) return { parts, receiptIds: [] }
   const uploads = serviceOf(rt, 'fileUploads')
+  if (typeof uploads?.resolve !== 'function') throw refuse('session/joined-attachment-unsupported', '主控的文件上传服务暂时不可用，请稍后重新发送')
   let agent = typeof sessionId === 'string' && sessionId !== '' ? serviceOf(rt, 'agents')?.get?.(sessionId) : undefined
   if (agent === undefined && typeof rt.resolveAgent === 'function' && typeof sessionId === 'string' && sessionId !== '') {
     try { agent = await rt.resolveAgent(sessionId) } catch { agent = undefined }
   }
   const gone = () => refuse('session/joined-attachment-unsupported', '上传的附件已经失效，请重新添加后再发送')
-  if (agent === undefined || typeof uploads?.resolve !== 'function') throw gone()
+  if (agent === undefined) throw gone()
   const receiptIds = []
   const resolved = parts.map((part) => {
     if (!receipts.includes(part)) return part
@@ -134,7 +154,8 @@ export async function collectPrompt(rt, bot, content, { sessionId, requestId } =
       imageNumber += 1
       if (part.attachment !== undefined) {
         if (typeof store?.readImage !== 'function') throw refuse('session/joined-attachment-unsupported', '这台主控读不了已上传的图片')
-        const read = await store.readImage(part.attachment, AbortSignal.timeout(60_000))
+        let read
+        try { read = await store.readImage(part.attachment, AbortSignal.timeout(60_000)) } catch (error) { throw unreadable(part.attachment.name ?? `图片 ${imageNumber}`, error) }
         data = Buffer.from(read.data)
         mediaType = read.ref?.mediaType ?? part.attachment.mediaType
         name = read.ref?.name ?? part.attachment.name
@@ -152,14 +173,14 @@ export async function collectPrompt(rt, bot, content, { sessionId, requestId } =
       name = name || `image-${imageNumber}.${EXT[mediaType] ?? 'png'}`
     } else {
       if (part.attachment === undefined || typeof store?.readFileStream !== 'function') throw refuse('session/joined-attachment-unsupported', '这台主控读不了已上传的文件')
-      data = await readFileBytes(store, part.attachment)
+      try { data = await readFileBytes(store, part.attachment) } catch (error) { throw unreadable(part.attachment.name ?? 'file', error) }
       name = part.attachment.name || 'file'
       block = { type: 'file', attachment: part.attachment }
     }
     if (data.length === 0) throw refuse('session/joined-attachment-unsupported', `${name} 是空的`)
     total += data.length
     if (total > MAX_TOTAL_BYTES) throw refuse('session/joined-attachment-too-large', `附件加起来不能超过 ${mb(MAX_TOTAL_BYTES)}`)
-    items.push({ index: items.length, kind: part.type, name: String(name).slice(0, 200), ...(mediaType ? { mediaType: String(mediaType).slice(0, 64) } : {}), data, sha256: sha256Of(data) })
+    items.push({ index: items.length, kind: part.type, name: String(name).trim().slice(0, 200) || (part.type === 'image' ? `image-${imageNumber}` : 'file'), ...(mediaType ? { mediaType: String(mediaType).slice(0, 64) } : {}), data, sha256: sha256Of(data) })
     blocks.push(block)
   }
   // The receipts are spent: bound to this message, they are retired when its user message lands on the page
@@ -186,6 +207,36 @@ export function sendChunks(registry, { nodeId, remoteBotId, exchangeId, items })
     manifest.push({ index: item.index, name: item.name, kind: item.kind, ...(item.mediaType ? { mediaType: item.mediaType } : {}), bytes: item.data.length, sha256: item.sha256, chunks })
   }
   return manifest
+}
+
+// ── the node: hand the core's prompt a receipt for each file ───────────────────────────────────
+
+/** A file whose bytes are still to be staged: `{ type: 'file', name, data }`, with neither a receipt nor a stored reference. */
+export const isPendingFile = part => part?.type === 'file' && part.receiptId === undefined && part.attachment === undefined && part.data !== undefined
+
+/**
+ * The core's prompt takes a file as the receipt of an upload made for the Session that gets the message
+ * (`{ type: 'file', receiptId }`, resolved against that Session's Agent); a part naming a stored file instead is
+ * refused as FILE_NOT_STAGED. So each pending file is uploaded through this node's own `fileUploads` for exactly
+ * `sessionId`, right before the prompt — the caller names the Session the message really goes to (a busy Bot's
+ * message moves to a fresh chat first). Throws { code: 'bot-attach-unsupported' } when the node cannot stage it.
+ */
+export async function stageFileParts(rt, sessionId, parts) {
+  if (!Array.isArray(parts) || !parts.some(isPendingFile)) return parts
+  const uploads = serviceOf(rt, 'fileUploads')
+  if (typeof uploads?.uploadStream !== 'function') throw refuse('bot-attach-unsupported', '这台节点存不了文件')
+  const staged = []
+  for (const part of parts) {
+    if (!isPendingFile(part)) { staged.push(part); continue }
+    let value
+    try {
+      value = await uploads.uploadStream({ sessionId, data: (async function* () { yield part.data })(), name: part.name })
+    } catch (error) {
+      throw refuse('bot-attach-unsupported', `节点存不下文件 ${part.name}：${String(error?.message ?? error).slice(0, 120)}`)
+    }
+    staged.push({ type: 'file', receiptId: value.receiptId })
+  }
+  return staged
 }
 
 // ── the node: keep the chunks until the turn that uses them arrives ─────────────────────────────
@@ -244,30 +295,40 @@ export function createAttachReceiver(rt) {
     }
   }
 
-  /** The prompt parts of a turn's attachments, in order. Throws { code: 'bot-attach-incomplete' | 'bot-attach-invalid' }. */
+  /**
+   * The parts of a turn's attachments, in order, once every byte is here and checked. An image is the encoded image
+   * the core's prompt takes; a file is `{ type: 'file', name, data }` — bytes that `stageFileParts` still has to upload
+   * for the Session that will take the message. Throws { code: 'bot-attach-incomplete' | 'bot-attach-invalid' }.
+   */
   async function assembleParts(turn) {
     const entries = Array.isArray(turn?.attachments) ? turn.attachments : []
     const parts = []
-    for (const entry of entries) {
-      const data = await bytesOf(turn.exchangeId, entry)
-      if (data.length !== entry.bytes || sha256Of(data) !== entry.sha256) throw refuse('bot-attach-invalid', `附件 ${entry.name} 在传输中损坏了`)
-      if (entry.kind === 'image') {
-        parts.push({ type: 'image', mediaType: entry.mediaType ?? 'image/png', data: data.toString('base64'), name: entry.name })
-        continue
+    try {
+      for (const entry of entries) {
+        const data = await bytesOf(turn.exchangeId, entry)
+        if (data.length !== entry.bytes || sha256Of(data) !== entry.sha256) throw refuse('bot-attach-invalid', `附件 ${entry.name} 在传输中损坏了`)
+        if (entry.kind === 'image') parts.push({ type: 'image', mediaType: entry.mediaType ?? 'image/png', data: data.toString('base64'), name: entry.name })
+        else parts.push({ type: 'file', name: entry.name, data })
       }
-      const store = storeOf(rt)
-      if (typeof store?.admitEncodedFile !== 'function') throw refuse('bot-attach-invalid', '这台节点存不了文件')
-      const ref = await store.admitEncodedFile({ data: data.toString('base64'), name: entry.name })
-      parts.push({ type: 'file', attachment: ref })
+    } catch (error) {
+      discard(turn)   // the turn is refused: what else of it arrived is not kept waiting for a turn that will not use it
+      throw error
     }
     return parts
   }
-  return { receive, assembleParts, size: () => books.size }
+
+  /** A turn that will not be assembled (refused before it): let go of the chunks that came ahead of it. */
+  function discard(turn) {
+    for (const entry of Array.isArray(turn?.attachments) ? turn.attachments : []) drop(`${turn.exchangeId}:${entry?.index}`)
+  }
+
+  return { receive, assembleParts, discard, size: () => books.size }
 }
 
 export function install(rt) {
   const receiver = createAttachReceiver(rt)
   rt.assembleAttachmentParts = receiver.assembleParts
+  rt.discardAttachmentParts = receiver.discard
   // AC's node plugin finds the receiver under this name (an older AC never sends bot/attach).
   try { rt.ctx?.provide?.('remote-agent:bot-attach', receiver.receive) } catch { /* registry plugin may be absent */ }
 }

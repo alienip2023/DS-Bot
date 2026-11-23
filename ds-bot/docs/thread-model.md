@@ -25,7 +25,7 @@ or **IMPLEMENTED** (code enforces it).
 - Which saved conversation a Session runs in: `bySessionIdFullMap` (`src/host/store.js:644`).
 - At most `MAX_THREADS_PER_BOT = 10` Threads per Bot, Main included (`src/host/constants.js:22-23`). **IMPLEMENTED**:
   `createThread` refuses the eleventh Thread with `bot/refused` (`src/host/roster.js:358-360`), reached by the
-  `thread-create` route (`src/host/channel.js:859-861`) and tested by `test/thread-t2-api.test.js:55-65`.
+  `thread-create` route (`src/host/channel.js:867-869`) and tested by `test/thread-t2-api.test.js:55-65`.
 - One turn per Bot runs at a time across its Threads (section 4.5).
 
 ### 1.3 Process / profile-wide
@@ -36,8 +36,8 @@ or **IMPLEMENTED** (code enforces it).
   ); persisting is skipped when `rt.readOnly() !== undefined` (`src/host/resume.js:166`).
 - `state.json` and `state.lock`: the first host to load takes the lock, a second only reads
   (`src/host/home-lock.js:3`).
-- Read-only host mode (`rt.readOnly()`, `src/host/channel.js:429`, `:461`) and the `READS` allow-set
-  (`src/host/channel.js:491`), which contains `approval-answer`. That is a compatibility allowance, not
+- Read-only host mode (`rt.readOnly()`, `src/host/channel.js:437`, `:461`) and the `READS` allow-set
+  (`src/host/channel.js:499`), which contains `approval-answer`. That is a compatibility allowance, not
   authentication.
 
 ## 4. Concurrency
@@ -49,7 +49,7 @@ or **IMPLEMENTED** (code enforces it).
 - **IMPLEMENTED**: the per-Bot slot. A turn starts only when `slot.running === null`; otherwise it is pushed on
   `slot.queue` (`src/host/thread-queue.js:250-255`). The gate keys on `owner.botId`, so two Threads of one
   Bot share a slot.
-- The send endpoint reaches the gate through `rt.sendThreadTurn` (`src/host/channel.js:1231-1232`).
+- The send endpoint reaches the gate through `rt.sendThreadTurn` (`src/host/channel.js:1239-1240`).
 - A turn accepted but never started is let go after `ACCEPT_WAIT_MS = 60_000` (`src/host/thread-queue.js:17`).
 
 ### Approval answers
@@ -62,7 +62,7 @@ or **IMPLEMENTED** (code enforces it).
   (`:138-142`); `choice` is allow or reject (`:143-144`).
 - The binding is a stale-card guard, not a credential or a caller identity. A matching binding cannot make an
   unknown, settled or foreign-session id answerable, nor an invalid choice valid.
-- The binding is optional everywhere. `src/host/channel.js:1003-1004` passes `body.binding ?? undefined`; the web
+- The binding is optional everywhere. `src/host/channel.js:1011-1012` passes `body.binding ?? undefined`; the web
   UI sends one when the view row carries both fields; the IM path sends none
   (`src/host/im/index.js:723-727`) because a card stores only the id.
 - `cancelApprovals(sessionId)` settles only that Session's entries as `cancelled`
@@ -112,11 +112,11 @@ Checked by `test/thread-model-anchors.test.js`: each row's line must contain its
 | `src/host/store.js:869` | `bySessionIdFullMap.set` |
 | `src/host/store.js:869` | `bySessionIdFullMap.set` |
 | `src/host/store.js:1056` | `thread-model.md §1.3` |
-| `src/host/channel.js:489` | `READS` |
-| `src/host/channel.js:859` | `thread-create` |
-| `src/host/channel.js:1010` | `approval-answer` |
-| `src/host/channel.js:1336` | `thread-model §4.5` |
-| `src/host/channel.js:1337` | `sendThreadTurn` |
+| `src/host/channel.js:497` | `READS` |
+| `src/host/channel.js:867` | `thread-create` |
+| `src/host/channel.js:1018` | `approval-answer` |
+| `src/host/channel.js:1344` | `thread-model §4.5` |
+| `src/host/channel.js:1345` | `sendThreadTurn` |
 | `src/host/delivery.js:317` | `thread-model §4.5` |
 | `src/host/thread-queue.js:5` | `maxParallelThreads` |
 | `src/host/thread-queue.js:35` | `slots` |

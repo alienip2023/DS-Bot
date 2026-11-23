@@ -7,6 +7,7 @@ import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { replaceFile } from '../files.js'
 import { viewCardText } from '../parts.js'
+import { uploadSessionOf } from '../mirror.js'
 import { imPlatform, IM_PLATFORMS } from '../../shared/im-platforms.js'
 import { SOURCE_KIND } from '../constants.js'
 import { extractLocalMarkdownImages, prepareOutboundReply } from './outbound-images.js'
@@ -1289,8 +1290,8 @@ export function install(rt) {
     // Session moves on to a fresh part (`room.sessionId`) while `room.id` stays the
     // first one, so uploading under the id leaves the receipt on a Session the
     // message never reaches and DSH drops the file (#1121).
-    const uploadTo = target.botId !== undefined
-      ? rt.chatOf(target.botId)
+    const uploadTo = (msg.files ?? []).length === 0 ? undefined : target.botId !== undefined
+      ? await uploadSessionOf(rt, target.botId)
       : rt.sessionOfRoom(rt.roomOf(target.roomId))
     const content = []
     // A quoted reply goes in as the quoted message, then what the user said:

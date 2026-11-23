@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { test } from 'node:test'
 import {
-  CHUNK_BYTES, MAX_ATTACHMENTS, MAX_TOTAL_BYTES, attachmentsOf, collectPrompt, createAttachReceiver, forgetAttachments, sendChunks, stashAttachments, userContentOf,
+  CHUNK_BYTES, MAX_ATTACHMENTS, MAX_TOTAL_BYTES, attachmentsOf, collectPrompt, createAttachReceiver, forgetAttachments, holdAttachments, releaseBytes, sendChunks, stashAttachments, userContentOf,
 } from '../src/host/joined-attachments.js'
 import { makeWorld, textRequest, types } from './joined-world.js'
 
@@ -103,8 +103,8 @@ test('NA-4: the node puts the chunks back together, whatever their order, and re
   for (const frame of [...frames].reverse()) node.receive(frame)   // out of order
   const parts = await node.assembleParts({ exchangeId: 'x1', attachments: manifest })
   assert.equal(parts[0].type, 'file')
-  assert.equal(parts[0].attachment.name, 'doc.bin')
-  assert.equal(parts[0].attachment.bytes, data.length)
+  assert.equal(parts[0].name, 'doc.bin')
+  assert.equal(parts[0].data.equals(data), true, 'a file is still bytes: it is staged for the Session that takes the message later')
   assert.deepEqual(parts[1], { type: 'image', mediaType: 'image/png', data: png.toString('base64'), name: 'p.png' })
   assert.equal(node.size(), 0, 'what was used is let go')
 
@@ -272,4 +272,51 @@ test('NA-12: a page prompt of receipts reaches the node as chunks and a turn, wi
   const message = w.sessionOf(w.bot.sessionId).log.find(event => event.type === 'user/message')
   assert.deepEqual(message.data.content.map(block => block.type), ['text', 'image'])
   assert.equal(up.bound[0].requestId, 'req-rcpt')
+})
+
+test('NA-13: a name AC would refuse is never sent; an unreadable attachment is a refusal that names it, not an internal error', async () => {
+  const blank = await collectPrompt(rtWith(fakeStore), bot, [{ type: 'file', attachment: { attachmentId: 'f1', name: '   ', bytes: 5 } }, { type: 'image', mediaType: 'image/png', data: png.toString('base64'), name: '  ' }])
+  // AC's cleanBotAttachments rejects the whole turn for a name that is empty once trimmed
+  assert.deepEqual(blank.collected.items.map(item => item.name), ['file', 'image-1'], 'a blank name is replaced')
+  const broken = { ...fakeStore, readImage: async () => { throw Object.assign(new Error('object missing'), { code: 'ATTACHMENT_NOT_FOUND' }) }, readFileStream: async function* () { throw new Error('read timed out') } }
+  const refusal = content => collectPrompt(rtWith(broken), bot, content).then(() => assert.fail('expected a refusal'), error => error)
+  const image = await refusal([{ type: 'image', attachment: { attachmentId: 'a1', mediaType: 'image/png', bytes: 8, name: 'photo.png' } }])
+  assert.equal(image.code, 'session/joined-attachment-unsupported')
+  assert.match(image.message, /photo\.png.*object missing/)
+  const file = await refusal([{ type: 'file', attachment: { attachmentId: 'f1', name: 'big.zip', bytes: 8 } }])
+  assert.equal(file.code, 'session/joined-attachment-unsupported')
+  assert.match(file.message, /big\.zip.*read timed out/)
+})
+
+test('NA-14: attachments of a message that waits behind a turn are kept past the ordinary lifetime, then let go when it is over', () => {
+  const realNow = Date.now
+  try {
+    stashAttachments('waiting', { items: [{ data: Buffer.from('x') }], blocks: [{ type: 'file' }] })
+    stashAttachments('stray', { items: [], blocks: [] })
+    holdAttachments('waiting')
+    Date.now = () => realNow() + 45 * 60_000
+    stashAttachments('later', { items: [], blocks: [] })   // a new stash sweeps
+    assert.equal(attachmentsOf('stray'), undefined, 'nothing waits for a stray entry: the clock lets it go')
+    assert.equal(attachmentsOf('waiting').items.length, 1, 'a message still waiting for its turn keeps its bytes')
+    releaseBytes('waiting')
+    assert.deepEqual(attachmentsOf('waiting').items, [])
+    Date.now = () => realNow() + 13 * 3600_000
+    stashAttachments('much-later', { items: [], blocks: [] })
+    assert.equal(attachmentsOf('waiting'), undefined)
+  } finally { Date.now = realNow; for (const id of ['waiting', 'stray', 'later', 'much-later']) forgetAttachments(id) }
+})
+
+test('NA-15: chunks that came ahead of a refused turn are let go, not kept for it', async () => {
+  const rt = rtWith(fakeStore)
+  rt.attachWaitMs = 30
+  const node = createAttachReceiver(rt)
+  node.receive({ exchangeId: 'refused', index: 0, chunk: 0, chunks: 1, data: png.toString('base64') })
+  node.receive({ exchangeId: 'refused', index: 1, chunk: 0, chunks: 1, data: png.toString('base64') })
+  assert.equal(node.size(), 2)
+  node.discard({ exchangeId: 'refused', attachments: [{ index: 0 }, { index: 1 }] })
+  assert.equal(node.size(), 0)
+  // an assembly that fails on its first entry lets go of the others too
+  node.receive({ exchangeId: 'half', index: 1, chunk: 0, chunks: 1, data: png.toString('base64') })
+  await assert.rejects(node.assembleParts({ exchangeId: 'half', attachments: [{ index: 0, name: 'a', kind: 'file', bytes: 1, sha256: sha(Buffer.from('a')), chunks: 1 }, { index: 1, name: 'b', kind: 'image', bytes: png.length, sha256: sha(png), chunks: 1 }] }), error => error.code === 'bot-attach-incomplete')
+  assert.equal(node.size(), 0)
 })

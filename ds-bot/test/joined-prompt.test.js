@@ -152,7 +152,8 @@ describe('S24: joined Bot page prompt takeover', () => {
     // the hub cannot read, is refused for what it is.
     const cases = [
       [{ type: 'audio', url: 'x' }, '节点 Bot 只能收文字、图片和文件'],
-      [{ type: 'file', receiptId: 'r1' }, '上传的附件已经失效，请重新添加后再发送'],
+      // no `fileUploads` service in this world: said as such, not as a receipt that went stale
+      [{ type: 'file', receiptId: 'r1' }, '主控的文件上传服务暂时不可用，请稍后重新发送'],
       [{ type: 'file', name: 'x' }, '这台主控读不了已上传的文件'],
     ]
     for (const [part, message] of cases) {
