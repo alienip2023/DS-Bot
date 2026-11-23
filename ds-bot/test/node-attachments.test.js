@@ -13,10 +13,20 @@ import { makeWorld, textRequest, types } from './joined-world.js'
 const sha = buffer => createHash('sha256').update(buffer).digest('hex')
 const png = Buffer.from('89504e470d0a1a0a', 'hex')
 const settle = async () => { for (let i = 0; i < 10; i += 1) await new Promise(resolve => setImmediate(resolve)) }
-const rtWith = (store, caps) => ({
-  ctx: { get: name => (name === 'attachments' ? store : name === 'remote-agent:registry' ? { getNode: () => (caps === undefined ? undefined : { hello: { caps } }) } : undefined), attachments: store },
-  warn() {},
-})
+// A Cordis context: a service is read with get(name); touching an uninjected one as a property throws, as in the host.
+function strictCtx(services) {
+  return new Proxy({ get: name => services[name] }, {
+    get(target, key) {
+      if (key in target || typeof key === 'symbol') return target[key]
+      throw new Error(`cannot get property "${String(key)}" without inject (gateway/internal)`)
+    },
+  })
+}
+const rtWith = (store, caps) => {
+  const services = { attachments: store, 'remote-agent:registry': { getNode: () => (caps === undefined ? undefined : { hello: { caps } }) } }
+  const rt = { ctx: strictCtx(services), warn() {}, services }
+  return rt
+}
 const bot = { id: 'joined:n1:b1', origin: 'joined', type: 'remote-worker', worker: { nodeId: 'n1', remoteBotId: 'b1', home: 'remote', online: true } }
 
 const fakeStore = {
@@ -123,7 +133,6 @@ test('NA-5: chunks that arrive while the turn already waits for them are picked 
 
 test('NA-6: a page prompt with an image reaches the node as chunks then a turn, and the page shows the image', async () => {
   const w = makeWorld({ tracker: true })
-  w.rt.ctx.attachments = fakeStore
   const original = w.rt.ctx.get
   w.rt.ctx.get = name => (name === 'attachments' ? fakeStore : original(name))
   const data = png.toString('base64')
@@ -202,14 +211,14 @@ test('NA-9: attachments that did not arrive whole refuse the turn with the reaso
 function uploadsWith(staged) {
   const agent = { session: { id: 'mirror-1' } }
   const bound = []
-  const ctxExtras = {
+  const services = {
     agents: new Map([['mirror-1', agent]]),
     fileUploads: {
       resolve: (who, receiptId) => (who === agent ? staged[receiptId] : undefined),
       bindPrompt: (who, ids, requestId) => { bound.push({ who, ids, requestId }); return { commit() { bound.at(-1).committed = true } } },
     },
   }
-  return { agent, bound, ctxExtras }
+  return { agent, bound, services }
 }
 
 test('NA-10: the page\'s upload receipts are swapped for the staged image and file before they are collected', async () => {
@@ -217,7 +226,7 @@ test('NA-10: the page\'s upload receipts are swapped for the staged image and fi
   const fileRef = { attachmentId: 'f1', name: 'notes.txt', bytes: 5 }
   const up = uploadsWith({ r1: { type: 'image', attachment: imageRef, encodedBytes: 8 }, r2: { type: 'file', attachment: fileRef } })
   const rt = rtWith(fakeStore)
-  Object.assign(rt.ctx, up.ctxExtras)
+  Object.assign(rt.services, up.services)
   const { text, collected } = await collectPrompt(rt, bot, [
     { type: 'text', text: 'both of these' }, { type: 'file', receiptId: 'r1' }, { type: 'file', receiptId: 'r2' },
   ], { sessionId: 'mirror-1', requestId: 'req-r' })
@@ -230,13 +239,13 @@ test('NA-10: the page\'s upload receipts are swapped for the staged image and fi
 test('NA-11: a receipt that is no longer staged, or whose Session has no agent, is refused; nothing is skipped', async () => {
   const up = uploadsWith({})
   const rt = rtWith(fakeStore)
-  Object.assign(rt.ctx, up.ctxExtras)
+  Object.assign(rt.services, up.services)
   const refused = (content, ids, rtx = rt) => collectPrompt(rtx, bot, content, ids).then(() => assert.fail('expected a refusal'), error => error)
   const stale = await refused([{ type: 'file', receiptId: 'gone' }], { sessionId: 'mirror-1', requestId: 'r' })
   assert.equal(stale.code, 'session/joined-attachment-unsupported')
   assert.match(stale.message, /已经失效/)
   const rt2 = rtWith(fakeStore)
-  Object.assign(rt2.ctx, { agents: new Map(), fileUploads: up.ctxExtras.fileUploads })
+  Object.assign(rt2.services, { agents: new Map(), fileUploads: up.services.fileUploads })
   assert.match((await refused([{ type: 'file', receiptId: 'r1' }], { sessionId: 'other', requestId: 'r' }, rt2)).message, /已经失效/)
 })
 
@@ -244,10 +253,17 @@ test('NA-12: a page prompt of receipts reaches the node as chunks and a turn, wi
   const w = makeWorld({ tracker: true })
   const imageRef = { attachmentId: 'a1', mediaType: 'image/png', bytes: 8, name: 'shot.png' }
   const up = uploadsWith({ r1: { type: 'image', attachment: imageRef, encodedBytes: 8 } })
-  w.rt.ctx.agents = up.ctxExtras.agents
-  w.rt.ctx.fileUploads = up.ctxExtras.fileUploads
-  const original = w.rt.ctx.get
-  w.rt.ctx.get = name => (name === 'attachments' ? fakeStore : original(name))
+  // The host's context: these services are read with get(name); as a property they throw (the real failure was
+  // `cannot get property "fileUploads" without inject`).
+  const original = w.rt.ctx
+  const services = { attachments: fakeStore, ...up.services }
+  w.rt.ctx = new Proxy(original, {
+    get(target, key) {
+      if (key === 'get') return name => (name in services ? services[name] : target.get(name))
+      if (['fileUploads', 'agents', 'attachments'].includes(key)) throw new Error(`cannot get property "${key}" without inject (gateway/internal)`)
+      return Reflect.get(target, key)
+    },
+  })
   up.agent.session.id = 'mirror-1'
   await w.prompt({ requestId: 'req-rcpt', sessionId: 'mirror-1', mode: 'queue', content: [{ type: 'text', text: 'what is this?' }, { type: 'file', receiptId: 'r1' }] })
   await settle()
