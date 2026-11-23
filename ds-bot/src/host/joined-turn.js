@@ -311,8 +311,10 @@ export async function replyToSender(rt, { fromId, toId, exchangeId, work, text, 
   // sender's next step — the same path local Bot handoffs use. Delivering again via rt.deliver
   // creates a new queued input message, so the reply appears as 5 stacked messages in the sender's
   // queue instead of being consumed as a silent handoff result.
+  // Guard: only skip when answered === true (a real result was received). For failures/timeouts
+  // (answered === false), still deliver explicitly so the sender sees the failure message.
   const senderIsLocal = sender.origin !== 'joined' && sender.origin !== 'peer' && sender.type !== 'remote-worker'
-  if (senderIsLocal && work !== undefined) return
+  if (senderIsLocal && work !== undefined && answered === true) return
   await rt.deliver?.({
     fromId: toId,
     toId: fromId,
