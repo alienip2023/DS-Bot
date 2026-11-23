@@ -160,6 +160,16 @@ export function mirrorTurnPending(session, { turn, step = 1, text } = {}) {
 }
 
 /**
+ * Append a streaming text delta while a page-origin turn is open.
+ * Writes an assistant/message with the accumulated-so-far text so the page shows it live.
+ * Does NOT close the step or turn — mirrorTurnFinish does that when the result arrives.
+ * `text` is the full accumulated text so far (not a delta), so the page always shows the latest.
+ */
+export function mirrorTurnStream(session, { turn, step = 1, text } = {}) {
+  appendAssistant(session, turn, step, text ?? '')
+}
+
+/**
  * assistant/message, step/end, turn/end completed. A node result already written
  * ((botId,nodeSeq) in seenKeys/closedKeys) still closes the turn — as aborted, without a
  * second answer. `closedTurns` guarantees exactly one turn/end per Start.

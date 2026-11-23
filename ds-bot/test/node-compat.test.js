@@ -49,5 +49,5 @@ test('the Bot list says which AC version the node reported and which one is need
   assert.deepEqual(compatOf(rtVersion(['bot-turn-mode/1'], '0.4.24'), bot), { nodeCompat: ['actions', 'cards', 'trace', 'attach', 'models'], nodeAcVersion: '0.4.24', acNeeded: AC_NEEDED })
   assert.equal(compatOf(rtVersion(['bot-turn-mode/1']), bot).nodeAcVersion, undefined, 'an older node reports none: unknown, not guessed')
   assert.deepEqual(compatOf(rtVersion(ALL, '0.4.28'), bot), {}, 'a node that has everything is not flagged, whatever it reports')
-  assert.equal(AC_NEEDED, '0.4.29')
+  assert.equal(AC_NEEDED, '0.4.30')
 })

@@ -1070,6 +1070,63 @@ export function install(rt) {
   }))
 
   rt.teamTools.push(defineTool({
+    name: 'record_routine',
+    description: 'Turn what you just did into a scheduled routine: give the task a name, say what it should do (or confirm the prompt shown), and choose when to repeat it. The Bot runs the prompt on schedule in its own chat without the user needing to ask. Use after completing a task when the user says "do this every day", "run this weekly", or "make this a routine". The prompt should be fully self-contained — the Bot cannot see the original conversation when it runs.',
+    parameters: {
+      bot: { type: 'string', required: true, description: 'Exact name of the Bot that should run the routine (usually yourself)' },
+      title: { type: 'string', required: true, description: 'Short name for the routine, shown in the schedule list' },
+      prompt: { type: 'string', required: true, description: 'What the Bot should do each time — write as a complete, self-contained instruction' },
+      when: {
+        type: 'object',
+        required: true,
+        description: 'When to run. Provide exactly one of: daily (HH:mm), weekly ({day:"monday"–"sunday", time:"HH:mm"}), every_seconds (integer), at (ISO 8601 one-time datetime)',
+        additionalProperties: false,
+        properties: {
+          daily: { type: 'string', description: 'Time of day in HH:mm (e.g. "09:00")' },
+          weekly: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              day: { type: 'string', enum: ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'] },
+              time: { type: 'string', description: 'HH:mm' },
+            },
+          },
+          every_seconds: { type: 'integer', description: 'Repeat every N seconds (minimum 60)' },
+          at: { type: 'string', description: 'ISO 8601 datetime for a one-time run (e.g. "2026-12-01T09:00:00")' },
+        },
+      },
+    },
+    output,
+    async execute(args) {
+      await rt.load()
+      const title = String(args.title ?? '').trim()
+      const prompt = String(args.prompt ?? '').trim()
+      if (title === '') return 'Give the routine a name.'
+      if (prompt === '') return 'Write what the Bot should do.'
+      const bot = rt.findBot(String(args.bot ?? '').trim())
+      if (bot === undefined) return `No Bot named "${args.bot}".`
+      if (!rt.routines) return 'Routines are not available on this team.'
+      const when = args.when
+      if (!when || typeof when !== 'object') return 'Say when the routine should run.'
+      const keys = Object.keys(when).filter(k => when[k] !== undefined && when[k] !== null)
+      if (keys.length === 0) return 'Say when the routine should run (daily, weekly, every_seconds, or at).'
+      if (keys.length > 1) return `Specify only one schedule type, not both ${keys.join(' and ')}.`
+      const selector = { [keys[0]]: when[keys[0]] }
+      try {
+        await rt.routines.create({ target: { kind: 'bot', botId: bot.id }, title, prompt, selector })
+      } catch (error) {
+        return `Could not create the routine: ${error?.message ?? error}`
+      }
+      const kind = keys[0]
+      const desc = kind === 'daily' ? `every day at ${when.daily}`
+        : kind === 'weekly' ? `every ${when.weekly?.day} at ${when.weekly?.time}`
+        : kind === 'every_seconds' ? `every ${when.every_seconds}s`
+        : `once at ${when.at}`
+      return `Routine "${title}" created for ${bot.name}, running ${desc}. It will run in ${bot.name}'s own chat without the user needing to ask.`
+    },
+  }))
+
+  rt.teamTools.push(defineTool({
     name: 'post_to_group',
     description: 'Post a message into a group chat as yourself. A Main Bot may post into any group, any other Bot into a group it is in. A Main Bot\'s or the group admin\'s post starts a round: members reply in the group, where the user reads them. Another member\'s post calls only the members it names with "@Name"; without one it is only written into the group.',
     parameters: {

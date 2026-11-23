@@ -8,7 +8,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { LATE_ANSWER, TEXT_KEPT, DELEGATE_TIMEOUT_MS } from './constants.js'
+import { LATE_ANSWER, TEXT_KEPT, DELEGATE_TIMEOUT_MS, DELEGATE_NUDGE_MS } from './constants.js'
 import { headOf } from './text.js'
 import { ownChatSessions, threadCurrentOfPart } from './threads.js'
 
@@ -30,11 +30,15 @@ export function install(rt) {
   const works = () => (state.works ??= {})
   // What came back, whole; state.json keeps the start of each.
   const whole = new Map()
-  // Timers for delegate timeout (#919): workId → setTimeout handle.
+  // Timers for delegate timeout (#919): workId → { timeout, nudge } handles.
   const delegateTimers = new Map()
   const clearDelegateTimer = id => {
-    const timer = delegateTimers.get(id)
-    if (timer !== undefined) { clearTimeout(timer); delegateTimers.delete(id) }
+    const entry = delegateTimers.get(id)
+    if (entry !== undefined) {
+      clearTimeout(entry.timeout ?? entry)   // backward-compat: plain timer or {timeout,nudge}
+      clearTimeout(entry.nudge)
+      delegateTimers.delete(id)
+    }
   }
   const save = () => void rt.save().catch(() => {})
   const nameOf = id => rt.botOf(id)?.name
@@ -120,10 +124,20 @@ export function install(rt) {
     works()[id] = { ...(from ? { from } : {}), ...(to ? { to } : {}), ...(room ? { room } : {}), ...(above ? { parent } : {}), ...(fromRoom ? { fromRoom } : {}), ...(fromPart ? { fromPart } : {}), ...(name ? { name } : {}), ...(child ? { child } : {}), open: [], results: [], at: Date.now() }
     if (above !== undefined) above.open.push(id)
     save()
-    // Start a delegate-timeout timer. If the recipient never replies within
-    // DELEGATE_TIMEOUT_MS, unblock the sender with a timeout notice (#919).
+    // Start a two-stage delegate timer:
+    // 1. At DELEGATE_NUDGE_MS: nudge the delegatee ("still waiting").
+    // 2. At DELEGATE_TIMEOUT_MS: unblock the sender with a timeout notice.
     if (from !== undefined && to !== undefined) {
+      const nudgeTimer = setTimeout(() => {
+        const work = works()[id]
+        if (work === undefined) return   // already closed
+        const fromName = rt.botOf(from)?.name ?? 'another Bot'
+        const nudgeText = `[Reminder from ${fromName}]\n${fromName} is still waiting for your reply. Please respond or let them know you need more time.`
+        void rt.deliver({ fromId: from, toId: to, role: 'nudge', exchangeId: `nudge-${id}`, text: nudgeText }).catch(() => {})
+      }, DELEGATE_NUDGE_MS)
+      if (nudgeTimer.unref) nudgeTimer.unref()
       const timer = setTimeout(() => {
+        clearTimeout(nudgeTimer)
         delegateTimers.delete(id)
         const work = works()[id]
         if (work === undefined) return   // already closed
@@ -133,7 +147,7 @@ export function install(rt) {
         const text = `[Message from ${toName}]\n${toName} did not reply within 30 minutes. The request has timed out.`
         void rt.deliver({ fromId: to, toId: from, sessionId: senderSession, role: 'reply', replyTo: id, exchangeId: id, text }).catch(() => {})
       }, DELEGATE_TIMEOUT_MS)
-      delegateTimers.set(id, timer)
+      delegateTimers.set(id, { timeout: timer, nudge: nudgeTimer })
     }
   }
 

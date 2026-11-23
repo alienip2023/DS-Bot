@@ -18,6 +18,7 @@ import { listenBotTurnResult, JOINED_TURN_TIMEOUT_MS, JOINED_LATE_WINDOW_MS, LIN
 import { mirrorTurn, allocateTurn, mirrorTurnStart, mirrorTurnFinish, mirrorTurnFail, mirrorTurnAbort, mirrorTurnPending, mirrorLateReply, TASK_RESULT_MARK, STEER_REPLY_MARK } from './mirror.js'
 import { deferMirrorWrite, drainJoinedMirror, mirrorTurnOpen } from './joined-mirror-writer.js'
 import { noteTraceGap, openTraceSink } from './hub-trace.js'
+import { openStreamSink } from './hub-stream.js'
 
 /**
  * Error codes thrown by send() / deliverTurn():
@@ -496,6 +497,8 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
   // The node's thinking and tool steps (bot/trace) are written into this turn while it runs; closeTrace() ends them
   // and says which step the closing message goes in (hub-trace.js). A node that cannot send them has no sink.
   const sink = openTraceSink(rt, { bot, exchangeId: prepared.turnId, nodeId: prepared.nodeId, binding: { session, turn, step, closedTurns } })
+  // The node's streaming text (bot/stream) is written live into this turn while it runs; disposed when the turn ends.
+  const streamSink = openStreamSink(rt, { bot, exchangeId: prepared.turnId, nodeId: prepared.nodeId, binding: { session, turn, step } })
   const closeTrace = () => sink?.close() ?? { step }
   // The step the page turn is in now: a steer's answer written into this turn goes there (the steps moved it on).
   claim.currentStep = () => sink?.step() ?? step
@@ -566,6 +569,7 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
     } finally {
       rt.joinedLate.delete(dispose)
       sink?.dispose()
+      streamSink?.dispose()
       forgetAttachments(requestId)   // the turn is over: neither its bytes nor its page blocks are needed any more
       release()
     }
@@ -635,6 +639,7 @@ export function startSideTurn({ rt, bot, text, requestId, session, state = {}, t
   // A steer written as a turn of its own carries the node's thinking and tool steps inside that turn (hub-trace.js).
   // One that joins the page turn already open has none: that turn's own trace holds the node's events, the steer's too.
   const sink = hostTurn === undefined ? openTraceSink(rt, { bot, exchangeId: prepared.turnId, nodeId: prepared.nodeId }) : undefined
+  const streamSink2 = hostTurn === undefined ? openStreamSink(rt, { bot, exchangeId: prepared.turnId, nodeId: prepared.nodeId }) : undefined
 
   const writeWhenFree = (write) => {
     if (rt.joinedLateClosed === true) return
@@ -650,6 +655,7 @@ export function startSideTurn({ rt, bot, text, requestId, session, state = {}, t
   const writeTurn = (finish) => writeWhenFree(() => {
     const turn = allocateTurn(session)
     mirrorTurnStart(session, { turn, step: 1, userText: text, rpcId: requestId, content: userContent })
+    if (streamSink2) streamSink2.bind({ session, turn, step: 1 })
     finish(turn, sink?.bindAndClose({ session, turn, step: 1, closedTurns }) ?? { step: 1 })
   })
   // The answer lands in the turn that is still open on the page (right after the steer it answers);
@@ -657,6 +663,7 @@ export function startSideTurn({ rt, bot, text, requestId, session, state = {}, t
   const answerInline = (answer, mark) => {
     if (!userWritten) return false
     sink?.dispose()
+    streamSink2?.dispose()
     const stillOpen = rt.joinedInFlight?.get(bot.id) === hostTurn
     if (stillOpen) {
       try { mirrorTurnPending(session, { turn: hostTurn.turn, step: hostTurn.currentStep?.() ?? hostTurn.step, text: answer }); return true } catch { /* falls back below */ }
@@ -748,6 +755,7 @@ export function startSideTurn({ rt, bot, text, requestId, session, state = {}, t
       return { ok: true, turnId: prepared.turnId }
     } finally {
       rt.joinedLate.delete(dispose)
+      streamSink2?.dispose()
       forgetAttachments(requestId)
       release()
     }

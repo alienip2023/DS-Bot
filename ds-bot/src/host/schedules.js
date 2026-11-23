@@ -95,6 +95,8 @@ function selectorOf(when) {
 export function install(rt) {
   const { ctx } = rt
   const routines = installBotRoutines(rt)
+  // Expose routines on rt so the record_routine tool and other callers can reach it.
+  rt.routines = routines
   let service = null
 
   const attach = (sub) => {
