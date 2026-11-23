@@ -611,24 +611,27 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
         tracking.streamer = control.stream.start(rt.ctx, sessionIdForTurn)
       }
       const send = async () => {
-        const name = typeof turn.senderName === 'string' ? turn.senderName.trim() : ''
-        const header = name === '' ? '' : '[Message from ' + name + ']'
+        const senderName = typeof turn.senderName === 'string' ? turn.senderName.trim() : ''
+        const senderBotId = typeof turn.senderBotId === 'string' ? turn.senderBotId.trim() : ''
+        // Use clean text — no [Message from xxx] prefix. The sender identity is carried in
+        // the source field so dsh core renders a proper sender bubble, not anonymous user input.
         const text = roomId
-          ? '[群 ' + (trimmed(turn.roomName) || roomId) + ']' + (header === '' ? ' ' : '\n' + header + '\n') + (turn.text ?? '')
-          : header === '' ? (turn.text ?? '') : header + '\n' + (turn.text ?? '')
-        // A file goes in as bytes: sendUser uploads it for the Session the message really goes to and the prompt
-        // names its receipt (the core's prompt refuses a file part that is not a receipt of that Session's own upload).
+          ? '[群 ' + (trimmed(turn.roomName) || roomId) + '] ' + (turn.text ?? '')
+          : (turn.text ?? '')
+        // Build source: when we have a sender identity, tell dsh who sent this message so the
+        // page can render it as a Bot-to-Bot message rather than an anonymous user bubble.
+        const source = (senderName !== '' || senderBotId !== '')
+          ? { senderName: senderName || undefined, senderBotId: senderBotId || undefined, kind: 'bot-message' }
+          : undefined
         try {
           return await rt.sendUser({
             sessionId: sessionIdForTurn,
             content: [...(text === '' && attachedParts.length > 0 ? [] : [{ type: 'text', text }]), ...attachedParts],
             requestId: exchangeId,
+            ...(source ? { source } : {}),
             ...(steering ? { mode: 'steer' } : {}),
           })
         } catch (error) {
-          // A turn that waits behind another runs later, after acceptTurn has come back from the gate: nobody catches
-          // its failure there and the hub would wait out the whole timeout, so the failure settles the wait here.
-          // One that runs at once is thrown to the catch below, as it always was.
           if (!gateReturned) throw error
           const failure = Object.assign(new Error(String(error?.message ?? error)), { code: deliverFailure(error, attachedParts.length > 0) })
           rt.settleJoinedTurn(exchangeId, '', failure)
