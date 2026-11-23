@@ -59,7 +59,9 @@ export function install(rt) {
   }
   const timer = setInterval(tick, ENFORCE_MS)
   timer.unref?.()
-  const first = setTimeout(tick, 500)
+  // 100ms on first tick (was 500ms) to close the window between install() and role publication
+  // during which createBot({main:true}) could still succeed before the wrapper is active.
+  const first = setTimeout(tick, 100)
   first.unref?.()
   ctx?.effect?.(() => () => { clearInterval(timer); clearTimeout(first) }, 'ds-bot: node team check')
 }

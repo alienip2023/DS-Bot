@@ -18,7 +18,7 @@
 //
 // Needs AC 0.4.25 on the node (`bot-attach/1`, node-compat.js); an older node is refused with that reason.
 import { createHash } from 'node:crypto'
-import { readFile, stat } from 'node:fs/promises'
+import { lstat, open, readFile, realpath, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { nodeCan, refusalFor } from './node-compat.js'
@@ -137,10 +137,17 @@ async function resolveReceipts(rt, parts, sessionId) {
 const MENTION = /(^|\s)@(?:"([^"\n]+)"|([^\s"]+))/gu
 const TRAILING = /[,.;:!?)\]}，。；：！？）】」』]+$/u
 // Where credentials live: a mention of these is never read on the user's behalf.
-const NEVER_SEND = ['.ssh', '.gnupg', '.aws', '.kube', '.dsh', '.dsh-remote-agent', '.config/gcloud', '.docker']
+// Covers secret stores, cloud credentials, tokens and sensitive config known to live here.
+const NEVER_SEND = [
+  '.ssh', '.gnupg', '.aws', '.kube', '.dsh', '.dsh-remote-agent', '.config/gcloud', '.docker',
+  '.npm', '.npmrc', '.gitconfig', '.git-credentials', '.netrc', '.pypirc',
+  '.cursor', '.azure', '.terraform.d', '.config/op',
+]
 
 const looksAbsolute = value => value.startsWith('~/') || path.isAbsolute(value)
 const resolveMention = value => (value.startsWith('~/') ? path.join(homedir(), value.slice(2)) : value)
+
+/** Returns true when `file` is inside (or is) any protected directory. Rejects symlinks pointing there too. */
 function withheld(file) {
   const home = homedir()
   return NEVER_SEND.some((name) => {
@@ -149,11 +156,37 @@ function withheld(file) {
   })
 }
 
+/**
+ * Stat a candidate path WITHOUT following symlinks for the final component.
+ * Returns the lstat if it is a regular file (not a symlink, directory, etc.), otherwise undefined.
+ * This prevents a symlink in a non-protected directory from pointing to a protected path.
+ */
 async function fileAt(candidate) {
   try {
-    const info = await stat(candidate)
-    return info.isFile() ? info : undefined
+    const info = await lstat(candidate)
+    return info.isFile() ? info : undefined   // symlinks have isFile()===false; they are skipped
   } catch { return undefined }
+}
+
+/**
+ * TOCTOU-safe read: open the file, fstat the fd to confirm it is still a regular file of the
+ * expected size, then read from the same fd. Prevents a file being swapped to a symlink or a
+ * much-larger file between fileAt() and the read. Max 20 MiB; a file that grew past that since
+ * the stat is refused rather than silently read.
+ */
+async function readRegularFile(filePath, expectedSize) {
+  let fd
+  try {
+    fd = await open(filePath, 'r')
+    const info = await fd.stat()
+    if (!info.isFile()) throw Object.assign(new Error('not a regular file'), { code: 'EINVAL' })
+    // Guard against a file that grew between the mention scan and the open (e.g. /dev/zero via TOCTOU).
+    if (info.size > MAX_TOTAL_BYTES) throw Object.assign(new Error('file too large'), { code: 'EFBIG' })
+    return await fd.readFile()
+  } finally {
+    await fd?.close().catch(() => {})
+  }
+  void expectedSize   // kept for caller context; actual limit enforced above
 }
 
 /** Every `@path` in `text` that names a regular file on this machine: [{ start, end, file, name, size }]. */
@@ -256,7 +289,7 @@ export async function collectPrompt(rt, bot, content, { sessionId, requestId, me
         if (mention.size === 0) throw refuse('session/joined-attachment-unsupported', `${mention.name} 是空的`)
         if (total + mention.size > MAX_TOTAL_BYTES) throw refuse('session/joined-attachment-too-large', `${mention.name} 太大：附件加起来不能超过 ${mb(MAX_TOTAL_BYTES)}`)
         let data
-        try { data = await readFile(mention.file) } catch (error) { throw unreadable(mention.name, error) }
+        try { data = await readRegularFile(mention.file, mention.size) } catch (error) { throw unreadable(mention.name, error) }
         total += data.length
         items.push({ index: items.length, kind: 'file', name: mention.name.slice(0, 200) || 'file', data, sha256: sha256Of(data) })
         sentFiles.set(mention.file, true)
@@ -279,11 +312,21 @@ export async function collectPrompt(rt, bot, content, { sessionId, requestId, me
   return { text, collected: { items, blocks, ...(sendText === undefined ? {} : { sendText }) } }
 }
 
+// Backpressure threshold for bot/attach chunks: pause after each chunk if the transport's write
+// buffer exceeds this many bytes, and wait until it drains before sending the next one.
+// Without this, sending 8×20 MB = 160 MB at once would blow up the ws write buffer.
+const ATTACH_DRAIN_THRESHOLD = 2 * 1024 * 1024    // 2 MiB
+const ATTACH_DRAIN_TIMEOUT_MS = 30_000
+
 /**
  * Put a message's attachments on the link as bot/attach chunks and return the manifest the bot/turn carries.
- * Throws when a frame cannot be sent (the node is gone): the message is then not sent either.
+ * Applies backpressure after each chunk: if the transport's write buffer exceeds ATTACH_DRAIN_THRESHOLD,
+ * waits for it to drain before sending the next one (up to ATTACH_DRAIN_TIMEOUT_MS per chunk).
+ * Throws when a frame cannot be sent (the node is gone) or when drain times out.
+ * Returns a Promise so callers must await it; in the common case (no backpressure needed) it
+ * resolves synchronously via microtask (no I/O awaited).
  */
-export function sendChunks(registry, { nodeId, remoteBotId, exchangeId, items }) {
+export async function sendChunks(registry, { nodeId, remoteBotId, exchangeId, items }) {
   const manifest = []
   for (const item of items) {
     const chunks = Math.max(1, Math.ceil(item.data.length / CHUNK_BYTES))
@@ -291,6 +334,15 @@ export function sendChunks(registry, { nodeId, remoteBotId, exchangeId, items })
       const slice = item.data.subarray(chunk * CHUNK_BYTES, (chunk + 1) * CHUNK_BYTES)
       const sent = registry.send(nodeId, 'bot/attach', { nodeId, remoteBotId, exchangeId, index: item.index, chunk, chunks, data: slice.toString('base64') })
       if (sent !== true) throw Object.assign(new Error('node offline or send failed'), { code: 'E_OFFLINE' })
+      // Back-pressure: if the transport has buffered too much, wait for it to drain.
+      // registry.bufferedBytesOf returns the write-buffer depth for a node's transport (or undefined on old registry).
+      const buffered = typeof registry.bufferedBytesOf === 'function' ? registry.bufferedBytesOf(nodeId) : undefined
+      if (Number.isFinite(buffered) && buffered > ATTACH_DRAIN_THRESHOLD) {
+        const drained = typeof registry.drainNode === 'function'
+          ? await registry.drainNode(nodeId, ATTACH_DRAIN_THRESHOLD, ATTACH_DRAIN_TIMEOUT_MS)
+          : true
+        if (drained === false) throw Object.assign(new Error('attachment send timed out waiting for drain'), { code: 'E_DRAIN_TIMEOUT' })
+      }
     }
     manifest.push({ index: item.index, name: item.name, kind: item.kind, ...(item.mediaType ? { mediaType: item.mediaType } : {}), bytes: item.data.length, sha256: item.sha256, chunks })
   }

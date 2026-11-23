@@ -70,7 +70,7 @@ test('NA-2: a message with no attachment is just its words; what cannot go is re
   assert.match((await refused([{ type: 'audio' }])).message, /只能收文字、图片和文件/)
   const old = await refused([{ type: 'image', mediaType: 'image/png', data: png.toString('base64') }], rtWith(fakeStore, ['bot-turn-mode/1']))
   assert.equal(old.code, 'session/joined-attachment-unsupported')
-  assert.match(old.message, /AC 0\.4\.28/)
+  assert.match(old.message, /AC 0\.4\.29/)
   const many = Array.from({ length: MAX_ATTACHMENTS + 1 }, () => ({ type: 'image', mediaType: 'image/png', data: png.toString('base64') }))
   assert.equal((await refused(many)).code, 'session/joined-attachment-too-large')
   const big = await refused([{ type: 'file', attachment: { attachmentId: 'f', name: 'big.bin', bytes: MAX_TOTAL_BYTES + 1 } }])
@@ -79,15 +79,15 @@ test('NA-2: a message with no attachment is just its words; what cannot go is re
   assert.match((await refused([{ type: 'image', url: 'x' }])).message, /图片没有内容/)
 })
 
-test('NA-3: sendChunks cuts an attachment into ordered chunks and names it in the manifest; a gone node fails the send', () => {
+test('NA-3: sendChunks cuts an attachment into ordered chunks and names it in the manifest; a gone node fails the send', async () => {
   const data = Buffer.alloc(CHUNK_BYTES * 2 + 10, 7)
   const sent = []
   const registry = { send: (nodeId, type, payload) => { sent.push({ nodeId, type, payload }); return true } }
-  const manifest = sendChunks(registry, { nodeId: 'n1', remoteBotId: 'b1', exchangeId: 'x1', items: [{ index: 0, kind: 'file', name: 'a.bin', data, sha256: sha(data) }] })
+  const manifest = await sendChunks(registry, { nodeId: 'n1', remoteBotId: 'b1', exchangeId: 'x1', items: [{ index: 0, kind: 'file', name: 'a.bin', data, sha256: sha(data) }] })
   assert.deepEqual(sent.map(frame => [frame.type, frame.payload.index, frame.payload.chunk, frame.payload.chunks]), [['bot/attach', 0, 0, 3], ['bot/attach', 0, 1, 3], ['bot/attach', 0, 2, 3]])
   assert.ok(sent.every(frame => frame.payload.data.length <= 1_100_000), 'a chunk fits AC\'s limit')
   assert.deepEqual(manifest, [{ index: 0, name: 'a.bin', kind: 'file', bytes: data.length, sha256: sha(data), chunks: 3 }])
-  assert.throws(() => sendChunks({ send: () => false }, { nodeId: 'n1', remoteBotId: 'b1', exchangeId: 'x', items: [{ index: 0, kind: 'file', name: 'a', data, sha256: 's' }] }), error => error.code === 'E_OFFLINE')
+  await assert.rejects(sendChunks({ send: () => false }, { nodeId: 'n1', remoteBotId: 'b1', exchangeId: 'x', items: [{ index: 0, kind: 'file', name: 'a', data, sha256: 's' }] }), error => error.code === 'E_OFFLINE')
 })
 
 test('NA-4: the node puts the chunks back together, whatever their order, and refuses what is missing or damaged', async () => {
@@ -96,7 +96,7 @@ test('NA-4: the node puts the chunks back together, whatever their order, and re
   const node = createAttachReceiver(rt)
   const data = Buffer.alloc(CHUNK_BYTES + 100, 9)
   const frames = []
-  const manifest = sendChunks({ send: (_n, _t, payload) => { frames.push(payload); return true } }, { nodeId: 'n1', remoteBotId: 'b1', exchangeId: 'x1', items: [
+  const manifest = await sendChunks({ send: (_n, _t, payload) => { frames.push(payload); return true } }, { nodeId: 'n1', remoteBotId: 'b1', exchangeId: 'x1', items: [
     { index: 0, kind: 'file', name: 'doc.bin', data, sha256: sha(data) },
     { index: 1, kind: 'image', name: 'p.png', mediaType: 'image/png', data: png, sha256: sha(png) },
   ] })
@@ -389,7 +389,7 @@ test('NA-19: a mentioned file that is too big, empty, protected or on a node too
   const secret = join(homedir(), '.ssh', 'id_ed25519')
   if ((await mentionedFiles(`@${secret}`)).length > 0) assert.match((await refused(`@${secret} x`)).message, /受保护/)
   const old = await refused(`@${f.plain} x`, rtWith(fakeStore, ['bot-turn-mode/1']))
-  assert.match(old.message, /AC 0\.4\.28/)
+  assert.match(old.message, /AC 0\.4\.29/)
   const many = Array.from({ length: MAX_ATTACHMENTS + 1 }, (_, i) => { const file = join(f.dir, `m${i}.txt`); writeFileSync(file, 'x'); return `@${file}` }).join(' ')
   assert.equal((await refused(many)).code, 'session/joined-attachment-too-large')
 })

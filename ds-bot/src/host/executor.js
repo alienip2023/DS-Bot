@@ -70,7 +70,7 @@ export async function send({ botId, text, rt, tracker, timeoutMs: timeoutOverrid
 // send() result or throws an ExecutorError; `cancel()` drops the listener.
 function dispatchRemote(args) {
   const prepared = prepareRemote(args)
-  prepared.send()
+  void prepared.send()
   return prepared
 }
 
@@ -104,7 +104,7 @@ function prepareRemote({ bot, text, rt, tracker, timeoutOverride, lateWindowMs =
   let sendCalled = false
   // The page's Stop: the wait ends without the failure bookkeeping a cancel() would do.
   let stopped = false
-  const send = () => {
+  const send = async () => {
     if (sendCalled) return
     sendCalled = true
     let sent = false
@@ -113,7 +113,7 @@ function prepareRemote({ bot, text, rt, tracker, timeoutOverride, lateWindowMs =
     try {
       const held = attachmentsOf(requestId)
       if (held !== undefined && held.items.length > 0) {
-        attachments = sendChunks(registry, { nodeId, remoteBotId, exchangeId: turnId, items: held.items })
+        attachments = await sendChunks(registry, { nodeId, remoteBotId, exchangeId: turnId, items: held.items })
         releaseBytes(requestId)
       }
     } catch (sendErr) {
@@ -530,7 +530,7 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
   const done = (async () => {
     try {
       try {
-        prepared.send()
+        await prepared.send()
       } catch (err) {
         over = true
         fail(err)
@@ -718,7 +718,7 @@ export function startSideTurn({ rt, bot, text, requestId, session, state = {}, t
   const done = (async () => {
     try {
       try {
-        prepared.send()
+        await prepared.send()
       } catch (error) {
         over = true
         // The steer never left: the page was told it was accepted and its message is on the page, so say what
