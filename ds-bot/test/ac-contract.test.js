@@ -136,3 +136,18 @@ test('bot/create, bot/update, bot/delete, bot/history keep every field', { skip 
     survives(type, byType[type], kept)
   }
 })
+
+// The pairing itself: the real AC's node hello advertises every capability ds-bot reads (NODE_FEATURES), carries its
+// own version, and AC_NEEDED is the version of the AC this ds-bot was tested against. A new ds-bot feature that
+// waits on a capability AC does not advertise (or an AC that stops advertising one) fails here, not on a cluster.
+test('the real AC advertises every capability ds-bot depends on, and AC_NEEDED is the AC it was tested with', { skip }, async () => {
+  const protocol = await load('protocol.js')
+  const { NODE_FEATURES, AC_NEEDED } = await import('../src/host/node-compat.js')
+  const caps = protocol.nodeCaps([])
+  for (const [feature, { cap }] of Object.entries(NODE_FEATURES)) assert.ok(caps.includes(cap), `AC's hello lacks ${cap} (${feature})`)
+  const hello = protocol.validateHello({ nodeId: 'n1', protocol: protocol.PROTOCOL_VERSION, os: 'linux', acVersion: AC_NEEDED, caps })
+  assert.equal(hello.ok, true)
+  assert.equal(hello.hello.acVersion, AC_NEEDED, 'the hub keeps the version a node reports')
+  const { version } = JSON.parse((await import('node:fs')).readFileSync(join(repo, 'package.json'), 'utf8'))
+  assert.equal(version, AC_NEEDED, `AC_NEEDED (${AC_NEEDED}) must be the AC this ds-bot pairs with (the AC repo is at ${version})`)
+})
