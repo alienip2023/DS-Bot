@@ -300,6 +300,8 @@ const FAILURE_WORDS = {
   E_MIRROR_WRITE: '消息没能写入页面，已取消发送',
   'bot-attach-incomplete': '附件没有完整送到节点，请重新发送',
   'bot-attach-invalid': '附件在传输中损坏了，请重新发送',
+  'bot-attach-no-receiver': '节点上的 ds-bot 版本太旧，不支持附件，请把节点上的 ds-bot 升级到 fork.103 或更新',
+  'bot-turn-attachments-invalid': '附件清单没有通过节点的校验，请重新发送',
   'bot-attach-unsupported': '节点存不下这个附件（它的 DeepSeek Harness 没有文件上传服务，或存储失败）',
 }
 // The reason the node's own core gave for refusing an attachment (details.reason of its prompt), in words.
