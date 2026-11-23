@@ -61,9 +61,12 @@ export function userContentOf(requestId, text) {
 
 // ── the hub: read what the user attached ────────────────────────────────────────────────────────
 
-function storeOf(rt) {
-  try { return rt.ctx?.get?.('attachments') ?? rt.ctx?.attachments } catch { return rt.ctx?.attachments }
+// A Cordis service is read with ctx.get(name): a plain `ctx.fileUploads` throws "cannot get property … without inject"
+// for a service this plugin does not declare (the page's uploads live in the core's own `fileUploads`).
+function serviceOf(rt, name) {
+  try { return rt.ctx?.get?.(name) } catch { return undefined }
 }
+const storeOf = rt => serviceOf(rt, 'attachments')
 
 async function readFileBytes(store, ref) {
   const chunks = []
@@ -81,8 +84,8 @@ async function readFileBytes(store, ref) {
 async function resolveReceipts(rt, parts, sessionId) {
   const receipts = parts.filter(part => part?.type === 'file' && part.attachment === undefined && part.receiptId !== undefined)
   if (receipts.length === 0) return { parts, receiptIds: [] }
-  const uploads = rt.ctx?.fileUploads
-  let agent = typeof sessionId === 'string' && sessionId !== '' ? rt.ctx?.agents?.get?.(sessionId) : undefined
+  const uploads = serviceOf(rt, 'fileUploads')
+  let agent = typeof sessionId === 'string' && sessionId !== '' ? serviceOf(rt, 'agents')?.get?.(sessionId) : undefined
   if (agent === undefined && typeof rt.resolveAgent === 'function' && typeof sessionId === 'string' && sessionId !== '') {
     try { agent = await rt.resolveAgent(sessionId) } catch { agent = undefined }
   }
