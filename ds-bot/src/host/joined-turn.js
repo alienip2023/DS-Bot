@@ -605,8 +605,10 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
       // Before anything is sent: the exchange's own user/message is what opens the trace and stream.
       tracking.tracer = feed.start({ sessionId: sessionIdForTurn, exchangeId, control })
       // bot/stream: wire the streaming forwarder if the hub supports it.
+      // Use rt.ctx (the node's cordis context), not the outer `ctx` parameter which is the hub
+      // lifecycle context and is out of scope inside this closure — accessing it throws ReferenceError.
       if (typeof control?.stream?.start === 'function' && sessionIdForTurn) {
-        tracking.streamer = control.stream.start(ctx, sessionIdForTurn)
+        tracking.streamer = control.stream.start(rt.ctx, sessionIdForTurn)
       }
       const send = async () => {
         const name = typeof turn.senderName === 'string' ? turn.senderName.trim() : ''
@@ -643,6 +645,9 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
         gateReturned = true
       } else await send()
     } catch (error) {
+      // Q5: log the original error detail so ReferenceError / TypeError / internal failures are traceable.
+      const isInternal = !(error?.code?.startsWith?.('bot-') || error?.code?.startsWith?.('session/') || error?.code === 'E_BUSY')
+      if (isInternal) rt.warn?.('ds-bot: joined-turn internal error for %s: %s %s', exchangeId, error?.name ?? 'Error', error?.message ?? error)
       const waiter = pending.get(exchangeId)
       if (waiter) {
         pending.delete(exchangeId)

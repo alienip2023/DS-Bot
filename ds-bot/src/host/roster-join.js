@@ -479,7 +479,13 @@ export function install(rt) {
         for (const id of botIds) settled.add(id)
         for (const id of result.failed) pending.add(id)
         for (const item of result.deferred) {
-          rt.warn?.('ds-bot: history migration deferred for %s: %s', item.botId, item.reason)
+          // Q3: suppress repeated "unclosed turns" spam — only warn once per botId per session
+          const suppressKey = `deferred:${item.botId}:${item.reason}`
+          if (!rt._migrationWarnSeen) rt._migrationWarnSeen = new Set()
+          if (!rt._migrationWarnSeen.has(suppressKey)) {
+            rt._migrationWarnSeen.add(suppressKey)
+            rt.warn?.('ds-bot: history migration deferred for %s: %s', item.botId, item.reason)
+          }
           if (item.reason === 'node history contains incomplete or unclosed turns') pending.add(item.botId)
         }
         for (const id of result.skipped) if (!rt.botOf?.(id)?.sessionId) pending.add(id)
