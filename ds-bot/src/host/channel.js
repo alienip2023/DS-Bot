@@ -177,7 +177,7 @@ export function createSendUser(rt, { textOfContent, getMirrorState, ctx, ownThre
       : joinedShadow(rt.bySessionId(ref)) ? rt.bySessionId(ref)
       : null
     if (joinedBot) {
-      const prompt = await collectPrompt(rt, joinedBot, content)
+      const prompt = await collectPrompt(rt, joinedBot, content, { sessionId: joinedBot.sessionId, requestId })
       const text = prompt.text
       stashAttachments(requestId, prompt.collected)
       const session = await ensureMirrorSession(rt, joinedBot)

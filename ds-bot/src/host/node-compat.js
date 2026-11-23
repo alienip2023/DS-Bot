@@ -15,7 +15,7 @@ export const NODE_FEATURES = Object.freeze({
   trace: { cap: 'bot-trace/1', label: '思考过程与工具步骤' },
   attach: { cap: 'bot-attach/1', label: '图片和文件附件' },
 })
-// The AC release that carries every capability above (AC 0.4.25 pairs with ds-bot 0.3.10-fork.103; `bot-attach/1`, images and files, is what needs it).
+// The AC release that carries every capability above (AC 0.4.25 pairs with ds-bot 0.3.10-fork.103 and later; `bot-attach/1`, images and files, is what needs it).
 export const AC_NEEDED = '0.4.25'
 
 /** The capabilities of a node, or undefined when they are not known. */
