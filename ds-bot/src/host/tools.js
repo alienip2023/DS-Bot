@@ -2146,4 +2146,153 @@ export function install(rt) {
       return lines.join('\n')
     },
   }))
+
+  // ── node_network：mesh 网络拓扑一览 ──────────────────────────────────────
+  rt.teamTools.push(defineTool({
+    name: 'node_network',
+    description: 'Show the mesh network topology: which machines are online, their LAN discovery status, peer-link RTTs, pairing state, and machine IDs. Useful for diagnosing connectivity before dispatching tasks.',
+    isConcurrencySafe: true,
+    parameters: {
+      node: { type: 'string', description: 'Show details for one node only (by name or machine ID). Omit for all.' },
+    },
+    output,
+    async execute(args) {
+      const registry = (() => { try { return ctx.get?.('remote-agent:registry') } catch { return undefined } })()
+      if (!registry) return 'Node registry not available.'
+      const nodes = typeof registry.onlineNodes === 'function' ? registry.onlineNodes() : []
+      if (nodes.length === 0) return 'No nodes connected.'
+      const filtered = args.node ? nodes.filter(n => n.nodeId === args.node || n.hostname === args.node) : nodes
+      if (filtered.length === 0) return `No node matching "${args.node}".`
+      const lines = ['Mesh Network', '─'.repeat(40)]
+      for (const n of filtered) {
+        const caps = Array.isArray(n.caps) ? n.caps : (n.hello?.caps ?? [])
+        const hasLan = caps.includes('lan-discovery/1')
+        const hasPairing = caps.includes('pairing/1')
+        const hasIdentity = caps.includes('machine-identity/1')
+        const rtt = typeof registry.rttOf === 'function' ? registry.rttOf(n.nodeId) : null
+        lines.push('')
+        lines.push(`${n.online !== false ? '🟢' : '🔴'} ${n.nodeId}  ${n.hostname ?? ''}`)
+        if (rtt !== null) lines.push(`  RTT: ${rtt}ms`)
+        lines.push(`  LAN 发现: ${hasLan ? '✓' : '✗'}  配对码: ${hasPairing ? '✓' : '✗'}  持久身份: ${hasIdentity ? '✓' : '✗'}`)
+        if (n.hello?.acVersion) lines.push(`  AC: ${n.hello.acVersion}`)
+      }
+      return lines.join('\n')
+    },
+  }))
+
+  // ── pair_node：显示配对码，准备接受新节点 ───────────────────────────────
+  rt.teamTools.push(defineTool({
+    name: 'pair_node',
+    description: 'Get the current pairing code for this hub so a new machine can join the mesh network. The code is valid for 5 minutes. Share it with the operator of the new machine.',
+    isConcurrencySafe: true,
+    parameters: {},
+    output,
+    async execute() {
+      const registry = (() => { try { return ctx.get?.('remote-agent:registry') } catch { return undefined } })()
+      const pairingCode = typeof registry?.getPairingCode === 'function' ? registry.getPairingCode() : null
+      if (!pairingCode) return 'Pairing service not available on this hub. Ensure AC 0.4.31+ is running and pairing is enabled.'
+      return [
+        '配对码（5分钟有效）：',
+        '',
+        `  ${pairingCode}`,
+        '',
+        '在新机器上运行：',
+        `  dsh-node-daemon pair --code ${pairingCode} --hub <this-machine-IP>`,
+      ].join('\n')
+    },
+  }))
+
+  // ── list_skills：列出 Bot 的 Skill Markdown 文件 ─────────────────────────
+  rt.teamTools.push(defineTool({
+    name: 'list_skills',
+    description: 'List the skills available to a Bot: named procedures stored as Markdown files that the Bot can invoke by name. Skills encode reusable multi-step workflows.',
+    isConcurrencySafe: true,
+    parameters: {
+      bot: { type: 'string', description: 'Bot name. Omit for the caller\'s own skills.' },
+    },
+    output,
+    async execute(args, exec) {
+      await rt.load()
+      const self = rt.selfOf(exec.agent?.id)
+      const target = args.bot ? rt.findBot(args.bot) : self
+      if (!target) return args.bot ? `No Bot named "${args.bot}".` : 'Could not identify caller.'
+      const { readdirSync, existsSync } = await import('node:fs')
+      const { join } = await import('node:path')
+      const { homedir } = await import('node:os')
+      const skillsDir = join(homedir(), '.dsh', 'bots', target.id, 'skills')
+      if (!existsSync(skillsDir)) return `${target.name} has no skills yet. Use create_skill to add one.`
+      const files = readdirSync(skillsDir).filter(f => f.endsWith('.md'))
+      if (files.length === 0) return `${target.name} has no skills yet.`
+      return [`${target.name}'s skills:`, ...files.map(f => `  • ${f.replace(/\.md$/, '')}`)].join('\n')
+    },
+  }))
+
+  // ── create_skill：创建或更新 Bot 的 Skill ────────────────────────────────
+  rt.teamTools.push(defineTool({
+    name: 'create_skill',
+    description: 'Create or update a named skill for a Bot: a Markdown file that encodes a reusable procedure with steps and success criteria. The Bot can invoke it by name in future turns.',
+    parameters: {
+      name: { type: 'string', required: true, description: 'Short kebab-case skill name, e.g. "deploy-prod"' },
+      content: { type: 'string', required: true, description: 'Full Markdown content of the skill: description, steps, success criteria' },
+      bot: { type: 'string', description: 'Bot to assign the skill to. Omit for the caller.' },
+    },
+    output,
+    async execute(args, exec) {
+      await rt.load()
+      const self = rt.selfOf(exec.agent?.id)
+      const target = args.bot ? rt.findBot(args.bot) : self
+      if (!target) return args.bot ? `No Bot named "${args.bot}".` : 'Could not identify caller.'
+      if (!/^[a-z0-9-]+$/.test(args.name)) return 'Skill name must be kebab-case (lowercase letters, digits, hyphens).'
+      const { mkdirSync, writeFileSync } = await import('node:fs')
+      const { join } = await import('node:path')
+      const { homedir } = await import('node:os')
+      const skillsDir = join(homedir(), '.dsh', 'bots', target.id, 'skills')
+      mkdirSync(skillsDir, { recursive: true })
+      writeFileSync(join(skillsDir, `${args.name}.md`), args.content, 'utf8')
+      return `Skill "${args.name}" saved for ${target.name}.`
+    },
+  }))
+
+  // ── bot_journal：查看 Bot 的步骤日志和崩溃续跑状态 ──────────────────────
+  rt.teamTools.push(defineTool({
+    name: 'bot_journal',
+    description: 'Show the recent journal entries and crash-recovery state for a Bot. Useful for diagnosing why a turn failed or confirming that a resumed turn completed.',
+    isConcurrencySafe: true,
+    parameters: {
+      bot: { type: 'string', description: 'Bot name. Omit for the caller.' },
+      lines: { type: 'integer', description: 'How many recent journal entries to show (default 20)' },
+    },
+    output,
+    async execute(args, exec) {
+      await rt.load()
+      const self = rt.selfOf(exec.agent?.id)
+      const target = args.bot ? rt.findBot(args.bot) : self
+      if (!target) return args.bot ? `No Bot named "${args.bot}".` : 'Could not identify caller.'
+      const { existsSync, readFileSync } = await import('node:fs')
+      const { join } = await import('node:path')
+      const { homedir } = await import('node:os')
+      const journalPath = join(homedir(), '.dsh', 'bots', target.id, 'journal.jsonl')
+      if (!existsSync(journalPath)) return `${target.name} has no journal entries yet.`
+      const raw = readFileSync(journalPath, 'utf8').trim().split('\n').filter(Boolean)
+      const limit = Math.min(Math.max(1, args.lines ?? 20), 100)
+      const recent = raw.slice(-limit)
+      const incomplete = (() => {
+        const turns = new Map()
+        for (const line of raw) {
+          try {
+            const e = JSON.parse(line)
+            if (e.type === 'turn/start') turns.set(e.exchangeId, false)
+            else if (e.type === 'turn/end' || e.type === 'turn/fail') turns.set(e.exchangeId, true)
+          } catch {}
+        }
+        return [...turns.entries()].filter(([, ended]) => !ended).map(([id]) => id)
+      })()
+      const lines = [`${target.name} journal (last ${recent.length} of ${raw.length} entries):`]
+      if (incomplete.length > 0) lines.push(`⚠ Incomplete turns (crash recovery pending): ${incomplete.join(', ')}`)
+      lines.push(...recent.map(l => {
+        try { const e = JSON.parse(l); return `  ${e.type} ${e.exchangeId?.slice(0, 8) ?? ''} ${e.name ?? ''}` } catch { return `  ${l.slice(0, 80)}` }
+      }))
+      return lines.join('\n')
+    },
+  }))
 }
