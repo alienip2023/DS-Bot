@@ -146,22 +146,29 @@ describe('S24: joined Bot page prompt takeover', () => {
     assert.equal(stale.originalCalls.length, 1)
   })
 
-  it('S24-d attachments are refused with a structured, visible error and nothing is written or sent', async () => {
+  it('S24-d what cannot go to the node is refused with a structured, visible error and nothing is written or sent', async () => {
     const w = makeWorld()
-    for (const part of [{ type: 'image', mediaType: 'image/png', data: 'AAAA' }, { type: 'file', receiptId: 'r1' }]) {
+    // A node whose AC has no bot-attach/1 cannot take an image; a part that is neither text, image nor file, or a file
+    // the hub cannot read, is refused for what it is.
+    const cases = [
+      [{ type: 'audio', url: 'x' }, '节点 Bot 只能收文字、图片和文件'],
+      [{ type: 'file', receiptId: 'r1' }, '这台主控读不了已上传的文件'],
+    ]
+    for (const [part, message] of cases) {
       const error = await rejection(w.prompt({ requestId: 'req-a', sessionId: 'mirror-1', content: [{ type: 'text', text: 'look' }, part] }))
       assert.equal(error.isDSHRemoteError, true)
-      // The composer sends session/attachment-invalid through attachmentErrorText(), which
-      // would print "image send failed (JOINED_ATTACHMENT_UNSUPPORTED)"; our own code gets the
-      // generic toast. composerToast mirrors dsh-client-ui-conversation lib/client.js:21754.
+      // The composer sends session/attachment-invalid through attachmentErrorText(), which would print
+      // "image send failed (JOINED_ATTACHMENT_UNSUPPORTED)"; our own code gets the generic toast.
       assert.notEqual(error.code, 'session/attachment-invalid')
       assert.notEqual(error.code, 'subagent/attachment-invalid')
       assert.equal(error.code, 'session/joined-attachment-unsupported')
-      assert.equal(error.message, '副机 Bot 暂不支持附件，请改为文字发送')
+      assert.equal(error.message, message)
       assert.equal(error.details.reason, 'JOINED_ATTACHMENT_UNSUPPORTED')
-      const composerToast = e => (e.code === 'session/attachment-invalid' || e.code === 'subagent/attachment-invalid' ? `image send failed: ${e.details.reason}` : `${e.message} (${e.code})`)
-      assert.equal(composerToast(error), '副机 Bot 暂不支持附件，请改为文字发送 (session/joined-attachment-unsupported)')
     }
+    w.rt.ctx.get = name => (name === 'remote-agent:registry' ? { send: () => true, on() {}, off() {}, getNode: () => ({ hello: { caps: ['bot-turn-mode/1'] } }) } : undefined)
+    const old = await rejection(w.prompt({ requestId: 'req-b', sessionId: 'mirror-1', content: [{ type: 'text', text: 'look' }, { type: 'image', mediaType: 'image/png', data: 'AAAA' }] }))
+    assert.equal(old.code, 'session/joined-attachment-unsupported')
+    assert.match(old.message, /AC 0\.4\.25/)
     assert.equal(w.frames.length, 0)
     assert.equal(w.originalCalls.length, 0)
     assert.deepEqual(types(w.sessionOf('mirror-1')), [])

@@ -52,6 +52,7 @@ import * as mcpServer from './src/host/mcp-server.js'
 import * as channel from './src/host/channel.js'
 import * as joinedTurn from './src/host/joined-turn.js'
 import * as nodeCards from './src/host/node-cards.js'
+import * as joinedAttachments from './src/host/joined-attachments.js'
 import * as steerAsk from './src/host/steer-ask.js'
 import * as steerLatency from './src/host/steer-latency.js'
 import * as joinedPrompt from './src/host/joined-prompt.js'
@@ -91,7 +92,7 @@ export { name, inject } from './src/host/entry.js'
 // install. Listeners run and tools are listed in registration order, so this order holds:
 // usage meters model requests after every listener that rewrites them. privacy checks a
 // call before the hooks of tools do, so a closed call never reaches a card they show.
-export const MODULES = [diagnostics, store, ledger, models, providers, permissions, turns, steer, steerLatency, handoffs, requests, delivery, remoteTasks, workerBridge, rosterJoin, roster, federation, folders, privacy, agents, prompt, timeContext, hostContext, tools, issueReport, deepseekServices, chatIndex, groups, goals, agentCommands, tasks, approvals, resume, memory, memoryFederation, parts, botTasks, changes, images, avatarLibrary, secrets, connectors, capabilities, learning, schedules, browser, browserPlugins, computer, usage, update, dshUpdate, thinking, threadQueue, mobile, feed, phone, mcpServer, im, channel, remote, joinedTurn, nodeCards, steerAsk, joinedPrompt, threadPrompt, mirrorGuard, joinedCreate, configSource, nodeConfig, joinedPage, officeSkills, goalSkills, manualSkills, localAgents, botNetwork, waker, pmo]
+export const MODULES = [diagnostics, store, ledger, models, providers, permissions, turns, steer, steerLatency, handoffs, requests, delivery, remoteTasks, workerBridge, rosterJoin, roster, federation, folders, privacy, agents, prompt, timeContext, hostContext, tools, issueReport, deepseekServices, chatIndex, groups, goals, agentCommands, tasks, approvals, resume, memory, memoryFederation, parts, botTasks, changes, images, avatarLibrary, secrets, connectors, capabilities, learning, schedules, browser, browserPlugins, computer, usage, update, dshUpdate, thinking, threadQueue, mobile, feed, phone, mcpServer, im, channel, remote, joinedTurn, nodeCards, joinedAttachments, steerAsk, joinedPrompt, threadPrompt, mirrorGuard, joinedCreate, configSource, nodeConfig, joinedPage, officeSkills, goalSkills, manualSkills, localAgents, botNetwork, waker, pmo]
 
 export function apply(ctx, config = {}) {
   createRuntime(ctx, config)
