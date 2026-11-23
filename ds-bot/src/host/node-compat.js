@@ -15,10 +15,13 @@ export const NODE_FEATURES = Object.freeze({
   trace: { cap: 'bot-trace/1', label: '思考过程与工具步骤' },
   attach: { cap: 'bot-attach/1', label: '图片和文件附件' },
   models: { cap: 'config-models/1', label: '模型能力（图片、思考档位）' },
+  lanDiscovery: { cap: 'lan-discovery/1', label: 'LAN 自动发现' },
+  pairing: { cap: 'pairing/1', label: '配对码零配置接入' },
+  machineIdentity: { cap: 'machine-identity/1', label: '持久机器身份' },
 })
-// The AC release that carries every capability above: ds-bot 0.3.10-fork.110 pairs with AC 0.4.30 (hub and nodes).
+// The AC release that carries every capability above: ds-bot 0.3.10-fork.111 pairs with AC 0.4.31 (hub and nodes).
 // The full version table is in docs/ac-pairing.md and in AC's README.
-export const AC_NEEDED = '0.4.30'
+export const AC_NEEDED = '0.4.31'
 
 /** The capabilities of a node, or undefined when they are not known. */
 export function nodeCapsOf(rt, nodeId) {
