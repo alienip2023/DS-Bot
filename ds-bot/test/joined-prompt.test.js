@@ -170,7 +170,7 @@ describe('S24: joined Bot page prompt takeover', () => {
     w.rt.ctx.get = name => (name === 'remote-agent:registry' ? { send: () => true, on() {}, off() {}, getNode: () => ({ hello: { caps: ['bot-turn-mode/1'] } }) } : undefined)
     const old = await rejection(w.prompt({ requestId: 'req-b', sessionId: 'mirror-1', content: [{ type: 'text', text: 'look' }, { type: 'image', mediaType: 'image/png', data: 'AAAA' }] }))
     assert.equal(old.code, 'session/joined-attachment-unsupported')
-    assert.match(old.message, /AC 0\.4\.25/)
+    assert.match(old.message, /AC 0\.4\.28/)
     assert.equal(w.frames.length, 0)
     assert.equal(w.originalCalls.length, 0)
     assert.deepEqual(types(w.sessionOf('mirror-1')), [])
