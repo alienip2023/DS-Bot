@@ -18,6 +18,9 @@
 //
 // Needs AC 0.4.25 on the node (`bot-attach/1`, node-compat.js); an older node is refused with that reason.
 import { createHash } from 'node:crypto'
+import { readFile, stat } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import path from 'node:path'
 import { nodeCan, refusalFor } from './node-compat.js'
 
 export const MAX_ATTACHMENTS = 8
@@ -122,22 +125,82 @@ async function resolveReceipts(rt, parts, sessionId) {
   return { parts: resolved, receiptIds, agent, uploads }
 }
 
+
+// ── files the user mentioned by path (`@/Users/me/report.txt`) ─────────────────────────────────────────────
+//
+// The desktop composer turns a file dragged in from the disk into a path mention in the words (`@/abs/path`, or
+// `@"/abs/path with spaces"`), not into an upload. For a local Bot that is enough, it reads the path itself; a node
+// Bot is on another machine and cannot. So the message sent from the hub's own page is searched for mentions that
+// name a regular file on THIS machine: its bytes go along as attachments and the mention in the words sent to the
+// node becomes the file's name (the node's core then hands the Bot the saved copy). A path that does not exist
+// here is left as it is (it may be a path on the node); a directory too.
+const MENTION = /(^|\s)@(?:"([^"\n]+)"|([^\s"]+))/gu
+const TRAILING = /[,.;:!?)\]}，。；：！？）】」』]+$/u
+// Where credentials live: a mention of these is never read on the user's behalf.
+const NEVER_SEND = ['.ssh', '.gnupg', '.aws', '.kube', '.dsh', '.dsh-remote-agent', '.config/gcloud', '.docker']
+
+const looksAbsolute = value => value.startsWith('~/') || path.isAbsolute(value)
+const resolveMention = value => (value.startsWith('~/') ? path.join(homedir(), value.slice(2)) : value)
+function withheld(file) {
+  const home = homedir()
+  return NEVER_SEND.some((name) => {
+    const dir = path.join(home, name)
+    return file === dir || file.startsWith(dir + path.sep)
+  })
+}
+
+async function fileAt(candidate) {
+  try {
+    const info = await stat(candidate)
+    return info.isFile() ? info : undefined
+  } catch { return undefined }
+}
+
+/** Every `@path` in `text` that names a regular file on this machine: [{ start, end, file, name, size }]. */
+export async function mentionedFiles(text) {
+  const found = []
+  for (const match of String(text ?? '').matchAll(MENTION)) {
+    const quoted = match[2] !== undefined
+    let raw = quoted ? match[2] : match[3]
+    if (!looksAbsolute(raw)) continue
+    let file = resolveMention(raw)
+    let info = await fileAt(file)
+    let used = raw
+    if (info === undefined && !quoted) {
+      // Words glued to the path (`@/a/b.txt，谢谢`): the path is the longest prefix up to a sentence mark that names a file.
+      const cuts = [...raw.matchAll(/[,;!?，。；：！？)\]}）】」』]/gu)].map(item => item.index).filter(index => index > 1).reverse().slice(0, 8)
+      for (const cut of cuts) {
+        const prefix = raw.slice(0, cut).replace(TRAILING, '')
+        if (!looksAbsolute(prefix)) continue
+        const probe = await fileAt(resolveMention(prefix))
+        if (probe !== undefined) { used = prefix; file = resolveMention(prefix); info = probe; break }
+      }
+    }
+    if (info === undefined) continue
+    const start = match.index + match[1].length
+    const token = quoted ? `@"${match[2]}"` : `@${used}`
+    found.push({ start, end: start + token.length, file, name: path.basename(file), size: info.size, token })
+  }
+  return found
+}
+
 /**
  * The words of a prompt's parts and, for a node Bot, its attachments. Refuses (never drops) what cannot go:
  * a node too old for them, too many, too big, a part of a kind that is neither text, image nor file.
  * Returns { text, collected } — `collected` is undefined when the message has no attachment.
  */
-export async function collectPrompt(rt, bot, content, { sessionId, requestId } = {}) {
+export async function collectPrompt(rt, bot, content, { sessionId, requestId, mentions = false } = {}) {
   const given = typeof content === 'string' ? [{ type: 'text', text: content }] : Array.isArray(content) ? content : []
   const { parts, receiptIds, agent, uploads } = await resolveReceipts(rt, given, sessionId)
   const text = parts.filter(part => part?.type === 'text').map(part => String(part.text ?? '')).join('\n')
   const attached = parts.filter(part => part?.type !== 'text')
-  if (attached.length === 0) return { text }
+  const mentioned = mentions === true ? await mentionedFiles(text) : []
+  if (attached.length === 0 && mentioned.length === 0) return { text }
   if (attached.some(part => part?.type !== 'image' && part?.type !== 'file')) {
     throw refuse('session/joined-attachment-unsupported', '节点 Bot 只能收文字、图片和文件')
   }
   if (!nodeCan(rt, bot, 'attach')) throw refuse('session/joined-attachment-unsupported', refusalFor('attach'))
-  if (attached.length > MAX_ATTACHMENTS) throw refuse('session/joined-attachment-too-large', `一条消息最多带 ${MAX_ATTACHMENTS} 个附件`)
+  if (attached.length + mentioned.length > MAX_ATTACHMENTS) throw refuse('session/joined-attachment-too-large', `一条消息最多带 ${MAX_ATTACHMENTS} 个附件`)
   const store = storeOf(rt)
   const items = []
   const blocks = []
@@ -183,12 +246,37 @@ export async function collectPrompt(rt, bot, content, { sessionId, requestId } =
     items.push({ index: items.length, kind: part.type, name: String(name).trim().slice(0, 200) || (part.type === 'image' ? `image-${imageNumber}` : 'file'), ...(mediaType ? { mediaType: String(mediaType).slice(0, 64) } : {}), data, sha256: sha256Of(data) })
     blocks.push(block)
   }
+  // The files named by path in the words: their bytes go as attachments (the page already shows the mention itself).
+  let sendText
+  if (mentioned.length > 0) {
+    const sentFiles = new Map()
+    for (const mention of mentioned) {
+      if (withheld(mention.file)) throw refuse('session/joined-attachment-unsupported', `${mention.name} 在受保护的目录里，不会发送到节点`)
+      if (!sentFiles.has(mention.file)) {
+        if (mention.size === 0) throw refuse('session/joined-attachment-unsupported', `${mention.name} 是空的`)
+        if (total + mention.size > MAX_TOTAL_BYTES) throw refuse('session/joined-attachment-too-large', `${mention.name} 太大：附件加起来不能超过 ${mb(MAX_TOTAL_BYTES)}`)
+        let data
+        try { data = await readFile(mention.file) } catch (error) { throw unreadable(mention.name, error) }
+        total += data.length
+        items.push({ index: items.length, kind: 'file', name: mention.name.slice(0, 200) || 'file', data, sha256: sha256Of(data) })
+        sentFiles.set(mention.file, true)
+      }
+    }
+    // The words the node reads: each mention is the file's name now (the node's copy is handed to the Bot with it).
+    let cursor = 0
+    sendText = ''
+    for (const mention of mentioned) {
+      sendText += text.slice(cursor, mention.start) + mention.name
+      cursor = mention.end
+    }
+    sendText += text.slice(cursor)
+  }
   // The receipts are spent: bound to this message, they are retired when its user message lands on the page
   // (the core's own observer), instead of staying staged for the life of the Session.
   if (receiptIds.length > 0 && requestId !== undefined) {
     try { uploads.bindPrompt?.(agent, receiptIds, requestId)?.commit?.() } catch { /* a receipt that cannot be bound is only retired later */ }
   }
-  return { text, collected: { items, blocks } }
+  return { text, collected: { items, blocks, ...(sendText === undefined ? {} : { sendText }) } }
 }
 
 /**
