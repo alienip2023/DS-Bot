@@ -320,3 +320,10 @@ test('NA-15: chunks that came ahead of a refused turn are let go, not kept for i
   await assert.rejects(node.assembleParts({ exchangeId: 'half', attachments: [{ index: 0, name: 'a', kind: 'file', bytes: 1, sha256: sha(Buffer.from('a')), chunks: 1 }, { index: 1, name: 'b', kind: 'image', bytes: png.length, sha256: sha(png), chunks: 1 }] }), error => error.code === 'bot-attach-incomplete')
   assert.equal(node.size(), 0)
 })
+
+test('NA-16: a node whose ds-bot cannot take attachments, or whose AC refuses the manifest, is explained on the page', async () => {
+  const { failureText } = await import('../src/host/executor.js')
+  const words = code => failureText(Object.assign(new Error(code), { code: 'E_REJECTED' }))
+  assert.match(words('bot-attach-no-receiver'), /ds-bot 版本太旧.*fork\.103/)
+  assert.match(words('bot-turn-attachments-invalid'), /附件清单没有通过/)
+})

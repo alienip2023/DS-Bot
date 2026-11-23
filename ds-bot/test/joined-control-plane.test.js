@@ -253,7 +253,12 @@ test('a turn opened after the stop still reports a real bridge-down', async (t) 
   await first
 
   // The node is back and a new turn is in flight. Its drop is a real bridge-down, not the stop.
+  const turnsBefore = w.frames.filter(f => f.type === 'bot/turn').length
   const again = w.rt.deliver({ fromId: 'a', toId: REMOTE, text: 'go again', role: 'request', wait: true })
+  // Wait for the turn to be on the wire (a fixed pause is not enough when the machine is busy): the drop below must
+  // come after the turn is listening for its result.
+  const waitUntil = Date.now() + 10_000
+  while (w.frames.filter(f => f.type === 'bot/turn').length === turnsBefore && Date.now() < waitUntil) await settle(20)
   await settle(40)
   const later = w.frames.filter(f => f.type === 'bot/turn').at(-1)
   assert.ok(later, 'the later turn reached the node')
