@@ -130,11 +130,13 @@ describe('L2 worker role permissions', () => {
     assert.equal(rt.createBot.mock.callCount(), 0)
   })
 
-  it('create_bot on worker does not return E_WORKER_READONLY for local bot', async t => {
+  // A node has no Main Bot and its Bots are ordinary: they do not create Bots, the hub's Main Bot does (create_bot with node).
+  it('create_bot on a worker node is refused: only the hub\'s Main Bot creates Bots there', async t => {
     const { rt, execute } = toolsWorld(t, 'worker')
     const result = await execute('create_bot', { name: 'New Bot', role: 'Writer', instructions: 'Write reports.' })
-    assert.match(result, /^Created /)
-    assert.equal(rt.createBot.mock.callCount(), 1)
+    assert.match(result, /节点上没有主 Bot/)
+    assert.match(result, /create_bot with node/)
+    assert.equal(rt.createBot.mock.callCount(), 0)
   })
 
   it('create_bot on hub returns isMain error when caller is not main', async t => {
@@ -165,11 +167,11 @@ describe('L2 worker role permissions', () => {
     assert.equal(rt.updateBot.mock.callCount(), 0)
   })
 
-  it('update_bot on worker does not return E_WORKER_READONLY for local bot', async t => {
+  it('update_bot on a worker node does not change another Bot: an ordinary Bot only changes itself', async t => {
     const { rt, execute } = toolsWorld(t, 'worker')
     const result = await execute('update_bot', { bot: 'Other', name: 'Changed' })
-    assert.match(result, /^Updated /)
-    assert.equal(rt.updateBot.mock.callCount(), 1)
+    assert.match(result, /节点上没有主 Bot/)
+    assert.equal(rt.updateBot.mock.callCount(), 0)
   })
 
   it('update_bot allows self-update on worker', async t => {

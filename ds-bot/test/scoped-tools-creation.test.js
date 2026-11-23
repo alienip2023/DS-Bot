@@ -202,7 +202,7 @@ test('team-admin filtering preserves other tools and sessions, including empty r
   t.after(host.stop)
   await host.call('state', {})
   const names = BUILTIN_PACKS['team-admin'].tools
-  assert.deepEqual(names, ['create_bot', 'stop_bot', 'create_group', 'delete_group'])
+  assert.deepEqual(names, ['create_bot', 'delete_bot', 'stop_bot', 'create_group', 'delete_group'])
   for (const id of ['a', 'b', 'plain']) {
     const agent = host.agentOf(id)
     let filter
