@@ -13,6 +13,7 @@
 import { randomUUID } from 'node:crypto'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { joinedShadow } from './roster-join.js'
+import { attachmentsOf, releaseBytes, sendChunks, userContentOf } from './joined-attachments.js'
 import { listenBotTurnResult, JOINED_TURN_TIMEOUT_MS, JOINED_LATE_WINDOW_MS, LINK_LOST_TEXT, PENDING_TURN_TEXT } from './joined-turn.js'
 import { mirrorTurn, allocateTurn, mirrorTurnStart, mirrorTurnFinish, mirrorTurnFail, mirrorTurnAbort, mirrorTurnPending, mirrorLateReply, TASK_RESULT_MARK, STEER_REPLY_MARK } from './mirror.js'
 import { deferMirrorWrite, drainJoinedMirror, mirrorTurnOpen } from './joined-mirror-writer.js'
@@ -77,7 +78,7 @@ function dispatchRemote(args) {
 // register the result listener. Its refusals throw before anything is sent; `send()` is the
 // one irreversible step (it throws E_OFFLINE when the node does not take the frame), and
 // `cancel()` drops the listener of a prepared turn that is never sent.
-function prepareRemote({ bot, text, rt, tracker, timeoutOverride, lateWindowMs = 0, onTimeout, mode }) {
+function prepareRemote({ bot, text, rt, tracker, timeoutOverride, lateWindowMs = 0, onTimeout, mode, requestId }) {
   if (!bot.worker) {
     throw new ExecutorError('E_NOT_FOUND', 'joined shadow missing worker config')
   }
@@ -107,12 +108,26 @@ function prepareRemote({ bot, text, rt, tracker, timeoutOverride, lateWindowMs =
     if (sendCalled) return
     sendCalled = true
     let sent = false
+    // The images and files of this message go out first, as bot/attach chunks; the turn names them.
+    let attachments
+    try {
+      const held = attachmentsOf(requestId)
+      if (held !== undefined && held.items.length > 0) {
+        attachments = sendChunks(registry, { nodeId, remoteBotId, exchangeId: turnId, items: held.items })
+        releaseBytes(requestId)
+      }
+    } catch (sendErr) {
+      cancel()
+      tracker?.finish(turnId, { status: 'failed', error: 'E_OFFLINE' })
+      throw new ExecutorError('E_OFFLINE', `attachments not sent: ${sendErr?.message ?? sendErr}`)
+    }
     try {
       sent = registry.send(nodeId, 'bot/turn', {
         nodeId,
         remoteBotId,
         exchangeId: turnId,
         text: text ?? '',
+        ...(attachments === undefined ? {} : { attachments }),
         // How a busy node Bot takes it (AC 0.4.20+; an older node ignores it and queues).
         ...(mode === 'steer' || mode === 'queue' ? { mode } : {}),
       })
@@ -283,14 +298,18 @@ const FAILURE_WORDS = {
   E_INVALID: '消息或 Bot 配置无效',
   E_BUSY: '上一条消息还在处理',
   E_MIRROR_WRITE: '消息没能写入页面，已取消发送',
+  'bot-attach-incomplete': '附件没有完整送到节点，请重新发送',
+  'bot-attach-invalid': '附件在传输中损坏了，请重新发送',
 }
 
 /** The words the page shows after "⚠ 无法送达节点：" for a failed delivery. */
 export function failureText(err) {
   const code = typeof err?.code === 'string' ? err.code : ''
   const detail = String(err?.message ?? err ?? '')
-  const word = FAILURE_WORDS[code]
+  // A node's refusal arrives as E_REJECTED with the node's own error name as its detail.
+  const word = FAILURE_WORDS[detail] ?? FAILURE_WORDS[code]
   if (word === undefined) return detail || 'unknown'
+  if (FAILURE_WORDS[detail] !== undefined) return `${word}（${detail}）`
   return detail !== '' && detail !== code ? `${word}（${code}: ${detail}）` : `${word}（${code}）`
 }
 
@@ -431,7 +450,7 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
   try {
     const lateWindowMs = Number.isFinite(rt.joinedLateWindowMs) ? Math.max(1, rt.joinedLateWindowMs) : JOINED_LATE_WINDOW_MS
     prepared = prepareRemote({
-      bot, text, rt, tracker, timeoutOverride: timeoutMs, lateWindowMs,
+      bot, text, rt, requestId, tracker, timeoutOverride: timeoutMs, lateWindowMs,
       onTimeout: () => markPending(PENDING_TURN_TEXT),
     })
   } catch (err) {
@@ -573,7 +592,7 @@ export function startSideTurn({ rt, bot, text, requestId, session, state = {}, t
   const sides = rt.joinedSide.get(bot.id) ?? new Set()
   if (sides.size >= JOINED_SIDE_LIMIT) throw new ExecutorError('E_BUSY', 'too many concurrent turns for this Bot')
   const lateWindowMs = Number.isFinite(rt.joinedLateWindowMs) ? Math.max(1, rt.joinedLateWindowMs) : JOINED_LATE_WINDOW_MS
-  const prepared = prepareRemote({ bot, text, rt, tracker, timeoutOverride: timeoutMs, lateWindowMs, mode })
+  const prepared = prepareRemote({ bot, text, rt, requestId, tracker, timeoutOverride: timeoutMs, lateWindowMs, mode })
   const { seenKeys, closedKeys, seenSteps, closedTurns } = state
   const record = { requestId, abort: undefined }
   let over = false
@@ -629,7 +648,7 @@ export function startSideTurn({ rt, bot, text, requestId, session, state = {}, t
   rt.joinedRunning?.(bot, true)
   if (hostTurn !== undefined) {
     try {
-      session.append('user/message', createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user', rpcId: requestId } }), { surfaceOp: 'append' })
+      session.append('user/message', createUserMessage({ content: userContentOf(requestId, text), source: { kind: 'user', rpcId: requestId } }), { surfaceOp: 'append' })
       userWritten = true
     } catch (error) { rt.warn?.('ds-bot: a steer to %s was not shown on the page: %s', bot.id, error?.message ?? error) }
   }

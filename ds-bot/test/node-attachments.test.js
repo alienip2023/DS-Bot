@@ -1,0 +1,198 @@
+// Images and files in a message to a node Bot: the hub reads them from its attachment store, sends them ahead of the
+// turn as bot/attach chunks, shows them in the user's message on the page; the node puts them back together, checks
+// them, and hands the Bot's Session the same parts a local message would carry. What cannot go is refused, never
+// dropped so that only the words travel.
+import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
+import { test } from 'node:test'
+import {
+  CHUNK_BYTES, MAX_ATTACHMENTS, MAX_TOTAL_BYTES, attachmentsOf, collectPrompt, createAttachReceiver, forgetAttachments, sendChunks, stashAttachments, userContentOf,
+} from '../src/host/joined-attachments.js'
+import { makeWorld, textRequest, types } from './joined-world.js'
+
+const sha = buffer => createHash('sha256').update(buffer).digest('hex')
+const png = Buffer.from('89504e470d0a1a0a', 'hex')
+const settle = async () => { for (let i = 0; i < 10; i += 1) await new Promise(resolve => setImmediate(resolve)) }
+const rtWith = (store, caps) => ({
+  ctx: { get: name => (name === 'attachments' ? store : name === 'remote-agent:registry' ? { getNode: () => (caps === undefined ? undefined : { hello: { caps } }) } : undefined), attachments: store },
+  warn() {},
+})
+const bot = { id: 'joined:n1:b1', origin: 'joined', type: 'remote-worker', worker: { nodeId: 'n1', remoteBotId: 'b1', home: 'remote', online: true } }
+
+const fakeStore = {
+  readImage: async ref => ({ data: new Uint8Array(png), ref }),
+  readFileStream: async function* () { yield new Uint8Array([1, 2, 3]); yield new Uint8Array([4, 5]) },
+  admitPromptContent: async parts => parts.map(part => ({ type: 'image', attachment: { attachmentId: 'a-new', mediaType: part.mediaType, bytes: 8 } })),
+  admitEncodedFile: async ({ data, name }) => ({ attachmentId: `f-${sha(Buffer.from(data, 'base64')).slice(0, 6)}`, name, bytes: Buffer.from(data, 'base64').length }),
+}
+
+test('NA-1: an encoded image, a stored image and a stored file are read, hashed and kept for the page', async () => {
+  const rt = rtWith(fakeStore)
+  const imageRef = { attachmentId: 'a1', mediaType: 'image/jpeg', bytes: 8, name: 'photo.jpg' }
+  const fileRef = { attachmentId: 'f1', name: 'notes.txt', bytes: 5 }
+  const { text, collected } = await collectPrompt(rt, bot, [
+    { type: 'text', text: 'look at these' }, { type: 'text', text: 'please' },
+    { type: 'image', mediaType: 'image/png', data: png.toString('base64') },
+    { type: 'image', attachment: imageRef, encodedBytes: 8 },
+    { type: 'file', attachment: fileRef },
+  ])
+  assert.equal(text, 'look at these\nplease')
+  assert.deepEqual(collected.items.map(item => [item.index, item.kind, item.name, item.mediaType]), [
+    [0, 'image', 'image-1.png', 'image/png'], [1, 'image', 'photo.jpg', 'image/jpeg'], [2, 'file', 'notes.txt', undefined],
+  ])
+  assert.equal(collected.items[0].sha256, sha(png))
+  assert.deepEqual([...collected.items[2].data], [1, 2, 3, 4, 5], 'a file is read whole')
+  assert.deepEqual(collected.blocks.map(block => block.type), ['image', 'image', 'file'])
+  assert.equal(collected.blocks[1].attachment, imageRef, 'the page shows the hub\'s own reference')
+  // the user's message on the page: the words, then what was attached
+  stashAttachments('req-1', collected)
+  assert.deepEqual(userContentOf('req-1', text).map(block => block.type), ['text', 'image', 'image', 'file'])
+  assert.deepEqual(userContentOf('req-1', '').map(block => block.type), ['image', 'image', 'file'], 'no empty text block beside an attachment')
+  assert.deepEqual(userContentOf('unknown', 'plain'), [{ type: 'text', text: 'plain' }])
+  forgetAttachments('req-1')
+  assert.equal(attachmentsOf('req-1'), undefined)
+})
+
+test('NA-2: a message with no attachment is just its words; what cannot go is refused with the reason', async () => {
+  const rt = rtWith(fakeStore)
+  assert.deepEqual(await collectPrompt(rt, bot, 'hello'), { text: 'hello' })
+  const refused = async (content, rtx = rt) => collectPrompt(rtx, bot, content).then(() => assert.fail('expected a refusal'), error => error)
+  assert.match((await refused([{ type: 'audio' }])).message, /只能收文字、图片和文件/)
+  const old = await refused([{ type: 'image', mediaType: 'image/png', data: png.toString('base64') }], rtWith(fakeStore, ['bot-turn-mode/1']))
+  assert.equal(old.code, 'session/joined-attachment-unsupported')
+  assert.match(old.message, /AC 0\.4\.25/)
+  const many = Array.from({ length: MAX_ATTACHMENTS + 1 }, () => ({ type: 'image', mediaType: 'image/png', data: png.toString('base64') }))
+  assert.equal((await refused(many)).code, 'session/joined-attachment-too-large')
+  const big = await refused([{ type: 'file', attachment: { attachmentId: 'f', name: 'big.bin', bytes: MAX_TOTAL_BYTES + 1 } }])
+  assert.equal(big.code, 'session/joined-attachment-too-large')
+  assert.match(big.message, /20 MB/)
+  assert.match((await refused([{ type: 'image', url: 'x' }])).message, /图片没有内容/)
+})
+
+test('NA-3: sendChunks cuts an attachment into ordered chunks and names it in the manifest; a gone node fails the send', () => {
+  const data = Buffer.alloc(CHUNK_BYTES * 2 + 10, 7)
+  const sent = []
+  const registry = { send: (nodeId, type, payload) => { sent.push({ nodeId, type, payload }); return true } }
+  const manifest = sendChunks(registry, { nodeId: 'n1', remoteBotId: 'b1', exchangeId: 'x1', items: [{ index: 0, kind: 'file', name: 'a.bin', data, sha256: sha(data) }] })
+  assert.deepEqual(sent.map(frame => [frame.type, frame.payload.index, frame.payload.chunk, frame.payload.chunks]), [['bot/attach', 0, 0, 3], ['bot/attach', 0, 1, 3], ['bot/attach', 0, 2, 3]])
+  assert.ok(sent.every(frame => frame.payload.data.length <= 1_100_000), 'a chunk fits AC\'s limit')
+  assert.deepEqual(manifest, [{ index: 0, name: 'a.bin', kind: 'file', bytes: data.length, sha256: sha(data), chunks: 3 }])
+  assert.throws(() => sendChunks({ send: () => false }, { nodeId: 'n1', remoteBotId: 'b1', exchangeId: 'x', items: [{ index: 0, kind: 'file', name: 'a', data, sha256: 's' }] }), error => error.code === 'E_OFFLINE')
+})
+
+test('NA-4: the node puts the chunks back together, whatever their order, and refuses what is missing or damaged', async () => {
+  const rt = rtWith(fakeStore)
+  rt.attachWaitMs = 80
+  const node = createAttachReceiver(rt)
+  const data = Buffer.alloc(CHUNK_BYTES + 100, 9)
+  const frames = []
+  const manifest = sendChunks({ send: (_n, _t, payload) => { frames.push(payload); return true } }, { nodeId: 'n1', remoteBotId: 'b1', exchangeId: 'x1', items: [
+    { index: 0, kind: 'file', name: 'doc.bin', data, sha256: sha(data) },
+    { index: 1, kind: 'image', name: 'p.png', mediaType: 'image/png', data: png, sha256: sha(png) },
+  ] })
+  for (const frame of [...frames].reverse()) node.receive(frame)   // out of order
+  const parts = await node.assembleParts({ exchangeId: 'x1', attachments: manifest })
+  assert.equal(parts[0].type, 'file')
+  assert.equal(parts[0].attachment.name, 'doc.bin')
+  assert.equal(parts[0].attachment.bytes, data.length)
+  assert.deepEqual(parts[1], { type: 'image', mediaType: 'image/png', data: png.toString('base64'), name: 'p.png' })
+  assert.equal(node.size(), 0, 'what was used is let go')
+
+  // a chunk that never comes
+  for (const frame of frames.slice(0, 1)) node.receive({ ...frame, exchangeId: 'x2' })
+  await assert.rejects(node.assembleParts({ exchangeId: 'x2', attachments: [{ ...manifest[0] }] }), error => error.code === 'bot-attach-incomplete')
+  // bytes that do not match the manifest
+  const wrong = { ...manifest[1], exchangeId: 'x3' }
+  node.receive({ exchangeId: 'x3', index: 1, chunk: 0, chunks: 1, data: Buffer.from('not the image').toString('base64') })
+  await assert.rejects(node.assembleParts({ exchangeId: 'x3', attachments: [wrong] }), error => error.code === 'bot-attach-invalid')
+  // a duplicate chunk is ignored
+  node.receive({ exchangeId: 'x4', index: 0, chunk: 0, chunks: 1, data: png.toString('base64') })
+  node.receive({ exchangeId: 'x4', index: 0, chunk: 0, chunks: 1, data: png.toString('base64') })
+  const [same] = await node.assembleParts({ exchangeId: 'x4', attachments: [{ index: 0, name: 'p.png', kind: 'image', mediaType: 'image/png', bytes: png.length, sha256: sha(png), chunks: 1 }] })
+  assert.equal(same.type, 'image')
+})
+
+test('NA-5: chunks that arrive while the turn already waits for them are picked up', async () => {
+  const rt = rtWith(fakeStore)
+  const node = createAttachReceiver(rt)
+  const entry = { index: 0, name: 'p.png', kind: 'image', mediaType: 'image/png', bytes: png.length, sha256: sha(png), chunks: 1 }
+  const waiting = node.assembleParts({ exchangeId: 'late', attachments: [entry] })
+  setTimeout(() => node.receive({ exchangeId: 'late', index: 0, chunk: 0, chunks: 1, data: png.toString('base64') }), 30)
+  assert.equal((await waiting)[0].type, 'image')
+})
+
+test('NA-6: a page prompt with an image reaches the node as chunks then a turn, and the page shows the image', async () => {
+  const w = makeWorld({ tracker: true })
+  w.rt.ctx.attachments = fakeStore
+  const original = w.rt.ctx.get
+  w.rt.ctx.get = name => (name === 'attachments' ? fakeStore : original(name))
+  const data = png.toString('base64')
+  await w.prompt({ ...textRequest('what is this?', 'req-img'), content: [{ type: 'text', text: 'what is this?' }, { type: 'image', mediaType: 'image/png', data }] })
+  await settle()
+  assert.deepEqual(w.frames.map(frame => frame.type), ['bot/attach', 'bot/turn'], 'the chunks go first, the turn that names them after')
+  const turn = w.frames[1].payload
+  assert.equal(turn.text, 'what is this?')
+  assert.deepEqual(turn.attachments.map(item => [item.index, item.kind, item.bytes, item.sha256, item.chunks]), [[0, 'image', png.length, sha(png), 1]])
+  assert.equal(w.frames[0].payload.exchangeId, turn.exchangeId)
+  // the user's message on the page carries the image
+  const log = w.sessionOf(w.bot.sessionId).log
+  const message = log.find(event => event.type === 'user/message')
+  assert.deepEqual(message.data.content.map(block => block.type), ['text', 'image'])
+  // and the node can put it back together from exactly what the hub sent
+  const node = createAttachReceiver(rtWith(fakeStore))
+  node.receive(w.frames[0].payload)
+  const [part] = await node.assembleParts(turn)
+  assert.deepEqual([part.type, part.mediaType, part.data], ['image', 'image/png', data])
+  assert.ok(types(w.sessionOf(w.bot.sessionId)).includes('user/message'))
+})
+
+test('NA-7: an image alone, without words, is a message', async () => {
+  const w = makeWorld({ tracker: true })
+  const original = w.rt.ctx.get
+  w.rt.ctx.get = name => (name === 'attachments' ? fakeStore : original(name))
+  await w.prompt({ ...textRequest('', 'req-only'), content: [{ type: 'image', mediaType: 'image/png', data: png.toString('base64') }] })
+  await settle()
+  assert.equal(w.frames[1].payload.text, '')
+  assert.equal(w.frames[1].payload.attachments.length, 1)
+})
+
+// ── the node's turn receiver hands the Bot's Session the text and the attachments ──────────────
+
+import { createBotTurnReceiver } from '../src/host/joined-turn.js'
+
+function nodeSide({ assemble }) {
+  const sent = []
+  const rt = {
+    state: { bots: { k1: { id: 'k1', name: 'Worker' } } },
+    botOf: id => rt.state.bots[id], chatOf: id => `chat-${id}`,
+    sendUser: async (request) => { sent.push(request); queueMicrotask(() => rt.settleJoinedTurn(request.requestId, 'seen it')) },
+    assembleAttachmentParts: assemble, save: async () => {}, warn() {},
+  }
+  return { rt, sent, accept: createBotTurnReceiver(rt, { timeoutMs: 5000 }) }
+}
+
+test('NA-8: the Bot\'s own message carries the words and the parts that were put back together', async () => {
+  const parts = [{ type: 'image', mediaType: 'image/png', data: 'AAAA', name: 'p.png' }]
+  const w = nodeSide({ assemble: async () => parts })
+  const result = await w.accept({ remoteBotId: 'k1', exchangeId: 'ex-1', text: 'what is this', attachments: [{ index: 0 }] }, {})
+  assert.equal(result.ok, true)
+  assert.deepEqual(w.sent[0].content, [{ type: 'text', text: 'what is this' }, ...parts])
+  // no words, only an image: no empty text block
+  const alone = nodeSide({ assemble: async () => parts })
+  await alone.accept({ remoteBotId: 'k1', exchangeId: 'ex-2', text: '', attachments: [{ index: 0 }] }, {})
+  assert.deepEqual(alone.sent[0].content, parts)
+})
+
+test('NA-9: attachments that did not arrive whole refuse the turn with the reason; nothing is sent to the Bot', async () => {
+  for (const code of ['bot-attach-incomplete', 'bot-attach-invalid']) {
+    const w = nodeSide({ assemble: async () => { throw Object.assign(new Error('x'), { code }) } })
+    const result = await w.accept({ remoteBotId: 'k1', exchangeId: 'ex-3', text: 'look', attachments: [{ index: 0 }] }, {})
+    assert.equal(result.ok, false)
+    assert.equal(result.error, code)
+    assert.equal(w.sent.length, 0)
+  }
+  // a turn without attachments is untouched
+  const plain = nodeSide({ assemble: async () => assert.fail('not called') })
+  assert.equal((await plain.accept({ remoteBotId: 'k1', exchangeId: 'ex-4', text: 'hi' }, {})).ok, true)
+  assert.deepEqual(plain.sent[0].content, [{ type: 'text', text: 'hi' }])
+})

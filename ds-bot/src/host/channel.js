@@ -11,6 +11,7 @@ export function mapNodeModel(m) {
 
 // Client channel: the team view the browser renders, and the POST /api/bot endpoints.
 import { randomUUID } from 'node:crypto'
+import { collectPrompt, stashAttachments, userContentOf } from './joined-attachments.js'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { PUBLISH_ISSUE } from './issue-report.js'
 import { install as installBtw } from './btw.js'
@@ -176,7 +177,9 @@ export function createSendUser(rt, { textOfContent, getMirrorState, ctx, ownThre
       : joinedShadow(rt.bySessionId(ref)) ? rt.bySessionId(ref)
       : null
     if (joinedBot) {
-      const text = textOrRefuse(content, _textOfContent)
+      const prompt = await collectPrompt(rt, joinedBot, content)
+      const text = prompt.text
+      stashAttachments(requestId, prompt.collected)
       const session = await ensureMirrorSession(rt, joinedBot)
       if (hasPromptRequest(session, requestId)) return { accepted: true }
       const ms = _getMirrorState(rt, joinedBot.id, session)
@@ -184,7 +187,7 @@ export function createSendUser(rt, { textOfContent, getMirrorState, ctx, ownThre
       const queuedBehind = joinedBusy(rt, joinedBot.id) || (rt._joinedNextQueues?.get(joinedBot.id)?.items.length ?? 0) > 0
       if (queuedBehind) {
         session.append('user/message', createUserMessage({
-          content: [{ type: 'text', text }],
+          content: userContentOf(requestId, text),
           source: { kind: 'user', rpcId: requestId },
         }), { surfaceOp: 'append' })
         const item = { text, requestId }
@@ -1663,12 +1666,3 @@ function remoteTasksOf(bot, nodeTasks) {
   return nodeTasks.map(task => ({ ...task, remote: true, updatedAt: task.startedAt }))
 }
 
-// A node Bot takes text only: an image or a file in the message is refused (the phone and IM show the reason),
-// never dropped so that only the words go out.
-function textOrRefuse(content, textOf) {
-  const parts = Array.isArray(content) ? content : []
-  if (parts.some(part => part?.type !== undefined && part.type !== 'text')) {
-    throw Object.assign(new Error('副机 Bot 暂不支持附件，请改为文字发送'), { code: 'session/joined-attachment-unsupported' })
-  }
-  return textOf(content)
-}

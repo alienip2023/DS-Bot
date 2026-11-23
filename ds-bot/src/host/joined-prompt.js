@@ -25,6 +25,7 @@ import { wrapControllerMethod } from './controller-wrap.js'
 import { sendBotAction } from './node-cards.js'
 import { nodeCan } from './node-compat.js'
 import { stopOnNode } from './joined-turn.js'
+import { collectPrompt, stashAttachments } from './joined-attachments.js'
 import { writeNodeReport } from './executor.js'
 import { STOP_NOTE_MARK } from './mirror.js'
 
@@ -79,6 +80,18 @@ export async function promptText(content) {
   return parts.map(part => String(part.text ?? '')).join('\n')
 }
 
+/** collectPrompt, with its refusal in the shape the page reads (a RemoteError with a code). */
+async function collectPromptOrReject(rt, bot, content) {
+  try {
+    return await collectPrompt(rt, bot, content)
+  } catch (error) {
+    if (typeof error?.code === 'string' && error.code.startsWith('session/joined-attachment')) {
+      throw await remoteError(error.code, error.message, { reason: 'JOINED_ATTACHMENT_UNSUPPORTED' })
+    }
+    throw error
+  }
+}
+
 export function install(rt) {
   const { ctx } = rt
   // The Bot-to-Bot writer closes turns in joined-mirror-writer.js; when a late node answer is
@@ -126,7 +139,10 @@ export function install(rt) {
     const bot = joinedBotOfSession(rt, request?.sessionId)
     if (bot === undefined) return original.call(this, request, ...rest)
 
-    const text = await promptText(request.content)
+    // The words and, for a node Bot, the images / files of the message (refused with the reason when they cannot go).
+    const prompt = await collectPromptOrReject(rt, bot, request.content)
+    const text = prompt.text
+    stashAttachments(request.requestId, prompt.collected)
     const session = await ensureMirrorSession(rt, bot)
     if (hasPromptRequest(session, request.requestId)) return { accepted: true }
 

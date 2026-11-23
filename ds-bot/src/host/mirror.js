@@ -2,6 +2,7 @@
 // The session is store-owned; writes go through session.append ONLY.
 // No followup / steer / sendUser / sessionController.prompt.
 import { createUserMessage, createAssistantMessage, createSystemMessage } from '@deepseek-ai/dsh-llm'
+import { userContentOf } from './joined-attachments.js'
 import { turnEnd } from './turn-end.js'
 
 const MIRROR_PROVIDER = 'mirror'
@@ -128,7 +129,7 @@ export function mirrorTurnStart(session, { turn, step = 1, userText, rpcId } = {
   try {
     session.append('step/start', { turn, step })
     session.append('user/message', createUserMessage({
-      content: [{ type: 'text', text: String(userText ?? '') }],
+      content: userContentOf(rpcId, userText),
       source: rpcId === undefined ? { kind: 'user' } : { kind: 'user', rpcId },
     }), { surfaceOp: 'append' })
   } catch (err) {

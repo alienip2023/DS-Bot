@@ -563,6 +563,11 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
     if (!bot || bot.type === 'remote-worker' || bot.origin === 'joined') return { ok: false, error: 'bot-not-on-roster', ...roomFields }
     // The hub asked this Bot: what its background tasks report later is owed to that hub's page.
     markHubAsked(rt, bot)
+    // The images and files the hub sent ahead of this turn: all of them, intact, or the turn is refused.
+    let attachedParts = []
+    if (Array.isArray(turn?.attachments) && turn.attachments.length > 0) {
+      try { attachedParts = await rt.assembleAttachmentParts(turn) } catch (error) { return { ok: false, exchangeId, error: error?.code ?? 'bot-attach-incomplete', ...roomFields } }
+    }
     const done = new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(exchangeId)
@@ -592,7 +597,7 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
           : header === '' ? (turn.text ?? '') : header + '\n' + (turn.text ?? '')
         return rt.sendUser({
           sessionId: sessionIdForTurn,
-          content: [{ type: 'text', text }],
+          content: [...(text === '' && attachedParts.length > 0 ? [] : [{ type: 'text', text }]), ...attachedParts],
           requestId: exchangeId,
           ...(steering ? { mode: 'steer' } : {}),
         })
