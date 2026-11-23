@@ -306,6 +306,13 @@ export async function replyToSender(rt, { fromId, toId, exchangeId, work, text, 
   }
   const sender = fromId ? rt.botOf?.(fromId) : undefined
   if (!sender || sender.id === toId) return
+  // When the sender is a local Bot (not joined/peer) and closeWork already registered the result
+  // in its parent work, skip the deliver call: turns.js picks up the result via takenWork on the
+  // sender's next step — the same path local Bot handoffs use. Delivering again via rt.deliver
+  // creates a new queued input message, so the reply appears as 5 stacked messages in the sender's
+  // queue instead of being consumed as a silent handoff result.
+  const senderIsLocal = sender.origin !== 'joined' && sender.origin !== 'peer' && sender.type !== 'remote-worker'
+  if (senderIsLocal && work !== undefined) return
   await rt.deliver?.({
     fromId: toId,
     toId: fromId,
@@ -596,7 +603,7 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
       // Before anything is sent: the exchange's own user/message is what opens the trace and stream.
       tracking.tracer = feed.start({ sessionId: sessionIdForTurn, exchangeId, control })
       // bot/stream: wire the streaming forwarder if the hub supports it.
-      if (typeof control.stream?.start === 'function' && sessionIdForTurn) {
+      if (typeof control?.stream?.start === 'function' && sessionIdForTurn) {
         tracking.streamer = control.stream.start(ctx, sessionIdForTurn)
       }
       const send = async () => {
