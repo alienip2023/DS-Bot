@@ -933,6 +933,8 @@ export const KO = {
   '{count} images': '이미지 {count}장',
   'Replies from': '그룹 답장:',
   'Reply from': '답장:',
+  'Work handed back': '돌려받은 작업 결과',
+  'Work handed back by': '결과를 돌려준 Bot:',
   'ReplyFrom': '원격 봇의 답장: ',
   'Message from': '메시지 발신:',
   'Stopped by': '중지한 주체:',

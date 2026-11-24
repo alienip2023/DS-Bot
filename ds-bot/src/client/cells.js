@@ -750,6 +750,13 @@ export function TriggerCell({ node, sessionId, useRoster, useSessions, useTurnCl
       if (source.role === 'report') {
         return h(GroupEvent, { prefix: t('Replies from'), room: roster.roomsById[source.roomId], name: t('a group chat'), roster, actions })
       }
+      // Everything handed back for one work, in the one message that resumes it: who handed back, each opening the
+      // pair's conversation (work model, docs/plans/2026-11-24-work-model.md).
+      if (source.role === 'results') {
+        const from = (Array.isArray(source.resultFrom) ? source.resultFrom : []).map(id => roster.byId[id]).filter(Boolean)
+        if (from.length === 0) return h('div', { className: 'bt-event' }, t('Work handed back'))
+        return h(EventLine, { prefix: t('Work handed back by'), bots: from, onOpen: bot => actions.openExchange(selfId, bot.id), whole: true })
+      }
       // A request carried on keeps its role, but its message line was shown already.
       if (source.role === 'resume' || source.resumed === true) return h('div', { className: 'bt-event' }, t('Picked up its work after a restart'))
       if (source.role === 'retry' || source.retried === true) return h('div', { className: 'bt-event' }, t('Asked to make the tool call it wrote as text'))

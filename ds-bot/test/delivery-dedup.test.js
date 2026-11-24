@@ -18,6 +18,11 @@ const settle = async (check, ms = 4000) => {
   assert.ok(check(), 'condition not reached')
 }
 
+// What a message to the asker answers: a plain reply names its request; a resume (work model, W1) carries every
+// result handed back for one work.
+const answered = msg => (msg.source.role === 'results' ? msg.source.results : [msg.source.replyTo])
+const answers = (msg, id) => answered(msg).includes(id)
+
 const textOf = message => (message?.content ?? []).map(block => block.text ?? '').join('\n')
 
 const baseSeed = () => ({
@@ -249,7 +254,7 @@ test('answerSender is idempotent per exchangeId and per failure requestId while 
   const seed = baseSeed()
   seed.works = {
     'ex-1': { from: 'a', to: 'b', open: [], results: [], at: 1 },
-    'ex-parent': { from: 'a', to: 'b', open: ['ex-child-1', 'ex-child-2'], results: [], at: 1 },
+    'ex-parent': { from: 'b', to: 'a', open: ['ex-child-1', 'ex-child-2'], results: [], at: 1 },
     'ex-child-1': { from: 'a', to: 'b', parent: 'ex-parent', open: [], results: [], at: 2 },
     'ex-child-2': { from: 'a', to: 'b', parent: 'ex-parent', open: [], results: [], at: 3 },
     'ex-abandoned-parent': { from: 'a', to: 'a', open: ['ex-late'], results: [], at: 1 },
@@ -570,22 +575,23 @@ test('answerSender keeps separate continuations for distinct parent works sharin
   assert.equal(answerSender(rt, 'b', { kind: 'bot', role: 'request', exchangeId: 'child-p2', senderSessionId: 'a' }, 'Writer failed', undefined, { failure, dedupKey }), true)
   await settle(() => host.agentOf('a').calls.length >= 3)
   assert.deepEqual(
-    host.agentOf('a').calls.map(msg => [msg.source.replyTo, msg.source.work]),
-    [['ex-no-parent', undefined], ['child-p1', 'parent-1'], ['child-p2', 'parent-2']],
+    host.agentOf('a').calls.map(msg => [answered(msg)[0], msg.source.work]).sort((x, y) => x[0].localeCompare(y[0])),
+    [['child-p1', 'parent-1'], ['child-p2', 'parent-2'], ['ex-no-parent', undefined]],
     'distinct parent works must never be suppressed by another parent or unparented failure',
   )
 
-  // Same parent work, but once the first failed child was already consumed out of parent.open,
-  // a second child's failure must still deliver so the parked parent is woken up.
+  // Same parent work, two children failing in the same failed request: the second is folded into the first (one
+  // notice per failure), and the parked parent is woken once that was the last thing out (one resume per work).
   const sameParentFailure = { code: 'INVALID_REQUEST', status: 400, requestId: 'req-consumed-parent', message: 'bad' }
   assert.equal(answerSender(rt, 'b', { kind: 'bot', role: 'request', exchangeId: 'child-c1', senderSessionId: 'a' }, 'Writer failed', undefined, { failure: sameParentFailure }), true)
+  await realDelay(30)
+  assert.deepEqual(host.agentOf('a').calls.map(msg => [answered(msg), msg.source.work]).slice(3), [], 'child-c2 is still out: no resume yet')
+  assert.equal(answerSender(rt, 'b', { kind: 'bot', role: 'request', exchangeId: 'child-c2', senderSessionId: 'a' }, 'Writer failed', undefined, { failure: sameParentFailure }), false)
   await settle(() => host.agentOf('a').calls.length >= 4)
-  rt.takenWork('parent-consumed', 'child-c1')
-  assert.equal(answerSender(rt, 'b', { kind: 'bot', role: 'request', exchangeId: 'child-c2', senderSessionId: 'a' }, 'Writer failed', undefined, { failure: sameParentFailure }), true)
-  await settle(() => host.agentOf('a').calls.length >= 5)
+  await realDelay(30)
   assert.deepEqual(
-    [host.agentOf('a').calls[4].source.replyTo, host.agentOf('a').calls[4].source.work],
-    ['child-c2', 'parent-consumed'],
+    host.agentOf('a').calls.slice(3).map(msg => [answered(msg), msg.source.work]),
+    [[['child-c1'], 'parent-consumed']],
   )
 })
 
@@ -692,7 +698,7 @@ test('reconcileEnded settles distinct parent works that steered into the same fa
   t.mock.timers.tick(3000)
   await settle(() => host.agentOf('a').calls.length >= 2)
   assert.deepEqual(
-    host.agentOf('a').calls.map(msg => [msg.source.replyTo, msg.source.work]),
+    host.agentOf('a').calls.map(msg => [answered(msg)[0], msg.source.work]),
     [['req-1', 'p1'], ['req-2', 'p2']],
     'reconcileEnded must notify every distinct parent work steered into the failed turn',
   )
@@ -739,8 +745,8 @@ test('a completed turn hands a steered request back after a restart', async (t) 
   await settle(() => host.agentOf('a').calls.length >= 1 && host.agentOf('b').calls.length >= 1)
 
   const replies = host.agentOf('a').calls
-  assert.equal(replies.filter(msg => msg.source.replyTo === 'req-1').length, 1, 'the primary request is answered once')
-  assert.equal(replies.filter(msg => msg.source.replyTo === 'req-2').length, 0, 'the steered request is not answered with the turn\'s text')
+  assert.equal(replies.filter(msg => answers(msg, 'req-1')).length, 1, 'the primary request is answered once')
+  assert.equal(replies.filter(msg => answers(msg, 'req-2')).length, 0, 'the steered request is not answered with the turn\'s text')
   const handed = host.agentOf('b').calls
   assert.equal(handed.length, 1, 'the steered request is handed back once')
   assert.equal(handed[0].source.exchangeId, 'req-2')
@@ -795,7 +801,7 @@ test('a request already deferred before the crash is not handed back twice', asy
   t.mock.timers.tick(3000)
   await settle(() => host.agentOf('a').calls.length >= 1)
   await realDelay(30)
-  assert.equal(host.agentOf('a').calls.filter(msg => msg.source.replyTo === 'req-1').length, 1, 'the primary request is answered once')
+  assert.equal(host.agentOf('a').calls.filter(msg => answers(msg, 'req-1')).length, 1, 'the primary request is answered once')
   assert.equal(host.agentOf('b').calls.length, 0, 'the deferred request is not handed back again')
   assert.deepEqual(host.rt.state.works['p2'].open, ['req-2'], 'its parent work is still waiting for its own turn')
   await host.stop()
@@ -996,8 +1002,8 @@ test('a steered request carried across a part switch via source.joined is recove
   await settle(() => host.agentOf('a').calls.length >= 1 && host.agentOf('b-2').calls.length >= 1)
 
   const replies = host.agentOf('a').calls
-  assert.equal(replies.filter(msg => msg.source.replyTo === 'req-1').length, 1, 'the primary request is answered once')
-  assert.equal(replies.filter(msg => msg.source.replyTo === 'req-2').length, 0, 'the carried request is not answered with the turn\'s text')
+  assert.equal(replies.filter(msg => answers(msg, 'req-1')).length, 1, 'the primary request is answered once')
+  assert.equal(replies.filter(msg => answers(msg, 'req-2')).length, 0, 'the carried request is not answered with the turn\'s text')
   const handed = host.agentOf('b-2').calls
   assert.equal(handed.length, 1, 'the carried steered request is handed back once')
   assert.equal(handed[0].source.exchangeId, 'req-2')

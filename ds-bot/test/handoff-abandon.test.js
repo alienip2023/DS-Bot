@@ -193,7 +193,8 @@ test('giving up one wait closes that branch and the work above it goes on', asyn
   assert.equal((await call('abandon-work', { id: child })).ok, true)
   const after = await worksIn(host)
   assert.equal(after[child], undefined)
-  assert.deepEqual(after[parent].open, [])
+  // Handed back (no answer came) and not read yet: Writer reads it in the turn that resumes it.
+  assert.deepEqual(after[parent].open, [child])
   assert.equal(after[parent].results.length, 1)
   assert.equal(after[parent].results[0].abandoned, true)
   assert.match(after[parent].results[0].text, /No reply came back from Tester/)
@@ -204,7 +205,7 @@ test('giving up one wait closes that branch and the work above it goes on', asyn
   // Writer is brought back with that result, and its answer goes up to Chief.
   await settled(() => callsOf(agents, 'b').length === before + 1)
   const back = callsOf(agents, 'b').at(-1)[1]
-  assert.match(textOf(back.content), /^\[Waiting given up · Tester did not hand back this work/)
+  assert.match(textOf(back.content), /^\[Work handed back to you · from Tester · everything you handed on for the work Chief asked you for is back; your answer goes to Chief\]\nTester:\nNo reply came back from Tester/)
   assert.match(textOf(back.content), /gave up waiting/)
   turns.open('b', back)
   turns.end('b', 'finished without it')
@@ -260,16 +261,21 @@ test('giving up one branch leaves the other open works of the same work', async 
   const before = callsOf(agents, 'b').length
   await call('abandon-work', { id: tester })
   const after = await worksIn(host)
-  assert.deepEqual(after[parent].open, [editor])
+  assert.deepEqual(after[parent].open, [tester, editor], 'Tester settled (no answer), Editor still out')
   assert.equal(after[parent].results.length, 1)
   assert.equal((await call('state', {})).value.work.waiting.b.waits.length, 1)
   assert.equal(callsOf(agents, 'a').length, 0, 'Chief hears nothing until Writer is done')
+  // Writer is not woken for one of the two: it goes on once both are back.
+  await delay(30)
+  assert.equal(callsOf(agents, 'b').length, before)
 
-  // Editor's real reply still comes back, and Writer settles upward once with both.
-  await settled(() => callsOf(agents, 'b').length === before + 1)
+  // Editor's real reply comes back: Writer is resumed once, with both, and settles upward once.
   turns.take('d')
   turns.end('d', 'editor done')
-  await settled(() => callsOf(agents, 'b').length === before + 2)
+  await settled(() => callsOf(agents, 'b').length === before + 1)
+  const both = textOf(callsOf(agents, 'b').at(-1)[1].content)
+  assert.match(both, /No reply came back from Tester/)
+  assert.match(both, /editor done/)
   turns.open('b', callsOf(agents, 'b').at(-1)[1])
   turns.end('b', 'both accounted for')
   await settled(() => callsOf(agents, 'a').length === 1)
@@ -328,7 +334,7 @@ test('a restart gives up a wait whose target no longer exists, and only those', 
   assert.equal(works.p2.results.length, 0)
   // Writer hears about the wait that was given up for it.
   await settled(() => callsOf(host.agents, 'b').length >= 1)
-  assert.match(textOf(callsOf(host.agents, 'b').at(-1)[1].content), /^\[Waiting given up · the other Bot did not hand back this work/)
+  assert.match(textOf(callsOf(host.agents, 'b').at(-1)[1].content), /^\[Work handed back to you · from the other Bot · everything you handed on for the work Chief asked you for is back; your answer goes to Chief\]\nthe other Bot:\nThe other Bot is no longer on the team/)
 })
 
 // A subagent run's Session cannot be told gone for certain: DSH says nothing both

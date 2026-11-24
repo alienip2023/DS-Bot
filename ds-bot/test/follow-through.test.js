@@ -655,7 +655,7 @@ test('a delivery that fails is not recorded as delivered, and stays queued for t
   assert.equal(second.agentOf('b').calls[0].source.role, 'request')
 })
 
-test('a reply that fails to reach the asker reaches it as a failure notice carrying the answer', async (t) => {
+test('a resume that fails to reach the asker is tried again, and carries the answer', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const state = seed()
   // Chief asked Writer; Writer handed part of it to Reviewer.
@@ -666,8 +666,8 @@ test('a reply that fails to reach the asker reaches it as a failure notice carry
   }
   const home = freshHome(t, state)
   const host = await start(home)
-  // Reviewer finished; its reply to Writer fails once, so the failure reaches
-  // Writer as a notice instead, carrying what Reviewer answered.
+  // Reviewer finished; its answer is Writer's result (work model), and the one message that resumes Writer fails
+  // once: it is tried again, and Writer goes on with what Reviewer answered.
   let fails = 1
   const resolving = host.ctx.sessionController.resolveAgent
   host.ctx.sessionController.resolveAgent = async (sessionId) => {
@@ -680,27 +680,29 @@ test('a reply that fails to reach the asker reaches it as a failure notice carry
   run(host, 'c', 1, { content: [{ type: 'text', text: '[Message from Writer]\nCheck the numbers' }], source: { kind: 'bot', form: 'relay', role: 'request', exchangeId: 'y1', senderName: 'Writer', senderSessionId: 'b', hop: 0 } })
   host.emit('c', 'assistant/message', { message: { content: [{ type: 'text', text: 'The numbers check out.' }] } })
   host.emit('c', 'turn/end', { turn: 1, reason: { kind: 'completed' } })
+  // The wait stays until the resume is read; the result is kept with the work.
+  await settleState(t, home, () => stateOf(home).works?.x1?.results[0]?.text === 'The numbers check out.')
+  assert.deepEqual(stateOf(home).works.x1.open, ['y1'])
+  await settle(() => fails === 0)
+  for (let i = 0; i < 20 && host.agentOf('b').calls.length === 0; i += 1) { t.mock.timers.tick(1_000); await new Promise(resolve => setImmediate(resolve)) }
   await settle(() => host.agentOf('b').calls.length === 1)
   const notice = host.agentOf('b').calls[0]
-  assert.deepEqual([notice.source.role, notice.source.replyTo, notice.source.work], ['reply', 'y1', 'x1'])
-  assert.match(text(notice), /^\[Reply from Reviewer · for the work Chief asked you for; your answer goes to Chief once everything you handed on is back\]\nReviewer could not send its reply to you \(session\/not-found: Session sess-b is gone\); what it had answered:\nThe numbers check out\.$/)
-  // The wait stays until the notice is read; the kept result is marked.
-  await settleState(t, home, () => stateOf(home).works?.x1?.results[0]?.failed === true)
-  assert.deepEqual(stateOf(home).works.x1.open, ['y1'])
+  assert.deepEqual([notice.source.role, notice.source.results, notice.source.work], ['results', ['y1'], 'x1'])
+  assert.match(text(notice), /^\[Work handed back to you · from Reviewer · everything you handed on for the work Chief asked you for is back; your answer goes to Chief\]\nReviewer:\nThe numbers check out\.$/)
 
-  // Writer reads the notice, the wait ends, and the answer that goes up names it.
+  // Writer reads it, the wait ends, and the answer that goes up carries it.
   run(host, 'b', 2, notice)
   host.emit('b', 'assistant/message', { message: { content: [{ type: 'text', text: 'The plan is ready.' }] } })
   host.emit('b', 'turn/end', { turn: 2, reason: { kind: 'completed' } })
   await settle(() => host.agentOf('a').calls.length === 1)
   const reply = text(host.agentOf('a').calls[0])
   assert.match(reply, /The plan is ready\./)
-  assert.match(reply, /Reviewer could not send its reply to you; what it had answered:\nThe numbers check out\./)
-  // Nothing of the lost reply is sent again: the notice carried it.
+  assert.match(reply, /Reviewer:\nThe numbers check out\./)
+  // Nothing is sent again: the resume that got through carried it.
   await settle(() => (notes(home).queued.b ?? []).length === 0)
 })
 
-test('a failure notice that cannot reach the asker stays queued and wakes it after restart', async (t) => {
+test('a resume that cannot reach the asker stays queued and wakes it after restart', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const state = seed()
   state.bots.c = { id: 'c', name: 'Reviewer', sessionId: 'c', createdAt: 3 }
@@ -718,22 +720,22 @@ test('a failure notice that cannot reach the asker stays queued and wakes it aft
   first.emit('c', 'turn/end', { turn: 1, reason: { kind: 'completed' } })
   await settle(() => {
     const queued = notes(home).queued.b ?? []
-    return queued.length === 1 && /could not send its reply/.test(queued[0].args.text)
+    return queued.length === 1 && queued[0].args.role === 'results' && /The numbers check out/.test(queued[0].args.text)
   })
-  await settleState(t, home, () => stateOf(home).works?.x1?.results[0]?.failed === true)
+  await settleState(t, home, () => Array.isArray(stateOf(home).works?.x1?.resume))
   await first.stop()
 
   const second = await start(home)
   t.mock.timers.tick(3000)
   await settle(() => second.agentOf('b').calls.length === 1)
   const [notice] = second.agentOf('b').calls
-  assert.deepEqual([notice.source.role, notice.source.replyTo, notice.source.work], ['reply', 'y1', 'x1'])
-  assert.match(text(notice), /could not send its reply.*\nThe numbers check out\.$/)
+  assert.deepEqual([notice.source.role, notice.source.results, notice.source.work], ['results', ['y1'], 'x1'])
+  assert.match(text(notice), /\nReviewer:\nThe numbers check out\.$/)
   run(second, 'b', 2, notice)
   second.emit('b', 'assistant/message', { message: { content: [{ type: 'text', text: 'The plan is ready.' }] } })
   second.emit('b', 'turn/end', { turn: 2, reason: { kind: 'completed' } })
   await settle(() => second.agentOf('a').calls.length === 1)
-  assert.match(text(second.agentOf('a').calls[0]), /Reviewer could not send its reply to you; what it had answered:\nThe numbers check out\./)
+  assert.match(text(second.agentOf('a').calls[0]), /Reviewer:\nThe numbers check out\./)
 })
 
 test('new deliveries before recovery do not overwrite the saved queue', async (t) => {
@@ -817,7 +819,7 @@ test('a request kept for retry keeps its work, and the result flows up after the
   second.emit('c', 'turn/end', { turn: 1, reason: { kind: 'completed' } })
   await settle(() => second.agentOf('b').calls.length === 1)
   const reply = second.agentOf('b').calls[0]
-  assert.deepEqual([reply.source.role, reply.source.work, reply.source.replyTo], ['reply', 'x1', handed[0]])
+  assert.deepEqual([reply.source.role, reply.source.work, reply.source.results], ['results', 'x1', [handed[0]]])
   run(second, 'b', 2, reply)
   second.emit('b', 'assistant/message', { message: { content: [{ type: 'text', text: 'The plan is ready.' }] } })
   second.emit('b', 'turn/end', { turn: 2, reason: { kind: 'completed' } })

@@ -335,9 +335,10 @@ export function install(rt) {
     return `${plain} ${kept}${whole} If you end your turn without writing any text, ${cut ? 'that part' : 'it'} goes up to ${to}; any text you write for this work from now on goes up instead.`
   }
 
+  const BACK = 'What it hands back reaches you in one message once everything you handed on is back; do not wait for it, end your turn when you have handed on all you need.'
   rt.teamTools.push(defineTool({
     name: 'message_bot',
-    description: 'Send a message to another Bot on the team. If that Bot is working, it reads your message at its next step and can change course, then answers once that work is done; if it is idle, it starts on it right away. Its reply arrives later as a new message to you; with reply_to "user" it answers the user in its own chat instead. Do not message a Bot that is waiting for the result of the work you are doing (the Bot that asked you for it, or one above that): your answer reaches it by itself once you end your turn and everything you handed on is back. In a group chat it reaches only members of that group, as writing "@Name" there does. With request_id you name the request yourself: a repeat of that name with the same message is not sent again, but gives the receipt of the first call back.',
+    description: 'Send a message to another Bot on the team. If that Bot is working, it reads your message at its next step and can change course, then answers once that work is done; if it is idle, it starts on it right away. What it hands back reaches you in one message once everything you handed on in this work is back (end your turn meanwhile); with reply_to "user" it answers the user in its own chat instead. Do not message a Bot that is waiting for the result of the work you are doing (the Bot that asked you for it, or one above that): your answer reaches it by itself once you end your turn and everything you handed on is back. In a group chat it reaches only members of that group, as writing "@Name" there does. With request_id you name the request yourself: a repeat of that name with the same message is not sent again, but gives the receipt of the first call back.',
     parameters: {
       to: { type: 'string', required: true, description: 'Exact Bot name from list_bots' },
       message: { type: 'string', required: true, description: 'Self-contained message; the other Bot cannot see this conversation' },
@@ -391,7 +392,7 @@ export function install(rt) {
         const exchangeId = randomUUID()
         const toUser = args.reply_to === 'user'
         const { fromPart } = callerPart(exec)
-        if (!toUser) rt.openWork(exchangeId, { from: sender.id, to: target.id, parent: worksOf(exec)[0], ...(fromPart ? { fromPart } : {}) })
+        if (!toUser) rt.openWork(exchangeId, { from: sender.id, to: target.id, parent: worksOf(exec)[0] ?? rt.rootWorkOf?.(exec.agent?.id), ...(fromPart ? { fromPart } : {}) })
         const result = await rt.deliver({ fromId: sender.id, toId: target.id, text, role: 'request', exchangeId, ...(toUser ? { audience: 'user' } : {}) })
         if (result?.ok !== true) {
           if (!toUser) rt.dropWork(exchangeId)
@@ -452,7 +453,8 @@ export function install(rt) {
       if (rt.upstreamOf(works).has(target.id)) return upstreamRefusal(exec, sender, target, text.trim(), args)
       const send = async () => {
         const toUser = args.reply_to === 'user'
-        const work = toUser ? undefined : works[0]
+        // A turn the user started hands on under a root work of its own (work model): what comes back resumes it once.
+        const work = toUser ? undefined : (works[0] ?? rt.rootWorkOf?.(exec.agent?.id))
         // A Bot on another machine has no local chat or Session on this machine: resolving
         // one here fails with `session "…" not found` before delivery.js can route it. Hand
         // the request straight to deliver(), whose joined / remote-worker branches own the
@@ -522,8 +524,8 @@ export function install(rt) {
           })
           const asker = rt.ownsWork(sender.id, work) ? rt.botOf(state.works[work].from)?.name : undefined
           const notes = [
-            `Delivered to ${target.name} in a background task while its foreground chat is busy. Its reply will arrive later as a new message; do not wait for it.`,
-            asker ? `When you have handed on everything, end your turn: each reply brings you back to this work, and your answer goes to ${asker} once all of it is back.` : '',
+            `Delivered to ${target.name} in a background task while its foreground chat is busy. ${BACK}`,
+            asker ? `Your answer goes to ${asker} after that.` : '',
           ].filter(Boolean)
           return notes.join(' ')
         }
@@ -541,15 +543,15 @@ export function install(rt) {
         const sent = toUser
           ? `Delivered to ${target.name}. It will answer the user in its own chat; nothing comes back to you, so point the user to ${target.name}'s chat instead of relaying.`
           : working && steer
-            ? `Delivered to ${target.name} while it is working: it reads your message at its next step and answers once that work is done. Its reply will arrive later as a new message; do not wait for it.`
+            ? `Delivered to ${target.name} while it is working: it reads your message at its next step and answers once that work is done. ${BACK}`
             : working
-              ? `Queued for ${target.name}: it reads your message after its current work. Its reply will arrive later as a new message; do not wait for it.`
-              : `Delivered to ${target.name}. Its reply will arrive later as a new message; do not wait for it.`
+              ? `Queued for ${target.name}: it reads your message after its current work. ${BACK}`
+              : `Delivered to ${target.name}. ${BACK}`
         const asker = rt.ownsWork(sender.id, work) ? rt.botOf(state.works[work].from)?.name : undefined
         const notes = [
           joins ? `${target.name} had not read your earlier message yet, so this one was added to it, and it answers both at once.` : '',
           status === 'idle' ? '' : `${target.name} now: ${status}.`,
-          asker ? `When you have handed on everything, end your turn: each reply brings you back to this work, and your answer goes to ${asker} once all of it is back.` : '',
+          asker ? `Your answer goes to ${asker} after that.` : '',
         ].filter(Boolean)
         const out = [sent, ...notes].join(' ')
         // A message reaches the part of the Bot's own chat it is delivered to only; work

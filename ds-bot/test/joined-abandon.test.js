@@ -80,7 +80,9 @@ describe('S50-abandon: abandon-work with a joined shadow', () => {
     const result = await w.call('abandon-work', { id: 'sub-1' })
     assert.equal(result.ok, true, JSON.stringify(result))
     assert.equal(w.rt.state.works['sub-1'], undefined, 'the sub-work closed')
-    assert.deepEqual(w.rt.state.works['parent-1'].open, [], 'the wait is over for the parent')
+    // Its result is in (no answer came); the parent goes on with it in one resume, which reads it.
+    assert.equal(w.rt.state.works['parent-1'].results[0].abandoned, true, 'the wait is over for the parent')
+    assert.deepEqual(w.rt.state.works['parent-1'].resume, ['sub-1'], 'and it is resumed with that result')
     const again = await w.call('abandon-work', { id: 'sub-1' })
     assert.equal(again.ok, false, 'a second give-up finds nothing open')
   })
@@ -92,7 +94,7 @@ describe('S50-abandon: abandon-work with a joined shadow', () => {
     await settle()
     assert.equal(w.delivered.length, 1)
     assert.equal(w.delivered[0].args.toId, LOCAL_A)
-    assert.equal(w.delivered[0].args.role, 'reply')
+    assert.equal(w.delivered[0].args.role, 'results')
   })
 
   it('J-refused: when the Bot that waited is a joined shadow, the delivery is refused — no local turn, nothing written to the mirror Session, nothing sent to the node', async () => {
@@ -103,11 +105,8 @@ describe('S50-abandon: abandon-work with a joined shadow', () => {
     const result = await w.call('abandon-work', { id: 'sub-1' })
     assert.equal(result.ok, true, JSON.stringify(result))
     await settle()
-    assert.equal(w.delivered.length, 1, 'the abandon delivered once')
-    const sent = w.delivered[0]
-    assert.equal(sent.args.toId, JOINED)
-    assert.equal(sent.error, undefined, 'the refusal is an outcome, not a crash')
-    assert.deepEqual(sent.outcome, { ok: false, error: 'joined shadow cannot dispatch' }, 'the delivery interception answered')
+    // A Bot of another machine is not resumed from here at all (work model: its work lives on its own machine).
+    assert.equal(w.delivered.length, 0, 'nothing is delivered to the shadow')
     assert.equal(mirror.log.length, before, 'the mirror Session got no event')
     assert.deepEqual(w.frames, [], 'nothing was sent to the node')
     assert.equal(w.rt.mirrorGuardRefused ?? 0, 0, 'refused at the delivery, before it reached the guard')
@@ -126,7 +125,7 @@ describe('S50-abandon: abandon-work with a joined shadow', () => {
       const result = await w.call('abandon-work', { id: 'sub-1' })
       assert.equal(result.ok, true, `the abandon really ran: ${JSON.stringify(result)}`)
       await settle()
-      assert.equal(w.delivered.length, 1, 'and it delivered to the joined Bot')
+      assert.equal(w.delivered.length, 0, 'nothing is delivered to the joined Bot from here')
       await mirror.whenIdle()
       const types = real.types(mirror)
       assert.equal(types.includes('turn/start'), false, `no native turn: ${types}`)

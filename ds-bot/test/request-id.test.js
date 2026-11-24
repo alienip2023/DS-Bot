@@ -121,7 +121,7 @@ test('a request with an id is delivered once, and a repeat gives the first recei
   t.after(async () => { await stop(); cleanup(home) })
 
   const first = await tool('message_bot', { to: 'Writer', message: 'do the thing', request_id: 'r-1' }, 'a')
-  assert.equal(first, 'Delivered to Writer. Its reply will arrive later as a new message; do not wait for it.')
+  assert.equal(first, 'Delivered to Writer. What it hands back reaches you in one message once everything you handed on is back; do not wait for it, end your turn when you have handed on all you need.')
   assert.equal(agents.get('b').calls.length, 1)
 
   const again = await tool('message_bot', { to: 'Writer', message: 'do the thing', request_id: 'r-1' }, 'a')

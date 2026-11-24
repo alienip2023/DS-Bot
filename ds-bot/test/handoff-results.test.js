@@ -186,7 +186,8 @@ test('a result longer than 2,000 characters survives a restart before the Bot th
   const { first, result } = await handedOn({ start }, LONG)
   // The whole result is in a file of its own, and the team file names it.
   const works = await worksIn(first)
-  const [work] = Object.values(works)
+  // Writer's work (Chief's own turn hangs it under a root work of Chief's).
+  const work = Object.values(works).find(entry => entry.to === 'b')
   assert.equal(work.results.length, 1)
   assert.equal(work.results[0].text.length, 2000)
   assert.equal(work.results[0].length, LONG.length)
@@ -209,7 +210,8 @@ test('a short result stays in the team file, and no file of its own is made', as
   const { home, start } = bench(t)
   const { first } = await handedOn({ start }, 'two things to fix')
   const works = await worksIn(first)
-  const [work] = Object.values(works)
+  // Writer's work (Chief's own turn hangs it under a root work of Chief's).
+  const work = Object.values(works).find(entry => entry.to === 'b')
   assert.equal(work.results[0].text, 'two things to fix')
   assert.equal(work.results[0].length, undefined)
   assert.deepEqual(keptIn(home), [])
@@ -260,6 +262,9 @@ test('a result inside a result survives a restart too', async (t) => {
   const toChief = textOf(callsOf(second.agents, 'a')[0][1].content)
   assert.ok(toChief.includes(LONG), 'the result inside the result is still there')
   assert.ok(toChief.includes('the review is done'))
+  // Chief goes on with it; its own work then closes, and no copy is left.
+  last.open('a', callsOf(second.agents, 'a')[0][1])
+  last.end('a', 'thanks, all done')
   await settled(() => keptIn(home).length === 0)
   assert.deepEqual(keptIn(home), [])
 })
@@ -284,7 +289,8 @@ test('a result file that was cut short is reported as well', async (t) => {
   const { home, start } = bench(t)
   const { first, result } = await handedOn({ start }, LONG)
   const works = await worksIn(first)
-  const [work] = Object.values(works)
+  // Writer's work (Chief's own turn hangs it under a root work of Chief's).
+  const work = Object.values(works).find(entry => entry.to === 'b')
   writeFileSync(join(home, 'handoff-results', `${work.results[0].id}.txt`), LONG.slice(0, 100), 'utf8')
   await first.stop()
   const second = await start()
@@ -303,7 +309,8 @@ test('a result that could not be written is not claimed, and is reported after a
   writeFileSync(join(home, 'handoff-results'), 'not a folder', 'utf8')
   const { first, result } = await handedOn({ start }, LONG)
   const works = await worksIn(first)
-  const [work] = Object.values(works)
+  // Writer's work (Chief's own turn hangs it under a root work of Chief's).
+  const work = Object.values(works).find(entry => entry.to === 'b')
   assert.equal(work.results[0].length, LONG.length)
   assert.equal(work.results[0].file, undefined)
   await first.stop()
@@ -415,6 +422,9 @@ test('a subagent a Bot delegated to hands its result into the work the turn answ
   assert.ok(answer.includes('all reviewed'), `own reply goes up: ${answer}`)
   assert.ok(answer.includes('subagent deep review'), `result is named: ${answer}`)
   assert.ok(answer.includes('reviewed: three findings'), `result text goes up: ${answer}`)
+  // Chief goes on with it in its own chat; then nothing is left open.
+  turns.take('a')
+  turns.end('a', 'done')
   const after = await worksIn(first)
   assert.equal(Object.keys(after).length, 0)
 })
@@ -444,7 +454,8 @@ test('a subagent that ends after its wait was given up still hands over its clos
   // The user gives up the wait for the run.
   assert.equal((await call('abandon-work', { id: 'r1' })).ok, true)
   await settled(() => callsOf(agents, 'b').length === before + 1)
-  assert.match(textOf(callsOf(agents, 'b').at(-1)[1].content), /^\[Waiting given up · subagent deep review did not hand back this work/)
+  // Giving up is that run's result: everything Writer handed on is back, so it goes on with the work once.
+  assert.match(textOf(callsOf(agents, 'b').at(-1)[1].content), /^\[Work handed back to you · from subagent deep review · everything you handed on for the work Chief asked you for is back; your answer goes to Chief\]\nsubagent deep review:\nNo reply came back from subagent deep review, and the user gave up waiting for it\./)
 
   // The run finishes after that: its closing text arrives, marked late.
   emitScoped('b', 'subagent/end', { runId: 'r1', provider: 'spawn', id: 'sub1', local: true, stopReason: 'completed', lastAssistantMessage: textBlock('reviewed: three findings') })

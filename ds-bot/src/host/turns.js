@@ -154,7 +154,29 @@ export function answerSender(rt, id, source, text, long, options = {}) {
         .findLast(entry => parentCoveredBy(rt, ownParent, entry.replyTo))
   if (matchedInMemory || matchedLedger !== undefined) {
     dropSuppressedWork(rt, source.exchangeId, name, text)
+    // The duplicate is gone from what its work waits for: that may have been the last thing out.
+    if (ownParent !== undefined) rt.resumeWork?.(ownParent)
     return false
+  }
+  // The asker is a Bot of this machine doing a work this one hangs under: the answer is that work's result, not a
+  // message (docs/plans/2026-11-24-work-model.md). It is written into the work and, once all that work handed on is
+  // back, the asker goes on with it in one turn (handoffs.js resumeWork). The pair's book still shows it.
+  const askerBot = rt.botOf(toId)
+  const localAsker = askerBot !== undefined && askerBot.origin !== 'peer' && !joinedShadow(askerBot) && askerBot.type !== 'remote-worker'
+  if (ownParent !== undefined && back === undefined && localAsker && typeof rt.resumeWork === 'function') {
+    const parentWork = rt.closeWork(source.exchangeId, name, text, { resume: true })
+    if (exchangeKey !== undefined) {
+      guards.exchanges.add(exchangeKey)
+      if (guards.exchanges.size > MAX_REPLY_GUARDS) guards.exchanges.delete(guards.exchanges.values().next().value)
+    }
+    if (failureRequestId !== undefined) pushLimited(guards.failureRequests, { fromId, toId, targetSessionId, requestId: failureRequestId, work: parentWork, exchangeId: source.exchangeId })
+    if (dedupKey !== undefined) pushLimited(guards.turnFailures, { fromId, toId, targetSessionId, dedupKey, work: parentWork, exchangeId: source.exchangeId })
+    const recordId = randomUUID()
+    void Promise.resolve(rt.recordPairMessage?.({ from: fromId, to: toId, id: recordId, role: 'reply', text, replyTo: source.exchangeId }))
+      .then(() => rt.markPairDelivered?.(fromId, toId, recordId))
+      .catch(error => rt.warn('ds-bot: the answer of %s was not written to the book: %s', name, error))
+    if (parentWork !== undefined) rt.resumeWork(parentWork)
+    return true
   }
   const work = rt.closeWork?.(source.exchangeId, name, text)
   if (exchangeKey !== undefined) {
@@ -1201,6 +1223,7 @@ export function install(rt) {
         entry.later = []
         entry.steeredAt = undefined
         entry.carried = false
+        entry.rootWork = undefined
         let claimedPending
         let claimedPendingText
         if (entry.pending !== undefined) {
@@ -1219,6 +1242,7 @@ export function install(rt) {
           entry.joined = carry.joined
           entry.later = carry.later
           entry.toolCount = carry.toolCount ?? 0
+          if (carry.rootWork !== undefined) entry.rootWork = carry.rootWork
           // The messages the cut turn had taken (a hub exchange among them) are still owed this turn's answer.
           // turn/start cleared them just above; without this the first exchange is never settled.
           if (carry.userRpcId !== undefined) entry.userRpcId = carry.userRpcId
@@ -1273,6 +1297,10 @@ export function install(rt) {
         }
         // A result that came back counts as taken once a turn reads it.
         if (source?.kind === SOURCE_KIND && source.work !== undefined && source.replyTo !== undefined) rt.takenWork?.(source.work, source.replyTo)
+        // Everything handed back for a work, in the one message that resumes it.
+        if (source?.kind === SOURCE_KIND && source.role === 'results' && source.work !== undefined && Array.isArray(source.results)) {
+          for (const result of source.results) rt.takenWork?.(source.work, result)
+        }
         // A message that shares a step with a bare handoff package is what the turn
         // answers, so the turn is not a hidden acknowledgement.
         const bare = info => info?.handoff === true && info.resume !== true
@@ -1454,7 +1482,7 @@ export function install(rt) {
         const steerCut = cut !== undefined && event.data?.reason?.kind === 'aborted'
           && event.data.reason.reason?.kind === 'hook' && event.data.reason.reason.reason === STEER_CUT
         if (steerCut) {
-          entry.carry = { info: entry.info, joined: entry.joined ?? [], later: entry.later ?? [], texts: entry.texts.slice(0, cut.texts), shown: entry.shown, answers: entry.answers, toolCount: entry.toolCount ?? 0, userRpcId: entry.userRpcId, userRpcIds: entry.userRpcIds }
+          entry.carry = { info: entry.info, joined: entry.joined ?? [], later: entry.later ?? [], texts: entry.texts.slice(0, cut.texts), shown: entry.shown, answers: entry.answers, toolCount: entry.toolCount ?? 0, userRpcId: entry.userRpcId, userRpcIds: entry.userRpcIds, rootWork: entry.rootWork }
         }
         const info = entry.info
         const joined = entry.joined ?? []
@@ -1492,6 +1520,8 @@ export function install(rt) {
         entry.lastText = undefined
         entry.lastCalled = undefined
         entry.usage = undefined
+        const rootWork = entry.rootWork
+        entry.rootWork = undefined
         const later = entry.later ?? []
         entry.later = []
         if (steerCut || suppressedSubagent) {
@@ -1514,6 +1544,7 @@ export function install(rt) {
             ...(result.info.roomId ? { roomId: result.info.roomId } : {}),
             ...(result.info.taskId ? { taskId: result.info.taskId } : {}),
             ...(result.info.imOrigin ? { imOrigin: result.info.imOrigin } : {}),
+            ...(result.info.role === 'results' ? { note: result.info.note, results: result.info.results, resultFrom: result.info.resultFrom } : {}),
             deferred: true,
           }).catch(error => rt.warn('ds-bot: handing back a result failed: %s', error))
         }
@@ -1535,6 +1566,8 @@ export function install(rt) {
         const held = rt.groupOwners.has(id) ? rt.takeRoomSteps?.(id) ?? '' : ''
         if (switched) {
           rt.dropRoomStepEcho?.(id)
+          // The turn goes on in the next part; the work it handed on resumes there (resumeTargetOf).
+          if (rootWork !== undefined && rt.workTurnEnded?.(rootWork, '', undefined) === 'done') rt.dropWork?.(rootWork)
           break
         }
         const owner = rt.chatOwners.get(id)
@@ -1645,15 +1678,26 @@ export function install(rt) {
             tellSender(id, source, reply !== '' ? reply : `${name} was stopped before it could answer your message.`, undefined, reply === '' && turnDedupKey !== undefined ? { dedupKey: turnDedupKey } : undefined)
           }
         }
+        // The work a turn the user started hands on (handoffs.js openRootWork): nobody waits for its answer, which is
+        // this turn's own text. A stopped turn gives it up; otherwise it waits for what it handed on, and the Bot goes
+        // on here in one turn once all of it is back.
+        const endRootWork = (work, reply) => {
+          if (reason?.kind === 'aborted') { rt.dropWork?.(work); return }
+          if (rt.workTurnEnded?.(work, failure !== undefined ? '' : reply, id) === 'done') rt.dropWork?.(work)
+        }
         // Work a Bot asked for, also when what came back for it opens the turn: while
         // anything handed on for it is still out, the answer waits; then it goes up with
         // what came back. A failed or stopped turn answers at once.
         const finish = (source, reply) => {
           const work = rt.workOf?.(source)
           if (!rt.ownsWork?.(rt.selfOf(id), work)) return answer(source, reply)
+          if (rt.isRootWork?.(work)) return endRootWork(work, reply)
           const asker = rt.workAsker(work)
           if (failure !== undefined || reason?.kind === 'aborted') return answer(asker, reply)
-          if (rt.waitsWork(work)) return rt.holdWork(work, reply)
+          // Still waiting for what it handed on: the answer is held, and the Bot goes on with this work in one turn
+          // here once all of it is back (handoffs.js resumeWork).
+          if (rt.workTurnEnded?.(work, reply, id) === 'waiting') return
+          if (rt.workTurnEnded === undefined && rt.waitsWork(work)) return rt.holdWork(work, reply)
           // With what came back, the answer may pass what one message carries.
           const text = rt.answerText(work, reply, name)
           if (text.length <= MESSAGE_INLINE_MAX) return tellSender(id, asker, text)
@@ -1702,6 +1746,8 @@ export function install(rt) {
             rt.reportTaskToHub?.(rt.botOf(rt.chatOwners.get(id)), replyText(), { kind: 'continuation' })
           }
         }
+        // A turn with no work of its own (the user's) that handed something on.
+        if (rootWork !== undefined && rt.workOf?.(info) !== rootWork) endRootWork(rootWork, replyText())
         for (const request of joined) {
           if (request.info.role === 'room' && stoppedRoomTurns.delete(request.info.exchangeId)) continue
           // A failed or stopped turn closes the request like any other; a finished
@@ -1760,6 +1806,22 @@ export function install(rt) {
     rt.nameSubWork?.(result.value.subagentId, `subagent${typeof description === 'string' && description.trim() !== '' ? ` ${description.trim()}` : ''}`)
   })
 
+  // The root work of the user's turn running in `sessionId`, opened the first time that turn hands something on.
+  // A turn already doing a work (a request, or what came back for one) hangs what it hands on under that.
+  const rootWorkOf = (sessionId) => {
+    const entry = live.get(sessionId)
+    if (entry?.turn === undefined) return undefined
+    if (entry.rootWork !== undefined && rt.state.works?.[entry.rootWork] !== undefined) return entry.rootWork
+    if (rt.workOf?.(entry.info) !== undefined) return undefined
+    if (!rt.chatOwners.has(sessionId) || rt.taskOwners?.has(sessionId) || rt.groupOwners.has(sessionId)) return undefined
+    const self = rt.selfOf(sessionId)
+    if (self === undefined || typeof rt.openRootWork !== 'function') return undefined
+    entry.rootWork = rt.openRootWork({ to: self, part: sessionId })
+    return entry.rootWork
+  }
+  // A turn is doing work `id` right now: what comes back for it waits for that turn to end.
+  const busyWithWork = id => [...live.values()].some(entry => entry.turn !== undefined && (entry.rootWork === id || rt.workOf?.(entry.info) === id))
+
   const markSteerCut = (id) => {
     const entry = live.get(id)
     if (entry?.turn !== undefined) entry.cut = { texts: entry.texts.length }
@@ -1767,7 +1829,7 @@ export function install(rt) {
 
   installPromptReasons(rt, placeOf)
 
-  Object.assign(rt, { live, liveOf, roomWaiters, roomProgress, roomInbox, activityView, workView, agentWorkView, roomWorkView, turnsView, steeredView, callDetail, doingOf, noteLocalAgentEvent, stopRoomTurn, stopChat, stopAgent, releaseBot, unblockBots, resumeBot, markSteerCut, clearActivity: id => setActivity(id, undefined), hasSubagents, stopSubagents, adoptLiveWork })
+  Object.assign(rt, { live, liveOf, roomWaiters, roomProgress, roomInbox, activityView, workView, agentWorkView, roomWorkView, turnsView, steeredView, callDetail, doingOf, noteLocalAgentEvent, stopRoomTurn, stopChat, stopAgent, releaseBot, unblockBots, resumeBot, markSteerCut, clearActivity: id => setActivity(id, undefined), hasSubagents, stopSubagents, adoptLiveWork, rootWorkOf, busyWithWork, resumeTargetOf: laterTarget })
 
   // ── Worker Bot 路由（Phase4 融合）────────────────────────────────────────
   // 拦截发往 remote-worker 类型 Bot 的 deliver 调用，转交 worker-bridge 处理。

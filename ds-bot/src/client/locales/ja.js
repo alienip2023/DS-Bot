@@ -921,6 +921,8 @@ export const JA = {
   "{count} images": "画像 {count} 枚",
   "Replies from": "グループ返信:",
   "Reply from": "返信元:",
+  "Work handed back": "返ってきた作業結果",
+  "Work handed back by": "結果を返した Bot:",
   'ReplyFrom': 'リモートBotからの返信：',
   "Message from": "メッセージ送信元:",
   "Stopped by": "停止者:",

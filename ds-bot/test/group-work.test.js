@@ -433,7 +433,7 @@ test('replies that arrive after the wait for a group was given up come back mark
   // The user gives up the wait by its group's name.
   assert.equal((await host.call('abandon-work', { id: groupWork })).ok, true)
   await settle(() => host.agentOf('a').calls.length === 2)
-  assert.match(text(host.agentOf('a').calls.at(-1)), /^\[Waiting given up · Ops did not hand back this work/)
+  assert.match(text(host.agentOf('a').calls.at(-1)), /^\[Work handed back to you · from Ops · everything you handed on for the work Tester asked you for is back; your answer goes to Tester\]\nOps:\nNo reply came back from the group chat "Ops"/)
 
   // The round ends afterwards: its replies still reach Chief, marked as the late
   // answer they are.

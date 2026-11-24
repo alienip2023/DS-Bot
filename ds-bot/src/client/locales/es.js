@@ -933,6 +933,8 @@ export const ES = {
   '{count} images': '{count} imágenes',
   'Replies from': 'Respuestas de',
   'Reply from': 'Respuesta de',
+  'Work handed back': 'Trabajo devuelto',
+  'Work handed back by': 'Resultado devuelto por',
   'ReplyFrom': 'Respuesta del bot remoto: ',
   'Message from': 'Mensaje de',
   'Stopped by': 'Detenido por',

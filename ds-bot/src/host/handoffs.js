@@ -8,9 +8,9 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { LATE_ANSWER, TEXT_KEPT, DELEGATE_TIMEOUT_MS, DELEGATE_NUDGE_MS } from './constants.js'
+import { LATE_ANSWER, MESSAGE_INLINE_MAX, TEXT_KEPT } from './constants.js'
 import { headOf } from './text.js'
-import { ownChatSessions, threadCurrentOfPart } from './threads.js'
+import { ownChatSessions } from './threads.js'
 
 const minutes = since => {
   const count = Math.floor((Date.now() - since) / 60_000)
@@ -25,22 +25,19 @@ const forHowLong = since => {
   return `for ${days} day${days === 1 ? '' : 's'}`
 }
 
+// A resume that did not get through is tried again once, this soon, before the next start sends it again.
+const RESUME_RETRY_MS = 1_000
+
 export function install(rt) {
   const { ctx, state } = rt
   const works = () => (state.works ??= {})
   // What came back, whole; state.json keeps the start of each.
   const whole = new Map()
-  // Timers for delegate timeout (#919): workId → { timeout, nudge } handles.
-  const delegateTimers = new Map()
-  const clearDelegateTimer = id => {
-    const entry = delegateTimers.get(id)
-    if (entry !== undefined) {
-      clearTimeout(entry.timeout ?? entry)   // backward-compat: plain timer or {timeout,nudge}
-      clearTimeout(entry.nudge)
-      delegateTimers.delete(id)
-    }
-  }
   const save = () => void rt.save().catch(() => {})
+  // Every change of a work is a line in the book `works` (ledger.js): what happened to it can be read back.
+  const log = (event, id, extra = {}) => {
+    try { rt.ledger?.append('works', { event, id, time: Date.now(), ...extra }) } catch {}
+  }
   const nameOf = id => rt.botOf(id)?.name
 
   // The whole result of a work, in a file of its own: state.json is written whole on
@@ -119,45 +116,100 @@ export function install(rt) {
   // child, is the sub-work, so a child that is continued hands up a result per run.
   // `fromPart`: the part of the sender's own chat it wrote from, which its answer goes
   // back to when that is a background part.
+  // No clock runs on a work (docs/plans/2026-11-24-work-model.md): a Bot that waits for the user's approval, or
+  // a machine that is away, keeps the work open, and the status line says whom it waits for.
   function openWork(id, { from, to, parent, fromRoom, room, name, child, fromPart }) {
     const above = parent === undefined ? undefined : works()[parent]
     works()[id] = { ...(from ? { from } : {}), ...(to ? { to } : {}), ...(room ? { room } : {}), ...(above ? { parent } : {}), ...(fromRoom ? { fromRoom } : {}), ...(fromPart ? { fromPart } : {}), ...(name ? { name } : {}), ...(child ? { child } : {}), open: [], results: [], at: Date.now() }
     if (above !== undefined) above.open.push(id)
+    log('open', id, { ...(from ? { from } : {}), ...(to ? { to } : {}), ...(room ? { room } : {}), ...(above ? { parent } : {}) })
     save()
-    // Start a two-stage delegate timer:
-    // 1. At DELEGATE_NUDGE_MS: nudge the delegatee ("still waiting").
-    // 2. At DELEGATE_TIMEOUT_MS: unblock the sender with a timeout notice.
-    // A Bot on another machine (peer row or joined shadow): its message waits in the bot/assign outbox while
-    // that machine is away, and no clock runs then (docs/plans/2026-11-24-bot-assign.md).
-    const remote = rt.botOf(to)
-    if (from !== undefined && to !== undefined && remote?.origin !== 'peer' && !(remote?.origin === 'joined' && remote.worker?.home === 'remote')) {
-      const nudgeTimer = setTimeout(() => {
-        const work = works()[id]
-        if (work === undefined) return   // already closed
-        const fromName = rt.botOf(from)?.name ?? 'another Bot'
-        const nudgeText = `[Reminder from ${fromName}]\n${fromName} is still waiting for your reply. Please respond or let them know you need more time.`
-        void rt.deliver({ fromId: from, toId: to, role: 'nudge', exchangeId: `nudge-${id}`, text: nudgeText }).catch(() => {})
-      }, DELEGATE_NUDGE_MS)
-      if (nudgeTimer.unref) nudgeTimer.unref()
-      const timer = setTimeout(() => {
-        clearTimeout(nudgeTimer)
-        delegateTimers.delete(id)
-        const work = works()[id]
-        if (work === undefined) return   // already closed
-        const senderSession = rt.chatOf(from)
-        dropWork(id)
-        const toName = rt.botOf(to)?.name ?? 'A Bot'
-        const text = `[Message from ${toName}]\n${toName} did not reply within 30 minutes. The request has timed out.`
-        void rt.deliver({ fromId: to, toId: from, sessionId: senderSession, role: 'reply', replyTo: id, exchangeId: id, text }).catch(() => {})
-      }, DELEGATE_TIMEOUT_MS)
-      delegateTimers.set(id, { timeout: timer, nudge: nudgeTimer })
-    }
+  }
+
+  // The work a turn the user (or a routine) started does, once that turn hands something on: the root of what it
+  // hands on. Nobody asked for it, so its answer is the turn's own text in that conversation; what comes back for it
+  // resumes the Bot there (`part`).
+  function openRootWork({ to, part }) {
+    const id = randomUUID()
+    works()[id] = { to, origin: 'person', part, open: [], results: [], at: Date.now() }
+    log('open', id, { to, origin: 'person' })
+    save()
+    return id
+  }
+  const isRootWork = id => works()[id] !== undefined && works()[id].origin === 'person'
+
+  // Handed on and not handed back yet; handed back and not read yet.
+  const outstandingOf = work => work.open.filter(id => !(work.results ?? []).some(result => result.id === id))
+  const unreadOf = work => (work.results ?? []).filter(result => work.open.includes(result.id))
+
+  // All a work handed on is back: the Bot goes on with it in ONE turn, in the conversation the work is done in,
+  // with every result that came back (OpenMausBot's resume). Results never steer into a running turn and never
+  // queue as the user's input: the message waits for that conversation to be idle (the serial gate in deliver).
+  // Results a message of their own brings (a group's report, a background task, a subagent, another machine) are
+  // not taken in: their message wakes the Bot, and the turn that reads it comes back here when it ends.
+  function resumeWork(id) {
+    const work = works()[id]
+    if (work === undefined || work.to === undefined || work.resume !== undefined) return false
+    if (outstandingOf(work).length > 0) return false
+    const unread = unreadOf(work)
+    if (unread.length === 0 || unread.some(result => result.resume !== true)) return false
+    if (rt.busyWithWork?.(id) === true) return false
+    const bot = rt.botOf(work.to)
+    // Only a Bot that runs on this machine is resumed here; one on another machine (a peer row, a joined shadow, a
+    // remote worker) has its work on its own machine (W3: work frames), and nothing is sent to it from here.
+    if (bot === undefined || bot.origin === 'peer' || bot.origin === 'joined' || bot.type === 'remote-worker') return false
+    const sessionId = (work.part === undefined ? undefined : rt.resumeTargetOf?.(work.part)) ?? rt.chatOf(work.to)
+    const parts = unread.map((result) => {
+      const { text, whole } = resultText(result)
+      const cut = whole ? '' : `\n[cut; ${result.length} characters in all, the rest was not kept]`
+      if (result.failed === true) return `${result.name} could not send its reply to you; what it had answered:\n${text}${cut}`
+      return `${result.name}:\n${text}${cut}`
+    })
+    const ids = unread.map(result => result.id)
+    const from = [...new Set(unread.map(result => result.from).filter(other => typeof other === 'string' && rt.botOf(other) !== undefined))]
+    const names = [...new Set(unread.map(result => result.name))]
+    const exchangeId = randomUUID()
+    work.resume = ids
+    log('resume', id, { results: ids })
+    save()
+    const body = parts.join('\n\n')
+    // Sent through the delivery journal (resume.js): one that does not get through stays noted and goes again at the
+    // next start. It is tried once more in this run too; `work.resume` stays set, so nothing resumes the work twice.
+    const send = (args, attempt) => rt.deliver(args).catch((error) => {
+      rt.warn('ds-bot: work handed back to %s did not reach it: %s', bot.name, error)
+      if (attempt >= 2) return
+      const retry = setTimeout(() => {
+        if (works()[id]?.resume === ids) void send(args, attempt + 1)
+      }, RESUME_RETRY_MS)
+      retry.unref?.()
+    })
+    void (body.length <= MESSAGE_INLINE_MAX ? Promise.resolve({ text: body, files: [] }) : rt.attachLong(body, 'Work handed back.txt'))
+      .then(long => send({
+        fromName: names.join(', '), toId: work.to, sessionId, role: 'results', exchangeId, work: id, results: ids,
+        ...(from.length > 0 ? { resultFrom: from } : {}), note: names.join(', '),
+        text: long?.text ?? body, ...(long?.length !== undefined ? { files: long.files, length: long.length } : {}),
+      }, 1))
+      .catch(error => rt.warn('ds-bot: work handed back to %s was not prepared: %s', bot.name, error))
+    return true
+  }
+
+  // A turn doing work `id` ended with `reply` in Session `sessionId`. 'waiting': something it handed on is still
+  // out, or came back and is still to be read (the answer is held, and it resumes once all is back). 'done': nothing.
+  function workTurnEnded(id, reply, sessionId) {
+    const work = works()[id]
+    if (work === undefined) return 'gone'
+    if (typeof sessionId === 'string' && sessionId !== '') work.part = sessionId
+    if (work.open.length === 0) return 'done'
+    if (reply !== '') work.held = headOf(reply, TEXT_KEPT)
+    log('waiting', id, { open: work.open.length })
+    save()
+    resumeWork(id)
+    return 'waiting'
   }
 
   // The answer to work `id` is on its way, with `result` from `name`. Returns the work
   // it goes on with. That work keeps waiting until a turn reads the answer (`taken`).
   function closeWork(id, name, text, extra = {}) {
-    clearDelegateTimer(id)
     const work = works()[id]
     if (work === undefined) return undefined
     delete works()[id]
@@ -167,10 +219,11 @@ export function install(rt) {
     if (above !== undefined) {
       // The whole result goes into a file of its own before the team file names it.
       const file = keepResult(id, text)
-      above.results.push({ id, name, text: headOf(text, TEXT_KEPT), ...(work.child ? { child: work.child } : {}), ...(text.length > TEXT_KEPT ? { length: text.length } : {}), ...(file ? { file } : {}), at: Date.now(), ...extra })
+      above.results.push({ id, name, ...(work.to ? { from: work.to } : {}), text: headOf(text, TEXT_KEPT), ...(work.child ? { child: work.child } : {}), ...(text.length > TEXT_KEPT ? { length: text.length } : {}), ...(file ? { file } : {}), at: Date.now(), ...extra })
       whole.set(id, text)
     }
     for (const result of work.results ?? []) whole.delete(result.id)
+    log(extra.abandoned === true ? 'abandoned' : 'done', id, above === undefined ? {} : { parent: work.parent })
     // Old state can still name these files until the replacement state lands.
     // A failed save must leave them available to the next host.
     void rt.save().then(() => {
@@ -232,7 +285,6 @@ export function install(rt) {
   }
 
   const dropWork = (id) => {
-    clearDelegateTimer(id)
     const work = works()[id]
     if (work === undefined) return
     const { parent } = work
@@ -241,6 +293,7 @@ export function install(rt) {
     const above = works()[parent]
     if (above !== undefined) above.open = above.open.filter(other => other !== id)
     for (const result of work.results ?? []) whole.delete(result.id)
+    log('dropped', id)
     void rt.save().then(() => {
       for (const result of work.results ?? []) dropResult(result.file)
     }).catch(() => {})
@@ -250,6 +303,8 @@ export function install(rt) {
     const work = works()[workId]
     if (work === undefined || !work.open.includes(id)) return
     work.open = work.open.filter(other => other !== id)
+    // The resume message is read once every result it carried is.
+    if (Array.isArray(work.resume) && work.resume.every(other => !work.open.includes(other))) delete work.resume
     save()
   }
 
@@ -278,6 +333,13 @@ export function install(rt) {
 
   const owns = (botId, workId) => workId !== undefined && works()[workId]?.to === botId
   const waits = workId => (works()[workId]?.open.length ?? 0) > 0
+  // The conversation a work is done in, so what comes back for it resumes the Bot there.
+  const notePart = (workId, sessionId) => {
+    const work = works()[workId]
+    if (work === undefined || typeof sessionId !== 'string' || sessionId === '' || work.part === sessionId) return
+    work.part = sessionId
+    save()
+  }
   function hold(workId, text) {
     const work = works()[workId]
     if (work === undefined || text === '') return
@@ -385,23 +447,13 @@ export function install(rt) {
       ? cap(target) + ' is no longer on the team, so no reply can come back for the work handed to it. The user gave up waiting for that answer: this counts as its result. Go on with the work you were given, and say plainly that this answer is missing.'
       : 'No reply came back from ' + target + ', and the user gave up waiting for it. This counts as its result: go on with the work you were given, and say plainly that this answer is missing.'
     rememberAbandoned(id, { at: Date.now(), from: work.from, to: work.to, room: work.room, parent: work.parent, name, reason, ...(parent.to !== undefined ? { waiting: parent.to } : {}) })
-    closeWork(id, name, text, { abandoned: true, abandonedAt: Date.now(), abandonedReason: reason })
-    // The wait is over now, not when the Bot next reads the result.
-    parent.open = parent.open.filter(other => other !== id)
+    // Its result is that no answer came; it counts like any result handed back, and the Bot that waited goes on
+    // once everything else it handed on for that work is back too (one resume, docs/plans/2026-11-24-work-model.md).
+    closeWork(id, name, text, { abandoned: true, abandonedAt: Date.now(), abandonedReason: reason, resume: true })
+    // Where it resumes: the part the Bot handed it on from, when the work has no conversation of its own yet.
+    if (parent.part === undefined && work.fromPart !== undefined) parent.part = work.fromPart
     save()
-    // The Bot that waited goes on with its work now, the same way a reply brings it back.
-    const waitingBot = parent.to
-    if (waitingBot !== undefined && rt.botOf(waitingBot) !== undefined) {
-      const said = reason === 'gone'
-        ? target + ' is no longer on the team, so the work you handed it has no answer. The user gave up waiting for it; this is its result. Go on with the work you were given.'
-        : 'No reply came back from ' + target + ', and the user gave up waiting for it. This is its result: go on with the work you were given.'
-      const targetSession = work.fromPart === undefined ? undefined : threadCurrentOfPart(rt.botOf(waitingBot), work.fromPart)
-      void rt.deliver({
-        fromId: work.to !== undefined && rt.botOf(work.to) !== undefined ? work.to : undefined,
-        fromName: name, toId: waitingBot, ...(targetSession ? { sessionId: targetSession } : {}), text: said, role: 'reply', replyTo: id,
-        exchangeId: randomUUID(), work: work.parent, abandoned: true, recordExchange: false,
-      }).catch(error => rt.warn('ds-bot: giving up the wait for %s was not delivered: %s', waitingBot, error))
-    }
+    resumeWork(work.parent)
     return true
   }
 
@@ -509,10 +561,8 @@ export function install(rt) {
       const toName = rt.botOf(botId)?.name ?? 'a Bot'
       const text = `[Message from ${toName}]\n${toName} cannot continue: it is blocked (${code}). The work you asked it to do is on hold until the user fixes it.`
       void rt.deliver({ fromId: botId, toId: work.from, sessionId: rt.chatOf(work.from), role: 'reply', replyTo: id, exchangeId: id, text }).catch(() => {})
-      // Cancel the delegate timeout: the work is on hold, not abandoned.
-      clearDelegateTimer(id)
     }
   }
 
-  Object.assign(rt, { workOf, openWork, closeWork, dropWork, takenWork: taken, lateWork, answerMissed, ownsWork: owns, waitsWork: waits, holdWork: hold, workAsker: askedBy, answerText, upstreamOf, sameWork, forgetBotWork: forgetBot, statusOf, waitingView, settleSubWork, subWorkRun, nameSubWork, abandonWork, abandonedWork: takeAbandoned, notifyBlockedDelegators })
+  Object.assign(rt, { workOf, openWork, openRootWork, isRootWork, resumeWork, workTurnEnded, noteWorkPart: notePart, closeWork, dropWork, takenWork: taken, lateWork, answerMissed, ownsWork: owns, waitsWork: waits, holdWork: hold, workAsker: askedBy, answerText, upstreamOf, sameWork, forgetBotWork: forgetBot, statusOf, waitingView, settleSubWork, subWorkRun, nameSubWork, abandonWork, abandonedWork: takeAbandoned, notifyBlockedDelegators })
 }

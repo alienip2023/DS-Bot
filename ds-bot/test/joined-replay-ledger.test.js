@@ -9,7 +9,8 @@ import { join } from 'node:path'
 import { handleJoinedTurn, BRIDGE_DOWN_TEXT } from '../src/host/joined-turn.js'
 import { shadowId } from '../src/host/roster-join.js'
 import { install as installHandoffs } from '../src/host/handoffs.js'
-import { DELEGATE_TIMEOUT_MS } from '../src/host/constants.js'
+// No clock runs on a work (docs/plans/2026-11-24-work-model.md); an hour stands for "long after".
+const AN_HOUR = 60 * 60 * 1000
 
 const { Session } = await import('@deepseek-ai/dsh-session')
 
@@ -103,7 +104,7 @@ test('L2 a failure after the answer neither replaces the row nor reaches the sen
   assert.equal(w.replies.length, 1, 'the sender hears nothing new')
 })
 
-test('L3 an answered work closes, so the 30-minute delegate timer stays silent', async (t) => {
+test('L3 an answered work closes, and nothing is sent about it later', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const w = makeLedgerWorld()
   t.after(w.drop)
@@ -113,7 +114,7 @@ test('L3 an answered work closes, so the 30-minute delegate timer stays silent',
   w.answer({ text: 'pong' })
   assert.equal(await turn, 'ex-1')
   assert.equal(w.rt.state.works['ex-1'], undefined, 'the answer closed the work')
-  t.mock.timers.tick(DELEGATE_TIMEOUT_MS)
+  t.mock.timers.tick(AN_HOUR)
   await settle()
   assert.equal(w.replies.length, 1, 'no timeout notice for work already answered')
 })
@@ -140,7 +141,7 @@ test('L5 a dispatch with no sender writes no ledger row', async (t) => {
   assert.equal(w.replies.length, 0, 'and nobody to tell')
 })
 
-test('L6 across the delegate window one answered exchange is delivered once', async (t) => {
+test('L6 long after, one answered exchange is delivered once', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const w = makeLedgerWorld()
   t.after(w.drop)
@@ -149,7 +150,7 @@ test('L6 across the delegate window one answered exchange is delivered once', as
   await settle()
   w.answer({ text: 'pong' })
   assert.equal(await turn, 'ex-1')
-  t.mock.timers.tick(DELEGATE_TIMEOUT_MS)
+  t.mock.timers.tick(AN_HOUR)
   await settle()
   assert.equal(w.replies.length, 1, 'the answer, and no timeout notice after it')
   assert.equal(rowsOf(w, 'ex-1').length, 1)

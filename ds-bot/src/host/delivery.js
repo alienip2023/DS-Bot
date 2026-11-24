@@ -10,7 +10,7 @@ import { sameConversation } from './threads.js'
 
 // For remote dispatch, control is local, an answer is refused, everything else is work.
 // An answer is not new work: never dispatch it to another machine.
-const ANSWER_ROLES = new Set(['reply', 'report'])
+const ANSWER_ROLES = new Set(['reply', 'report', 'results'])
 
 export function install(rt) {
   const { ctx, state } = rt
@@ -29,6 +29,10 @@ export function install(rt) {
     // What came back for work another Bot gave this one says where its answer goes.
     const goesOn = asker === undefined ? '' : ` · for the work ${asker} asked you for; your answer goes to ${asker} once everything you handed on is back`
     // A wait the user gave up reads as its own thing: the other Bot never answered.
+    // Everything a Bot handed on for one work, back together: it goes on with that work now (work model, W1).
+    const allBack = asker === undefined ? ' · everything you handed on is back' : ` · everything you handed on for the work ${asker} asked you for is back; your answer goes to ${asker}`
+    if (role === 'results' && deferred) return `[Work handed back to you · from ${note} · you read it during your last task; go on with that work now${allBack}]`
+    if (role === 'results') return `[Work handed back to you · from ${note}${allBack}]`
     if (abandoned) return `[Waiting given up · ${fromName} did not hand back this work; go on with the work it was for${goesOn}]`
     if (deferred && role === 'reply') return `[Reply from ${fromName} · you read it during your last task; go on with the work it is for now${goesOn}]`
     if (deferred && role === 'report') return `[Group chat "${roomName}" · replies to your post · you read them during your last task; go on with the work they are for now${goesOn}]`
@@ -59,6 +63,8 @@ export function install(rt) {
   // Roles recorded as team exchanges.
   const EXCHANGE_ROLES = new Set(['request', 'reply', 'stopped'])
   const TASK_ROLES = new Set(['task', 'task-followup', 'task-report'])
+  // Drawn as one line from its `kind: 'bot'` source (who handed back), never as text the user typed.
+  const RESULT_ROLES = new Set(['results'])
 
   // What two Bots say to each other is in the book of the pair (ledger.js), whole, written
   // before the message goes out. A message is shown once a record says it was delivered.
@@ -174,7 +180,7 @@ export function install(rt) {
   // result that came back goes on with. `merged`: a request that takes in an earlier
   // one its recipient had not read, under that one's exchange. `fromPart`: the Session
   // of the sending Bot, which a reply comes back to when that is a background part.
-  async function deliver({ fromId, fromName: senderName, toId, sessionId, text, role, replyTo, roomId, audience, note, exchangeId = randomUUID(), steer = false, deferred = false, resumed = false, retried = false, resent = false, merged = false, abandoned = false, recordExchange = true, askedBy, fromRoomId, fromPart, images = [], files = [], length, work, taskId, imOrigin, failureRequestId, joinedTurn = false, joinedAsync = false, wait = false, stopped = false }) {
+  async function deliver({ fromId, fromName: senderName, toId, sessionId, text, role, replyTo, roomId, audience, note, exchangeId = randomUUID(), steer = false, deferred = false, resumed = false, retried = false, resent = false, merged = false, abandoned = false, recordExchange = true, askedBy, fromRoomId, fromPart, images = [], files = [], length, work, taskId, imOrigin, failureRequestId, joinedTurn = false, joinedAsync = false, wait = false, stopped = false, results, resultFrom }) {
     const from = rt.botOf(fromId)
     const to = rt.botOf(toId)
     // The answer to a request from another machine, whose stand-in row is not here at this moment: it still goes
@@ -277,6 +283,9 @@ export function install(rt) {
       ...(fromRoomId ? { senderRoomId: fromRoomId } : {}),
       ...(joinedTurn ? { joinedTurn: true } : {}),
       ...(abandoned ? { abandoned: true } : {}),
+      ...(Array.isArray(results) && results.length > 0 ? { results } : {}),
+      ...(Array.isArray(resultFrom) && resultFrom.length > 0 ? { resultFrom } : {}),
+      ...(role === 'results' && note ? { note } : {}),
     }
     const targetSessionId = sessionId ?? rt.chatOf(toId)
     await writeBook()
@@ -322,18 +331,15 @@ export function install(rt) {
     // between Bots on one machine: it keeps `kind: 'bot'`, so it is not drawn as something the
     // user typed. Other visible roles (group, report, task) are still written as user text.
     // Background task roles (DS Bot 0.3.10) are drawn by the task bar from their `kind: 'bot'` source, not as text the user typed.
-    const visible = classify(role) === 'visible' && !EXCHANGE_ROLES.has(role) && !TASK_ROLES.has(role) && typeof agent.session?.append === 'function'
+    const visible = classify(role) === 'visible' && !EXCHANGE_ROLES.has(role) && !TASK_ROLES.has(role) && !RESULT_ROLES.has(role) && typeof agent.session?.append === 'function'
     if (visible) {
       // The chat projector renders user sources verbatim; relay sources show only an
       // exchange link. Keep the relay metadata on the wake that owns the next turn.
       agent.session.append('user/message', { ...message, source: { ...source, kind: 'user' } }, { surfaceOp: 'append' })
       await ctx.sessions.flush(agent.session)
     }
-    // A teammate's answer to a Bot that is working right now goes into its current turn, at its next step:
-    // the Bot that asked is usually still busy with the work it asked about, and an answer left for its
-    // next turn waits in the user's queue as if the user had typed it (Grok Bot / OpenMausBot hand results
-    // straight to the Bot that waits). An idle Bot is woken by it once, as before. Group rounds keep theirs.
-    const answerNow = role === 'reply' && roomId === undefined && from !== undefined && rt.live?.get?.(targetSessionId)?.turn !== undefined
+    // A teammate's answer never steers into a running turn (work model, docs/plans/2026-11-24-work-model.md):
+    // it waits for that conversation to be idle, behind the serial gate below.
     const send = async () => {
       if (visible) {
         // The content is already in model history. An empty, deferred relay wakes the
@@ -352,7 +358,7 @@ export function install(rt) {
         void pending.catch(error => rt.warn('ds-bot: visible delivery turn failed: %s', error)).finally(() => {
           if (visibleTurns.get(agent) === pending) visibleTurns.delete(agent)
         })
-      } else if (steer || answerNow) agent.steer(message)
+      } else if (steer) agent.steer(message)
       else agent.followup(message)
       await ctx.sessions.flush(agent.session)
       if (book !== undefined) await markDelivered()

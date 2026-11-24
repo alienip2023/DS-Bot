@@ -239,14 +239,14 @@ test('R4-E2E-3 a node Bot still changes itself locally (no hub round trip)', { s
   void hub
 })
 
-test('R4-E2E-4 a node Bot answer reaches a hub Bot that is still in its turn at its next step, not its queue', { skip }, async t => {
+test('R4-E2E-4 a node Bot answer never steers into a hub Bot turn that is still running (work model W1)', { skip }, async t => {
   const { hub, n10 } = await cluster(t)
   await messageBot(hub.rt, 'chief', 'node010执行', '跑一下验收 A1')
   await until(() => taskTexts(n10.w, 'e10').some(text => text.includes('跑一下验收 A1')), 'the request reached node010')
   hub.rt.liveOf(hub.rt.chatOf('chief')).turn = 9  // Chief is still working on the acceptance run
   await answer(n10.w.rt, 'e10', '跑一下验收 A1', 'A1 PASS')
-  await until(() => hub.steers.some(item => item.sessionId === hub.rt.chatOf('chief') && JSON.stringify(item.message).includes('A1 PASS')), 'steered into Chief running turn')
-  assert.equal(hub.followups.some(item => JSON.stringify(item.message).includes('A1 PASS')), false, "not in Chief's queue")
+  await new Promise(resolve => setTimeout(resolve, 300))
+  assert.equal(hub.steers.some(item => JSON.stringify(item.message).includes('A1 PASS')), false, "not steered into Chief's running turn")
 })
 
 // The answer must come back by itself when the recipient's background task ends its turn (turns.js), not

@@ -1068,6 +1068,8 @@ const ZH = {
   '{count} images': '{count} 张图片',
   'Replies from': '群聊回复：',
   'Reply from': '收到回复：',
+  'Work handed back': '交回的工作结果',
+  'Work handed back by': '交回结果：',
   'ReplyFrom': '收到来自跨机 Bot 的回复：',
   'Message from': '收到消息：',
   'Stopped by': '叫停者：',

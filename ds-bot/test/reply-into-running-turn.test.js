@@ -1,5 +1,6 @@
-// A teammate's answer reaches the Bot that asked at once: into its running turn (next step) when it is working,
-// waking it when it is idle — never left in the user's queue for its next turn (Grok Bot / OpenMausBot).
+// A teammate's answer never steers into the running turn of the Bot that asked (work model,
+// docs/plans/2026-11-24-work-model.md; this reverts fork.114): it waits for that conversation to be idle, and an idle
+// Bot is woken by it once. An answer to a work the Bot waits on is not a message at all (handoffs.js resumeWork).
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { makeBot, threadWorld } from './thread-t2-world.js'
@@ -14,12 +15,11 @@ async function pair(t) {
 const reply = (w, helper, asker) => w.rt.deliver({ fromId: helper.id, toId: asker.id, role: 'reply', replyTo: 'x-1', text: 'done: 42' })
 const has = (list, chat) => list.some(item => item.sessionId === chat && JSON.stringify(item.message).includes('done: 42'))
 
-test('a reply to a Bot in the middle of a turn is steered into that turn, not queued for the next', async t => {
+test('a reply to a Bot in the middle of a turn is never steered into that turn', async t => {
   const { w, asker, helper, chat } = await pair(t)
   w.rt.liveOf(chat).turn = 7
-  await reply(w, helper, asker)
-  assert.ok(has(w.steers, chat), 'steered into the running turn')
-  assert.equal(has(w.followups, chat), false, 'not left in the queue for the next turn')
+  await Promise.race([reply(w, helper, asker), new Promise(resolve => setTimeout(resolve, 100))])
+  assert.equal(has(w.steers, chat), false, 'not steered into the running turn')
 })
 
 test('a reply to an idle Bot wakes it once, as before', async t => {

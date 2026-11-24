@@ -128,7 +128,7 @@ test('message_bot steers by default; on an idle Bot it opens the next turn', asy
 
   // Idle: the message goes to the Bot's own chat and starts its next turn.
   const idle = await tool('message_bot', { to: 'Writer', message: 'how are you' }, 'a')
-  assert.equal(idle, 'Delivered to Writer. Its reply will arrive later as a new message; do not wait for it.')
+  assert.equal(idle, 'Delivered to Writer. What it hands back reaches you in one message once everything you handed on is back; do not wait for it, end your turn when you have handed on all you need.')
   assert.deepEqual(agents.get('b').calls.map(([kind]) => kind), ['steer'])
   assert.match(textOf(agents.get('b').calls[0][1].content), /^\[Message from Chief\]/)
   assert.equal(agents.get('b').calls[0][1].source.role, 'request')
@@ -136,7 +136,7 @@ test('message_bot steers by default; on an idle Bot it opens the next turn', asy
   // Running: the message cuts into that turn instead of queuing.
   emit('b', 'turn/start', { turn: 1 })
   const busy = await tool('message_bot', { to: 'Writer', message: 'watch out' }, 'a')
-  assert.equal(busy, 'Delivered to Writer while it is working: it reads your message at its next step and answers once that work is done. Its reply will arrive later as a new message; do not wait for it. Writer now: working in its own chat for less than a minute, for the user; not read yet: 1 from Chief.')
+  assert.equal(busy, 'Delivered to Writer while it is working: it reads your message at its next step and answers once that work is done. What it hands back reaches you in one message once everything you handed on is back; do not wait for it, end your turn when you have handed on all you need. Writer now: working in its own chat for less than a minute, for the user; not read yet: 1 from Chief.')
   assert.deepEqual(agents.get('b').calls.map(([kind]) => kind), ['steer', 'steer'])
 })
 
@@ -146,7 +146,7 @@ test('message_bot when "queue" waits for the current work, and reply_to "user" a
 
   emit('b', 'turn/start', { turn: 1 })
   const queued = await tool('message_bot', { to: 'Writer', message: 'later', when: 'queue' }, 'a')
-  assert.equal(queued, 'Queued for Writer: it reads your message after its current work. Its reply will arrive later as a new message; do not wait for it. Writer now: working in its own chat for less than a minute, for the user.')
+  assert.equal(queued, 'Queued for Writer: it reads your message after its current work. What it hands back reaches you in one message once everything you handed on is back; do not wait for it, end your turn when you have handed on all you need. Writer now: working in its own chat for less than a minute, for the user.')
   assert.deepEqual(agents.get('b').calls.map(([kind]) => kind), ['followup'])
 
   const toUser = await tool('message_bot', { to: 'Writer', message: 'tell them', reply_to: 'user', when: 'now' }, 'a')
@@ -163,14 +163,14 @@ test('a Bot busy in a group gets the message in its own chat, and the sender is 
 
   emit('gb', 'turn/start', { turn: 1 })
   const out = await tool('message_bot', { to: 'Writer', message: 'status?' }, 'a')
-  assert.equal(out, 'Delivered to Writer. Its reply will arrive later as a new message; do not wait for it. Writer now: working in group "Ops" for less than a minute. Your message does not reach its work in group "Ops". If it must not go on there, use stop_bot.')
+  assert.equal(out, 'Delivered to Writer. What it hands back reaches you in one message once everything you handed on is back; do not wait for it, end your turn when you have handed on all you need. Writer now: working in group "Ops" for less than a minute. Your message does not reach its work in group "Ops". If it must not go on there, use stop_bot.')
   assert.deepEqual(agents.get('b').calls.map(([kind]) => kind), ['steer'])
   assert.equal(agents.get('gb'), undefined)
 
   // A non-Main sender gets no stop_bot hint.
   emit('ga', 'turn/start', { turn: 1 })
   const back = await tool('message_bot', { to: 'Chief', message: 'done' }, 'b')
-  assert.equal(back, 'Delivered to Chief. Its reply will arrive later as a new message; do not wait for it. Chief now: working in group "Ops" for less than a minute. Your message does not reach its work in group "Ops".')
+  assert.equal(back, 'Delivered to Chief. What it hands back reaches you in one message once everything you handed on is back; do not wait for it, end your turn when you have handed on all you need. Chief now: working in group "Ops" for less than a minute. Your message does not reach its work in group "Ops".')
 })
 
 test('a request steered into a running turn is recorded once and answered in a turn of its own', async (t) => {
@@ -312,7 +312,7 @@ test('a non-Main Bot can steer a message to a Main Bot', async (t) => {
   t.after(stop)
 
   const out = await tool('message_bot', { to: 'Chief', message: 'heads up' }, 'b')
-  assert.equal(out, 'Delivered to Chief. Its reply will arrive later as a new message; do not wait for it.')
+  assert.equal(out, 'Delivered to Chief. What it hands back reaches you in one message once everything you handed on is back; do not wait for it, end your turn when you have handed on all you need.')
   assert.deepEqual(agents.get('a').calls.map(([kind]) => kind), ['steer'])
   assert.equal(agents.get('a').calls[0][1].source.senderSessionId, 'b')
 })
@@ -651,12 +651,15 @@ test('a Bot\'s answer waits for the work it handed on, and carries what came bac
   const { agents, tool, call } = team
   const shown = async () => { const { value } = await call('state', {}); return [value.activity.b === 'waiting', value.work.waiting] }
   const { take, end, handed } = await handedOn(team)
-  assert.deepEqual(await shown(), [false, {}])
-  assert.match(handed, /When you have handed on everything, end your turn: each reply brings you back to this work, and your answer goes to Chief once all of it is back\.$/)
+  // Chief's own turn (the user's) handed the work on: Chief waits for Writer, under a root work of its own.
+  const [, rootWaiting] = await shown()
+  assert.deepEqual(Object.keys(rootWaiting), ['a'])
+  assert.deepEqual(rootWaiting.a.waits.map(wait => [wait.to, wait.name]), [['b', 'Writer']])
+  assert.match(handed, /end your turn when you have handed on all you need\. Your answer goes to Chief after that\.$/)
   end('b', 'handed it to Tester')
   // Nothing goes up yet; Writer waits, and the team can see it.
   assert.match(await tool('list_bots', {}, 'a'), /- Writer \(Write\)\n {2}now: waiting for Tester to hand back work, for Chief\n/)
-  assert.deepEqual(Object.values(await worksIn(team)).map(work => [work.from, work.to, work.open.length, work.held]), [['a', 'b', 1, 'handed it to Tester'], ['b', 'c', 0, undefined]])
+  assert.deepEqual(Object.values(await worksIn(team)).map(work => [work.from, work.to, work.open.length, work.held, work.origin]), [[undefined, 'a', 1, 'asked Writer', 'person'], ['a', 'b', 1, 'handed it to Tester', undefined], ['b', 'c', 0, undefined, undefined]])
   assert.deepEqual(callsOf(agents, 'a'), [])
   // Its mark shows it waits, its row whom for, and the menu names the wait to give up.
   const [, waitingWork] = await shown()
@@ -665,18 +668,22 @@ test('a Bot\'s answer waits for the work it handed on, and carries what came bac
   assert.equal(typeof waits[0].id, 'string')
   assert.deepEqual([waits[0].to, waits[0].name], ['c', 'Tester'])
   delete waitingWork.b.waits
-  assert.deepEqual(waitingWork, { b: { bots: ['c'], rooms: [], for: ['a'] } })
+  delete waitingWork.a.waits
+  assert.deepEqual(waitingWork, { a: { bots: ['b'], rooms: [], for: [] }, b: { bots: ['c'], rooms: [], for: ['a'] } })
 
   take('c')
   end('c', 'two things to fix')
   await settled(() => callsOf(agents, 'b').length === 2)
   const back = take('b')
-  assert.deepEqual(await shown(), [false, {}])
-  assert.equal(textOf(back.content), '[Reply from Tester · for the work Chief asked you for; your answer goes to Chief once everything you handed on is back]\ntwo things to fix')
+  assert.deepEqual(Object.keys((await shown())[1]), ['a'], 'Writer goes on with its work; Chief still waits for it')
+  assert.equal(textOf(back.content), '[Work handed back to you · from Tester · everything you handed on for the work Chief asked you for is back; your answer goes to Chief]\nTester:\ntwo things to fix')
   end('b', 'fixed both')
   await settled(() => callsOf(agents, 'a').length === 1)
-  assert.equal(textOf(callsOf(agents, 'a')[0][1].content), '[Reply from Writer]\nfixed both\n\n[Handed back to Writer for this work]\n\nTester:\ntwo things to fix')
+  assert.equal(textOf(callsOf(agents, 'a')[0][1].content), '[Work handed back to you · from Writer · everything you handed on is back]\nWriter:\nfixed both\n\n[Handed back to Writer for this work]\n\nTester:\ntwo things to fix')
   assert.match(await tool('list_bots', {}, 'a'), /- Writer \(Write\)\n {2}now: idle\n/)
+  // Chief goes on with what came back, in one turn of its own chat; then nothing is left open.
+  take('a')
+  end('a', 'all done, here it is')
   assert.deepEqual(await shown(), [false, {}])
   assert.deepEqual(await worksIn(team), {})
 })
@@ -732,12 +739,14 @@ test('a message refused because its Bot waits for the result goes up as the answ
   const team = await start(threeBots())
   t.after(team.stop)
   const { agents } = team
-  const { end, refused } = await refusedUp(team)
+  const { take, end, refused } = await refusedUp(team)
   assert.equal(refused, 'Not sent: Chief is waiting for the result of the work you are doing, and your answer reaches it by itself once everything you handed on is back. Your message was kept as your answer. If you end your turn without writing any text, it goes up to Chief; any text you write for this work from now on goes up instead.')
   assert.deepEqual(callsOf(agents, 'a'), [])
   end('b')
   await settled(() => callsOf(agents, 'a').length === 1)
-  assert.equal(textOf(callsOf(agents, 'a')[0][1].content), '[Reply from Writer]\nHere is the summary: all three parts are done.')
+  assert.equal(textOf(callsOf(agents, 'a')[0][1].content), '[Work handed back to you · from Writer · everything you handed on is back]\nWriter:\nHere is the summary: all three parts are done.')
+  take('a')
+  end('a', 'noted')
   assert.deepEqual(await worksIn(team), {})
 })
 
@@ -749,7 +758,7 @@ test('a final answer replaces the refused message it kept', async (t) => {
   assert.equal(Object.values(await worksIn(team)).find(work => work.to === 'b').held, 'Here is the summary: all three parts are done.')
   end('b', 'The summary, final.')
   await settled(() => callsOf(agents, 'a').length === 1)
-  assert.equal(textOf(callsOf(agents, 'a')[0][1].content), '[Reply from Writer]\nThe summary, final.')
+  assert.equal(textOf(callsOf(agents, 'a')[0][1].content), '[Work handed back to you · from Writer · everything you handed on is back]\nWriter:\nThe summary, final.')
 })
 
 test('messages refused in one turn add up to the answer, and the refusal says so', async (t) => {
@@ -760,7 +769,7 @@ test('messages refused in one turn add up to the answer, and the refusal says so
   assert.equal(await tool('message_bot', { to: 'Chief', message: 'One more thing: part two needs a review.' }, 'b'), 'Not sent: Chief is waiting for the result of the work you are doing, and your answer reaches it by itself once everything you handed on is back. Your message was kept as your answer, after what was kept before in this turn. If you end your turn without writing any text, it goes up to Chief; any text you write for this work from now on goes up instead.')
   end('b')
   await settled(() => callsOf(agents, 'a').length === 1)
-  assert.equal(textOf(callsOf(agents, 'a')[0][1].content), '[Reply from Writer]\nHere is the summary: all three parts are done.\n\nOne more thing: part two needs a review.')
+  assert.equal(textOf(callsOf(agents, 'a')[0][1].content), '[Work handed back to you · from Writer · everything you handed on is back]\nWriter:\nHere is the summary: all three parts are done.\n\nOne more thing: part two needs a review.')
 })
 
 test('a message refused in a later turn replaces what an earlier turn kept, and the refusal says so', async (t) => {
@@ -777,7 +786,7 @@ test('a message refused in a later turn replaces what an earlier turn kept, and 
   assert.equal(await tool('message_bot', { to: 'Chief', message: 'Built and reviewed.' }, 'b'), 'Not sent: Chief is waiting for the result of the work you are doing, and your answer reaches it by itself once everything you handed on is back. Your message was kept as your answer, in place of what was kept for this work before this turn. If you end your turn without writing any text, it goes up to Chief; any text you write for this work from now on goes up instead.')
   end('b')
   await settled(() => callsOf(agents, 'a').length === 1)
-  assert.equal(textOf(callsOf(agents, 'a')[0][1].content), '[Reply from Writer]\nBuilt and reviewed.\n\n[Handed back to Writer for this work]\n\nTester:\nlooks good')
+  assert.equal(textOf(callsOf(agents, 'a')[0][1].content), '[Work handed back to you · from Writer · everything you handed on is back]\nWriter:\nBuilt and reviewed.\n\n[Handed back to Writer for this work]\n\nTester:\nlooks good')
 })
 
 test('a refused message stays the answer while the work waits for what was handed on', async (t) => {
@@ -794,7 +803,7 @@ test('a refused message stays the answer while the work waits for what was hande
   take('b')
   end('b')
   await settled(() => callsOf(agents, 'a').length === 1)
-  assert.equal(textOf(callsOf(agents, 'a')[0][1].content), '[Reply from Writer]\nBuilt it; Tester is reviewing.\n\n[Handed back to Writer for this work]\n\nTester:\nlooks good')
+  assert.equal(textOf(callsOf(agents, 'a')[0][1].content), '[Work handed back to you · from Writer · everything you handed on is back]\nWriter:\nBuilt it; Tester is reviewing.\n\n[Handed back to Writer for this work]\n\nTester:\nlooks good')
 })
 
 test('a long refused message keeps its start as the answer, and the refusal says so', async (t) => {
@@ -811,7 +820,7 @@ test('a long refused message keeps its start as the answer, and the refusal says
   assert.match(refused, /Only its first 2000 characters were kept as your answer\. To send all of it, write it in full as your answer\. If you end your turn without writing any text, that part goes up to Chief;/)
   turns.end('b')
   await settled(() => callsOf(agents, 'a').length === 1)
-  assert.equal(textOf(callsOf(agents, 'a')[0][1].content), `[Reply from Writer]\n${report.slice(0, 2000)}`)
+  assert.equal(textOf(callsOf(agents, 'a')[0][1].content), `[Work handed back to you · from Writer · everything you handed on is back]\nWriter:\n${report.slice(0, 2000)}`)
 })
 
 test('a message refused after a long one in the same turn keeps the start of both, and the refusal says so', async (t) => {
@@ -829,7 +838,7 @@ test('a message refused after a long one in the same turn keeps the start of bot
   assert.match(refused, /Your message was kept as your answer, after what was kept before in this turn, but only the first 2000 characters of all of it\. To send all of it, write it in full as your answer\./)
   turns.end('b')
   await settled(() => callsOf(agents, 'a').length === 1)
-  assert.equal(textOf(callsOf(agents, 'a')[0][1].content), `[Reply from Writer]\n${report.slice(0, 2000)}`)
+  assert.equal(textOf(callsOf(agents, 'a')[0][1].content), `[Work handed back to you · from Writer · everything you handed on is back]\nWriter:\n${report.slice(0, 2000)}`)
 })
 
 test('a message refused because a Bot further up waits goes to the direct asker, and the refusal says so', async (t) => {
@@ -842,7 +851,7 @@ test('a message refused because a Bot further up waits goes to the direct asker,
   assert.equal(await tool('message_bot', { to: 'Chief', message: 'Chief, it passes.' }, 'c'), 'Not sent: Chief is waiting for the result of the work you are doing, and your answer reaches it by itself once everything you handed on is back. Your message was kept as your answer. If you end your turn without writing any text, it goes up to Writer as your answer, and reaches Chief with Writer\'s answer; any text you write for this work from now on goes up instead.')
   end('c')
   await settled(() => callsOf(agents, 'b').length === 2)
-  assert.equal(textOf(take('b').content), '[Reply from Tester · for the work Chief asked you for; your answer goes to Chief once everything you handed on is back]\nChief, it passes.')
+  assert.equal(textOf(take('b').content), '[Work handed back to you · from Tester · everything you handed on for the work Chief asked you for is back; your answer goes to Chief]\nTester:\nChief, it passes.')
   assert.deepEqual(callsOf(agents, 'a'), [])
 })
 
@@ -860,7 +869,7 @@ test('a message refused after the turn wrote text is not kept, and the refusal s
   assert.equal(Object.values(await worksIn(team)).find(work => work.to === 'b').held, undefined)
   turns.end('b')
   await settled(() => callsOf(agents, 'a').length === 1)
-  assert.equal(textOf(callsOf(agents, 'a')[0][1].content), '[Reply from Writer]\nLet me send Chief the summary.')
+  assert.equal(textOf(callsOf(agents, 'a')[0][1].content), '[Work handed back to you · from Writer · everything you handed on is back]\nWriter:\nLet me send Chief the summary.')
 })
 
 test('a queued or user-facing message to a Bot that waits for the result is not kept as the answer', async (t) => {
@@ -878,7 +887,7 @@ test('a queued or user-facing message to a Bot that waits for the result is not 
   assert.equal(Object.values(await worksIn(team)).find(work => work.to === 'b').held, undefined)
   turns.end('b')
   await settled(() => callsOf(agents, 'a').length === 1)
-  assert.equal(textOf(callsOf(agents, 'a')[0][1].content), '[Reply from Writer]\nWriter finished without a reply.')
+  assert.equal(textOf(callsOf(agents, 'a')[0][1].content), '[Work handed back to you · from Writer · everything you handed on is back]\nWriter:\nWriter finished without a reply.')
 })
 
 test('a stopped turn answers at once, and what it handed on comes back to it alone', async (t) => {
@@ -888,11 +897,12 @@ test('a stopped turn answers at once, and what it handed on comes back to it alo
   const { take, end } = await handedOn(team)
   emit('b', 'turn/end', { turn: 1, reason: { kind: 'aborted', reason: { kind: 'user' } } })
   await settled(() => callsOf(agents, 'a').length === 1)
-  assert.equal(textOf(callsOf(agents, 'a')[0][1].content), '[Reply from Writer]\nWriter was stopped before it could answer your message.')
+  assert.equal(textOf(callsOf(agents, 'a')[0][1].content), '[Work handed back to you · from Writer · everything you handed on is back]\nWriter:\nWriter was stopped before it could answer your message.')
 
   take('c')
   end('c', 'reviewed')
   await settled(() => callsOf(agents, 'b').length === 2)
+  // Writer's work ended when it was stopped: Tester's answer comes back to Writer alone, as a plain reply.
   assert.equal(textOf(callsOf(agents, 'b')[1][1].content), '[Reply from Tester]\nreviewed')
   take('b')
   end('b', 'noted')
@@ -919,23 +929,25 @@ test('a result read during other work comes back in a turn of its own and goes o
   await settled(() => callsOf(agents, 'b').length === 3)
   const [kind, again] = callsOf(agents, 'b')[2]
   assert.equal(kind, 'followup')
-  assert.equal(textOf(again.content), '[Reply from Tester · you read it during your last task; go on with the work it is for now · for the work Chief [ops] asked you for; your answer goes to Chief [ops] once everything you handed on is back]\nreviewed')
+  assert.equal(textOf(again.content), '[Work handed back to you · from Tester · you read it during your last task; go on with that work now · everything you handed on for the work Chief [ops] asked you for is back; your answer goes to Chief [ops]]\nTester:\nreviewed')
   assert.deepEqual(callsOf(agents, 'a'), [])
   take('b')
   end('b', 'done after the review')
   await settled(() => callsOf(agents, 'a').length === 1)
-  assert.equal(textOf(callsOf(agents, 'a')[0][1].content), '[Reply from Writer]\ndone after the review\n\n[Handed back to Writer for this work]\n\nTester:\nreviewed')
+  assert.equal(textOf(callsOf(agents, 'a')[0][1].content), '[Work handed back to you · from Writer · everything you handed on is back]\nWriter:\ndone after the review\n\n[Handed back to Writer for this work]\n\nTester:\nreviewed')
 })
 
 test('deleting a Bot that waits for work it handed on tells the Bot that asked', async (t) => {
   const team = await start(threeBots())
   t.after(team.stop)
   const { agents, call } = team
-  const { end } = await handedOn(team)
+  const { take, end } = await handedOn(team)
   end('b', 'handed it on')
   assert.equal((await call('delete-bot', { id: 'b' })).ok, true)
   await settled(() => callsOf(agents, 'a').length === 1)
-  assert.equal(textOf(callsOf(agents, 'a')[0][1].content), '[Reply from Writer]\nWriter was deleted before it could answer your message.')
+  assert.equal(textOf(callsOf(agents, 'a')[0][1].content), '[Work handed back to you · from Writer · everything you handed on is back]\nWriter:\nWriter was deleted before it could answer your message.')
+  take('a')
+  end('a', 'Writer is gone; I will do it myself')
   assert.deepEqual(await worksIn(team), {})
 })
 
@@ -956,9 +968,10 @@ test('an answer that grows past 20,000 characters with what came back goes as a 
   await settled(() => callsOf(agents, 'a').length === 1)
   const [text, file] = callsOf(agents, 'a')[0][1].content
   const whole = `${'改好了。'.repeat(1500)}\n\n[Handed back to Writer for this work]\n\nTester:\n${review}`
-  assert.ok(text.text.startsWith(`[Reply from Writer]\n[A long message: ${whole.length} characters.`))
-  assert.equal(file.attachment.name, 'Answer from Writer.txt')
-  assert.equal(new TextDecoder().decode(store.files.get(file.attachment.attachmentId)), whole)
+  // Handed back to Chief's own work, whole: one message, as a file past what a message carries.
+  assert.ok(text.text.startsWith(`[Work handed back to you · from Writer · everything you handed on is back]\n[A long message: ${whole.length + 'Writer:\n'.length} characters.`))
+  assert.equal(file.attachment.name, 'Work handed back.txt')
+  assert.equal(new TextDecoder().decode(store.files.get(file.attachment.attachmentId)), `Writer:\n${whole}`)
 })
 
 test('Bots keep messaging and posting with no count of messages or rounds', async (t) => {
@@ -1595,3 +1608,92 @@ test('a message between Bots that the book cannot keep is not sent', { skip: pro
   assert.deepEqual(await exchanges(), [])
 })
 
+
+// ── Work model W1 (docs/plans/2026-11-24-work-model.md): one record per work, the Bot that handed work on waits, and
+// it goes on ONCE, in its own conversation, with everything that came back. Every case runs real turns
+// (turn/start → user/message → assistant/message → turn/end); nothing closes a work by hand.
+
+test('W1-1 a user turn that hands work to two Bots is resumed once, with both results, after the second is back', async (t) => {
+  const team = await start(threeBots())
+  t.after(team.stop)
+  const { agents, emit, tool } = team
+  const turns = turnTaker(agents, emit)
+  turns.userTurn('a', 'get the plan written and tested')
+  await tool('message_bot', { to: 'Writer', message: 'write the plan' }, 'a')
+  await tool('message_bot', { to: 'Tester', message: 'prepare the tests' }, 'a')
+  turns.end('a', 'Writer and Tester are on it.')
+  turns.take('b')
+  turns.end('b', 'the plan is written')
+  await delay(30)
+  assert.deepEqual(callsOf(agents, 'a'), [], 'Tester is still out: Chief is not woken for one of two')
+  turns.take('c')
+  turns.end('c', 'the tests are ready')
+  await settled(() => callsOf(agents, 'a').length === 1)
+  await delay(30)
+  assert.equal(callsOf(agents, 'a').length, 1, 'one resume, not one wake per result')
+  const [kind, resume] = callsOf(agents, 'a')[0]
+  assert.equal(kind, 'followup', 'never steered')
+  assert.equal(resume.source.kind, SOURCE_KIND, 'a Bot message, never the user\'s input')
+  assert.equal(resume.source.role, 'results')
+  assert.deepEqual([...resume.source.resultFrom].sort(), ['b', 'c'])
+  assert.equal(textOf(resume.content), '[Work handed back to you · from Writer, Tester · everything you handed on is back]\nWriter:\nthe plan is written\n\nTester:\nthe tests are ready')
+  // Chief goes on with it; the work is done, and nothing is left open.
+  turns.take('a')
+  turns.end('a', 'Plan and tests are ready.')
+  assert.deepEqual(await worksIn(team), {})
+  assert.deepEqual((await exchanges()).map(entry => [entry.role, entry.text]), [['request', 'write the plan'], ['reply', 'the plan is written']], 'the pair keeps the answer')
+
+  async function exchanges() { return (await team.call('exchange', { a: 'a', b: 'b' })).value ?? [] }
+})
+
+test('W1-2 what comes back while the Bot is in another turn never steers into it', async (t) => {
+  const team = await start(threeBots())
+  t.after(team.stop)
+  const { agents, emit, tool } = team
+  const turns = turnTaker(agents, emit)
+  turns.userTurn('a', 'have Writer do it')
+  await tool('message_bot', { to: 'Writer', message: 'write the plan' }, 'a')
+  turns.end('a', 'asked Writer')
+  // The user talks to Chief about something else; Writer answers meanwhile.
+  turns.userTurn('a', 'what time is it?')
+  turns.take('b')
+  turns.end('b', 'the plan is written')
+  await settled(() => callsOf(agents, 'a').length === 1)
+  assert.deepEqual(callsOf(agents, 'a').map(([kind, message]) => [kind, message.source.role]), [['followup', 'results']])
+  turns.end('a', 'noon')
+})
+
+test('W1-3 what comes back while the turn doing that work still runs waits for it to end, then resumes once', async (t) => {
+  const team = await start(threeBots())
+  t.after(team.stop)
+  const { agents, emit, tool } = team
+  const turns = turnTaker(agents, emit)
+  turns.userTurn('a', 'have Writer do it')
+  await tool('message_bot', { to: 'Writer', message: 'write the plan' }, 'a')
+  // Writer answers before Chief's turn is over.
+  turns.take('b')
+  turns.end('b', 'the plan is written')
+  await delay(30)
+  assert.deepEqual(callsOf(agents, 'a'), [], 'the turn that handed it on is still running')
+  turns.end('a', 'asked Writer')
+  await settled(() => callsOf(agents, 'a').length === 1)
+  assert.equal(callsOf(agents, 'a')[0][1].source.role, 'results')
+})
+
+test('W1-4 no clock runs on a work: an unanswered request stays open, and nobody is told it timed out', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const team = await start(threeBots())
+  t.after(team.stop)
+  const { agents, emit, tool } = team
+  const turns = turnTaker(agents, emit)
+  turns.userTurn('a', 'have Writer do it')
+  await tool('message_bot', { to: 'Writer', message: 'write the plan' }, 'a')
+  turns.end('a', 'asked Writer')
+  const before = callsOf(agents, 'b').length
+  t.mock.timers.tick(3 * 60 * 60 * 1000)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(callsOf(agents, 'a'), [], 'no timeout notice')
+  assert.equal(callsOf(agents, 'b').length, before, 'no reminder')
+  const open = Object.values(await worksIn(team)).find(work => work.to === 'b')
+  assert.ok(open !== undefined, 'still waiting for Writer')
+})

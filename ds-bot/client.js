@@ -1043,6 +1043,8 @@ var JA = {
   "{count} images": "画像 {count} 枚",
   "Replies from": "グループ返信:",
   "Reply from": "返信元:",
+  "Work handed back": "返ってきた作業結果",
+  "Work handed back by": "結果を返した Bot:",
   "ReplyFrom": "リモートBotからの返信：",
   "Message from": "メッセージ送信元:",
   "Stopped by": "停止者:",
@@ -3892,6 +3894,8 @@ var KO = {
   "{count} images": "이미지 {count}장",
   "Replies from": "그룹 답장:",
   "Reply from": "답장:",
+  "Work handed back": "돌려받은 작업 결과",
+  "Work handed back by": "결과를 돌려준 Bot:",
   "ReplyFrom": "원격 봇의 답장: ",
   "Message from": "메시지 발신:",
   "Stopped by": "중지한 주체:",
@@ -6757,6 +6761,8 @@ var ES = {
   "{count} images": "{count} imágenes",
   "Replies from": "Respuestas de",
   "Reply from": "Respuesta de",
+  "Work handed back": "Trabajo devuelto",
+  "Work handed back by": "Resultado devuelto por",
   "ReplyFrom": "Respuesta del bot remoto: ",
   "Message from": "Mensaje de",
   "Stopped by": "Detenido por",
@@ -9593,6 +9599,8 @@ var FR = {
   "{count} images": "{count} images",
   "Replies from": "Réponses de",
   "Reply from": "Réponse de",
+  "Work handed back": "Travail rendu",
+  "Work handed back by": "Résultat rendu par",
   "ReplyFrom": "Réponse du bot distant : ",
   "Message from": "Message de",
   "Stopped by": "Arrêté par",
@@ -12442,6 +12450,8 @@ var DE = {
   "{count} images": "{count} Bilder",
   "Replies from": "Antworten von",
   "Reply from": "Antwort von",
+  "Work handed back": "Arbeitsergebnis zurück",
+  "Work handed back by": "Ergebnis zurück von",
   "ReplyFrom": "Antwort vom Remote-Bot: ",
   "Message from": "Nachricht von",
   "Stopped by": "Gestoppt von",
@@ -15427,6 +15437,8 @@ var ZH = {
   "{count} images": "{count} 张图片",
   "Replies from": "群聊回复：",
   "Reply from": "收到回复：",
+  "Work handed back": "交回的工作结果",
+  "Work handed back by": "交回结果：",
   "ReplyFrom": "收到来自跨机 Bot 的回复：",
   "Message from": "收到消息：",
   "Stopped by": "叫停者：",
@@ -32985,6 +32997,11 @@ function TriggerCell({ node, sessionId, useRoster, useSessions, useTurnClock, us
       }
       if (source.role === "report") {
         return (0, import_react35.createElement)(GroupEvent, { prefix: t("Replies from"), room: roster.roomsById[source.roomId], name: t("a group chat"), roster, actions });
+      }
+      if (source.role === "results") {
+        const from = (Array.isArray(source.resultFrom) ? source.resultFrom : []).map((id) => roster.byId[id]).filter(Boolean);
+        if (from.length === 0) return (0, import_react35.createElement)("div", { className: "bt-event" }, t("Work handed back"));
+        return (0, import_react35.createElement)(EventLine, { prefix: t("Work handed back by"), bots: from, onOpen: (bot) => actions.openExchange(selfId, bot.id), whole: true });
       }
       if (source.role === "resume" || source.resumed === true) return (0, import_react35.createElement)("div", { className: "bt-event" }, t("Picked up its work after a restart"));
       if (source.role === "retry" || source.retried === true) return (0, import_react35.createElement)("div", { className: "bt-event" }, t("Asked to make the tool call it wrote as text"));
