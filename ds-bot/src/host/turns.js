@@ -1704,6 +1704,9 @@ export function install(rt) {
         // The user pressed Stop (or the machine that asked for this work called it off): what this turn's work handed
         // on stops too, and nothing comes back for it (fork.125). DSH shutting down is not a stop.
         const stoppedByUser = reason?.kind === 'aborted' && (reason.reason?.kind === 'user' || reason.reason?.reason === 'ds-bot/cancelled')
+        // Stop in a conversation stops all the work waiting in it, also what an earlier turn handed on (OpenMausBot's
+        // stopRequester stops every child of that conversation).
+        if (stoppedByUser) rt.stopWaitingIn?.(id)
         const endRootWork = (work, reply) => {
           if (reason?.kind === 'aborted') {
             if (stoppedByUser) rt.stopHandedOn?.(work)

@@ -1944,3 +1944,52 @@ test('W2-5 the user stopping a work thread in the middle of a work tells the ask
   assert.match(textOf(callsOf(agents, 'a')[0][1].content), /Writer was stopped before it could answer your message\./)
   assert.equal(agents.get('b'), undefined, 'no task report in the user\'s chat with Writer')
 })
+
+// fork.126: what comes back for a work and could not be delivered once (DSH refused the write) goes again, instead of
+// leaving the work waiting forever.
+test('a results message that could not go out when its turn came is sent again, and the Bot is resumed', async (t) => {
+  const team = await start(threeBots())
+  t.after(team.stop)
+  const { agents, emit, tool } = team
+  const turns = turnTaker(agents, emit)
+  await team.rt.sendThreadTurn({ botId: 'a', sessionId: 'a', kind: 'send', releaseOn: 'turn-end', run: async () => turns.userTurn('a', 'have Writer do it') })
+  await tool('message_bot', { to: 'Writer', message: 'write the plan' }, 'a')
+  turns.end('a', 'asked Writer')
+  await delay(10)
+  // Chief is busy with something else when Writer's answer comes back: the resume waits for that turn.
+  await team.rt.sendThreadTurn({ botId: 'a', sessionId: 'a', kind: 'send', releaseOn: 'turn-end', run: async () => turns.userTurn('a', 'and the weather?') })
+  const chief = agents.get('a')
+  const followup = chief.followup
+  let refused = 0
+  chief.followup = function (message) {
+    if (message.source?.role === 'results' && refused === 0) { refused += 1; throw new Error('session append cannot reenter') }
+    return followup.call(this, message)
+  }
+  turns.take('b')
+  turns.end('b', 'the plan is written')
+  await delay(30)
+  turns.end('a', 'sunny')
+  await settled(() => callsOf(agents, 'a').some(([kind, message]) => kind === 'followup' && message.source?.role === 'results'))
+  for (let i = 0; i < 40 && !callsOf(agents, 'a').some(([kind, message]) => kind === 'followup' && message.source?.role === 'results'); i += 1) await delay(50)
+  assert.equal(refused, 1)
+  assert.equal(callsOf(agents, 'a').filter(([kind, message]) => kind === 'followup' && message.source?.role === 'results').length, 1, 'sent again, once')
+})
+
+test('Stop in a conversation also stops work an earlier turn there handed on and still waits for', async (t) => {
+  const team = await start(threeBots())
+  t.after(team.stop)
+  const { agents, emit, tool } = team
+  const turns = turnTaker(agents, emit)
+  turns.userTurn('a', 'have Writer do it')
+  await tool('message_bot', { to: 'Writer', message: 'write the plan' }, 'a')
+  turns.end('a', 'asked Writer')
+  turns.take('b')
+  // A new turn in Chief's chat, which the user stops.
+  turns.userTurn('a', 'something else')
+  emit('a', 'turn/end', { turn: 2, reason: { kind: 'aborted', reason: { kind: 'user' } } })
+  await settled(() => callsOf(agents, 'b').some(([kind]) => kind === 'cancel'))
+  assert.equal(callsOf(agents, 'b').some(([kind]) => kind === 'cancel'), true, 'Writer was stopped')
+  turns.end('b', 'the plan')
+  await delay(30)
+  assert.equal(callsOf(agents, 'a').length, 0, 'nothing comes back to Chief')
+})

@@ -166,7 +166,16 @@ export function install(rt) {
     if (slot.state !== 'failed') slot.state = 'idle'
     const next = slot.queue.shift()
     if (next !== undefined) {
-      void start(slot, next).catch(error => rt.warn?.('ds-bot: queued turn for %s failed: %s', slot.botId, error))
+      // A release usually comes from inside a Session event (turn/end) that DSH is still recording: the next turn
+      // starts once that is done, or its first write is refused ("session append cannot reenter"). The Bot is held
+      // for it meanwhile, so nothing else goes first.
+      slot.running = { queueId: next.queueId, threadId: next.threadId, sessionId: next.sessionId, startedAt: Date.now(), kind: next.kind }
+      slot.entry = next
+      slot.state = 'running'
+      setImmediate(() => {
+        if (slot.running?.queueId !== next.queueId) return
+        void start(slot, next).catch(error => rt.warn?.('ds-bot: queued turn for %s failed: %s', slot.botId, error))
+      })
     }
   }
 

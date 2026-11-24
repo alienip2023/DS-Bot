@@ -54,6 +54,8 @@ test('T0 (the D6 chain) a prompt on the Bot\'s current part, whose Main row name
   await until(() => rt.threadQueueLive(BOT).queued.length === 1, 'the hand-back waits behind the running turn')
   turn(CURRENT, 'end')
   await delivered
+  // Once DSH has finished recording the turn's end (fork.126), not inside it.
+  await until(() => followups.length > 0, 'the hand-back went out after the turn')
   assert.deepEqual(followups.map(f => f.sessionId), [CURRENT], 'the hand-back went to the current part right after the turn')
   assert.equal(warnings.mock.calls.some(call => /accepted but never started/.test(String(call.arguments[0]))), false)
 })
@@ -82,6 +84,8 @@ test('T2 the same hand-back sent twice while the Bot is busy is queued once and 
   assert.equal(rt.threadQueueLive(BOT).queued.length, 1)
   turn(CURRENT, 'end')
   assert.deepEqual(await both, ['receipt-2', 'receipt-2'])
+  await until(() => followups.length > 0, 'delivered')
+  for (let i = 0; i < 10; i += 1) await settle()
   assert.deepEqual(followups.map(f => f.sessionId), [CURRENT])
 })
 
@@ -102,4 +106,41 @@ test('T4 an ended part is still read as history', async t => {
   }))
   const page = await rt.chatPage(BOT, { part: 0 })
   assert.match(JSON.stringify(page.items), /old page/)
+})
+
+// fork.126: the queue released the next turn from inside the turn/end event DSH was still recording, and DSH refused
+// its first write ("session append cannot reenter while another append is being published"): a hand-back was lost.
+test('T5 the turn queued behind a turn starts after DSH finished recording that turn\'s end, not inside it', async t => {
+  const w = await world(t)
+  const { rt, ctx, turn, followups } = w
+  const warnings = t.mock.method(rt, 'warn', () => {})
+  let publishing = false
+  const record = (sessionId, kind) => { publishing = true; try { turn(sessionId, kind) } finally { publishing = false } }
+  const agent = w.agentOf(CURRENT)
+  const followup = agent.followup
+  agent.followup = function (message) {
+    if (publishing) throw new Error('session append cannot reenter while another append is being published')
+    return followup.call(this, message)
+  }
+  await ctx.sessionController.prompt({ sessionId: CURRENT, requestId: 'r1', content: [{ type: 'text', text: 'now' }] })
+  record(CURRENT, 'start')
+  const delivered = rt.deliver({ fromId: PEER, toId: BOT, text: 'R121-GOT', role: 'reply', exchangeId: 'receipt-5' })
+  await until(() => rt.threadQueueLive(BOT).queued.length === 1, 'waits behind the running turn')
+  record(CURRENT, 'end')
+  await delivered
+  await until(() => followups.some(f => f.sessionId === CURRENT), 'the hand-back went out')
+  assert.equal(warnings.mock.calls.some(call => /queued turn for/.test(String(call.arguments[0]))), false)
+})
+
+test('T6 with untilSent, a delivery that waited for its turn and then failed to go out fails for its caller, who can send it again', async t => {
+  const w = await world(t)
+  const { rt, turn } = w
+  t.mock.method(rt, 'warn', () => {})
+  await rt.sendThreadTurn({ botId: BOT, sessionId: CURRENT, kind: 'send', releaseOn: 'turn-end', run: async () => turn(CURRENT, 'start') })
+  const agent = w.agentOf(CURRENT)
+  agent.followup = () => { throw new Error('refused') }
+  const delivered = rt.deliver({ fromId: PEER, toId: BOT, text: 'results', role: 'reply', exchangeId: 'receipt-6', untilSent: true })
+  await until(() => rt.threadQueueLive(BOT).queued.length === 1, 'waits')
+  turn(CURRENT, 'end')
+  await assert.rejects(delivered, /refused/)
 })

@@ -197,7 +197,7 @@ export function install(rt) {
     })
     void (body.length <= MESSAGE_INLINE_MAX ? Promise.resolve({ text: body, files: [] }) : rt.attachLong(body, 'Work handed back.txt'))
       .then(long => send({
-        fromName: names.join(', '), toId: work.to, sessionId, role: 'results', exchangeId, work: id, results: ids, ...(running !== undefined ? { steer: true } : {}),
+        fromName: names.join(', '), toId: work.to, sessionId, role: 'results', exchangeId, work: id, results: ids, untilSent: true, ...(running !== undefined ? { steer: true } : {}),
         ...(from.length > 0 ? { resultFrom: from } : {}), note: names.join(', '),
         text: long?.text ?? body, ...(long?.length !== undefined ? { files: long.files, length: long.length } : {}),
       }, 1))
@@ -551,12 +551,33 @@ export function install(rt) {
       if (gone) abandonWork(id, 'gone')
     }
   }
+  // A resume marked as sent whose message never reached the conversation (fork.126: DSH refused the write, and the
+  // work waited forever): sent again at start. One that is in the conversation, read or not, is left alone.
+  async function reconcileLostResumes() {
+    if (rt.readOnly?.() !== undefined) return
+    for (const [id, work] of Object.entries(works())) {
+      if (!Array.isArray(work.resume) || work.to === undefined) continue
+      const sessionId = (work.part === undefined ? undefined : rt.resumeTargetOf?.(work.part)) ?? rt.chatOf(work.to)
+      const agent = await rt.resolveAgent(sessionId).catch(() => undefined)
+      const session = agent?.session
+      if (session === undefined) continue
+      const events = typeof session.snapshotEvents === 'function' ? session.snapshotEvents() : Array.isArray(session.log) ? session.log : undefined
+      if (events === undefined) continue
+      const there = events.some(event => event?.type === 'user/message' && event.data?.source?.role === 'results' && event.data.source.work === id)
+      if (there || works()[id]?.resume !== work.resume) continue
+      delete work.resume
+      log('resume-lost', id)
+      save()
+      resumeWork(id)
+    }
+  }
   // A host without a context (the narrow tests) has no startup to reconcile. The sweep
   // waits a tick: the team file loads through every module's own setup, and this module
   // is installed before the ones that load it.
   ctx?.effect?.(() => {
     const timer = setTimeout(() => {
       void rt.load().then(() => reconcileLostWorks()).catch(error => rt.warn('ds-bot: lost waits not settled: %s', error))
+      void rt.load().then(() => reconcileLostResumes()).catch(error => rt.warn('ds-bot: lost resumes not sent again: %s', error))
     }, 0)
     return () => clearTimeout(timer)
   }, 'ds-bot: lost hand-offs')

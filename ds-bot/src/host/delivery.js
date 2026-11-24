@@ -181,7 +181,7 @@ export function install(rt) {
   // result that came back goes on with. `merged`: a request that takes in an earlier
   // one its recipient had not read, under that one's exchange. `fromPart`: the Session
   // of the sending Bot, which a reply comes back to when that is a background part.
-  async function deliver({ fromId, fromName: senderName, toId, sessionId, text, role, replyTo, roomId, audience, note, exchangeId = randomUUID(), steer = false, deferred = false, resumed = false, retried = false, resent = false, merged = false, abandoned = false, recordExchange = true, askedBy, fromRoomId, fromPart, images = [], files = [], length, work, taskId, imOrigin, failureRequestId, joinedTurn = false, joinedAsync = false, wait = false, stopped = false, results, resultFrom }) {
+  async function deliver({ fromId, fromName: senderName, toId, sessionId, text, role, replyTo, roomId, audience, note, exchangeId = randomUUID(), untilSent = false, steer = false, deferred = false, resumed = false, retried = false, resent = false, merged = false, abandoned = false, recordExchange = true, askedBy, fromRoomId, fromPart, images = [], files = [], length, work, taskId, imOrigin, failureRequestId, joinedTurn = false, joinedAsync = false, wait = false, stopped = false, results, resultFrom }) {
     const from = rt.botOf(fromId)
     const to = rt.botOf(toId)
     if (to === undefined) throw new Error(`Unknown Bot ${toId}`)
@@ -362,12 +362,24 @@ export function install(rt) {
       const bot = full === undefined ? (targetSessionId === rt.chatOf(toId) ? to : undefined) : undefined
       const threadId = full?.threadId ?? (bot === undefined ? undefined : rt.mainThreadOf?.(bot.id)?.id)
       queuedDeliveries.add(key)
+      // With `untilSent`, a delivery that waits for its turn resolves once it went out, and fails if it could not:
+      // the caller can send it again (what comes back for a work must not be lost in the queue).
+      let settle
+      const sent = new Promise((resolve, reject) => { settle = { resolve, reject } })
+      sent.catch(() => {})
       let outcome
       try {
-        outcome = await rt.sendThreadTurn({ botId: full?.botId ?? bot?.id, threadId, sessionId: targetSessionId, kind: 'dispatch', preview: text, onCancel: () => queuedDeliveries.delete(key), run: async () => { try { await run() } finally { queuedDeliveries.delete(key) } } })
+        outcome = await rt.sendThreadTurn({
+          botId: full?.botId ?? bot?.id, threadId, sessionId: targetSessionId, kind: 'dispatch', preview: text,
+          onCancel: () => { queuedDeliveries.delete(key); settle.reject(new Error('the delivery was withdrawn before it went out')) },
+          run: async () => {
+            try { await run(); settle.resolve() } catch (error) { settle.reject(error); throw error } finally { queuedDeliveries.delete(key) }
+          },
+        })
       } finally {
         if (outcome?.queued !== true) queuedDeliveries.delete(key)
       }
+      if (untilSent && outcome?.queued === true) await sent
     } else {
       await run()
     }
