@@ -133,13 +133,20 @@ export function install(rt) {
     const model = bot.appliedModel ?? bot.model
     const section = sectionNameOf(bot.sectionId)
     const shadow = bot.origin === 'peer'
+    const isJoined = bot.origin === 'joined'
+    // Phase 6: machine badge — show which machine a joined/node Bot runs on.
+    const machineLabel = isJoined
+      ? (bot.worker?.hostname ?? bot.homeNodeId ?? 'node')
+      : shadow ? (bot.worker?.hostname || 'another machine') : ''
+    const machineBadge = isJoined ? `🖥 ${machineLabel}` : ''
     const onMachine = bot.worker?.hostname || 'another machine'
-    const tags = [bot.role, section ? `section "${section}"` : '', model ? `model ${model}` : '', bot.workDir ? `works in ${bot.workDir}` : '', rt.isMain(bot.id) ? 'Main Bot' : '', bot.private === true ? 'private' : '', shadow ? `read-only, on ${onMachine}` : '', bot.id === self ? 'you' : ''].filter(Boolean).join(', ')
+    const tags = [bot.role, section ? `section "${section}"` : '', model ? `model ${model}` : '', bot.workDir ? `works in ${bot.workDir}` : '', rt.isMain(bot.id) ? 'Main Bot' : '', bot.private === true ? 'private' : '', shadow ? `read-only, on ${onMachine}` : '', isJoined && bot.worker?.online === false ? 'offline' : '', bot.id === self ? 'you' : ''].filter(Boolean).join(', ')
     const job = bot.instructions ? ` — ${bot.instructions.split('\n')[0].slice(0, 120)}` : ''
     const now = bot.id === self || shadow ? '' : `\n  now: ${rt.statusOf(bot.id)}`
     // For peer bots (read-only shadows of another machine), show working state if tracked.
     const peerNow = shadow && rt.joinedInFlight?.has(bot.id) ? '\n  now: working on its node' : ''
-    return `- ${bot.name}${tags ? ` (${tags})` : ''}${job}${now}${peerNow}`
+    const badge = machineBadge ? `  ${machineBadge}` : ''
+    return `- ${bot.name}${tags ? ` (${tags})` : ''}${job}${badge}${now}${peerNow}`
   }
   // Hub rooms from the directory: name and member count only, read-only, memory-only.
   const hubRoomLines = (args) => {
