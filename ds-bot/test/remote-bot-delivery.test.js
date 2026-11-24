@@ -15,7 +15,6 @@ import { install as installJoinedTurn } from '../src/host/joined-turn.js'
 
 const { Session } = await import('@deepseek-ai/dsh-session')
 
-const settle = async (times = 6) => { for (let i = 0; i < times; i += 1) await new Promise(resolve => setImmediate(resolve)) }
 
 function team() {
   return {
@@ -74,9 +73,6 @@ async function start(seed) {
     sessionTitle: { rename: async () => {} },
     sessions: { flush: async () => {}, messageProjections: [] },
   })
-  let route
-  const register = ctx.connection.fetch.register
-  ctx.connection.fetch.register = (options) => { route = options; return register(options) }
   const rt = createRuntime(ctx, { home })
   const registry = new EventEmitter()
   const frames = []
@@ -109,28 +105,16 @@ async function start(seed) {
   return { rt, ctx, registry, frames, sessions, resolved, tool, stop }
 }
 
-test('message_bot to a joined Bot on another machine goes over bot/assign, never into its page here (rewrite R3)', async (t) => {
+test('message_bot to a joined Bot on another machine needs the work link: without it nothing is sent, nothing is written into its page here (W3)', async (t) => {
   const w = await start(team())
   t.after(w.stop)
-  let reply
-  try {
-  reply = await w.tool('message_bot', { to: 'Remote', message: 'please run one turn' }, 'a')
-  // This fixture has no AC bot-network that can carry bot/assign: the request waits in the outbox (away).
-  assert.match(reply, /^Remote's machine \(box-1\) is not connected right now\./)
+  // This fixture has no AC bot-network with the reliable link (no `post`): the work cannot leave.
+  await assert.rejects(w.tool('message_bot', { to: 'Remote', message: 'please run one turn' }, 'a'), /cross-machine work is not available on this machine/)
   assert.deepEqual(w.frames.map(frame => frame.type), [], 'no bot/turn')
   assert.ok(!w.resolved.includes('joined:n1:rb1'), 'the shadow id was never resolved as a local Session')
   const session = w.sessions.get('mirror-j')
   assert.equal((session?.log ?? []).filter(event => event.type === 'user/message').length, 0, 'nothing written into the mirror as if the user had said it')
-  const [pending] = w.rt.assign.pending()
-  assert.equal(pending.to, 'Remote')
-  assert.equal(pending.role, 'request')
-  assert.equal(pending.away, true)
-  assert.ok(Object.values(w.rt.state.works).some(work => work.from === 'a' && work.to === 'joined:n1:rb1'), 'the sender waits for the answer')
-  } finally {
-    // Clear any wait left by a failed assertion so the test process can exit.
-    for (const frame of w.frames) w.registry.emit('botTurnResult', { exchangeId: frame.payload.exchangeId, ok: false, error: 'test-over', seq: 99 })
-    await settle()
-  }
+  assert.equal(Object.values(w.rt.state.works ?? {}).some(work => work.to === 'joined:n1:rb1'), false, 'no wait is left open')
 })
 
 test('message_bot to a remote worker goes through the remote-worker branch of deliver', async (t) => {

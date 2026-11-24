@@ -1,13 +1,10 @@
-import { randomUUID } from 'node:crypto'
 import { hostname as osHostname } from 'node:os'
-import { classify } from './msg-classes.js'
 import { joinedShadow } from './roster-join.js'
 import { ensureMirrorSession, mirrorStateOf } from './mirror.js'
 import { writeNodeReport, repliedAlready } from './executor.js'
 // The hub publishes destinations; nodes keep the directory in remote-agent memory.
 const DIRECTORY_DELAY_MS = 1_000
 const REFRESH_MS = 60_000
-const asks = new WeakMap()
 export const HUB_NODE = 'hub'
 const HUB_ID = 'hub'
 // Only the directory listener installed below holds this; a caller without it is not the hub.
@@ -84,24 +81,6 @@ export function reapStalePeers(rt, now = Date.now()) {
   let removed = false
   for (const [id, bot] of Object.entries(rt.state.bots)) if (isSessionPeer(bot)) { delete rt.state.bots[id]; removed = true }
   return removed
-}
-
-// A node bot's message to a peer row: one bot/message frame to the hub, never queued, never retried.
-export function sendToPeer(rt, { fromId, toId, text, exchangeId = randomUUID(), depth = 0, kind = 'ask' }) {
-  const peer = rt.state.bots[toId]
-  const sender = rt.botOf?.(fromId) ?? rt.state.bots[fromId]
-  const network = rt.botNetwork
-  if (!isSessionPeer(peer) || !sender) return { ok: false, error: 'E_PEER_UNKNOWN' }
-  if (typeof network?.send !== 'function' || typeof network.nodeId !== 'string') return { ok: false, error: 'E_HUB_OFFLINE' }
-  let sent = false
-  try {
-    sent = network.send({
-      from: { id: sender.id, name: sender.name || sender.id, nodeId: network.nodeId },
-      to: { id: peer.remoteBotId, name: peer.name, nodeId: peer.homeNodeId },
-      exchangeId, kind, text, depth,
-    }) === true
-  } catch { sent = false }
-  return sent ? { ok: true, exchangeId, to: peer.name } : { ok: false, error: 'E_HUB_OFFLINE' }
 }
 
 function serviceOf(rt, name) {
@@ -222,12 +201,6 @@ export async function publishDirectory(rt) {
   }
 }
 
-function pruneAsks(rt) {
-  const seen = asks.get(rt)
-  if (!seen) return
-  const now = Date.now()
-  for (const [id, at] of seen) if (now - at >= REFRESH_MS) seen.delete(id)
-}
 
 // A node Bot reporting a result to the hub (its background task finished): the message names the
 // Bot as both sender and recipient, on the hub's side of the link, at the depth cap. An older hub
@@ -252,47 +225,10 @@ export async function handleNodeReport(rt, payload) {
   writeNodeReport({ rt, bot, session, state: mirrorStateOf(rt, bot.id, session), text: payload.text, ...(continuation ? { mark: '' } : {}) })
 }
 
-// The hub's joined shadow of a node Bot named in a bot/message: by its portable id first (the node's
-// identity book stamps it), else by node + the node's local Bot id.
-export function senderShadowOf(rt, from) {
-  if (!from || typeof from !== 'object') return undefined
-  const bots = Object.values(rt.state.bots ?? {}).filter(item => joinedShadow(item) && item.worker?.nodeId === from.nodeId)
-  if (typeof from.identityId === 'string' && IDENTITY_ID.test(from.identityId)) {
-    const byIdentity = bots.find(item => item.identityId === from.identityId || item.worker?.identityId === from.identityId)
-    if (byIdentity !== undefined) return byIdentity
-  }
-  return bots.find(item => item.worker?.remoteBotId === from.id)
-}
-
+// Node reports (a node Bot's background work, for the hub page that asked) still come as depth-3 replies; Bot-to-Bot
+// messages no longer come this way (bot/message is gone: work across machines is bot-link.js, work model W3).
 export async function handleNodeMessage(rt, payload) {
   if (isNodeReport(payload)) return handleNodeReport(rt, payload)
-  if (!payload || !['ask', 'reply'].includes(payload.kind) || payload.depth >= 3) return
-  await rt.load?.()
-  const to = Object.hasOwn(rt.state.bots, payload.to?.id) ? rt.state.bots[payload.to.id] : undefined
-  if (!to || to.origin === 'peer' || to.private === true) {
-    rt.warn?.('ds-bot: Bot network destination unavailable: %s', payload.to?.id)
-    return
-  }
-  if (payload.kind === 'ask') {
-    pruneAsks(rt)
-    let seen = asks.get(rt)
-    if (!seen) { seen = new Map(); asks.set(rt, seen) }
-    if (seen.has(payload.exchangeId)) return
-    seen.set(payload.exchangeId, Date.now())
-  }
-  // The sender as the hub knows it: a node names its Bot by the node's own id, the hub keys the same Bot
-  // as a joined shadow. A reply addressed to the node's id would find no Bot here and be lost.
-  const sender = senderShadowOf(rt, payload.from)
-  if (sender === undefined) rt.warn?.('ds-bot: Bot network sender %s on %s has no Bot here; its reply cannot come back', payload.from?.id, payload.from?.nodeId)
-  const message = {
-    fromId: sender?.id ?? payload.from.id, toId: to.id, text: payload.text,
-    role: 'default', exchangeId: payload.exchangeId,
-  }
-  if (to.origin === 'joined') return rt.handleJoinedTurn({
-    // A node ask is already accepted on that node; the hub must not await the joined turn.
-    ...message, senderName: payload.from.name, senderBotId: payload.from.id, defer: true,
-  })
-  return rt.deliver({ ...message, fromName: payload.from.name })
 }
 
 export function install(rt) {
@@ -341,23 +277,6 @@ export function install(rt) {
   if (typeof rt.botNetwork?.send === 'function') peerAt.set(rt, Date.now())
   rt.hubOnline = () => !stopped && typeof rt.botNetwork?.send === 'function'
     && peerAt.has(rt) && Date.now() - peerAt.get(rt) < STALE_MS
-  const offMessage = typeof rt.botNetwork?.onMessage === 'function'
-    ? rt.botNetwork.onMessage(async payload => {
-    if (stopped || payload.kind !== 'ask') return null
-    await rt.load?.()
-    const bot = Object.hasOwn(rt.state.bots, payload.to?.id) ? rt.state.bots[payload.to.id] : undefined
-    if (!bot || bot.origin === 'joined' || bot.origin === 'peer' || bot.private === true) {
-      rt.warn?.('ds-bot: Bot network local destination unavailable: %s', payload.to?.id)
-      return null
-    }
-    await rt.sendUser({
-      sessionId: rt.chatOf(bot.id),
-      content: [{ type: 'text', text: `[Message from ${payload.from.name}]\n${payload.text}` }],
-      requestId: payload.exchangeId,
-    })
-    return null
-  })
-    : undefined
   const offDirectory = typeof rt.botNetwork?.on === 'function' ? (() => {
     const onDirectory = payload => { if (!stopped) applyDirectory(rt, payload, HUB_FRAME) }
     rt.botNetwork.on('directory', onDirectory)
@@ -365,7 +284,7 @@ export function install(rt) {
   })() : undefined
   attach()
   publish()
-  const timer = setInterval(() => { attach(); pruneAsks(rt); reapStalePeers(rt); publish() }, REFRESH_MS)
+  const timer = setInterval(() => { attach(); reapStalePeers(rt); publish() }, REFRESH_MS)
   timer.unref?.()
   ctx?.effect?.(() => () => {
     stopped = true
@@ -373,12 +292,10 @@ export function install(rt) {
     clearInterval(timer)
     detach()
     offSaved?.()
-    offMessage?.()
     offDirectory?.()
     reapStalePeers(rt, Infinity)
     offReceiver?.()
     if (previous !== undefined && typeof ctx.set === 'function' && serviceOf(rt, 'remote-agent:bot-message') === receive) ctx.set('remote-agent:bot-message', previous)
-    asks.delete(rt)
     rt.botNetwork = undefined
     rt.hubOnline = undefined
   }, 'ds-bot: Bot network')

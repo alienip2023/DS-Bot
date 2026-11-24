@@ -1,5 +1,6 @@
 // Team tools: the roster, bot-to-bot messages, group chat settings and posts, and the
 // question and view cards. Group rounds and reading chats are in groups.js.
+import { isRemoteBot } from './bot-link.js'
 import { randomUUID } from 'node:crypto'
 import { NODE_NO_MAIN } from './node-team.js'
 import { canManage as teamCanManage, forwardTeamAct } from './team-act.js'
@@ -363,45 +364,34 @@ export function install(rt) {
       const sender = callerBot(exec)
       if (sender === undefined) return 'Only Bots on the team can use message_bot.'
       const target = rt.findBot(args.to)
-      if (target === undefined &&
-          typeof rt.botNetwork?.directory === 'function' &&
-          typeof rt.botNetwork?.send === 'function') {
-        const remote = networkDirectoryOf(rt).find(bot => bot.name === args.to)
-        if (remote) {
-          if (String(args.message ?? '').trim() === '') return 'Write a message to send.'
-          const room = rt.roomOf(rt.groupOwners.get(exec.agent?.id)?.roomId)
-          if (room !== undefined) refuse(`Not sent: ${remote.name} is on another node, and work for this group stays in it.`)
-          const nodeId = rt.botNetwork?.nodeId
-          if (typeof nodeId !== 'string' || nodeId.trim() === '') refuse('bot-network-identity-unavailable')
-          const from = { id: sender.id, name: sender.name || sender.id, nodeId }
-          const to = { id: remote.id, name: remote.name, nodeId: remote.nodeId }
-          const text = absoluteLinks(String(args.message), rt.sessionFolder?.(exec.agent?.session ?? exec.agent))
-          if (!rt.botNetwork.send({ from, to, exchangeId: randomUUID(), kind: 'ask', text, depth: 0 })) refuse(`Message to ${remote.name} could not be sent; the Bot network is unavailable.`)
-          return `Sent to ${remote.name} on ${remote.nodeId}; its reply will arrive later as a new message.`
-        }
-      }
       if (target === undefined) return `No Bot named ${args.to}. Team: ${Object.values(state.bots).map(bot => bot.name).join(', ')}`
       if (target.id === sender.id) return 'You cannot message yourself.'
-      // A peer row is another machine's Bot: the request goes there over bot/assign (kept until that
-      // machine has it), and its reply comes back later as a new message.
-      if (target.origin === 'peer') {
+      // A Bot of another machine (a peer row on a node, a joined shadow on the hub): the work goes there as one
+      // `work/handoff` frame over AC's reliable link (work model W3), and what it hands back comes back here like a
+      // teammate's. Group work stays in its group, and "reply_to: user" reaches only a Bot of this machine.
+      const callerRoom = rt.roomOf(rt.groupOwners.get(exec.agent?.id)?.roomId)
+      if (isRemoteBot(target) && callerRoom === undefined) {
         if (String(args.message ?? '').trim() === '') return 'Write a message to send.'
-        if (rt.roomOf(rt.groupOwners.get(exec.agent?.id)?.roomId) !== undefined) refuse(`Not sent: ${target.name} is on another machine, and work for this group stays in it.`)
-        if (typeof rt.assign?.send !== 'function') refuse(`Not sent to ${target.name}: cross-machine messages are not available on this machine.`)
-        const text = absoluteLinks(String(args.message), rt.sessionFolder?.(exec.agent?.session ?? exec.agent))
-        const exchangeId = randomUUID()
-        const toUser = args.reply_to === 'user'
-        const { fromPart } = callerPart(exec)
-        if (!toUser) rt.openWork(exchangeId, { from: sender.id, to: target.id, parent: worksOf(exec)[0] ?? rt.rootWorkOf?.(exec.agent?.id), ...(fromPart ? { fromPart } : {}) })
-        const result = await rt.deliver({ fromId: sender.id, toId: target.id, text, role: 'request', exchangeId, ...(toUser ? { audience: 'user' } : {}) })
-        if (result?.ok !== true) {
-          if (!toUser) rt.dropWork(exchangeId)
-          refuse(`Not sent to ${target.name}: ${result?.error ?? 'not delivered'}.`)
+        if (rt.taskOwners?.get(exec.agent?.id)?.roomId !== undefined) refuse('Background tasks in a group chat cannot call message_bot directly. Finish your work and mention @Name in your final reply so it goes to the group.')
+        if (args.reply_to === 'user' && target.origin === 'peer') refuse(`Not sent: ${target.name} is on another machine, where the user does not read its chat from here. Send it the work (reply_to "me"), or ask the user to talk to it there.`)
+        if (args.reply_to !== 'user') {
+          if (typeof rt.link?.handoff !== 'function') refuse(`Not sent to ${target.name}: work across machines is not available on this machine.`)
+          const works = worksOf(exec)
+          if (rt.upstreamOf(works).has(target.id)) return upstreamRefusal(exec, sender, target, String(args.message).trim(), args)
+          const text = absoluteLinks(String(args.message), rt.sessionFolder?.(exec.agent?.session ?? exec.agent))
+          const { fromPart } = callerPart(exec)
+          const work = works[0] ?? rt.rootWorkOf?.(exec.agent?.id)
+          const result = await rt.link.handoff({ sender, target, text, parent: work, fromPart })
+          if (result?.ok !== true) refuse(`Not sent to ${target.name}: ${result?.error ?? 'not delivered'}.`)
+          const machine = target.worker?.hostname || target.homeNodeId || target.worker?.nodeId
+          const asker = rt.ownsWork(sender.id, work) ? rt.botOf(state.works[work].from)?.name : undefined
+          const sent = result.away === true
+            ? `${target.name}'s machine (${machine}) is not connected right now. The work waits and reaches it when it is back; no time limit runs meanwhile. ${BACK}`
+            : `Handed to ${target.name} on ${machine}. ${BACK}`
+          return asker ? `${sent} Your answer goes to ${asker} after that.` : sent
         }
-        const machine = target.worker?.hostname || target.homeNodeId
-        if (result.away === true) return `${target.name}'s machine (${machine}) is not connected right now. The message waits and is delivered when it is back; no time limit runs meanwhile. End your turn: its reply will arrive later as a new message.`
-        return `Delivered to ${target.name} on ${machine}. Its reply will arrive later as a new message; do not wait for it.`
       }
+      if (target.origin === 'peer') refuse(`Not sent: ${target.name} is on another machine, and work for this group stays in it.`)
       if (String(args.message ?? '').trim() === '') return 'Write a message to send.'
       const name = typeof args.request_id === 'string' ? args.request_id.trim() : ''
       if (name.length > NAME_MAX) return `The request_id is ${name.length} characters long; a request name is at most ${NAME_MAX}.`

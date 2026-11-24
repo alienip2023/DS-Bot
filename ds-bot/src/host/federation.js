@@ -47,7 +47,7 @@ export const peerId = (hubId, botId) => `${PEER_PREFIX}${encodeURIComponent(hubI
 export const isPeerBot = (bot) => bot !== null && typeof bot === 'object' && bot.origin === 'peer'
 // The rows this roster makes. A row from the team directory (bot-network.js) is also a peer row, but it carries
 // homeNodeId and hubId and belongs to the directory: a roster frame (federation off clears its own rows) must
-// never take it away — it is how a node Bot's answer finds the Bot that asked (bot-assign.js).
+// never take it away — it is how work handed from another machine finds the Bot that asked (bot-link.js).
 const isRosterRow = (bot) => isPeerBot(bot) && !(typeof bot.homeNodeId === 'string' && typeof bot.hubId === 'string')
 
 // Same limits as the node-side validator: the two ends must agree on what a roster is.

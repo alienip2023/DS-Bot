@@ -10,7 +10,7 @@
 // or a list of Bot names / shadow ids.
 import { randomUUID } from 'node:crypto'
 import { joinedShadow } from './roster-join.js'
-import { botOfRef, ownNodeId, refOf } from './bot-assign.js'
+import { botOfRef, ownNodeId, refOf } from './bot-link.js'
 
 export const FORWARDED_TOOLS = Object.freeze(['create_bot', 'update_bot', 'delete_bot', 'stop_bot', 'create_group', 'update_group', 'delete_group'])
 

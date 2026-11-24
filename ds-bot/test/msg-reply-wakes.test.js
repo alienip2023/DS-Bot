@@ -12,7 +12,6 @@ import { install as installDelivery } from '../src/host/delivery.js'
 import { install as installLedger } from '../src/host/ledger.js'
 import { install as installParts } from '../src/host/parts.js'
 import { replyToSender } from '../src/host/joined-turn.js'
-import { handleNodeMessage } from '../src/host/bot-network.js'
 import { fakeContext } from './fake-ctx.js'
 
 const textOf = content => content.filter(block => block.type === 'text').map(block => block.text).join('')
@@ -160,16 +159,3 @@ test('a control message keeps followup delivery without an immediate transcript 
   await agent.whenIdle()
 })
 
-test('a visible node message to a joined Bot is dispatched at once without holding the node', async () => {
-  const calls = []
-  const rt = {
-    state: { bots: { joined: { id: 'joined', origin: 'joined' } } },
-    handleJoinedTurn: async message => { calls.push(message) },
-  }
-  for (const kind of ['ask', 'reply']) await handleNodeMessage(rt, {
-    kind, from: { id: 'sender', name: 'Sender' }, to: { id: 'joined' }, text: kind, exchangeId: kind, depth: 0,
-  })
-  assert.equal(calls.length, 2)
-  // defer only decides whether the caller awaits; the turn is dispatched either way.
-  assert.ok(calls.every(message => message.defer === true))
-})

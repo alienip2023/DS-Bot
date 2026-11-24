@@ -4,7 +4,6 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { HISTORY_TIMEOUT_MS, LONG_HEAD, MESSAGE_INLINE_MAX, READ_LINE_MAX, SOURCE_KIND, TEXT_KEPT, TEXT_SHOW_MAX } from './constants.js'
 import { joinedShadow, refuseJoinedDispatch } from './roster-join.js'
 import { headOf, textOf } from './text.js'
-import { sendToPeer } from './bot-network.js'
 import { classify } from './msg-classes.js'
 import { sameConversation } from './threads.js'
 
@@ -183,11 +182,6 @@ export function install(rt) {
   async function deliver({ fromId, fromName: senderName, toId, sessionId, text, role, replyTo, roomId, audience, note, exchangeId = randomUUID(), steer = false, deferred = false, resumed = false, retried = false, resent = false, merged = false, abandoned = false, recordExchange = true, askedBy, fromRoomId, fromPart, images = [], files = [], length, work, taskId, imOrigin, failureRequestId, joinedTurn = false, joinedAsync = false, wait = false, stopped = false, results, resultFrom }) {
     const from = rt.botOf(fromId)
     const to = rt.botOf(toId)
-    // The answer to a request from another machine, whose stand-in row is not here at this moment: it still goes
-    // home over bot/assign, to the address the request came from (bot-assign.js). Never dropped as an unknown Bot.
-    if (to === undefined && role === 'reply' && typeof rt.assign?.askerOf === 'function' && rt.assign.askerOf(replyTo) !== undefined) {
-      return rt.assign.send({ fromId, toId, role, text, exchangeId, replyTo })
-    }
     if (to === undefined) throw new Error(`Unknown Bot ${toId}`)
     // Joined members have no local model turn to settle the group's waiter.
     // Route their result through the same collection/late-reply path as local members.
@@ -212,18 +206,8 @@ export function install(rt) {
     // remote Bot. If the handler is not installed, keep the step-1 refusal and
     // do not fall through to a local session or handleRemoteTurn.
     const refused = refuseJoinedDispatch(to)
-    // The answer to a request a node Bot sent over bot/assign: it goes back to that Bot's machine.
-    if (refused && role === 'reply' && roomId === undefined && rt.assign?.owes?.(replyTo) === true) {
-      await writeBook()
-      return rt.assign.send({ fromId, toId, role, text, exchangeId, replyTo })
-    }
-    // A hub Bot's request to a node Bot (rewrite R3): it goes over bot/assign and the node answers it in a
-    // background task, so nothing of it is written into the node Bot's page here as if the user had said it.
-    // A caller that waits for the node's turn itself (`wait: true`) keeps the bot/turn path.
-    if (refused && role === 'request' && wait !== true && roomId === undefined && audience !== 'user' && from !== undefined && !joinedShadow(from) && typeof rt.assign?.send === 'function') {
-      await writeBook()
-      return rt.assign.send({ fromId, toId, role, text, exchangeId, replyTo })
-    }
+    // Work for a Bot of another machine leaves as `work/handoff` (bot-link.js, work model W3), never from here; what
+    // still reaches a joined shadow here is a group round, a page turn, or a message the user is meant to read.
     if (refused) {
       if (!ANSWER_ROLES.has(role) && classify(role) !== 'control' && typeof rt.handleJoinedTurn === 'function') {
         await writeBook()
@@ -240,16 +224,9 @@ export function install(rt) {
       }
       return refused
     }
-    // A peer row is another machine's Bot: the hub carries the message, and it never
+    // A peer row is another machine's Bot: nothing reaches it from here (work goes over bot-link.js), and it never
     // falls through to a local Session.
-    if (to.origin === 'peer') {
-      if (typeof rt.assign?.send === 'function') {
-        // Kept in the pair's book like a local message, so the exchange dialog shows both sides.
-        await writeBook()
-        return rt.assign.send({ fromId, toId, role, text, exchangeId, replyTo })
-      }
-      return sendToPeer(rt, { fromId, toId, text, exchangeId })
-    }
+    if (to.origin === 'peer') return { ok: false, error: 'E_PEER_READONLY' }
     // Worker Bot routing: dispatch to the remote hub instead of a local Session turn.
     // Phase 1: remote-worker dispatch path is legacy; joined (origin:'joined') uses handleJoinedTurn.
     // Answers and lifecycle controls keep the local delivery path.

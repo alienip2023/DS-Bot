@@ -17,7 +17,6 @@ import { reportTaskToHub } from '../src/host/joined-turn.js'
 import { sendBotAction } from '../src/host/node-cards.js'
 import { nodeCardsOf } from '../src/host/node-cards.js'
 import { reportableBots } from '../src/host/roster-join.js'
-import { sendToPeer } from '../src/host/bot-network.js'
 import { makeWorld, textRequest } from './joined-world.js'
 
 const PLUGIN = dirname(dirname(fileURLToPath(import.meta.url)))
@@ -104,14 +103,13 @@ test('the roster entry: model, clusterBotId, tasks and cards all cross AC\'s whi
   assert.ok(kept.cards.length === 1 && kept.tasks.length === 1)
 })
 
-test('bot/message: a task report and a message to a peer keep every field', { skip }, async () => {
+test('bot/message: a task report keeps every field (Bot-to-Bot messages are work frames now, W3)', { skip }, async () => {
   const { validateBotMessage } = await load('protocol.js')
   const sent = []
   const network = { nodeId: 'n1', send: payload => { sent.push(structuredClone(payload)); return true } }
   const rt = { hubAskedBots: new Set(['b1']), botNetwork: network, state: { bots: { b1: { id: 'b1', name: 'Worker' }, 'peer:x': { id: 'peer:x', origin: 'peer', remoteBotId: 'r1', name: 'Peer', homeNodeId: 'n2', hubId: 'hub-1' } } }, botOf: id => rt.state.bots[id] }
   assert.equal(reportTaskToHub(rt, rt.state.bots.b1, 'the build is done'), true)
-  assert.equal(sendToPeer(rt, { fromId: 'b1', toId: 'peer:x', text: 'hello', kind: 'ask' }).ok, true)
-  assert.equal(sent.length, 2)
+  assert.equal(sent.length, 1)
   for (const payload of sent) {
     const checked = (() => { try { return { ok: true, message: validateBotMessage(payload) } } catch (error) { return { ok: false, error } } })()
     assert.equal(checked.ok, true, String(checked.error?.code ?? checked.error))

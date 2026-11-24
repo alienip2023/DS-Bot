@@ -40,3 +40,17 @@ R1–R4 之后实机反复出现：回复进了用户排队区、node 间只有�
 - **一件做完不结束**：线程回到 `standing`（待命）状态，下一件同一对的 work 进同一会话。待命线程仍归属这个 Bot（审批、权限、换段照常），但不算"在忙"：任务条和计数不显示它，任务列表里显示"待命"。失败或被打断时发问方照常收到说明，线程回到待命；用户停掉线程（task_stop / 停止按钮）它才结束，下一件再开新的。重启时待命线程原样保留。
 - **同一对正在做时再来**：线程里正在跑这对的回合，就 steer 进去（补充给那件 work，`when: "queue"` 除外）；这是唯一允许的 steer。
 - **上限**：每个 Bot 最多 10 条待命/在做的工作线程；再开新的时，结束最久没用、空闲、没有在等结果的那条；都在忙就照开。
+
+## W3 落地：跨机器的 work
+
+- **一条路**：交给别的机器上的 Bot（节点上的 peer 行、主控上的 joined 影子）的 `message_bot`，和交给本机 Bot 一样开一个子 work（挂在本回合的 work 或根 work 下），再发一个 `work/handoff` 帧；对方机器把它当本机的请求放进这对的工作线程（W2），做完发回 `work/result`；这边按 work id 把结果写进那件 work，全部回来后续跑一次（W1）。结果从不作为消息投递、从不 steer。
+- **帧**（走 AC 可靠通道 `docs/reliable-link.md`，恰好处理一次；节点之间经主控存转）：
+  - `work/handoff { id, from, to, part, text }`：`from`/`to` 是全队通用的 Bot 引用（主控 Bot 用自己的 id，节点 Bot 用 `joined:<节点>:<本地 id>`）；`part` 是发问方那段对话的稳定名字，收件方据此选工作线程。
+  - `work/status { id, status }`：收件方收下后回 `queued`，发问方据此在两人的对话记录里标"已送达"。
+  - `work/result { id, outcome, text }`：`outcome` 为 `done` / `failed` / `stopped`。
+  - `work/cancel { id }`：用户在发问方放弃等待时发出；收件方停下那件 work 的回合（只认它登记过的 work）、不再回答。
+  - `team/pair { from, to, id, role, text, replyTo? }`：节点之间的一来一回同时抄给主控一份，只写进主控上两人的对话记录（主控是用户看全队的地方）。
+- **身份**：发送方是链路给出的事实（`from` 的机器必须等于帧实际来自的机器），不信帧里自称；收件方找不到发问方的替身行时不收（不 ack，稍后重发，等目录到了再处理）。
+- **离线**：对方机器不在时帧留在可靠通道（主控存转），不计任何时钟；回来立刻送。
+- **删除**：`bot-assign.js`（`bot/assign` 发件箱、`assignInbound`、`assignRounds`、主控转发记录）、`bot/message`（`sendToPeer`、节点 `onMessage`、主控 `handleNodeMessage` 的 ask/reply）、`message_bot` 对 joined 影子走 `bot/turn` 的路。
+- **暂不动（后续阶段）**：主控页面对节点 Bot 说话（W4 改成 work）、群聊里有节点成员时的 `bot/turn`、`team/act` 管理 RPC、AC 里 `bot/assign` / `bot/message` 帧本身（ds-bot 不再用，W5 清理）。

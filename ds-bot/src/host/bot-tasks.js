@@ -1590,6 +1590,7 @@ export function install(rt) {
     spawnBotHandoffTask,
     workThreadFor,
     workThreadTakes,
+    partKeyOf,
     stopTask: async (botId, taskId, reason = 'cancelled by the user') => {
       const bot = rt.botOf(botId)
       const task = findTask(bot, taskId, null)

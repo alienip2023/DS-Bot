@@ -447,6 +447,8 @@ export function install(rt) {
       ? cap(target) + ' is no longer on the team, so no reply can come back for the work handed to it. The user gave up waiting for that answer: this counts as its result. Go on with the work you were given, and say plainly that this answer is missing.'
       : 'No reply came back from ' + target + ', and the user gave up waiting for it. This counts as its result: go on with the work you were given, and say plainly that this answer is missing.'
     rememberAbandoned(id, { at: Date.now(), from: work.from, to: work.to, room: work.room, parent: work.parent, name, reason, ...(parent.to !== undefined ? { waiting: parent.to } : {}) })
+    // Work handed to another machine stops there too (W3), and answers no more.
+    if (work.remote !== undefined) rt.link?.cancel?.(id)
     // Its result is that no answer came; it counts like any result handed back, and the Bot that waited goes on
     // once everything else it handed on for that work is back too (one resume, docs/plans/2026-11-24-work-model.md).
     closeWork(id, name, text, { abandoned: true, abandonedAt: Date.now(), abandonedReason: reason, resume: true })

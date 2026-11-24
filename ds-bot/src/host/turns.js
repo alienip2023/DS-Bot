@@ -8,6 +8,7 @@ import { HANDOFF_ACK, LATE_ANSWER, MESSAGE_INLINE_MAX, REFERENCE_KIND, REPLY_KIN
 import { cleanText } from './diagnostics.js'
 import { wrapControllerMethod } from './controller-wrap.js'
 import { joinedShadow } from './roster-join.js'
+import { isRemoteBot } from './bot-link.js'
 import { absoluteLinks } from './links.js'
 import { splitRef, textOf } from './text.js'
 import { sameConversation, threadCurrentOfPart } from './threads.js'
@@ -133,6 +134,21 @@ export function answerSender(rt, id, source, text, long, options = {}) {
     if (typeof source.exchangeId === 'string' && source.exchangeId !== '') {
       rt.closeWork?.(source.exchangeId, name, deliveredReply?.text || text)
     }
+    return false
+  }
+  // Work a Bot of another machine handed here (W3): its answer goes home as `work/result`, never as a message.
+  if (rt.link?.owes?.(source.exchangeId) === true) {
+    if (exchangeKey !== undefined) {
+      guards.exchanges.add(exchangeKey)
+      if (guards.exchanges.size > MAX_REPLY_GUARDS) guards.exchanges.delete(guards.exchanges.values().next().value)
+    }
+    void rt.link.answer({ id: source.exchangeId, text, outcome: options?.failure !== undefined ? 'failed' : 'done' })
+      .catch(error => rt.warn('ds-bot: the answer of %s did not go home: %s', name, error))
+    return true
+  }
+  // The asker is on another machine and nothing is owed to it any more (the wait was given up there).
+  if (back === undefined && isRemoteBot(rt.botOf(toId))) {
+    if (typeof source.exchangeId === 'string') rt.closeWork?.(source.exchangeId, name, text)
     return false
   }
   const failureRequestId = typeof options?.failure?.requestId === 'string' && options.failure.requestId !== ''
