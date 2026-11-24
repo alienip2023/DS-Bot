@@ -116,6 +116,8 @@ export function taskStatusLabel(status) {
     case 'running': return t('Running')
     case 'waiting_work': return t('Waiting for teammate')
     case 'waiting_approval': return t('Waiting for approval')
+    // A work thread between works (work model W2): kept for the next work of its pair, not busy.
+    case 'standing': return t('Standing by')
     case 'completed': return t('Done')
     case 'failed': return t('Failed')
     case 'interrupted': return t('Interrupted')

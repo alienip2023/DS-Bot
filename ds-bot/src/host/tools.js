@@ -489,7 +489,10 @@ export function install(rt) {
         // The part of the sender's own chat this request comes from: its answer goes back
         // to that part's thread.
         const fromPart = callerPart(exec).fromPart
-        const chat = rt.chatOf(target.id)
+        // A request goes to the work thread of this pair (work model W2): one standing conversation of the target
+        // with this sender's conversation, apart from the user's chat. "reply_to: user" still goes to that chat.
+        const thread = !toUser && typeof rt.workThreadFor === 'function' ? await rt.workThreadFor(target, sender, fromPart) : undefined
+        const chat = thread?.sessionId ?? rt.chatOf(target.id)
         const agent = await rt.resolveAgent(chat)
         const status = rt.statusOf(target.id)
         // A request it has not read yet, sent for the same work, takes this one in, so
@@ -507,32 +510,18 @@ export function install(rt) {
         const joins = before !== undefined && agent.inbox?.remove?.(earlier.message.id) === true
         if (before !== undefined && !joins) long = await rt.attachLong(text, `Message from ${sender.name}.txt`) ?? long
         const working = rt.live.get(chat)?.turn !== undefined
-        const steer = (args.when !== 'queue' && !toUser) || (joins && earlier.steered)
+        // In a work thread a running turn is this pair's own earlier work: a message for it is added to that turn
+        // at its next step (the one steer the work model has), unless it is a new task ("queue"). It never steers
+        // into a turn of anything else.
+        const steer = thread !== undefined
+          ? (working && args.when !== 'queue') || (joins && earlier.steered)
+          : (args.when !== 'queue' && !toUser) || (joins && earlier.steered)
         const exchangeId = joins ? earlier.message.source.exchangeId : randomUUID()
-        const spawnInBackground = working && !toUser && !joins && args.when !== 'queue'
-          && rt.shouldMoveForeground?.(target, chat) === true
-          && typeof rt.spawnBotHandoffTask === 'function'
-        if (spawnInBackground) {
-          await rt.spawnBotHandoffTask(target, chat, {
-            fromBot: sender,
-            fromPart,
-            parentWork: work,
-            text: long.text,
-            files: long.files,
-            length: long.length,
-            exchangeId,
-          })
-          const asker = rt.ownsWork(sender.id, work) ? rt.botOf(state.works[work].from)?.name : undefined
-          const notes = [
-            `Delivered to ${target.name} in a background task while its foreground chat is busy. ${BACK}`,
-            asker ? `Your answer goes to ${asker} after that.` : '',
-          ].filter(Boolean)
-          return notes.join(' ')
-        }
         if (joins) rt.forgetDelivery?.(exchangeId)
         else if (!toUser) rt.openWork(exchangeId, { from: sender.id, to: target.id, parent: work, ...(fromPart ? { fromPart } : {}) })
+        if (thread !== undefined && !joins) await rt.workThreadTakes(thread.task, exchangeId)
         try {
-          await rt.deliver({ fromId: sender.id, toId: target.id, ...(fromPart ? { fromPart } : {}), text: long.text, files: [...long.files, ...(joins ? before.files : [])], length: long.length, role: 'request', steer, exchangeId, ...(joins ? { merged: true } : {}), ...(toUser ? { audience: 'user' } : {}) })
+          await rt.deliver({ fromId: sender.id, toId: target.id, ...(thread !== undefined ? { sessionId: chat } : {}), ...(fromPart ? { fromPart } : {}), text: long.text, files: [...long.files, ...(joins ? before.files : [])], length: long.length, role: 'request', steer, exchangeId, ...(joins ? { merged: true } : {}), ...(toUser ? { audience: 'user' } : {}) })
         } catch (error) {
           // The delivery stays noted for the next start while its Bot exists
           // (resume.js), and the resent request still answers up the tree, so the

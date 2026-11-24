@@ -923,6 +923,7 @@ export const JA = {
   "Reply from": "返信元:",
   "Work handed back": "返ってきた作業結果",
   "Work handed back by": "結果を返した Bot:",
+  "Standing by": "待機中",
   'ReplyFrom': 'リモートBotからの返信：',
   "Message from": "メッセージ送信元:",
   "Stopped by": "停止者:",

@@ -305,7 +305,7 @@ test('hidden peer-Bot turn moved to background gets bot-handoff origin, never le
   assert.ok(replyToChief !== undefined, 'stopping idle bot-handoff task must reply to asking Bot so handoff tree does not deadlock')
 })
 
-test('peer Bot message_bot to a busy Bot spawns a background task directly without switching user foreground', async (t) => {
+test('peer Bot message_bot to a busy Bot goes to their work thread without switching user foreground (W2)', async (t) => {
   const env = await startEnv()
   t.after(env.stop)
   const dmA = env.agentMap.get('dm-a')
@@ -318,11 +318,12 @@ test('peer Bot message_bot to a busy Bot spawns a background task directly witho
 
   // Chief (a) calls message_bot to Helper (b).
   const res = await env.tool('message_bot').execute({ to: 'Helper', message: 'Check API contract' }, execOf(dmA))
-  assert.match(res, /background task while its foreground chat is busy/)
+  assert.match(res, /^Delivered to Helper\./)
   assert.equal(env.rt.botOf('b').sessionId, 'dm-b', 'user foreground sessionId must NOT switch when another Bot messages')
   assert.equal(env.rt.botOf('b').tasks.length, 1)
   const task = env.rt.botOf('b').tasks[0]
-  assert.equal(task.origin, 'bot-handoff')
+  assert.equal(task.origin, 'bot-work')
+  assert.equal(task.title, '@Chief · 工作')
   assert.ok(task.exchangeId)
 
   // Task runs and answers Chief via turns.js without posting a task-report to Helper's user foreground.
@@ -336,10 +337,10 @@ test('peer Bot message_bot to a busy Bot spawns a background task directly witho
   })
   await env.emit(taskSid, 'assistant/message', { turn: 1, message: { role: 'assistant', content: [{ type: 'text', text: 'API contract verified.' }] } })
   await env.emit(taskSid, 'turn/end', { turn: 1, reason: { kind: 'completed' } })
-  await waitFor(() => task.status === 'completed' && env.deliveries.some(d => d.toId === 'a' && d.role === 'reply'))
+  await waitFor(() => task.status === 'standing' && env.deliveries.some(d => d.toId === 'a' && d.role === 'reply'))
 
-  assert.equal(task.status, 'completed')
-  assert.equal(env.deliveries.filter(d => d.role === 'task-report').length, 0, 'bot-handoff completion must not spam user foreground')
+  assert.equal(task.status, 'standing', 'the work thread stands by for the next work of the pair')
+  assert.equal(env.deliveries.filter(d => d.role === 'task-report').length, 0, 'a work thread must not spam user foreground')
   const reply = env.deliveries.find(d => d.toId === 'a' && d.role === 'reply' && d.replyTo === task.exchangeId)
   assert.ok(reply !== undefined)
   assert.match(reply.text, /API contract verified\./)
@@ -599,8 +600,10 @@ test('P0 #8: spawnBotHandoffTask failure in openTaskPart or deliver leaks zero w
     () => env.tool('message_bot').execute({ to: 'Helper', message: 'Work 2' }, execOf(dmA)),
     /delivery exploded/,
   )
-  assert.equal(Object.keys(env.rt.state.works).length, 0, 'failed deliver must drop state.works')
-  assert.equal(forgotten.length, 1, 'failed deliver must call forgetDelivery to avoid ghost inflight replay')
+  // A request to a work thread is like any request to a Bot of this machine: the delivery journal keeps it for the
+  // next start, so the work it opened stays; nothing is forgotten and no failure reply goes out meanwhile.
+  assert.equal(Object.keys(env.rt.state.works).length, 1, 'the undelivered request keeps its work for the next start')
+  assert.equal(forgotten.length, 0)
   assert.equal(env.deliveries.filter(d => d.toId === 'a' && d.role === 'reply').length, 0, 'failed deliver must not also send an async failure reply')
 })
 
@@ -696,7 +699,7 @@ test('long (>20k) completed bot-handoff reply holding attachLong does NOT trigge
   await env.emit('dm-b', 'turn/start', { turn: 1 })
   await env.emit('dm-b', 'tool/call', { callId: 'tc1', name: 'bash', arguments: '{}' })
   const res = await env.tool('message_bot').execute({ to: 'Helper', message: 'Long audit' }, execOf(dmA))
-  assert.match(res, /background task/)
+  assert.match(res, /^Delivered to Helper\./)
   const task = env.rt.botOf('b').tasks[0]
   const taskSid = task.sessionId
 
@@ -708,7 +711,7 @@ test('long (>20k) completed bot-handoff reply holding attachLong does NOT trigge
   const longText = 'X'.repeat(25_000)
   await env.emit(taskSid, 'assistant/message', { turn: 1, message: { role: 'assistant', content: [{ type: 'text', text: longText }] } })
   await env.emit(taskSid, 'turn/end', { turn: 1, reason: { kind: 'completed' } })
-  await waitFor(() => task.status === 'completed')
+  await waitFor(() => task.status === 'standing')
 
   // While attachLong is still pending, zero false "stopped" replies must have been sent!
   assert.equal(env.deliveries.filter(d => d.toId === 'a' && d.role === 'reply').length, 0)
@@ -759,7 +762,7 @@ test('plugin reload (adoptLiveWork) on running bot-handoff task restores routing
   await env.emit('dm-b', 'turn/start', { turn: 1 })
   await env.emit('dm-b', 'tool/call', { callId: 'tc1', name: 'bash', arguments: '{}' })
   const res = await env.tool('message_bot').execute({ to: 'Helper', message: 'Audit after reload' }, execOf(dmA))
-  assert.match(res, /background task/)
+  assert.match(res, /^Delivered to Helper\./)
   const task = env.rt.botOf('b').tasks[0]
   const taskSid = task.sessionId
   const taskAgent = env.agentMap.get(taskSid)
@@ -770,7 +773,7 @@ test('plugin reload (adoptLiveWork) on running bot-handoff task restores routing
   env.agentMap.list = () => [...env.agentMap.values()]
 
   await env.rt.adoptLiveWork()
-  assert.equal(env.rt.live.get(taskSid)?.info?.exchangeId, task.exchangeId, 'adoptLiveWork must restore bot-handoff routing info')
+  assert.equal(env.rt.live.get(taskSid)?.info?.exchangeId, task.exchangeId, 'adoptLiveWork must restore routing info of the work thread')
 
   // Task finishes after reload -> turns.js delivers the real reply and closes work!
   taskAgent.status = 'idle'

@@ -1,6 +1,7 @@
 // The result of work a Bot handed on, when it is longer than state.json keeps: the
 // whole result has to survive a restart, so the Bot that asked for it gets all of it.
 import assert from 'node:assert/strict'
+import { randomUUID } from 'node:crypto'
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -38,18 +39,24 @@ async function startHost(home, team) {
   if (team !== undefined) writeFileSync(join(home, 'state.json'), JSON.stringify(team))
   const ctx = fakeContext()
   const agents = new Map()
+  // Every message any Session got, in order: a Bot's are those of its own chat and of its background tasks (its work
+  // threads among them, work model W2), which `callsOf` and `turnTaker` follow.
+  const log = []
+  agents.botCalls = botId => log.filter(entry => entry.sessionId === botId || rt.taskOwners?.get(entry.sessionId)?.botId === botId
+    || rt.pastOwners?.get(entry.sessionId)?.botId === botId).map(entry => entry.call)
   const agentOf = (sessionId) => {
     if (!agents.has(sessionId)) {
       const calls = []
+      const note = call => { call.sessionId = sessionId; calls.push(call); log.push({ sessionId, call }) }
       agents.set(sessionId, {
         session: { id: sessionId, requestHeader: () => undefined },
         id: sessionId,
         calls,
         status: 'idle',
-        followup(message) { calls.push(['followup', message]) },
-        steer(message) { calls.push(['steer', message]) },
-        inject(message) { calls.push(['inject', message]) },
-        cancel(cause) { calls.push(['cancel', cause]) },
+        followup(message) { note(['followup', message]) },
+        steer(message) { note(['steer', message]) },
+        inject(message) { note(['inject', message]) },
+        cancel(cause) { note(['cancel', cause]) },
         async whenIdle() {},
         async runMaintenance(fn) { return fn(AbortSignal.timeout(60_000)) },
         inbox: {
@@ -76,7 +83,7 @@ async function startHost(home, team) {
       archiveSession: async () => {},
     },
     sessionController: {
-      create: async () => ({ sessionId: 's1' }),
+      create: async () => ({ sessionId: `s-${randomUUID().slice(0, 8)}` }),
       resolveAgent: async sessionId => ({ agent: agentOf(sessionId) }),
       selectModel: async () => {},
       page: async () => ({ records: [], hasMore: false }),
@@ -104,7 +111,12 @@ async function startHost(home, team) {
     const carrier = scopeTarget({}, agentOf(parentId))
     for (const listener of ctx.listeners.get(name) ?? []) listener.call(carrier, ...args)
   }
-  const tool = (name, args, sessionId) => rt.teamTools.find(d => d.name === name).execute(args, { agent: { id: sessionId } })
+  // A Bot calls a tool from the turn it is running: its own chat, or the work thread it is working in (W2).
+  const running = (id) => {
+    if (rt.live.get(id)?.turn !== undefined || rt.botOf(id) === undefined) return id
+    return (rt.botOf(id).tasks ?? []).find(task => rt.live.get(task.sessionId)?.turn !== undefined)?.sessionId ?? id
+  }
+  const tool = (name, args, sessionId) => rt.teamTools.find(d => d.name === name).execute(args, { agent: { id: running(sessionId) } })
   const call = async (endpoint, payload) => (await route.fetch(new Request('http://localhost/api/bot', {
     method: 'POST', body: JSON.stringify({ endpoint, payload }),
   }))).json()
@@ -128,31 +140,37 @@ function bench(t) {
 const textBlock = content => [{ type: 'text', text: content }]
 const assistantText = text => ({ message: { content: textBlock(text) } })
 const textOf = content => content.map(block => block.text ?? '').join('\n')
-const callsOf = (agents, id) => agents.get(id)?.calls ?? []
+const callsOf = (agents, id) => (agents.botCalls ? agents.botCalls(id) : agents.get(id)?.calls ?? [])
 const settled = async (check) => {
   for (let count = 0; count < 200 && !check(); count += 1) await delay(5)
 }
 
 // Each Session takes up the newest message it was sent as its next turn.
+// A Bot's turn runs in the Session its message went to: its own chat, or a work thread (work model W2).
 function turnTaker(agents, emit) {
   const turns = new Map()
+  const at = new Map()
   const open = (id, message) => {
-    turns.set(id, (turns.get(id) ?? 0) + 1)
-    emit(id, 'turn/start', { turn: turns.get(id) })
-    emit(id, 'user/message', { content: message.content, source: message.source })
+    const sessionId = message.sessionId ?? callsOf(agents, id).find(call => call[1] === message)?.sessionId ?? id
+    at.set(id, sessionId)
+    turns.set(sessionId, (turns.get(sessionId) ?? 0) + 1)
+    emit(sessionId, 'turn/start', { turn: turns.get(sessionId) })
+    emit(sessionId, 'user/message', { content: message.content, source: message.source })
     return message
   }
-  const take = id => open(id, agents.get(id).calls.at(-1)[1])
+  const take = id => open(id, callsOf(agents, id).at(-1)[1])
   const end = (id, text) => {
-    if (text !== undefined) emit(id, 'assistant/message', assistantText(text))
-    emit(id, 'turn/end', { turn: turns.get(id), reason: { kind: 'completed' } })
+    const sessionId = at.get(id) ?? id
+    if (text !== undefined) emit(sessionId, 'assistant/message', assistantText(text))
+    emit(sessionId, 'turn/end', { turn: turns.get(sessionId), reason: { kind: 'completed' } })
   }
   const userTurn = (id, text) => {
+    at.set(id, id)
     turns.set(id, (turns.get(id) ?? 0) + 1)
     emit(id, 'turn/start', { turn: turns.get(id) })
     emit(id, 'user/message', { content: textBlock(text), source: { kind: 'user' } })
   }
-  return { take, open, end, userTurn }
+  return { take, open, end, userTurn, sessionOf: id => at.get(id) ?? id }
 }
 
 // The works the team file holds, once the saves made so far are done.
@@ -399,10 +417,10 @@ test('a subagent a Bot delegated to hands its result into the work the turn answ
   turns.end('a', 'asked Writer')
   turns.take('b')
   // Writer delegates part of the work to a subagent instead of another Bot.
-  emit('b', 'tool/call', { callId: 'call1', name: 'subagent', arguments: JSON.stringify({ description: 'deep review', prompt: 'review the plan' }) })
-  emitScoped('b', 'subagent/start', { runId: 'r1', provider: 'spawn', id: 'sub1', local: true })
-  emitScoped('b', 'tools/result', { callId: 'call1', name: 'subagent', arguments: { description: 'deep review', prompt: 'review the plan' }, agent: agents.get('b') }, { isError: false, value: { kind: 'activation', subagentId: 'sub1' } })
-  emit('b', 'tool/result', { callId: 'call1', message: { callId: 'call1', content: textBlock('started subagent sub1'), isError: false } })
+  emit(turns.sessionOf('b'), 'tool/call', { callId: 'call1', name: 'subagent', arguments: JSON.stringify({ description: 'deep review', prompt: 'review the plan' }) })
+  emitScoped(turns.sessionOf('b'), 'subagent/start', { runId: 'r1', provider: 'spawn', id: 'sub1', local: true })
+  emitScoped(turns.sessionOf('b'), 'tools/result', { callId: 'call1', name: 'subagent', arguments: { description: 'deep review', prompt: 'review the plan' }, agent: agents.get(turns.sessionOf('b')) }, { isError: false, value: { kind: 'activation', subagentId: 'sub1' } })
+  emit(turns.sessionOf('b'), 'tool/result', { callId: 'call1', message: { callId: 'call1', content: textBlock('started subagent sub1'), isError: false } })
   turns.end('b', 'subagent is on it')
   // The answer waits while the sub-work is out, like a handed-on request.
   await delay(50)
@@ -412,11 +430,11 @@ test('a subagent a Bot delegated to hands its result into the work the turn answ
   assert.deepEqual(work.open, ['r1'])
   // The child settles; its closing message is the sub-work's result. DSH opens
   // the turn first, then records the notice that filled its inbox.
-  emitScoped('b', 'subagent/end', { runId: 'r1', provider: 'spawn', id: 'sub1', local: true, stopReason: 'completed', lastAssistantMessage: textBlock('reviewed: three findings') })
-  emit('b', 'turn/start', { turn: 2 })
-  emit('b', 'user/message', { content: textBlock('Background subagent sub1 finished.\nIts closing message:\nreviewed: three findings'), source: { kind: 'subagent-settled', form: 'notice', summary: 'Background subagent sub1 finished.', senderSessionId: 'sub1' } })
-  emit('b', 'assistant/message', assistantText('all reviewed'))
-  emit('b', 'turn/end', { turn: 2, reason: { kind: 'completed' } })
+  emitScoped(turns.sessionOf('b'), 'subagent/end', { runId: 'r1', provider: 'spawn', id: 'sub1', local: true, stopReason: 'completed', lastAssistantMessage: textBlock('reviewed: three findings') })
+  emit(turns.sessionOf('b'), 'turn/start', { turn: 2 })
+  emit(turns.sessionOf('b'), 'user/message', { content: textBlock('Background subagent sub1 finished.\nIts closing message:\nreviewed: three findings'), source: { kind: 'subagent-settled', form: 'notice', summary: 'Background subagent sub1 finished.', senderSessionId: 'sub1' } })
+  emit(turns.sessionOf('b'), 'assistant/message', assistantText('all reviewed'))
+  emit(turns.sessionOf('b'), 'turn/end', { turn: 2, reason: { kind: 'completed' } })
   await settled(() => callsOf(agents, 'a').length === 1)
   const answer = textOf(callsOf(agents, 'a')[0][1].content)
   assert.ok(answer.includes('all reviewed'), `own reply goes up: ${answer}`)
@@ -441,10 +459,10 @@ test('a subagent that ends after its wait was given up still hands over its clos
   await tool('message_bot', { to: 'Writer', message: 'carry out the plan' }, 'a')
   turns.end('a', 'asked Writer')
   turns.take('b')
-  emit('b', 'tool/call', { callId: 'call1', name: 'subagent', arguments: JSON.stringify({ description: 'deep review', prompt: 'review the plan' }) })
-  emitScoped('b', 'subagent/start', { runId: 'r1', provider: 'spawn', id: 'sub1', local: true })
-  emitScoped('b', 'tools/result', { callId: 'call1', name: 'subagent', arguments: { description: 'deep review', prompt: 'review the plan' }, agent: agents.get('b') }, { isError: false, value: { kind: 'activation', subagentId: 'sub1' } })
-  emit('b', 'tool/result', { callId: 'call1', message: { callId: 'call1', content: textBlock('started subagent sub1'), isError: false } })
+  emit(turns.sessionOf('b'), 'tool/call', { callId: 'call1', name: 'subagent', arguments: JSON.stringify({ description: 'deep review', prompt: 'review the plan' }) })
+  emitScoped(turns.sessionOf('b'), 'subagent/start', { runId: 'r1', provider: 'spawn', id: 'sub1', local: true })
+  emitScoped(turns.sessionOf('b'), 'tools/result', { callId: 'call1', name: 'subagent', arguments: { description: 'deep review', prompt: 'review the plan' }, agent: agents.get(turns.sessionOf('b')) }, { isError: false, value: { kind: 'activation', subagentId: 'sub1' } })
+  emit(turns.sessionOf('b'), 'tool/result', { callId: 'call1', message: { callId: 'call1', content: textBlock('started subagent sub1'), isError: false } })
   turns.end('b', 'subagent is on it')
   const before = callsOf(agents, 'b').length
   const started = await worksIn(first)
@@ -458,7 +476,7 @@ test('a subagent that ends after its wait was given up still hands over its clos
   assert.match(textOf(callsOf(agents, 'b').at(-1)[1].content), /^\[Work handed back to you · from subagent deep review · everything you handed on for the work Chief asked you for is back; your answer goes to Chief\]\nsubagent deep review:\nNo reply came back from subagent deep review, and the user gave up waiting for it\./)
 
   // The run finishes after that: its closing text arrives, marked late.
-  emitScoped('b', 'subagent/end', { runId: 'r1', provider: 'spawn', id: 'sub1', local: true, stopReason: 'completed', lastAssistantMessage: textBlock('reviewed: three findings') })
+  emitScoped(turns.sessionOf('b'), 'subagent/end', { runId: 'r1', provider: 'spawn', id: 'sub1', local: true, stopReason: 'completed', lastAssistantMessage: textBlock('reviewed: three findings') })
   await settled(() => callsOf(agents, 'b').length === before + 2)
   const late = callsOf(agents, 'b').at(-1)[1]
   const body = textOf(late.content)
@@ -480,8 +498,8 @@ test('a subagent started on a turn that answers no work changes nothing', async 
   const { emit, emitScoped } = first
   const turns = turnTaker(first.agents, first.emit)
   turns.userTurn('b', 'summarize this')
-  emit('b', 'tool/call', { callId: 'call1', name: 'subagent', arguments: JSON.stringify({ description: 'a summary', prompt: 'summarize' }) })
-  emitScoped('b', 'subagent/start', { runId: 'r1', provider: 'spawn', id: 'sub1', local: true })
+  emit(turns.sessionOf('b'), 'tool/call', { callId: 'call1', name: 'subagent', arguments: JSON.stringify({ description: 'a summary', prompt: 'summarize' }) })
+  emitScoped(turns.sessionOf('b'), 'subagent/start', { runId: 'r1', provider: 'spawn', id: 'sub1', local: true })
   turns.end('b', 'done')
   const works = await worksIn(first)
   assert.deepEqual(works, {})
@@ -496,18 +514,18 @@ for (const stopReason of ['aborted', 'error']) test(`a subagent ending with ${st
   await tool('message_bot', { to: 'Writer', message: 'carry out the plan' }, 'a')
   turns.end('a', 'asked Writer')
   turns.take('b')
-  emit('b', 'tool/call', { callId: 'call1', name: 'subagent', arguments: JSON.stringify({ description: 'deep review', prompt: 'review the plan' }) })
-  emitScoped('b', 'subagent/start', { runId: 'r1', provider: 'spawn', id: 'sub1', local: true })
-  emitScoped('b', 'tools/result', { callId: 'call1', name: 'subagent', arguments: { description: 'deep review', prompt: 'review the plan' }, agent: agents.get('b') }, { isError: false, value: { kind: 'activation', subagentId: 'sub1' } })
-  emit('b', 'tool/result', { callId: 'call1', message: { callId: 'call1', content: textBlock('started subagent sub1'), isError: false } })
+  emit(turns.sessionOf('b'), 'tool/call', { callId: 'call1', name: 'subagent', arguments: JSON.stringify({ description: 'deep review', prompt: 'review the plan' }) })
+  emitScoped(turns.sessionOf('b'), 'subagent/start', { runId: 'r1', provider: 'spawn', id: 'sub1', local: true })
+  emitScoped(turns.sessionOf('b'), 'tools/result', { callId: 'call1', name: 'subagent', arguments: { description: 'deep review', prompt: 'review the plan' }, agent: agents.get(turns.sessionOf('b')) }, { isError: false, value: { kind: 'activation', subagentId: 'sub1' } })
+  emit(turns.sessionOf('b'), 'tool/result', { callId: 'call1', message: { callId: 'call1', content: textBlock('started subagent sub1'), isError: false } })
   turns.end('b', 'subagent is on it')
   // The child was stopped with partial output: the result says so, it does not
   // read like a finished answer.
-  emitScoped('b', 'subagent/end', { runId: 'r1', provider: 'spawn', id: 'sub1', local: true, stopReason, lastAssistantMessage: textBlock('two of three findings') })
-  emit('b', 'turn/start', { turn: 2 })
-  emit('b', 'user/message', { content: textBlock('Background subagent sub1 was stopped before it finished.'), source: { kind: 'subagent-settled', form: 'notice', summary: 'Background subagent sub1 was stopped before it finished.', senderSessionId: 'sub1' } })
-  emit('b', 'assistant/message', assistantText('the review was stopped'))
-  emit('b', 'turn/end', { turn: 2, reason: { kind: 'completed' } })
+  emitScoped(turns.sessionOf('b'), 'subagent/end', { runId: 'r1', provider: 'spawn', id: 'sub1', local: true, stopReason, lastAssistantMessage: textBlock('two of three findings') })
+  emit(turns.sessionOf('b'), 'turn/start', { turn: 2 })
+  emit(turns.sessionOf('b'), 'user/message', { content: textBlock('Background subagent sub1 was stopped before it finished.'), source: { kind: 'subagent-settled', form: 'notice', summary: 'Background subagent sub1 was stopped before it finished.', senderSessionId: 'sub1' } })
+  emit(turns.sessionOf('b'), 'assistant/message', assistantText('the review was stopped'))
+  emit(turns.sessionOf('b'), 'turn/end', { turn: 2, reason: { kind: 'completed' } })
   await settled(() => callsOf(agents, 'a').length === 1)
   const answer = textOf(callsOf(agents, 'a')[0][1].content)
   assert.ok(answer.includes(`ended (${stopReason}) before it finished`), `the stop is in the result: ${answer}`)
@@ -523,32 +541,32 @@ test('parallel delegations get each call\'s own description for its child', asyn
   await tool('message_bot', { to: 'Writer', message: 'carry out the plan' }, 'a')
   turns.end('a', 'asked Writer')
   turns.take('b')
-  emit('b', 'tool/call', { callId: 'call1', name: 'subagent', arguments: JSON.stringify({ description: 'deep review', prompt: 'review the plan' }) })
-  emit('b', 'tool/call', { callId: 'call2', name: 'subagent_fork', arguments: JSON.stringify({ description: 'draft summary', prompt: 'summarize the plan' }) })
-  emitScoped('b', 'subagent/start', { runId: 'r2', provider: 'spawn', id: 'sub2', local: true })
-  emitScoped('b', 'subagent/start', { runId: 'r1', provider: 'spawn', id: 'sub1', local: true })
+  emit(turns.sessionOf('b'), 'tool/call', { callId: 'call1', name: 'subagent', arguments: JSON.stringify({ description: 'deep review', prompt: 'review the plan' }) })
+  emit(turns.sessionOf('b'), 'tool/call', { callId: 'call2', name: 'subagent_fork', arguments: JSON.stringify({ description: 'draft summary', prompt: 'summarize the plan' }) })
+  emitScoped(turns.sessionOf('b'), 'subagent/start', { runId: 'r2', provider: 'spawn', id: 'sub2', local: true })
+  emitScoped(turns.sessionOf('b'), 'subagent/start', { runId: 'r1', provider: 'spawn', id: 'sub1', local: true })
   // Publication order differs from call order, and one child even settles before
   // its call returns. Only the result's child id identifies the right description.
-  emitScoped('b', 'subagent/end', { runId: 'r2', provider: 'spawn', id: 'sub2', local: true, stopReason: 'completed', lastAssistantMessage: textBlock('a summary') })
-  emitScoped('b', 'tools/result', { callId: 'call2', name: 'subagent_fork', arguments: { description: 'draft summary', prompt: 'summarize the plan' }, agent: agents.get('b') }, { isError: false, value: { kind: 'activation', subagentId: 'sub2' } })
-  emitScoped('b', 'tools/result', { callId: 'call1', name: 'subagent', arguments: { description: 'deep review', prompt: 'review the plan' }, agent: agents.get('b') }, { isError: false, value: { kind: 'activation', subagentId: 'sub1' } })
-  emit('b', 'tool/result', { callId: 'call1', message: { callId: 'call1', content: textBlock('started subagent sub1'), isError: false } })
-  emit('b', 'tool/result', { callId: 'call2', message: { callId: 'call2', content: textBlock('started subagent sub2'), isError: false } })
+  emitScoped(turns.sessionOf('b'), 'subagent/end', { runId: 'r2', provider: 'spawn', id: 'sub2', local: true, stopReason: 'completed', lastAssistantMessage: textBlock('a summary') })
+  emitScoped(turns.sessionOf('b'), 'tools/result', { callId: 'call2', name: 'subagent_fork', arguments: { description: 'draft summary', prompt: 'summarize the plan' }, agent: agents.get(turns.sessionOf('b')) }, { isError: false, value: { kind: 'activation', subagentId: 'sub2' } })
+  emitScoped(turns.sessionOf('b'), 'tools/result', { callId: 'call1', name: 'subagent', arguments: { description: 'deep review', prompt: 'review the plan' }, agent: agents.get(turns.sessionOf('b')) }, { isError: false, value: { kind: 'activation', subagentId: 'sub1' } })
+  emit(turns.sessionOf('b'), 'tool/result', { callId: 'call1', message: { callId: 'call1', content: textBlock('started subagent sub1'), isError: false } })
+  emit(turns.sessionOf('b'), 'tool/result', { callId: 'call2', message: { callId: 'call2', content: textBlock('started subagent sub2'), isError: false } })
   turns.end('b', 'subagents are on it')
   const works = await worksIn(first)
   assert.equal(Object.values(works).find(work => work.child === 'sub1').name, 'subagent deep review')
   assert.equal(Object.values(works).find(work => work.to === 'b').results.find(result => result.child === 'sub2').name, 'subagent draft summary')
-  emit('b', 'turn/start', { turn: 2 })
-  emit('b', 'user/message', { content: textBlock('Background subagent sub2 finished.\nIts closing message:\na summary'), source: { kind: 'subagent-settled', form: 'notice', summary: 'Background subagent sub2 finished.', senderSessionId: 'sub2' } })
-  emit('b', 'assistant/message', assistantText('summary back, review still out'))
-  emit('b', 'turn/end', { turn: 2, reason: { kind: 'completed' } })
+  emit(turns.sessionOf('b'), 'turn/start', { turn: 2 })
+  emit(turns.sessionOf('b'), 'user/message', { content: textBlock('Background subagent sub2 finished.\nIts closing message:\na summary'), source: { kind: 'subagent-settled', form: 'notice', summary: 'Background subagent sub2 finished.', senderSessionId: 'sub2' } })
+  emit(turns.sessionOf('b'), 'assistant/message', assistantText('summary back, review still out'))
+  emit(turns.sessionOf('b'), 'turn/end', { turn: 2, reason: { kind: 'completed' } })
   await delay(50)
   assert.equal(callsOf(agents, 'a').length, 0)
-  emitScoped('b', 'subagent/end', { runId: 'r1', provider: 'spawn', id: 'sub1', local: true, stopReason: 'completed', lastAssistantMessage: textBlock('three findings') })
-  emit('b', 'turn/start', { turn: 3 })
-  emit('b', 'user/message', { content: textBlock('Background subagent sub1 finished.\nIts closing message:\nthree findings'), source: { kind: 'subagent-settled', form: 'notice', summary: 'Background subagent sub1 finished.', senderSessionId: 'sub1' } })
-  emit('b', 'assistant/message', assistantText('all back'))
-  emit('b', 'turn/end', { turn: 3, reason: { kind: 'completed' } })
+  emitScoped(turns.sessionOf('b'), 'subagent/end', { runId: 'r1', provider: 'spawn', id: 'sub1', local: true, stopReason: 'completed', lastAssistantMessage: textBlock('three findings') })
+  emit(turns.sessionOf('b'), 'turn/start', { turn: 3 })
+  emit(turns.sessionOf('b'), 'user/message', { content: textBlock('Background subagent sub1 finished.\nIts closing message:\nthree findings'), source: { kind: 'subagent-settled', form: 'notice', summary: 'Background subagent sub1 finished.', senderSessionId: 'sub1' } })
+  emit(turns.sessionOf('b'), 'assistant/message', assistantText('all back'))
+  emit(turns.sessionOf('b'), 'turn/end', { turn: 3, reason: { kind: 'completed' } })
   await settled(() => callsOf(agents, 'a').length === 1)
   const answer = textOf(callsOf(agents, 'a')[0][1].content)
   assert.ok(answer.includes('subagent draft summary:\na summary'), `first child's own name: ${answer}`)
@@ -567,27 +585,27 @@ test('a continued subagent hands up each run\'s own result', async (t) => {
   await tool('message_bot', { to: 'Writer', message: 'carry out the plan' }, 'a')
   turns.end('a', 'asked Writer')
   turns.take('b')
-  emit('b', 'tool/call', { callId: 'call1', name: 'subagent', arguments: JSON.stringify({ description: 'checks', prompt: 'check the plan' }) })
-  emitScoped('b', 'subagent/start', { runId: 'r1', provider: 'spawn', id: 'sub1', local: true })
-  emitScoped('b', 'tools/result', { callId: 'call1', name: 'subagent', arguments: { description: 'checks', prompt: 'check the plan' }, agent: agents.get('b') }, { isError: false, value: { kind: 'activation', subagentId: 'sub1' } })
-  emit('b', 'tool/result', { callId: 'call1', message: { callId: 'call1', content: textBlock('started subagent sub1'), isError: false } })
+  emit(turns.sessionOf('b'), 'tool/call', { callId: 'call1', name: 'subagent', arguments: JSON.stringify({ description: 'checks', prompt: 'check the plan' }) })
+  emitScoped(turns.sessionOf('b'), 'subagent/start', { runId: 'r1', provider: 'spawn', id: 'sub1', local: true })
+  emitScoped(turns.sessionOf('b'), 'tools/result', { callId: 'call1', name: 'subagent', arguments: { description: 'checks', prompt: 'check the plan' }, agent: agents.get(turns.sessionOf('b')) }, { isError: false, value: { kind: 'activation', subagentId: 'sub1' } })
+  emit(turns.sessionOf('b'), 'tool/result', { callId: 'call1', message: { callId: 'call1', content: textBlock('started subagent sub1'), isError: false } })
   turns.end('b', 'subagent is on it')
   // The first run settles and the Bot reads its notice, then sends the same
   // child more work: DSH opens a second run on the same child id.
-  emitScoped('b', 'subagent/end', { runId: 'r1', provider: 'spawn', id: 'sub1', local: true, stopReason: 'completed', lastAssistantMessage: textBlock('COST: 42') })
-  emit('b', 'turn/start', { turn: 2 })
-  emit('b', 'user/message', { content: textBlock('Background subagent sub1 finished.\nIts closing message:\nCOST: 42'), source: { kind: 'subagent-settled', form: 'notice', summary: 'Background subagent sub1 finished.', senderSessionId: 'sub1' } })
-  emitScoped('b', 'subagent/start', { runId: 'r2', provider: 'spawn', id: 'sub1', local: true })
-  emit('b', 'assistant/message', assistantText('sent it the schedule too'))
-  emit('b', 'turn/end', { turn: 2, reason: { kind: 'completed' } })
+  emitScoped(turns.sessionOf('b'), 'subagent/end', { runId: 'r1', provider: 'spawn', id: 'sub1', local: true, stopReason: 'completed', lastAssistantMessage: textBlock('COST: 42') })
+  emit(turns.sessionOf('b'), 'turn/start', { turn: 2 })
+  emit(turns.sessionOf('b'), 'user/message', { content: textBlock('Background subagent sub1 finished.\nIts closing message:\nCOST: 42'), source: { kind: 'subagent-settled', form: 'notice', summary: 'Background subagent sub1 finished.', senderSessionId: 'sub1' } })
+  emitScoped(turns.sessionOf('b'), 'subagent/start', { runId: 'r2', provider: 'spawn', id: 'sub1', local: true })
+  emit(turns.sessionOf('b'), 'assistant/message', assistantText('sent it the schedule too'))
+  emit(turns.sessionOf('b'), 'turn/end', { turn: 2, reason: { kind: 'completed' } })
   // The answer still waits while the second run is out.
   await delay(50)
   assert.equal(callsOf(agents, 'a').length, 0)
-  emitScoped('b', 'subagent/end', { runId: 'r2', provider: 'spawn', id: 'sub1', local: true, stopReason: 'completed', lastAssistantMessage: textBlock('SCHEDULE: Monday') })
-  emit('b', 'turn/start', { turn: 3 })
-  emit('b', 'user/message', { content: textBlock('Background subagent sub1 finished.\nIts closing message:\nSCHEDULE: Monday'), source: { kind: 'subagent-settled', form: 'notice', summary: 'Background subagent sub1 finished.', senderSessionId: 'sub1' } })
-  emit('b', 'assistant/message', assistantText('all back'))
-  emit('b', 'turn/end', { turn: 3, reason: { kind: 'completed' } })
+  emitScoped(turns.sessionOf('b'), 'subagent/end', { runId: 'r2', provider: 'spawn', id: 'sub1', local: true, stopReason: 'completed', lastAssistantMessage: textBlock('SCHEDULE: Monday') })
+  emit(turns.sessionOf('b'), 'turn/start', { turn: 3 })
+  emit(turns.sessionOf('b'), 'user/message', { content: textBlock('Background subagent sub1 finished.\nIts closing message:\nSCHEDULE: Monday'), source: { kind: 'subagent-settled', form: 'notice', summary: 'Background subagent sub1 finished.', senderSessionId: 'sub1' } })
+  emit(turns.sessionOf('b'), 'assistant/message', assistantText('all back'))
+  emit(turns.sessionOf('b'), 'turn/end', { turn: 3, reason: { kind: 'completed' } })
   await settled(() => callsOf(agents, 'a').length === 1)
   const answer = textOf(callsOf(agents, 'a')[0][1].content)
   assert.ok(answer.includes('COST: 42'), `the first run's result goes up: ${answer}`)

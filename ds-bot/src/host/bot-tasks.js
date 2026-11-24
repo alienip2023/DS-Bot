@@ -227,6 +227,24 @@ export function install(rt) {
     running: isActiveTask(task) && (rt.live.get(task.sessionId)?.turn !== undefined || (rt.runningJobs?.(task.sessionId)?.length ?? 0) > 0),
   }))
 
+  // The Bot that asked for the work a hand-off task or work thread is on hears once that it ended without an answer
+  // (stopped, failed, or cut off by a restart), so it does not wait for one.
+  function tellAsker(bot, task, outcome) {
+    if (task.exchangeId === undefined || !rt.ownsWork?.(bot.id, task.exchangeId)) return
+    const asker = rt.workAsker?.(task.exchangeId)
+    if (asker === undefined) return
+    const liveEntry = rt.live.get(task.sessionId)
+    if (liveEntry?.info !== undefined && rt.workOf?.(liveEntry.info) === task.exchangeId) {
+      liveEntry.info = undefined
+    }
+    const notice = outcome === 'interrupted'
+      ? `${bot.name} was interrupted by a restart before it could answer your message.`
+      : outcome === 'failed'
+        ? `${bot.name} could not answer your message: ${task.error ?? 'model call failed'}.`
+        : `${bot.name} was stopped before it could answer your message.`
+    answerSender(rt, task.sessionId, asker, notice)
+  }
+
   // Settles a task into a terminal state (`completed`, `failed`, `stopped`, `interrupted`),
   // closes any parent handoff sub-work, notifies the foreground chat via `rt.deliver`
   // (restoring IM origin if captured), and fires `onTaskEvent`.
@@ -275,25 +293,11 @@ export function install(rt) {
       // open (stopped via stopTask or interrupted by restart before turns.js closed it),
       // answer the asking Bot once here and clear `liveEntry.info` so any ensuing
       // `turn/end (aborted)` from `agent.cancel()` can never emit a duplicate reply.
-      if (task.origin === 'bot-handoff') {
+      if (task.origin === 'bot-handoff' || task.origin === 'bot-work') {
         // On `completed`, `turns.js` owns the reply delivery (including async `attachLong`
         // for >20k replies); only send the fallback notice on non-completed outcomes so we
         // never race `attachLong` with a false "stopped" reply.
-        if (outcome !== 'completed' && task.exchangeId !== undefined && rt.ownsWork?.(bot.id, task.exchangeId)) {
-          const asker = rt.workAsker?.(task.exchangeId)
-          if (asker !== undefined) {
-            const liveEntry = rt.live.get(task.sessionId)
-            if (liveEntry?.info !== undefined && rt.workOf?.(liveEntry.info) === task.exchangeId) {
-              liveEntry.info = undefined
-            }
-            const notice = outcome === 'interrupted'
-              ? `${bot.name} was interrupted by a restart before it could answer your message.`
-              : outcome === 'failed'
-                ? `${bot.name} could not answer your message: ${task.error ?? 'model call failed'}.`
-                : `${bot.name} was stopped before it could answer your message.`
-            answerSender(rt, task.sessionId, asker, notice)
-          }
-        }
+        if (outcome !== 'completed') tellAsker(bot, task, outcome)
         return
       }
 
@@ -612,6 +616,14 @@ export function install(rt) {
             task.status = 'waiting_work'
             task.updatedAt = Date.now()
             await rt.save()
+          }
+          continue
+        }
+        // A work thread stays: one that was on a request the restart cut off answers its asker, then stands by.
+        if (task.origin === 'bot-work') {
+          if (task.status !== 'standing') {
+            tellAsker(bot, task, 'interrupted')
+            await standBy(task)
           }
           continue
         }
@@ -1307,6 +1319,12 @@ export function install(rt) {
 
   async function handleTurnEnd(bot, task, reason, failure, said) {
     if (!isActiveTask(task) || settling.has(task.id)) return
+    // A work thread (work model W2) outlives each work: a failed or cut-off turn was answered to its asker by
+    // turns.js, and the thread waits for the next work of its pair. Only the user's Stop ends it (stopTask).
+    if (task.origin === 'bot-work' && (reason?.kind === 'aborted' || reason?.kind === 'error' || failure !== undefined)) {
+      await standBy(task)
+      return
+    }
     // 3. Turn cancelled externally (not disposed, not already stopped).
     if (reason?.kind === 'aborted') {
       await settleTask(bot, task, 'stopped', { error: reason.reason?.reason ?? reason.reason?.kind ?? 'cancelled', notifyForeground: true })
@@ -1342,8 +1360,72 @@ export function install(rt) {
       }
       return
     }
+    if (task.origin === 'bot-work') {
+      await standBy(task)
+      return
+    }
     const finalText = reason?.kind === 'max-tokens' ? cutOffText(said) : said
     await settleTask(bot, task, 'completed', { text: finalText, notifyForeground: true })
+  }
+
+  // ── Work threads (work model W2, docs/plans/2026-11-24-work-model.md) ──
+  // One standing background task per (recipient Bot, asking Bot, the asker's conversation): every request of that
+  // pair goes there, so the recipient keeps one continuous conversation with each asker, apart from the user's chat.
+  // Between works it is `standing`: still the Bot's own Session (permissions, part switches and approvals as for any
+  // task), but not busy, and not shown in the task bar.
+  const MAX_WORK_THREADS = 10
+  async function standBy(task) {
+    if (task.status === 'standing') return
+    task.status = 'standing'
+    task.updatedAt = Date.now()
+    await rt.save()
+  }
+  // The asker's conversation, by a name that survives its part switches: its main thread, its task, or its Session.
+  const partKeyOf = (fromSessionId) => {
+    if (typeof fromSessionId !== 'string' || fromSessionId === '') return 'main'
+    return rt.taskOwners?.get(fromSessionId)?.taskId ?? rt.bySessionIdFull?.(fromSessionId)?.threadId ?? fromSessionId
+  }
+  const workThreadsOf = bot => tasksOf(bot).filter(task => task.origin === 'bot-work' && isActiveTask(task))
+  const findWorkThread = (target, fromBot, fromPart) => {
+    const part = partKeyOf(fromPart)
+    return workThreadsOf(target).find(task => task.workFor?.botId === fromBot.id && task.workFor?.part === part)
+  }
+  // The work thread a request of `fromBot` (writing from `fromPart`) to `target` goes to; opened when there is none.
+  async function workThreadFor(target, fromBot, fromPart) {
+    const found = findWorkThread(target, fromBot, fromPart)
+    if (found !== undefined) return { sessionId: found.sessionId, task: found, opened: false }
+    // At most MAX_WORK_THREADS: the one used longest ago that is idle and waits for nothing ends first.
+    const standing = workThreadsOf(target)
+    if (standing.length >= MAX_WORK_THREADS) {
+      const idle = standing
+        .filter(task => task.status === 'standing' && rt.live.get(task.sessionId)?.turn === undefined && !hasOpenOutgoingWorks(target, task)
+          && (rt.unreadOf?.(task.sessionId)?.length ?? 0) === 0)
+        .sort((a, b) => (a.updatedAt ?? 0) - (b.updatedAt ?? 0))[0]
+      if (idle !== undefined) await settleTask(target, idle, 'completed', { notifyForeground: false })
+    }
+    const now = Date.now()
+    const baseTask = {
+      id: newId(),
+      title: oneLine(`@${fromBot.name} · 工作`, TITLE_MAX),
+      brief: oneLine(`Work for ${fromBot.name}`, BRIEF_KEPT),
+      from: rt.chatOf(target.id),
+      ...(target.segments?.length ? { inheritedSegments: target.segments.map(seg => ({ ...seg })) } : {}),
+      origin: 'bot-work',
+      workFor: { botId: fromBot.id, part: partKeyOf(fromPart) },
+      status: 'standing',
+      startedAt: now,
+      updatedAt: now,
+    }
+    const { sessionId, task } = await rt.openTaskPart(target, rt.chatOf(target.id), baseTask)
+    emitTaskEvent('task.started', target, task, { origin: 'bot-work' })
+    return { sessionId, task, opened: true }
+  }
+  // A request of the pair is on its way into the thread: it is busy with it now.
+  async function workThreadTakes(task, exchangeId) {
+    task.status = 'running'
+    task.exchangeId = exchangeId
+    task.updatedAt = Date.now()
+    await rt.save()
   }
 
   const callerScopeOf = (exec) => {
@@ -1506,6 +1588,8 @@ export function install(rt) {
     consumeEmptyTaskWake: id => id !== undefined && rejectEmptyTaskWake.delete(id),
     handoffForeground,
     spawnBotHandoffTask,
+    workThreadFor,
+    workThreadTakes,
     stopTask: async (botId, taskId, reason = 'cancelled by the user') => {
       const bot = rt.botOf(botId)
       const task = findTask(bot, taskId, null)

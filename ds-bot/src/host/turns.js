@@ -581,7 +581,8 @@ export function install(rt) {
       // Restore routing info for an adopted `bot-handoff` task so its completion
       // still delivers the real reply (including async `attachLong` for >20k outputs).
       const adoptedTask = rt.taskBySession?.(sessionId)?.task
-      if (adoptedTask?.origin === 'bot-handoff' && adoptedTask.exchangeId !== undefined && rt.ownsWork?.(rt.selfOf(sessionId), adoptedTask.exchangeId)) {
+      // A work thread (W2) carries the request it is on the same way.
+      if ((adoptedTask?.origin === 'bot-handoff' || adoptedTask?.origin === 'bot-work') && adoptedTask.exchangeId !== undefined && rt.ownsWork?.(rt.selfOf(sessionId), adoptedTask.exchangeId)) {
         const asker = rt.workAsker?.(adoptedTask.exchangeId)
         if (asker !== undefined) {
           entry.info = asker

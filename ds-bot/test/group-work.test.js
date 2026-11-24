@@ -395,10 +395,12 @@ test('late work the user asked for directly ends without a post once its result 
 test('replies a post waits for are work handed on: the answer to the Bot that asked waits for them and carries them', async (t) => {
   const host = await start(t)
   await host.tool('message_bot', { to: 'Chief', message: '让群里看一下文档' }, 'c')
-  host.begin('a')
-  const posted = await host.tool('post_to_group', { group: 'Ops', message: '@Writer 看一下文档', report_back: true }, 'a')
+  // Tester's request is in Chief's work thread for Tester (work model W2): Chief works on it there.
+  const chief = rt.botOf('a').tasks.find(task => task.origin === 'bot-work').sessionId
+  host.begin(chief)
+  const posted = await host.tool('post_to_group', { group: 'Ops', message: '@Writer 看一下文档', report_back: true }, chief)
   assert.match(posted, /your answer goes to Tester once all of it is back\.$/)
-  host.finish('a', '已经让 Writer 去看了。')
+  host.finish(chief, '已经让 Writer 去看了。')
   const waiting = (await host.call('state', {})).value
   assert.equal(waiting.activity.a, 'waiting')
   assert.deepEqual([waiting.work.waiting.a.bots, waiting.work.waiting.a.rooms, waiting.work.waiting.a.for], [[], ['r1'], ['c']])
@@ -409,11 +411,11 @@ test('replies a post waits for are work handed on: the answer to the Bot that as
   host.begin('gb')
   host.finish('gb', '文档没问题。')
   await settle(() => done() !== undefined)
-  await settle(() => host.agentOf('a').calls.length === 2)
+  await settle(() => host.agentOf(chief).calls.length === 2)
   assert.deepEqual(host.agentOf('c').calls, [])
-  const report = host.begin('a')
+  const report = host.begin(chief)
   assert.match(text(report), /^\[Group chat "Ops" · replies to your post · for the work Tester asked you for; your answer goes to Tester once everything you handed on is back\]/)
-  host.finish('a', 'Writer 看过了，没问题。')
+  host.finish(chief, 'Writer 看过了，没问题。')
   await settle(() => host.agentOf('c').calls.length === 1)
   assert.equal(text(host.agentOf('c').calls[0]), '[Reply from Chief]\nWriter 看过了，没问题。\n\n[Handed back to Chief for this work]\n\nGroup "Ops":\nReplies to your post (oldest first):\nWriter: 文档没问题。')
 })
@@ -423,17 +425,19 @@ test('replies a post waits for are work handed on: the answer to the Bot that as
 test('replies that arrive after the wait for a group was given up come back marked late', async (t) => {
   const host = await start(t)
   await host.tool('message_bot', { to: 'Chief', message: '让群里看一下文档' }, 'c')
-  host.begin('a')
-  await host.tool('post_to_group', { group: 'Ops', message: '@Writer 看一下文档', report_back: true }, 'a')
-  host.finish('a', '已经让 Writer 去看了。')
+  // Tester's request is in Chief's work thread for Tester (work model W2): Chief works on it there.
+  const chief = rt.botOf('a').tasks.find(task => task.origin === 'bot-work').sessionId
+  host.begin(chief)
+  await host.tool('post_to_group', { group: 'Ops', message: '@Writer 看一下文档', report_back: true }, chief)
+  host.finish(chief, '已经让 Writer 去看了。')
   const waiting = (await host.call('state', {})).value.work.waiting
   assert.deepEqual(waiting.a.waits.map(item => [item.room, item.name]), [['r1', 'Ops']])
   const groupWork = waiting.a.waits[0].id
   const done = host.round('c1', host.takePost())
   // The user gives up the wait by its group's name.
   assert.equal((await host.call('abandon-work', { id: groupWork })).ok, true)
-  await settle(() => host.agentOf('a').calls.length === 2)
-  assert.match(text(host.agentOf('a').calls.at(-1)), /^\[Work handed back to you · from Ops · everything you handed on for the work Tester asked you for is back; your answer goes to Tester\]\nOps:\nNo reply came back from the group chat "Ops"/)
+  await settle(() => host.agentOf(chief).calls.length === 2)
+  assert.match(text(host.agentOf(chief).calls.at(-1)), /^\[Work handed back to you · from Ops · everything you handed on for the work Tester asked you for is back; your answer goes to Tester\]\nOps:\nNo reply came back from the group chat "Ops"/)
 
   // The round ends afterwards: its replies still reach Chief, marked as the late
   // answer they are.
@@ -441,8 +445,8 @@ test('replies that arrive after the wait for a group was given up come back mark
   host.begin('gb')
   host.finish('gb', '文档没问题。')
   await settle(() => done() !== undefined)
-  await settle(() => host.agentOf('a').calls.length === 3)
-  const report = host.agentOf('a').calls.at(-1)
+  await settle(() => host.agentOf(chief).calls.length === 3)
+  const report = host.agentOf(chief).calls.at(-1)
   assert.match(text(report), /^\[Group chat "Ops" · replies to your post\]\n\[Late answer: the user had already given up waiting for this work/)
   assert.match(text(report), /Writer: 文档没问题。/)
   assert.equal(report.source.work, undefined)

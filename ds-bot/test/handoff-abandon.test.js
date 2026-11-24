@@ -1,6 +1,7 @@
 // Waits a Bot gave up: one hand-off that will not come back is closed with an explicit
 // result, so the work above it goes on instead of waiting forever.
 import assert from 'node:assert/strict'
+import { randomUUID } from 'node:crypto'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -36,18 +37,24 @@ async function startHost(home, team, options = {}) {
   if (team !== undefined) writeFileSync(join(home, 'state.json'), JSON.stringify(team))
   const ctx = fakeContext()
   const agents = new Map()
+  // Every message any Session got, in order: a Bot's are those of its own chat and of its background tasks (its work
+  // threads among them, work model W2).
+  const log = []
+  agents.botCalls = botId => log.filter(entry => entry.sessionId === botId || rt.taskOwners?.get(entry.sessionId)?.botId === botId
+    || rt.pastOwners?.get(entry.sessionId)?.botId === botId).map(entry => entry.call)
   const agentOf = (sessionId) => {
     if (!agents.has(sessionId)) {
       const calls = []
+      const note = call => { call.sessionId = sessionId; calls.push(call); log.push({ sessionId, call }) }
       agents.set(sessionId, {
         session: { id: sessionId, requestHeader: () => undefined },
         id: sessionId,
         calls,
         status: 'idle',
-        followup(message) { calls.push(['followup', message]) },
-        steer(message) { calls.push(['steer', message]) },
-        inject(message) { calls.push(['inject', message]) },
-        cancel(cause) { calls.push(['cancel', cause]) },
+        followup(message) { note(['followup', message]) },
+        steer(message) { note(['steer', message]) },
+        inject(message) { note(['inject', message]) },
+        cancel(cause) { note(['cancel', cause]) },
         async whenIdle() {},
         async runMaintenance(fn) { return fn(AbortSignal.timeout(60_000)) },
         inbox: {
@@ -74,7 +81,7 @@ async function startHost(home, team, options = {}) {
       archiveSession: async () => {},
     },
     sessionController: {
-      create: async () => ({ sessionId: 's1' }),
+      create: async () => ({ sessionId: `s-${randomUUID().slice(0, 8)}` }),
       resolveAgent: async sessionId => ({ agent: agentOf(sessionId) }),
       selectModel: async () => {},
       page: async () => ({ records: [], hasMore: false }),
@@ -103,7 +110,12 @@ async function startHost(home, team, options = {}) {
     const carrier = scopeTarget({}, agentOf(parentId))
     for (const listener of ctx.listeners.get(name) ?? []) listener.call(carrier, ...args)
   }
-  const tool = (name, args, sessionId) => rt.teamTools.find(d => d.name === name).execute(args, { agent: { id: sessionId } })
+  // A Bot calls a tool from the turn it is running: its own chat, or the work thread it is working in (W2).
+  const running = (id) => {
+    if (rt.live.get(id)?.turn !== undefined || rt.botOf(id) === undefined) return id
+    return (rt.botOf(id).tasks ?? []).find(task => rt.live.get(task.sessionId)?.turn !== undefined)?.sessionId ?? id
+  }
+  const tool = (name, args, sessionId) => rt.teamTools.find(d => d.name === name).execute(args, { agent: { id: running(sessionId) } })
   const call = async (endpoint, payload) => (await route.fetch(new Request('http://localhost/api/bot', {
     method: 'POST', body: JSON.stringify({ endpoint, payload }),
   }))).json()
@@ -127,31 +139,37 @@ function bench(t) {
 const textBlock = content => [{ type: 'text', text: content }]
 const assistantText = text => ({ message: { content: textBlock(text) } })
 const textOf = content => content.map(block => block.text ?? '').join('\n')
-const callsOf = (agents, id) => agents.get(id)?.calls ?? []
+const callsOf = (agents, id) => (agents.botCalls ? agents.botCalls(id) : agents.get(id)?.calls ?? [])
 const settled = async (check) => {
   for (let count = 0; count < 200 && !check(); count += 1) await delay(5)
 }
 
 // Each Session takes up the newest message it was sent as its next turn.
+// A Bot's turn runs in the Session its message went to: its own chat, or a work thread (work model W2).
 function turnTaker(agents, emit) {
   const turns = new Map()
+  const at = new Map()
   const open = (id, message) => {
-    turns.set(id, (turns.get(id) ?? 0) + 1)
-    emit(id, 'turn/start', { turn: turns.get(id) })
-    emit(id, 'user/message', { content: message.content, source: message.source })
+    const sessionId = callsOf(agents, id).find(call => call[1] === message)?.sessionId ?? id
+    at.set(id, sessionId)
+    turns.set(sessionId, (turns.get(sessionId) ?? 0) + 1)
+    emit(sessionId, 'turn/start', { turn: turns.get(sessionId) })
+    emit(sessionId, 'user/message', { content: message.content, source: message.source })
     return message
   }
-  const take = id => open(id, agents.get(id).calls.at(-1)[1])
+  const take = id => open(id, callsOf(agents, id).at(-1)[1])
   const end = (id, text) => {
-    if (text !== undefined) emit(id, 'assistant/message', assistantText(text))
-    emit(id, 'turn/end', { turn: turns.get(id), reason: { kind: 'completed' } })
+    const sessionId = at.get(id) ?? id
+    if (text !== undefined) emit(sessionId, 'assistant/message', assistantText(text))
+    emit(sessionId, 'turn/end', { turn: turns.get(sessionId), reason: { kind: 'completed' } })
   }
   const userTurn = (id, text) => {
+    at.set(id, id)
     turns.set(id, (turns.get(id) ?? 0) + 1)
     emit(id, 'turn/start', { turn: turns.get(id) })
     emit(id, 'user/message', { content: textBlock(text), source: { kind: 'user' } })
   }
-  return { take, open, end, userTurn }
+  return { take, open, end, userTurn, sessionOf: id => at.get(id) ?? id }
 }
 
 // The works the team file holds, once the saves made so far are done.

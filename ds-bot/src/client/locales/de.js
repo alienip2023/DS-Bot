@@ -935,6 +935,7 @@ export const DE = {
   'Reply from': 'Antwort von',
   'Work handed back': 'Arbeitsergebnis zurück',
   'Work handed back by': 'Ergebnis zurück von',
+  'Standing by': 'Bereit',
   'ReplyFrom': 'Antwort vom Remote-Bot: ',
   'Message from': 'Nachricht von',
   'Stopped by': 'Gestoppt von',

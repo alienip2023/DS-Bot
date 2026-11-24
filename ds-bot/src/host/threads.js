@@ -7,7 +7,8 @@
 // (store.js chatOf falls back to it).
 export const currentSession = bot => bot?.sessionId ?? bot?.id
 
-export const ACTIVE_TASK_STATUSES = new Set(['running', 'waiting_work', 'waiting_approval'])
+// `standing`: a work thread between works (work model W2): still the Bot's own Session, not busy.
+export const ACTIVE_TASK_STATUSES = new Set(['running', 'waiting_work', 'waiting_approval', 'standing'])
 
 export const isActiveTask = task => task !== undefined && ACTIVE_TASK_STATUSES.has(task.status)
 

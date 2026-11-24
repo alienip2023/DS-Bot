@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { randomUUID } from 'node:crypto'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -49,18 +50,24 @@ async function boot(home, seed) {
   if (seed !== undefined) writeFileSync(join(home, 'state.json'), JSON.stringify(seed))
   const ctx = fakeContext()
   const agents = new Map()
+  // Every message any Session got, in order: a Bot's are those of its own chat and of its background tasks (its work
+  // threads among them, work model W2).
+  const log = []
+  agents.botCalls = botId => log.filter(entry => entry.sessionId === botId || rt.taskOwners?.get(entry.sessionId)?.botId === botId
+    || rt.pastOwners?.get(entry.sessionId)?.botId === botId).map(entry => entry.call)
   const agentOf = (sessionId) => {
     if (!agents.has(sessionId)) {
       const calls = []
+      const note = call => { call.sessionId = sessionId; calls.push(call); log.push({ sessionId, call }) }
       agents.set(sessionId, {
         session: { id: sessionId, requestHeader: () => undefined },
         id: sessionId,
         calls,
         status: 'idle',
-        followup(message) { calls.push(['followup', message]) },
-        steer(message) { calls.push(['steer', message]) },
-        inject(message) { calls.push(['inject', message]) },
-        cancel(cause) { calls.push(['cancel', cause]) },
+        followup(message) { note(['followup', message]) },
+        steer(message) { note(['steer', message]) },
+        inject(message) { note(['inject', message]) },
+        cancel(cause) { note(['cancel', cause]) },
         async whenIdle() {},
         async runMaintenance(fn) { return fn(AbortSignal.timeout(60_000)) },
         inbox: {
@@ -87,7 +94,7 @@ async function boot(home, seed) {
       archiveSession: async () => {},
     },
     sessionController: {
-      create: async () => ({ sessionId: 's1' }),
+      create: async () => ({ sessionId: `s-${randomUUID().slice(0, 8)}` }),
       resolveAgent: async sessionId => ({ agent: agentOf(sessionId) }),
       selectModel: async () => {},
       page: async () => ({ records: [], hasMore: false }),
@@ -102,7 +109,12 @@ async function boot(home, seed) {
       if (listener.length >= 2) listener({ id }, { type, seq: ++seq, data })
     }
   }
-  const tool = (name, args, sessionId) => rt.teamTools.find(d => d.name === name).execute(args, { agent: { id: sessionId } })
+  // A Bot calls a tool from the turn it is running: its own chat, or the work thread it is working in (W2).
+  const running = (id) => {
+    if (rt.live.get(id)?.turn !== undefined || rt.botOf(id) === undefined) return id
+    return (rt.botOf(id).tasks ?? []).find(task => rt.live.get(task.sessionId)?.turn !== undefined)?.sessionId ?? id
+  }
+  const tool = (name, args, sessionId) => rt.teamTools.find(d => d.name === name).execute(args, { agent: { id: running(sessionId) } })
   const stop = async () => { await ctx.dispose() }
   // Loading once fills the Session-owner indexes turns.js filters events by.
   await tool('list_bots', {}, 'a')
@@ -122,11 +134,11 @@ test('a request with an id is delivered once, and a repeat gives the first recei
 
   const first = await tool('message_bot', { to: 'Writer', message: 'do the thing', request_id: 'r-1' }, 'a')
   assert.equal(first, 'Delivered to Writer. What it hands back reaches you in one message once everything you handed on is back; do not wait for it, end your turn when you have handed on all you need.')
-  assert.equal(agents.get('b').calls.length, 1)
+  assert.equal(agents.botCalls('b').length, 1)
 
   const again = await tool('message_bot', { to: 'Writer', message: 'do the thing', request_id: 'r-1' }, 'a')
   assert.equal(again, first)
-  assert.equal(agents.get('b').calls.length, 1)
+  assert.equal(agents.botCalls('b').length, 1)
 })
 
 test('the same request id with other content is refused, and nothing goes out', async (t) => {
@@ -138,11 +150,11 @@ test('the same request id with other content is refused, and nothing goes out', 
 
   await tool('message_bot', { to: 'Writer', message: 'do the thing', request_id: 'r-1' }, 'a')
   await assert.rejects(tool('message_bot', { to: 'Writer', message: 'do another thing', request_id: 'r-1' }, 'a'), /request_id "r-1" was already used for a different request/)
-  assert.equal(agents.get('b').calls.length, 1)
+  assert.equal(agents.botCalls('b').length, 1)
   // Another target under the same name is another request, and is refused as well.
   await tool('message_bot', { to: 'Writer', message: 'do the thing', request_id: 'r-2' }, 'c')
   await assert.rejects(tool('message_bot', { to: 'Chief', message: 'do the thing', request_id: 'r-2' }, 'c'), /request_id "r-2" was already used for a different request/)
-  assert.equal(agents.get('a')?.calls.length ?? 0, 0)
+  assert.equal(agents.botCalls('a').length, 0)
 })
 
 test('two callers with the same request id do not collide', async (t) => {
@@ -154,7 +166,7 @@ test('two callers with the same request id do not collide', async (t) => {
 
   await tool('message_bot', { to: 'Writer', message: 'from Chief', request_id: 'r-1' }, 'a')
   await tool('message_bot', { to: 'Writer', message: 'from Tester', request_id: 'r-1' }, 'c')
-  assert.equal(agents.get('b').calls.length, 2)
+  assert.equal(agents.botCalls('b').length, 2)
 })
 
 test('two calls at once with the same request id admit it once', async (t) => {
@@ -167,7 +179,7 @@ test('two calls at once with the same request id admit it once', async (t) => {
     tool('message_bot', { to: 'Writer', message: 'same request', request_id: 'r-1' }, 'a'),
   ])
   assert.equal(first, second)
-  assert.equal(agents.get('b').calls.length, 1)
+  assert.equal(agents.botCalls('b').length, 1)
 })
 
 test('a repeat after a restart gives the receipt back and sends nothing', async (t) => {
@@ -189,36 +201,45 @@ test('a repeat after the recipient read the message does not send it again', asy
   t.after(async () => { await stop(); cleanup(home) })
 
   const first = await tool('message_bot', { to: 'Writer', message: 'do the thing', request_id: 'r-1' }, 'a')
-  const delivered = agents.get('b').calls[0][1]
+  const delivered = agents.botCalls('b')[0][1]
   emit('b', 'user/message', { content: delivered.content, source: delivered.source })
   const again = await tool('message_bot', { to: 'Writer', message: 'do the thing', request_id: 'r-1' }, 'a')
   assert.equal(again, first)
-  assert.equal(agents.get('b').calls.length, 1)
+  assert.equal(agents.botCalls('b').length, 1)
 })
 
 test('a request whose delivery failed is not sent again', async (t) => {
   const home = tempHome()
-  const { agentOf, tool, stop } = await boot(home, team())
+  const { ctx, rt, agents, tool, stop } = await boot(home, team())
   t.after(async () => { await stop(); cleanup(home) })
 
-  const writer = agentOf('b')
-  const steer = writer.steer
-  writer.steer = () => { throw new Error('dsh is down') }
+  // Writer's work thread for Chief (W2) cannot take it.
+  const flush = ctx.sessions.flush
+  ctx.sessions.flush = async (session) => {
+    if (rt.taskOwners?.get(session?.id)?.botId === 'b') throw new Error('dsh is down')
+    return flush(session)
+  }
   await assert.rejects(tool('message_bot', { to: 'Writer', message: 'do the thing', request_id: 'r-1' }, 'a'), /dsh is down/)
-  writer.steer = steer
+  ctx.sessions.flush = flush
+  const sent = agents.botCalls('b').length
   // The outcome of that admission is not known, so it is not sent again.
   await assert.rejects(tool('message_bot', { to: 'Writer', message: 'do the thing', request_id: 'r-1' }, 'a'), /outcome of request_id "r-1" is not known/)
-  assert.equal(writer.calls.length, 0)
+  assert.equal(agents.botCalls('b').length, sent)
 })
 
 test('a request with an id takes in the message before it, and a repeat merges nothing', async (t) => {
   const home = tempHome()
-  const { agentOf, emit, tool, stop } = await boot(home, team())
+  const { rt, agentOf, emit, tool, stop } = await boot(home, team())
   t.after(async () => { await stop(); cleanup(home) })
 
-  const writer = agentOf('b')
+  // Writer takes up Chief's first request in its work thread for Chief (W2); that turn waits on something.
+  await tool('message_bot', { to: 'Writer', message: 'task 0' }, 'a')
+  const thread = rt.botOf('b').tasks.find(task => task.origin === 'bot-work').sessionId
+  const writer = agentOf(thread)
+  emit(thread, 'turn/start', { turn: 1 })
+  emit(thread, 'user/message', { content: writer.calls[0][1].content, source: writer.calls[0][1].source })
+  writer.calls.length = 0
   writer.steer = (message) => { writer.calls.push(['steer', message]); writer.inbox.nextStep.push(message) }
-  emit('b', 'turn/start', { turn: 1 })
 
   const first = await tool('message_bot', { to: 'Writer', message: 'task 1', request_id: 'r-1' }, 'a')
   const second = await tool('message_bot', { to: 'Writer', message: 'task 2', request_id: 'r-2' }, 'a')
@@ -236,17 +257,18 @@ test('a request with an id that queues, or that answers the user, goes out once'
   const { agents, emit, tool, stop } = await boot(home, team())
   t.after(async () => { await stop(); cleanup(home) })
 
-  // Writer is working, so a request that waits for its current work is queued.
-  emit('b', 'turn/start', { turn: 1 })
+  // Writer is working on Chief's work in its thread, so a request that waits for that work is queued.
+  await tool('message_bot', { to: 'Writer', message: 'first' }, 'a')
+  emit(agents.botCalls('b')[0].sessionId, 'turn/start', { turn: 1 })
   const queued = await tool('message_bot', { to: 'Writer', message: 'later', when: 'queue', request_id: 'r-1' }, 'a')
   assert.match(queued, /^Queued for Writer/)
-  assert.deepEqual(agents.get('b').calls.map(([kind]) => kind), ['followup'])
+  assert.deepEqual(agents.botCalls('b').map(([kind]) => kind), ['followup', 'followup'])
   assert.equal(await tool('message_bot', { to: 'Writer', message: 'later', when: 'queue', request_id: 'r-1' }, 'a'), queued)
 
   const toUser = await tool('message_bot', { to: 'Writer', message: 'tell them', reply_to: 'user', request_id: 'r-2' }, 'a')
   assert.match(toUser, /It will answer the user in its own chat/)
   assert.equal(await tool('message_bot', { to: 'Writer', message: 'tell them', reply_to: 'user', request_id: 'r-2' }, 'a'), toUser)
-  assert.equal(agents.get('b').calls.length, 2)
+  assert.equal(agents.botCalls('b').length, 3)
 })
 
 test('a request with an id in a group calls the member once', async (t) => {
@@ -294,7 +316,7 @@ test('a name whose receipt is no longer kept is not used again', async (t) => {
   for (const record of Object.values(rt.state.requests)) record.receipt = undefined
   const out = await tool('message_bot', { to: 'Writer', message: 'do the thing', request_id: 'r-1' }, 'a')
   assert.match(out, /Nothing was sent again: request_id "r-1" was admitted before/)
-  assert.equal(agents.get('b').calls.length, 1)
+  assert.equal(agents.botCalls('b').length, 1)
 })
 
 test('a request whose receipt cannot be saved is not sent', async (t) => {
@@ -310,7 +332,7 @@ test('a request whose receipt cannot be saved is not sent', async (t) => {
   rt.save = save
   const out = await tool('message_bot', { to: 'Writer', message: 'do the thing', request_id: 'r-1' }, 'a')
   assert.match(out, /^Delivered to Writer/)
-  assert.equal(agents.get('b').calls.length, 1)
+  assert.equal(agents.botCalls('b').length, 1)
 })
 
 test('calls without a request id are sent as they were', async (t) => {
@@ -320,7 +342,7 @@ test('calls without a request id are sent as they were', async (t) => {
 
   await tool('message_bot', { to: 'Writer', message: 'one' }, 'a')
   await tool('message_bot', { to: 'Writer', message: 'two' }, 'a')
-  assert.equal(agents.get('b').calls.length, 2)
+  assert.equal(agents.botCalls('b').length, 2)
 })
 
 test('the receipt of a request is kept in the team file', async (t) => {

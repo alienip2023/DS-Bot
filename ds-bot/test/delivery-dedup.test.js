@@ -68,7 +68,8 @@ async function createLoopRig(t, seed = baseSeed()) {
     }
     async *stream(options) {
       modes.callCount += 1
-      if (options.sessionId === 'b') {
+      // Writer: its own chat, or its work thread (`bw-…`, work model W2).
+      if (options.sessionId === 'b' || String(options.sessionId).startsWith('bw-')) {
         const last = options.messages.at(-1)
         const hasToolResult = last?.role === 'tool'
         if (!hasToolResult && modes.b === 'two-step-fail') {
@@ -122,7 +123,12 @@ async function createLoopRig(t, seed = baseSeed()) {
       workspaceRegistry: { get: () => undefined, resolveByPath: async () => undefined, create: async path => ({ id: 'w1', path }), archiveSession: async () => {} },
       sessionController: {
         resolveAgent: async sessionId => ({ agent: agents.get(sessionId) }),
-        create: async () => ({ sessionId: 's-unused' }),
+        // A work thread is a real Session with a real loop of its own.
+        create: async () => {
+          const sessionId = `bw-${agents.size}`
+          agents.set(sessionId, await root.agentLoop.create(SessionId(sessionId), { provider: 'dedup-test', model: 'test' }))
+          return { sessionId }
+        },
         selectModel: async () => {},
         page: async () => ({ records: [], hasMore: false }),
         inspect: async sessionId => ({ events: agents.get(sessionId)?.session.snapshotEvents() ?? [] }),
@@ -214,18 +220,20 @@ async function createRestartHost(t, home, logs, services, inspectOverride) {
 
 test('a failed turn with steered follow-ups pushes only one failure notice per request_id and settles open works', async (t) => {
   const { home, rt, agents, tool, stepGate, modes, deliveries } = await createLoopRig(t)
+  // Chief's requests go to Writer's work thread for Chief (work model W2).
+  const writer = () => [...agents.keys()].find(id => id.startsWith('bw-')) ?? 'b'
 
   // Chief sends an initial task to Writer; Writer starts working and pauses in wait_step.
   await tool('message_bot', { to: 'Writer', message: 'Run task 1' }, 'a')
-  await settle(() => modes.callCount >= 1 && rt.live.get('b')?.tool === 'wait_step')
+  await settle(() => modes.callCount >= 1 && rt.live.get(writer())?.tool === 'wait_step')
 
   // While Writer is mid-turn, Chief steers a follow-up update (default when: 'now').
   await tool('message_bot', { to: 'Writer', message: 'Also include check 2' }, 'a')
-  await settle(() => agents.get('b').inbox.nextStep.length === 1)
+  await settle(() => agents.get(writer()).inbox.nextStep.length === 1)
 
   // Let wait_step finish so Writer claims the steered follow-up and hits INVALID_REQUEST.
   stepGate.resolve()
-  await agents.get('b').whenIdle()
+  await agents.get(writer()).whenIdle()
   await settle(() => deliveries.some(entry => entry.sessionId === 'a' && entry.source.role === 'reply'))
   await agents.get('a').whenIdle()
   await realDelay(30)
@@ -242,7 +250,7 @@ test('a failed turn with steered follow-ups pushes only one failure notice per r
   modes.b = 'fail-once'
   modes.requestId = 'req-new-456'
   await tool('message_bot', { to: 'Writer', message: 'Retry with clean args' }, 'a')
-  await agents.get('b').whenIdle()
+  await agents.get(writer()).whenIdle()
   await settle(() => deliveries.some(entry => entry.sessionId === 'a' && entry.source.role === 'reply' && entry.text.includes('req-new-456')))
   await agents.get('a').whenIdle()
   const newReplies = deliveries.filter(entry => entry.sessionId === 'a' && entry.source.role === 'reply' && entry.text.includes('req-new-456'))
@@ -756,6 +764,8 @@ test('a completed turn hands a steered request back after a restart', async (t) 
   assert.match(textOf(handed[0]), /answer it now/, 'it asks for the turn it still owes')
   assert.deepEqual(handed[0].content.filter(block => block.type === 'image').map(block => block.attachment), [image], 'the attachments are kept')
 
+  // The save is queued without being awaited: write the state before reading the file.
+  await host.rt.save({ required: true })
   const state = JSON.parse(readFileSync(join(home, 'state.json'), 'utf8'))
   assert.equal(state.works['req-1'], undefined, 'the answered request is closed')
   assert.deepEqual(state.works['req-2'], seed.works['req-2'], 'the handed-back request keeps its work and parent')

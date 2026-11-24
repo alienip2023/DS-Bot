@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { randomUUID } from 'node:crypto'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -49,7 +50,7 @@ async function start(home, logs, inspect) {
     llm: { listProviders: () => [], listModels: async () => [], resolveModelInfo: async () => ({}) },
     workspaceRegistry: { get: () => undefined, resolveByPath: async () => undefined, create: async path => ({ id: 'w1', path }), archiveSession: async () => {} },
     sessionController: {
-      create: async () => ({ sessionId: 's1' }),
+      create: async () => ({ sessionId: `s-${randomUUID().slice(0, 8)}` }),
       resolveAgent: async sessionId => ({ agent: agentOf(sessionId) }),
       selectModel: async () => {},
       inspect: inspect ?? (async sessionId => ({ events: logs?.get(sessionId) ?? [] })),
@@ -239,8 +240,17 @@ test('when only DS Bot restarts, a turn still running or finished meanwhile is n
 })
 
 // Chief asks Writer for the plan; Writer's turn takes it up and the work waits.
+// A request in Writer's own chat, the way one from another machine still arrives (until W3); message_bot from a
+// Bot of this machine goes to a work thread instead (W2, tested on its own below). These tests are about what the
+// delivery journal and a restart do with a turn in that chat.
+const askInChat = async (text, { when = 'now', from = 'a', to = 'b' } = {}) => {
+  const exchangeId = randomUUID()
+  rt.openWork(exchangeId, { from, to })
+  await rt.deliver({ fromId: from, toId: to, text, role: 'request', exchangeId, steer: when !== 'queue' })
+  return exchangeId
+}
 const askWriter = async (host, home) => {
-  await host.tool('message_bot', { to: 'Writer', message: 'Draft the plan' }, 'a')
+  await askInChat('Draft the plan')
   const request = host.agentOf('b').calls[0]
   run(host, 'b', 1, request)
   await settle(() => inflight(home).b?.trigger?.exchangeId === request.source.exchangeId)
@@ -555,7 +565,7 @@ test('a message a shutdown cancelled is sent again once; one still waiting, take
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const home = freshHome(t)
   const first = await start(home)
-  const send = message => first.tool('message_bot', { to: 'Writer', message, when: 'queue' }, 'a')
+  const send = message => askInChat(message, { when: 'queue' })
   await send('Draft the plan')
   await send('Check the numbers')
   await send('Read the notes')
@@ -593,8 +603,8 @@ test('a queued request older than the TTL is dropped after a restart, and a rece
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const home = freshHome(t)
   const first = await start(home)
-  await first.tool('message_bot', { to: 'Writer', message: 'Draft the plan', when: 'queue' }, 'a')
-  await first.tool('message_bot', { to: 'Writer', message: 'Check the numbers', when: 'queue' }, 'a')
+  await askInChat('Draft the plan', { when: 'queue' })
+  await askInChat('Check the numbers', { when: 'queue' })
   await settle(() => (notes(home).queued.b ?? []).length === 2)
   const [plan, numbers] = first.agentOf('b').calls
   await first.stop()
@@ -624,7 +634,7 @@ test('queued deliveries are kept whole, not cut at fifty', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const home = freshHome(t)
   const first = await start(home)
-  for (let at = 1; at <= 55; at += 1) await first.tool('message_bot', { to: 'Writer', message: `Task ${at}`, when: 'queue' }, 'a')
+  for (let at = 1; at <= 55; at += 1) await askInChat(`Task ${at}`, { when: 'queue' })
   await settle(() => (notes(home).queued.b ?? []).length === 55)
   await first.stop()
 
@@ -642,7 +652,7 @@ test('a delivery that fails is not recorded as delivered, and stays queued for t
     if (session?.id === 'b') throw Object.assign(new Error('Session sess-b is gone'), { code: 'session/not-found' })
     return flushing(session)
   }
-  await assert.rejects(first.tool('message_bot', { to: 'Writer', message: 'Draft the plan' }, 'a'), /sess-b is gone/)
+  await assert.rejects(askInChat('Draft the plan'), /sess-b is gone/)
   // Nothing is shown as delivered; the delivery stays queued, and the work it
   // opened stays with it.
   await settleState(t, home, () => (stateOf(home).exchanges ?? []).length === 0 && Object.keys(stateOf(home).works ?? {}).length === 1)
@@ -742,11 +752,11 @@ test('new deliveries before recovery do not overwrite the saved queue', async (t
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const home = freshHome(t)
   const first = await start(home)
-  await first.tool('message_bot', { to: 'Writer', message: 'Task before shutdown', when: 'queue' }, 'a')
+  await askInChat('Task before shutdown', { when: 'queue' })
   await first.stop()
 
   const second = await start(home)
-  await second.tool('message_bot', { to: 'Writer', message: 'Task before recovery', when: 'queue' }, 'a')
+  await askInChat('Task before recovery', { when: 'queue' })
   await second.stop()
   assert.equal(notes(home).queued.b.length, 2)
 
@@ -761,7 +771,7 @@ test('a resend that cannot open the Session keeps the whole queue for the next s
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const home = freshHome(t)
   const first = await start(home)
-  for (const message of ['Task 1', 'Task 2', 'Task 3']) await first.tool('message_bot', { to: 'Writer', message, when: 'queue' }, 'a')
+  for (const message of ['Task 1', 'Task 2', 'Task 3']) await askInChat(message, { when: 'queue' })
   await settle(() => (notes(home).queued.b ?? []).length === 3)
   await first.stop()
 
@@ -796,27 +806,29 @@ test('a request kept for retry keeps its work, and the result flows up after the
   // send fails before it reaches Reviewer, so it stays queued for the next start.
   run(first, 'b', 1, { content: [{ type: 'text', text: '[Message from Chief]\nDraft the plan' }], source: { kind: 'bot', form: 'relay', role: 'request', exchangeId: 'x1', senderName: 'Chief', senderSessionId: 'a', hop: 0 } })
   const flushing = first.ctx.sessions.flush
+  // Writer's request goes to Reviewer's work thread for it (W2): that Session cannot take it.
   first.ctx.sessions.flush = async (session) => {
-    if (session?.id === 'c') throw Object.assign(new Error('Session sess-c is gone'), { code: 'session/not-found' })
+    if (rt.taskOwners?.get(session?.id)?.botId === 'c') throw Object.assign(new Error('Session sess-c is gone'), { code: 'session/not-found' })
     return flushing(session)
   }
   await assert.rejects(first.tool('message_bot', { to: 'Reviewer', message: 'Check the numbers' }, 'b'), /sess-c is gone/)
+  const reviewer = rt.botOf('c').tasks.find(task => task.origin === 'bot-work').sessionId
   // Writer ends its turn waiting for what it handed on.
   first.emit('b', 'assistant/message', { message: { content: [{ type: 'text', text: 'Reviewer is on the numbers.' }] } })
   first.emit('b', 'turn/end', { turn: 1, reason: { kind: 'completed' } })
   // The delivery stays queued, so the work it opened stays too.
   await settleState(t, home, () => Object.values(stateOf(home).works ?? {}).some(work => work.to === 'c' && work.parent === 'x1'))
   const handed = Object.entries(stateOf(home).works).find(([, work]) => work.to === 'c' && work.parent === 'x1')
-  await settle(() => (notes(home).queued.c ?? []).length === 1)
+  await settle(() => (notes(home).queued[reviewer] ?? []).length === 1)
   await first.stop()
 
   const second = await start(home)
   t.mock.timers.tick(3000)
-  await settle(() => second.agentOf('c').calls.length === 1)
-  // Reviewer answers; the result goes back up the work tree to Writer.
-  run(second, 'c', 1, second.agentOf('c').calls[0])
-  second.emit('c', 'assistant/message', { message: { content: [{ type: 'text', text: 'The numbers check out.' }] } })
-  second.emit('c', 'turn/end', { turn: 1, reason: { kind: 'completed' } })
+  await settle(() => second.agentOf(reviewer).calls.length === 1)
+  // Reviewer answers in that thread; the result goes back up the work tree to Writer.
+  run(second, reviewer, 1, second.agentOf(reviewer).calls[0])
+  second.emit(reviewer, 'assistant/message', { message: { content: [{ type: 'text', text: 'The numbers check out.' }] } })
+  second.emit(reviewer, 'turn/end', { turn: 1, reason: { kind: 'completed' } })
   await settle(() => second.agentOf('b').calls.length === 1)
   const reply = second.agentOf('b').calls[0]
   assert.deepEqual([reply.source.role, reply.source.work, reply.source.results], ['results', 'x1', [handed[0]]])
@@ -836,7 +848,7 @@ test('a resend whose first send never landed records the exchange once it arrive
     if (session?.id === 'b') throw Object.assign(new Error('Session sess-b is gone'), { code: 'session/not-found' })
     return flushing(session)
   }
-  await assert.rejects(first.tool('message_bot', { to: 'Writer', message: 'Draft the plan' }, 'a'), /sess-b is gone/)
+  await assert.rejects(askInChat('Draft the plan'), /sess-b is gone/)
   await settle(() => (notes(home).queued.b ?? []).length === 1)
   await first.stop()
 
@@ -976,4 +988,29 @@ test('a written tool call is told apart from text about one', () => {
   assert.equal(stripWrittenCalls('plain <text> with an angle or two'), 'plain <text> with an angle or two')
   assert.equal(writesToolCall('plain <text> with an angle or two'), false)
   assert.equal(stripWrittenCalls('a < b or c > d'), 'a < b or c > d')
+})
+
+test('W2-R1 a work thread standing by survives a restart, and the next request of the pair goes to it', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const home = freshHome(t)
+  const first = await start(home)
+  await first.tool('message_bot', { to: 'Writer', message: 'Draft the plan' }, 'a')
+  const thread = rt.botOf('b').tasks.find(task => task.origin === 'bot-work')
+  const [request] = first.agentOf(thread.sessionId).calls
+  run(first, thread.sessionId, 1, request)
+  first.emit(thread.sessionId, 'assistant/message', { message: { content: [{ type: 'text', text: 'The plan is ready.' }] } })
+  first.emit(thread.sessionId, 'turn/end', { turn: 1, reason: { kind: 'completed' } })
+  await settleState(t, home, () => stateOf(home).bots.b.tasks?.find(task => task.id === thread.id)?.status === 'standing')
+  await first.stop()
+
+  const second = await start(home)
+  t.mock.timers.tick(3000)
+  await new Promise(resolve => setImmediate(resolve))
+  const kept = rt.botOf('b').tasks.find(task => task.id === thread.id)
+  assert.equal(kept.status, 'standing', 'not settled as interrupted by the restart')
+  assert.equal(second.agentOf('a').calls.some(message => /interrupted/.test(text(message))), false, 'Chief is told nothing')
+  await second.tool('message_bot', { to: 'Writer', message: 'Now the budget' }, 'a')
+  assert.equal(second.agentOf(thread.sessionId).calls.length, 1)
+  assert.match(text(second.agentOf(thread.sessionId).calls[0]), /Now the budget$/)
+  assert.equal(rt.botOf('b').tasks.filter(task => task.origin === 'bot-work').length, 1)
 })

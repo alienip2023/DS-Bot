@@ -1045,6 +1045,7 @@ var JA = {
   "Reply from": "返信元:",
   "Work handed back": "返ってきた作業結果",
   "Work handed back by": "結果を返した Bot:",
+  "Standing by": "待機中",
   "ReplyFrom": "リモートBotからの返信：",
   "Message from": "メッセージ送信元:",
   "Stopped by": "停止者:",
@@ -3896,6 +3897,7 @@ var KO = {
   "Reply from": "답장:",
   "Work handed back": "돌려받은 작업 결과",
   "Work handed back by": "결과를 돌려준 Bot:",
+  "Standing by": "대기 중",
   "ReplyFrom": "원격 봇의 답장: ",
   "Message from": "메시지 발신:",
   "Stopped by": "중지한 주체:",
@@ -6763,6 +6765,7 @@ var ES = {
   "Reply from": "Respuesta de",
   "Work handed back": "Trabajo devuelto",
   "Work handed back by": "Resultado devuelto por",
+  "Standing by": "En espera",
   "ReplyFrom": "Respuesta del bot remoto: ",
   "Message from": "Mensaje de",
   "Stopped by": "Detenido por",
@@ -9601,6 +9604,7 @@ var FR = {
   "Reply from": "Réponse de",
   "Work handed back": "Travail rendu",
   "Work handed back by": "Résultat rendu par",
+  "Standing by": "En attente",
   "ReplyFrom": "Réponse du bot distant : ",
   "Message from": "Message de",
   "Stopped by": "Arrêté par",
@@ -12452,6 +12456,7 @@ var DE = {
   "Reply from": "Antwort von",
   "Work handed back": "Arbeitsergebnis zurück",
   "Work handed back by": "Ergebnis zurück von",
+  "Standing by": "Bereit",
   "ReplyFrom": "Antwort vom Remote-Bot: ",
   "Message from": "Nachricht von",
   "Stopped by": "Gestoppt von",
@@ -15438,6 +15443,7 @@ var ZH = {
   "Replies from": "群聊回复：",
   "Reply from": "收到回复：",
   "Work handed back": "交回的工作结果",
+  "Standing by": "待命",
   "Work handed back by": "交回结果：",
   "ReplyFrom": "收到来自跨机 Bot 的回复：",
   "Message from": "收到消息：",
@@ -33672,6 +33678,9 @@ function taskStatusLabel(status) {
       return t("Waiting for teammate");
     case "waiting_approval":
       return t("Waiting for approval");
+    // A work thread between works (work model W2): kept for the next work of its pair, not busy.
+    case "standing":
+      return t("Standing by");
     case "completed":
       return t("Done");
     case "failed":
