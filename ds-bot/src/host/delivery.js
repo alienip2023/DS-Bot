@@ -14,6 +14,8 @@ const ANSWER_ROLES = new Set(['reply', 'report', 'results'])
 export function install(rt) {
   const { ctx, state } = rt
   const visibleTurns = new WeakMap()
+  // A delivery waiting for its Bot's turn, by Bot and message: the same message sent again meanwhile is not queued twice (D6).
+  const queuedDeliveries = new Set()
   let disposed = false
   ctx.effect?.(() => () => { disposed = true }, 'ds-bot: visible delivery turns')
 
@@ -352,11 +354,20 @@ export function install(rt) {
       await send()
     }
     if (typeof rt.sendThreadTurn === 'function') {
+      // The same message waiting for this Bot already (sent again before the first went out) is not queued twice.
+      const key = `${toId}\u0000${exchangeId}`
+      if (queuedDeliveries.has(key)) return exchangeId
       // The Session decides the Bot; a group's own Session has no Bot and stays ungated.
       const full = rt.bySessionIdFull?.(targetSessionId)
       const bot = full === undefined ? (targetSessionId === rt.chatOf(toId) ? to : undefined) : undefined
       const threadId = full?.threadId ?? (bot === undefined ? undefined : rt.mainThreadOf?.(bot.id)?.id)
-      await rt.sendThreadTurn({ botId: full?.botId ?? bot?.id, threadId, sessionId: targetSessionId, kind: 'dispatch', preview: text, run })
+      queuedDeliveries.add(key)
+      let outcome
+      try {
+        outcome = await rt.sendThreadTurn({ botId: full?.botId ?? bot?.id, threadId, sessionId: targetSessionId, kind: 'dispatch', preview: text, onCancel: () => queuedDeliveries.delete(key), run: async () => { try { await run() } finally { queuedDeliveries.delete(key) } } })
+      } finally {
+        if (outcome?.queued !== true) queuedDeliveries.delete(key)
+      }
     } else {
       await run()
     }

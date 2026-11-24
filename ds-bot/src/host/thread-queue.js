@@ -43,6 +43,24 @@ export function install(rt) {
     return slot
   }
 
+  // An ended part of this Bot's chat (or of its threads and tasks): kept for reading, never a target for a turn.
+  const endedPartOf = (botId, sessionId) => typeof botId === 'string' && typeof sessionId === 'string' && sessionId !== '' &&
+    rt.pastOwners?.get(sessionId)?.botId === botId && rt.pastOwners.get(sessionId).roomId === undefined &&
+    localBot(botId) && rt.chatOf?.(botId) !== sessionId &&
+    !currentSession(sessionId)
+  // A Session something runs in now: a Bot's chat, task or group Session, or the Session of one of its Threads. The
+  // Main thread's own Session is the Bot's chat, whatever its row still names.
+  const localBot = (botId) => {
+    const bot = rt.botOf?.(botId)
+    return bot !== undefined && bot.origin !== 'joined' && bot.origin !== 'peer' && bot.worker?.home !== 'remote'
+  }
+  const currentSession = (sessionId) => {
+    if (rt.chatOwners?.has(sessionId) || rt.taskOwners?.has(sessionId) || rt.groupOwners?.has(sessionId) || rt.roomOwners?.has(sessionId)) return true
+    const full = rt.bySessionIdFull?.(sessionId)
+    return full !== undefined && full.threadId !== mainThreadId(full.botId)
+  }
+  const endedSession = sessionId => endedPartOf(rt.pastOwners?.get(sessionId)?.botId, sessionId)
+
   // Which Bot (and Thread, and Session) a queued action belongs to. `undefined` means
   // the action is not a Bot's own conversation (a group's Session, an unknown part), so
   // the gate stays out of its way and `run` happens at once.
@@ -53,7 +71,12 @@ export function install(rt) {
       if (thread !== undefined) {
         // A local Bot's Main thread has no Session field of its own (the Bot's chat is its
         // Session until a part moves it); resolve that now rather than ungating the Bot.
-        const sessionId = thread.sessionId ?? (thread.id === mainThreadId(thread.botId) ? (rt.chatOf?.(thread.botId) ?? null) : null)
+        const main = thread.id === mainThreadId(thread.botId)
+        let sessionId = thread.sessionId ?? (main ? (rt.chatOf?.(thread.botId) ?? null) : null)
+        // The Main thread is the Bot's chat: a row still naming an ended part of it (a rollover moved the Bot, not
+        // the row) means the part the Bot is in now. Waiting on the ended one would wait for a turn/start that never
+        // comes there, and hold the Bot (D6).
+        if (main && endedPartOf(thread.botId, sessionId)) sessionId = rt.chatOf?.(thread.botId) ?? null
         return { botId: thread.botId, threadId: thread.id, sessionId, title: thread.title, thread }
       }
     }
@@ -223,6 +246,15 @@ export function install(rt) {
     const signal = spec?.signal
     if (signal?.aborted === true) throw abortError()
     const owner = ownerOf(spec)
+    // A turn for an ended part cannot start: it fails now, once and visibly, instead of holding the Bot until the
+    // accept wait gives up (D6). Nothing is queued and nothing runs.
+    const ended = [spec.sessionId, owner?.sessionId].find(endedSession)
+    if (ended !== undefined) {
+      const error = Object.assign(new Error(`The Session ${ended} has ended; a new turn goes to the Bot's current conversation`), { code: 'E_SESSION_ENDED' })
+      const botId = owner?.botId ?? rt.pastOwners?.get(ended)?.botId
+      rt.noteFailure?.({ source: 'turn', code: error.code, text: error.message, bot: rt.botOf?.(botId)?.name, sessionId: ended, threadId: owner?.threadId })
+      throw error
+    }
     if (owner === undefined || typeof owner.sessionId !== 'string' || owner.sessionId === '') {
       await run()
       return { queued: false }
