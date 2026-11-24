@@ -127,7 +127,9 @@ export function install(rt) {
     // Start a two-stage delegate timer:
     // 1. At DELEGATE_NUDGE_MS: nudge the delegatee ("still waiting").
     // 2. At DELEGATE_TIMEOUT_MS: unblock the sender with a timeout notice.
-    if (from !== undefined && to !== undefined) {
+    // A Bot on another machine (peer row): its message waits in the bot/assign outbox while that machine
+    // is away, and no clock runs then (docs/plans/2026-11-24-bot-assign.md).
+    if (from !== undefined && to !== undefined && rt.botOf(to)?.origin !== 'peer') {
       const nudgeTimer = setTimeout(() => {
         const work = works()[id]
         if (work === undefined) return   // already closed

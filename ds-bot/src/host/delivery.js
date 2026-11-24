@@ -181,6 +181,10 @@ export function install(rt) {
     // remote Bot. If the handler is not installed, keep the step-1 refusal and
     // do not fall through to a local session or handleRemoteTurn.
     const refused = refuseJoinedDispatch(to)
+    // The answer to a request a node Bot sent over bot/assign: it goes back to that Bot's machine.
+    if (refused && role === 'reply' && roomId === undefined && rt.assign?.owes?.(replyTo) === true) {
+      return rt.assign.send({ fromId, toId, role, text, exchangeId, replyTo })
+    }
     if (refused) {
       if (!ANSWER_ROLES.has(role) && classify(role) !== 'control' && typeof rt.handleJoinedTurn === 'function') {
         await writeBook()
@@ -199,7 +203,10 @@ export function install(rt) {
     }
     // A peer row is another machine's Bot: the hub carries the message, and it never
     // falls through to a local Session.
-    if (to.origin === 'peer') return sendToPeer(rt, { fromId, toId, text, exchangeId })
+    if (to.origin === 'peer') {
+      if (typeof rt.assign?.send === 'function') return rt.assign.send({ fromId, toId, role, text, exchangeId, replyTo })
+      return sendToPeer(rt, { fromId, toId, text, exchangeId })
+    }
     // Worker Bot routing: dispatch to the remote hub instead of a local Session turn.
     // Phase 1: remote-worker dispatch path is legacy; joined (origin:'joined') uses handleJoinedTurn.
     // Answers and lifecycle controls keep the local delivery path.

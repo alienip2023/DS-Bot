@@ -218,6 +218,7 @@ test('apply registers listeners and effects in a fixed order', (t) => {
     'effect ds-bot: local agents',
     'provide remote-agent:bot-message',
     'effect ds-bot: Bot network',
+    'effect ds-bot: Bot assign',
     'provide ds-bot:apply-model-sync',
     'provide ds-bot:answer-approval',
   ])

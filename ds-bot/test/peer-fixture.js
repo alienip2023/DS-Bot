@@ -10,7 +10,11 @@ export function fakeNetwork({ online = true, nodeId = 'n9' } = {}) {
   network.send = input => { if (!state.online) return false; frames.push(input); return true }
   network.directory = () => []
   network.onMessage = () => () => {}
-  return { network, frames, state }
+  // bot/assign (rewrite R2): what message_bot to a peer row hands over now.
+  const assigns = []
+  network.sendAssign = input => { if (!state.online) return false; assigns.push(input); return true }
+  network.onAssign = () => () => {}
+  return { network, frames, assigns, state }
 }
 
 export const entry = (id, nodeId, name = id) => ({ id, name, role: 'Engineer', nodeId })

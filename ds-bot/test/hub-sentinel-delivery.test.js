@@ -71,7 +71,7 @@ test('a node discovers the published hub Bot and message_bot reaches its hub-loc
   registry.onlineNodes = () => [{ nodeId: 'n9' }]
   registry.send = (nodeId, type, payload) => { frames.push({ nodeId, type, payload }); return true }
   const hub = threadWorld({ services: { 'remote-agent:registry': registry } })
-  const { network, frames: sent } = fakeNetwork()
+  const { network, assigns: sent } = fakeNetwork()
   const node = threadWorld({ services: { 'remote-agent:bot-network': network } })
   t.after(async () => {
     for (const w of [node, hub]) {
@@ -96,17 +96,20 @@ test('a node discovers the published hub Bot and message_bot reaches its hub-loc
   const list = node.rt.teamTools.find(tool => tool.name === 'list_bots')
   assert.match(await list.execute({}, exec), /Commander/)
   const send = node.rt.teamTools.find(tool => tool.name === 'message_bot')
-  assert.match(await send.execute({ to: 'Commander', message: 'Across the hub boundary' }, exec), /^Sent to Commander on hub;/)
+  assert.match(await send.execute({ to: 'Commander', message: 'Across the hub boundary' }, exec), /^Delivered to Commander on hub\./)
   assert.equal(sent.length, 1)
   assert.deepEqual(sent[0].to, { id: commander.id, name: 'Commander', nodeId: 'hub' })
-  assert.deepEqual(sent[0].from, { id: exec9.id, name: 'Exec9', nodeId: 'n9' })
+  assert.deepEqual(sent[0].from, { id: `joined:n9:${encodeURIComponent(exec9.id)}`, name: 'Exec9', nodeId: 'n9' })
   frames.length = 0
-  await hub.ctx.get('remote-agent:bot-message')(sent[0])
+  // The hub knows the node Bot as its joined shadow (rewrite R2): only then can an answer go back.
+  await hub.rt.load()
+  hub.rt.state.bots[sent[0].from.id] = { id: sent[0].from.id, sessionId: sent[0].from.id, name: 'Exec9', role: '', instructions: '', createdAt: 1, type: 'remote-worker', origin: 'joined', worker: { home: 'remote', online: true, nodeId: 'n9', remoteBotId: exec9.id } }
+  assert.equal(await hub.rt.assign.receive(sent[0]), 'applied')
   assert.equal(hub.followups.length, 1, 'the published hub Bot must receive the node message')
   assert.equal(hub.followups[0].sessionId, hub.rt.chatOf(commander.id))
   assert.equal(hub.followups[0].message.content[0].text, '[Message from Exec9]\nAcross the hub boundary')
   assert.equal(hub.followups[0].message.source.exchangeId, sent[0].exchangeId)
-  assert.deepEqual(frames, [], 'the inbound hub sentinel must not be forwarded to any node')
+  assert.deepEqual(frames.filter(frame => frame.type !== 'bot/directory'), [], 'the inbound hub sentinel must not be forwarded to any node')
   assert.equal(node.followups.length, 0, 'sending must not execute the peer locally')
 })
 

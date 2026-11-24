@@ -378,15 +378,24 @@ export function install(rt) {
       }
       if (target === undefined) return `No Bot named ${args.to}. Team: ${Object.values(state.bots).map(bot => bot.name).join(', ')}`
       if (target.id === sender.id) return 'You cannot message yourself.'
-      // A peer row is another machine's Bot: the message goes to the hub as one bot/message
-      // frame, and the reply comes back later as a new message. No queue, no retry.
+      // A peer row is another machine's Bot: the request goes there over bot/assign (kept until that
+      // machine has it), and its reply comes back later as a new message.
       if (target.origin === 'peer') {
         if (String(args.message ?? '').trim() === '') return 'Write a message to send.'
         if (rt.roomOf(rt.groupOwners.get(exec.agent?.id)?.roomId) !== undefined) refuse(`Not sent: ${target.name} is on another machine, and work for this group stays in it.`)
+        if (typeof rt.assign?.send !== 'function') refuse(`Not sent to ${target.name}: cross-machine messages are not available on this machine.`)
         const text = absoluteLinks(String(args.message), rt.sessionFolder?.(exec.agent?.session ?? exec.agent))
-        const result = sendToPeer(rt, { fromId: sender.id, toId: target.id, text })
-        if (!result.ok) refuse(`Not sent to ${target.name}: ${result.error}${result.error === 'E_HUB_OFFLINE' ? '. The hub is offline; nothing was queued, send again when it is back.' : ''}`)
-        return `Sent to ${target.name} on ${target.homeNodeId}; its reply will arrive later as a new message.`
+        const exchangeId = randomUUID()
+        const toUser = args.reply_to === 'user'
+        if (!toUser) rt.openWork(exchangeId, { from: sender.id, to: target.id, parent: worksOf(exec)[0] })
+        const result = await rt.deliver({ fromId: sender.id, toId: target.id, text, role: 'request', exchangeId, ...(toUser ? { audience: 'user' } : {}) })
+        if (result?.ok !== true) {
+          if (!toUser) rt.dropWork(exchangeId)
+          refuse(`Not sent to ${target.name}: ${result?.error ?? 'not delivered'}.`)
+        }
+        const machine = target.worker?.hostname || target.homeNodeId
+        if (result.away === true) return `${target.name}'s machine (${machine}) is not connected right now. The message waits and is delivered when it is back; no time limit runs meanwhile. End your turn: its reply will arrive later as a new message.`
+        return `Delivered to ${target.name} on ${machine}. Its reply will arrive later as a new message; do not wait for it.`
       }
       if (String(args.message ?? '').trim() === '') return 'Write a message to send.'
       const name = typeof args.request_id === 'string' ? args.request_id.trim() : ''
