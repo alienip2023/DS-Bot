@@ -97,7 +97,9 @@ export const TEAM_TOOLS = [
   'task_start', 'task_send', 'task_stop', 'task_list', 'task_read',
   // Fork-only tools (tasks.js / tools.js): templates, team import, scheduling, connected apps, burst, health.
   'list_templates', 'create_from_template', 'import_team', 'schedule_bot', 'bot_connect', 'task_token',
-  'burst_task', 'team_health',
+  'burst_task', 'team_health', 'record_routine',
+  // Mesh / portable-Bot tools (tools.js, fork.111+): LAN peers, pairing, Bot skills, step journal.
+  'node_network', 'pair_node', 'list_skills', 'create_skill', 'bot_journal',
 ]
 // Consecutive automatic admin wakes with no goal progress before the goal waits
 // for the user instead of waking the admin again.
