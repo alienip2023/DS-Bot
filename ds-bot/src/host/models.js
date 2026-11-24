@@ -762,32 +762,19 @@ export function install(rt) {
   const assembleLlm = options => assembleLlmStream(ctx, options, { signal: lifetime.signal, backoff: rt.config?.llmRetryBackoff })
 
   /**
-   * 收到 hub 下发的 MODEL_SYNC 帧后，更新 bot.model/effort 并触发 applyModel。
-   * scope='default'：更新 agentDefaultModel（由 DSH ctx 持有），不改具体 bot。
-   * scope='bot'：只改 sync.botId 指定的 bot。
-   * scope='all'：改全部 managedBy='hub' 的 bot。
-   * 返回实际生效的 botId 列表（scope='default' 时为 []）。
+   * A hub's node/model-sync frame: set the model (and effort) of Bots on this node.
+   * scope='bot' changes sync.botId; scope='all' changes every hub-managed Bot.
+   * There is no 'default' scope: a Bot never follows the DSH default model (docs/plans/2026-10-10-bot-runtime.md),
+   * so changing it here would change nothing a Bot runs on, only the user's own DSH sessions.
+   * Returns the ids of the Bots that took the model.
    *
-   * 注意：为让测试和运行时都能拦截 applyModel，这里通过 rt.applyModel 调用而非
-   * 直接用闭包内的 applyModel。rt.applyModel 在 Object.assign(rt, ...) 后才存在，
-   * 因此本函数只能在 install 完成后调用（runtime 层面自然满足）。
+   * rt.applyModel (not the closure) so tests can stub it; only called after install.
    */
   async function applyModelSync(sync) {
     const { scope, modelRef, effort, botId: targetBotId } = sync
     const applied = []
-    if (scope === 'default') {
-      // 更新 DSH 的 agentDefaultModel：下次 Bot turn 自动用新 ref。
-      try {
-        const dm = typeof ctx?.get === 'function' ? ctx.get('agentDefaultModel') : undefined
-        if (dm && typeof dm.select === 'function') {
-          const parts = modelRef.split('/')
-          const provider = parts.length >= 2 ? parts[0] : undefined
-          const model = parts.length >= 2 ? parts.slice(1).join('/') : modelRef
-          await dm.select({ provider, model, ...(effort ? { reasoningEffort: effort } : {}) })
-        }
-      } catch (err) {
-        rt.warn('ds-bot: applyModelSync default: %s', err)
-      }
+    if (scope !== 'bot' && scope !== 'all') {
+      rt.warn('ds-bot: model sync scope %s is not applied (only bot or all)', scope)
       return applied
     }
     const bots = Object.values(state.bots ?? {}).filter(bot => {

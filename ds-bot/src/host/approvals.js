@@ -258,20 +258,10 @@ export function install(rt) {
     }
   }
 
-  // Relay open/settled events to the AC node when it has registered relay handlers.
-  onApproval((kind, data) => {
-    if (kind === 'open') {
-      const relay = ctx.get?.('dsh-ai-cluster:relay-approval-request', false)
-      if (typeof relay === 'function') {
-        relay({ approvalId: data.id, botId: data.botId, roomId: data.roomId, tool: data.tool, reason: data.reason, detail: data.detail, at: data.at, fingerprint: data.fingerprint })
-      }
-    } else if (kind === 'settled') {
-      const relay = ctx.get?.('dsh-ai-cluster:relay-approval-settled', false)
-      if (typeof relay === 'function') {
-        relay({ approvalId: data.id, outcome: data.outcome })
-      }
-    }
-  })
+  // On a node, an approval reaches the hub as a card in the roster report (node-cards.js) and is answered
+  // there with bot/action card-answer. The roster goes out every few seconds; publish at once when a card
+  // opens or settles so the hub shows it (and drops it) without that wait.
+  onApproval(() => { void Promise.resolve(rt.publishSkillRoster?.()).catch(() => {}) })
 
   Object.assign(rt, { approvalsView, waitsForApproval, answerApproval, cancelApprovals, onApproval })
 }
