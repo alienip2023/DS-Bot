@@ -99,7 +99,7 @@ export const TEAM_TOOLS = [
   'list_templates', 'create_from_template', 'import_team', 'schedule_bot', 'bot_connect', 'task_token',
   'burst_task', 'team_health', 'record_routine',
   // Mesh / portable-Bot tools (tools.js, fork.111+): LAN peers, pairing, step journal.
-  'node_network', 'pair_node', 'bot_journal', 'locate_bot',
+  'node_network', 'pair_node', 'bot_journal', 'locate_bot', 'list_machines',
 ]
 // Consecutive automatic admin wakes with no goal progress before the goal waits
 // for the user instead of waking the admin again.
