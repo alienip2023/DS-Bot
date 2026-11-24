@@ -314,7 +314,7 @@ export function install(rt) {
         // take it up. Once the node has it (a failed dispatch answers `{ ok: false }` and stays
         // noted, so the next start sends it again), it is done with here.
         const remote = rt.botOf(noted.toId)
-        if (remote !== undefined && (joinedShadow(remote) || remote.type === 'remote-worker')
+        if (remote !== undefined && (joinedShadow(remote) || (remote.type === 'remote-worker' && remote.origin !== 'joined'))
           && !(result !== null && typeof result === 'object' && result.ok === false)) forgetQueued(noted.exchangeId)
         return result
       } catch (error) {

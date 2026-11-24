@@ -24,7 +24,8 @@ test('clusterBotId is copied and stored, trims whitespace, and accepts exactly 6
   const row = state.bots['joined:n1:rb']
   assert.equal(row.clusterBotId, 'cb-1.alpha_2')
   assert.equal(row.id, 'joined:n1:rb')
-  assert.equal(row.type, 'remote-worker')
+  // Phase 1: joined rows no longer carry type:'remote-worker' — origin:'joined' is the discriminator.
+  assert.equal(row.type, undefined)
   assert.equal(row.origin, 'joined')
 
   const padded = { ...bot, clusterBotId: '  cb-2.alpha_3  ' }
@@ -77,7 +78,7 @@ test('reports without clusterBotId retain the legacy row keys and changed flags'
     id: 'joined:n1:rb',
     name: 'Bot',
     role: 'r',
-    type: 'remote-worker',
+    // Phase 1: type:'remote-worker' is removed from joined rows; origin:'joined' is the discriminator.
     origin: 'joined',
     homeNodeId: 'n1',
     createdAt: 100,
@@ -95,6 +96,7 @@ test('reports without clusterBotId retain the legacy row keys and changed flags'
     threadIds: ['joined:n1:rb:main'],
   }
   assert.equal(Object.hasOwn(row, 'clusterBotId'), false)
+  assert.equal(Object.hasOwn(row, 'type'), false, 'type should be absent on joined rows in Phase 1')
   assert.deepEqual(Object.keys(row).sort(), Object.keys(expected).sort())
   assert.deepEqual(row, expected)
   const [next] = applyRosterReport(state, report, 200, value => changes.push(value))

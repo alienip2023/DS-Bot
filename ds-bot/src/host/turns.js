@@ -1780,7 +1780,7 @@ export function install(rt) {
             }
             return { ok: false, error: 'joined shadow cannot dispatch' }
           }
-          if (bot?.type === 'remote-worker' && typeof rt.handleRemoteTurn === 'function') {
+          if (bot?.type === 'remote-worker' && bot?.origin !== 'joined' && typeof rt.handleRemoteTurn === 'function') {
             return rt.handleRemoteTurn({ fromId, toId, text: text ?? '', role, exchangeId, replyTo, work })
           }
         }
