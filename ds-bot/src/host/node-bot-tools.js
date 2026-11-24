@@ -47,7 +47,7 @@ export async function deleteBotTool(rt, exec, args, { nodeRole }) {
   await rt.load()
   const self = rt.selfOf(exec.agent?.id)
   if (nodeRole) return `${NODE_NO_MAIN}。`
-  if (!rt.isMain(self)) return 'Only a Main Bot can delete Bots.'
+  if (!(rt.canManage ?? rt.isMain)(self)) return 'Only a Main Bot can delete Bots.'
   const target = args.bot ? rt.findBot(args.bot) : undefined
   if (target === undefined) return `No Bot named ${args.bot}.`
   if (target.origin === 'peer') return `${target.name} belongs to another machine and is read-only here.`

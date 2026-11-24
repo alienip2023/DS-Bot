@@ -2,6 +2,7 @@
 // question and view cards. Group rounds and reading chats are in groups.js.
 import { randomUUID } from 'node:crypto'
 import { NODE_NO_MAIN } from './node-team.js'
+import { canManage as teamCanManage, forwardTeamAct } from './team-act.js'
 import { deleteBotTool, isNodeBot, updateNodeBot } from './node-bot-tools.js'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { readAvatar } from './avatar.js'
@@ -12,7 +13,7 @@ import { missingFileRefs } from './claims.js'
 import { absoluteLinks } from './links.js'
 import { NAME_MAX } from './requests.js'
 import { unquote } from './text.js'
-import { machinesOf, sendToPeer } from './bot-network.js'
+import { machinesOf } from './bot-network.js'
 import { formatRemoteTask } from './remote-tasks.js'
 import { ownChatSessions } from './threads.js'
 import { mentionSpans } from '../shared/mentions.js'
@@ -88,6 +89,8 @@ export function install(rt) {
   }
 
   const callerBot = (exec) => rt.botOf(rt.selfOf(exec.agent?.id))
+  // A Main Bot, or a node Bot the hub lets manage the team (team-act.js).
+  const canManage = id => teamCanManage(rt, id)
   const callerRoom = (exec) => {
     const roomId = (rt.groupOwners.get(exec.agent?.id) ?? rt.pastOwners?.get(exec.agent?.id))?.roomId
     return roomId ? { fromRoomId: roomId } : {}
@@ -117,7 +120,7 @@ export function install(rt) {
     return `- "${room.name}" — ${parts.join('; ')}`
   }
   // Main Bots see every group; other Bots see the groups they are in.
-  const visibleRooms = self => Object.values(state.rooms).filter(room => rt.isMain(self) || room.members.includes(self))
+  const visibleRooms = self => Object.values(state.rooms).filter(room => teamCanManage(rt, self) || room.members.includes(self))
   const teamNames = () => Object.values(state.bots).map(bot => bot.name).join(', ')
   const groupNames = self => visibleRooms(self).map(room => `"${room.name}"`).join(', ') || 'none'
   const pickRoom = (ref, self) => {
@@ -569,9 +572,11 @@ export function install(rt) {
     output,
     async execute(args, exec) {
       await rt.load()
+      if (workerRole() === 'worker') return forwardTeamAct(rt, exec, 'stop_bot', args)
       const sender = callerBot(exec)
-      if (sender === undefined || !rt.isMain(sender.id)) refuse('Only a Main Bot can stop other Bots.')
+      if (sender === undefined || !canManage(sender.id)) refuse('Only a Main Bot can stop other Bots.')
       const target = rt.findBot(args.bot)
+      if (target !== undefined && rt.isMain(target.id) && !rt.isMain(sender.id)) refuse(`${target.name} is a Main Bot: only a Main Bot can stop it.`)
       if (target === undefined) refuse(`No Bot named ${args.bot}. Team: ${Object.values(state.bots).map(bot => bot.name).join(', ')}`)
       if (target.id === sender.id) refuse('You cannot stop yourself.')
       // A peer row is a read-only shadow of another machine's Bot: it has no local turn and no
@@ -656,9 +661,9 @@ export function install(rt) {
       await rt.load()
       const workerErr = workerCreateBotCheck(args)
       if (workerErr) return workerErr
-      // A node has no Main Bot: its Bots are ordinary ones and the hub's Main Bot is the one that creates them there.
-      if (workerRole() === 'worker') return `${NODE_NO_MAIN}。To put a Bot on this machine, ask the hub's Main Bot (create_bot with node).`
-      if (!rt.isMain(rt.selfOf(exec.agent?.id))) return 'Only the Main Bot can create Bots. Ask the Main Bot instead.'
+      // The team is the hub's: on a node the call runs there, as this Bot (team-act.js).
+      if (workerRole() === 'worker') return forwardTeamAct(rt, exec, 'create_bot', args)
+      if (!canManage(rt.selfOf(exec.agent?.id))) return 'Only the Main Bot can create Bots. Ask the Main Bot instead.'
       try {
         // ── Node-side creation: create the Bot directly on a named node ──────
         const nodeArg = typeof args.node === 'string' ? args.node.trim() : ''
@@ -736,13 +741,16 @@ export function install(rt) {
       const self = rt.selfOf(exec.agent?.id)
       const caller = rt.botOf(self)
       if (caller === undefined) return 'Only Bots on the team can use update_bot.'
+      // Another Bot is the team's business, so on a node the call runs on the hub; a Bot changes itself here.
+      if (workerRole() === 'worker' && args.bot && rt.findBot(args.bot)?.id !== caller.id) return forwardTeamAct(rt, exec, 'update_bot', args)
       const bot = args.bot ? rt.findBot(args.bot) : caller
       if (bot === undefined) return `No Bot named ${args.bot}.`
       const workerErrU = workerUpdateBotCheck(bot)
       if (workerErrU) return workerErrU
       // On a node every Bot is ordinary: it changes itself, and only the hub's Main Bot changes another one.
       if (workerRole() === 'worker' && bot.id !== caller.id) return `${NODE_NO_MAIN}。Leave out bot to change yourself.`
-      if (bot.id !== caller.id && !rt.isMain(self)) return 'Only a Main Bot can change another Bot. Leave out bot to change yourself, or ask a Main Bot with message_bot.'
+      if (bot.id !== caller.id && !canManage(self)) return 'Only a Main Bot can change another Bot. Leave out bot to change yourself, or ask a Main Bot with message_bot.'
+      if (bot.id !== caller.id && rt.isMain(bot.id) && !rt.isMain(self)) return `${bot.name} is a Main Bot: only a Main Bot can change it.`
       // A Bot that lives on a node is changed there (bot/update), not only on this hub's row of it.
       if (isNodeBot(bot)) return await updateNodeBot(rt, bot, args)
       try {
@@ -778,7 +786,8 @@ export function install(rt) {
     },
     output,
     async execute(args, exec) {
-      return deleteBotTool(rt, exec, args, { nodeRole: workerRole() === 'worker' })
+      if (workerRole() === 'worker') return forwardTeamAct(rt, exec, 'delete_bot', args)
+      return deleteBotTool(rt, exec, args, { nodeRole: false })
     },
   }))
 
@@ -894,9 +903,8 @@ export function install(rt) {
     async execute(args, exec) {
       await rt.load()
       const self = rt.selfOf(exec.agent?.id)
-      const workerErrG = workerCreateGroupCheck()
-      if (workerErrG) return workerErrG
-      if (!rt.isMain(self)) return 'Only a Main Bot can create group chats. Ask a Main Bot instead.'
+      if (workerCreateGroupCheck() !== undefined) return forwardTeamAct(rt, exec, 'create_group', args)
+      if (!canManage(self)) return 'Only a Main Bot can create group chats. Ask a Main Bot instead.'
       const { bots, unknown } = resolveBots(args.members)
       if (unknown.length > 0) return `No Bot named ${unknown.join(', ')}. Team: ${teamNames()}`
       const admin = args.admin ? rt.findBot(args.admin) : rt.botOf(self)
@@ -930,11 +938,13 @@ export function install(rt) {
       await rt.load()
       const self = rt.selfOf(exec.agent?.id)
       if (rt.botOf(self) === undefined) return 'Only Bots on the team can use update_group.'
+      // Group chats live on the hub.
+      if (workerRole() === 'worker') return forwardTeamAct(rt, exec, 'update_group', args)
       const { room, error } = pickRoom(args.group, self)
       if (error) return error
       const moving = typeof args.work_dir === 'string'
-      if (moving && !rt.isMain(self)) return `Only a Main Bot can set the folder of "${room.name}".`
-      if (args.section !== undefined && !rt.isMain(self)) return `Only a Main Bot can move "${room.name}" between sidebar sections.`
+      if (moving && !canManage(self)) return `Only a Main Bot can set the folder of "${room.name}".`
+      if (args.section !== undefined && !canManage(self)) return `Only a Main Bot can move "${room.name}" between sidebar sections.`
       const add = resolveBots(args.add_members)
       const remove = resolveBots(args.remove_members)
       const unknown = [...add.unknown, ...remove.unknown]
@@ -1079,8 +1089,9 @@ export function install(rt) {
     output,
     async execute(args, exec) {
       await rt.load()
+      if (workerRole() === 'worker') return forwardTeamAct(rt, exec, 'delete_group', args)
       const self = rt.selfOf(exec.agent?.id)
-      if (!rt.isMain(self)) return 'Only a Main Bot can delete group chats.'
+      if (!canManage(self)) return 'Only a Main Bot can delete group chats.'
       const { room, error } = pickRoom(args.group, self)
       if (error) return error
       if (rt.roomBusy(room.id)) return `"${room.name}" is in the middle of a round. Delete it after the round ends.`

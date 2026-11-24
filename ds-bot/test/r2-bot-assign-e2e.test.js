@@ -41,6 +41,7 @@ async function cluster(t) {
       if (!this.nodes.get(nodeId)?.online) return false
       const network = nodes.get(nodeId)
       if (type === 'bot/assign') network.receiveAssign(structuredClone(data))
+      else if (type === 'team/act-result') network.receiveTeamActResult(structuredClone(data))
       else if (type === 'bot/directory') network.receiveDirectory(structuredClone(data))
       return true
     }
@@ -166,4 +167,54 @@ test('R3-E2E-4 hub Bot → node Bot: over bot/assign, never written into the nod
   await until(() => textsIn(hub, 'chief').some(text => text.includes('磁盘还剩 120G')), 'the answer reached Chief')
   assert.equal(Object.values(hub.rt.state.works ?? {}).filter(w => w.from === 'chief').length, 0, 'Chief work closed')
   assert.equal(mirrored, 0)
+})
+
+// ── R4: team management from a node ─────────────────────────────────────────────────────────────
+async function managedCluster(t, prefs) {
+  const c = await cluster(t)
+  for (const w of [c.n10.w, c.n11.w]) {
+    const get = w.ctx.get.bind(w.ctx)
+    w.ctx.get = name => (name === 'remote-agent:role' ? 'worker' : get(name))
+  }
+  // A real hub-side answer for team/act: AC's ingest + hub bot-network, back to the node over its link.
+  if (prefs !== undefined) Object.assign(c.hub.rt.state.prefs ??= {}, prefs)
+  return c
+}
+const tool = (w, name, args, as) => w.rt.teamTools.find(def => def.name === name).execute(args, { agent: { id: w.rt.chatOf(as) }, callId: 'c', signal: new AbortController().signal })
+
+test('R4-E2E-1 a node Bot creates and deletes a hub group chat through the hub, as itself', { skip }, async t => {
+  const { hub, n11 } = await managedCluster(t)
+  const made = await tool(n11.w, 'create_group', { name: '节点协作组', members: ['node010执行'] }, 'e11')
+  assert.match(String(made), /节点协作组/)
+  const room = Object.values(hub.rt.state.rooms).find(r => r.name === '节点协作组')
+  assert.ok(room, 'the group exists on the hub')
+  assert.deepEqual(room.members.sort(), ['joined:node010:e10', 'joined:node011:e11'].sort(), 'the node Bot that asked is in it')
+  const gone = await tool(n11.w, 'delete_group', { group: '节点协作组' }, 'e11')
+  assert.doesNotMatch(String(gone), /Only a Main Bot|Not done/)
+  assert.equal(Object.values(hub.rt.state.rooms).some(r => r.name === '节点协作组'), false)
+})
+
+test('R4-E2E-2 the hub decides: nodeManagers "none" refuses, and a node manager cannot change a Main Bot', { skip }, async t => {
+  const none = await managedCluster(t, { nodeManagers: 'none' })
+  const refused = await tool(none.n11.w, 'create_group', { name: 'X', members: ['node010执行'] }, 'e11')
+  assert.match(String(refused), /^Not done on the hub: node011执行 may not manage the team/)
+  assert.equal(Object.keys(none.hub.rt.state.rooms).length, 0)
+
+  const all = await managedCluster(t)
+  all.hub.rt.state.mainBotIds = ['chief']
+  const main = await tool(all.n11.w, 'update_bot', { bot: 'Chief', role: '被改' }, 'e11')
+  assert.match(String(main), /Chief is a Main Bot: only a Main Bot can change it/)
+  assert.notEqual(all.hub.rt.botOf('chief').role, '被改')
+})
+
+test('R4-E2E-3 a node Bot still changes itself locally (no hub round trip)', { skip }, async t => {
+  const { hub, n11 } = await managedCluster(t)
+  let asked = 0
+  const net = n11.w.ctx.get('remote-agent:bot-network')
+  const real = net.teamAct
+  net.teamAct = (...a) => { asked += 1; return real(...a) }
+  await tool(n11.w, 'update_bot', { role: '执行官' }, 'e11')
+  assert.equal(asked, 0)
+  assert.equal(n11.w.rt.botOf('e11').role, '执行官')
+  void hub
 })

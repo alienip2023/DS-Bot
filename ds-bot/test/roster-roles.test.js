@@ -130,12 +130,11 @@ describe('L2 worker role permissions', () => {
     assert.equal(rt.createBot.mock.callCount(), 0)
   })
 
-  // A node has no Main Bot and its Bots are ordinary: they do not create Bots, the hub's Main Bot does (create_bot with node).
-  it('create_bot on a worker node is refused: only the hub\'s Main Bot creates Bots there', async t => {
+  // Rewrite R4: the team is the hub's, so create_bot on a node runs there (team/act), never locally.
+  it('create_bot on a worker node goes to the hub, nothing is created here', async t => {
     const { rt, execute } = toolsWorld(t, 'worker')
     const result = await execute('create_bot', { name: 'New Bot', role: 'Writer', instructions: 'Write reports.' })
-    assert.match(result, /节点上没有主 Bot/)
-    assert.match(result, /create_bot with node/)
+    assert.match(result, /runs on the hub, and this machine's AC cannot reach it/)
     assert.equal(rt.createBot.mock.callCount(), 0)
   })
 
@@ -159,18 +158,12 @@ describe('L2 worker role permissions', () => {
     assert.equal(rt.createBot.mock.callCount(), 1)
   })
 
-  it('update_bot returns E_WORKER_READONLY when changing a joined bot on worker', async t => {
+  it('update_bot of another Bot on a worker goes to the hub, nothing changes here (rewrite R4)', async t => {
     const { rt, other, execute } = toolsWorld(t, 'worker')
+    assert.match(await execute('update_bot', { bot: 'Other', name: 'Changed' }), /runs on the hub, and this machine's AC cannot reach it/)
     other.origin = 'joined'
     other.worker = { nodeId: 'n2' }
-    assert.equal(await execute('update_bot', { bot: 'Other', name: 'Changed' }), 'E_WORKER_READONLY')
-    assert.equal(rt.updateBot.mock.callCount(), 0)
-  })
-
-  it('update_bot on a worker node does not change another Bot: an ordinary Bot only changes itself', async t => {
-    const { rt, execute } = toolsWorld(t, 'worker')
-    const result = await execute('update_bot', { bot: 'Other', name: 'Changed' })
-    assert.match(result, /节点上没有主 Bot/)
+    assert.match(await execute('update_bot', { bot: 'Other', name: 'Changed' }), /runs on the hub, and this machine's AC cannot reach it/)
     assert.equal(rt.updateBot.mock.callCount(), 0)
   })
 
@@ -182,16 +175,16 @@ describe('L2 worker role permissions', () => {
     assert.equal(caller.name, 'Changed')
   })
 
-  it('update_bot reports an unknown bot on worker', async t => {
+  it('update_bot of a Bot this node does not know goes to the hub, which knows the whole team (rewrite R4)', async t => {
     const { rt, execute } = toolsWorld(t, 'worker')
-    assert.equal(await execute('update_bot', { bot: 'Unknown' }), 'No Bot named Unknown.')
+    assert.match(await execute('update_bot', { bot: 'Unknown' }), /runs on the hub, and this machine's AC cannot reach it/)
     assert.equal(rt.updateBot.mock.callCount(), 0)
   })
 
-  it('create_group returns E_WORKER_READONLY on worker', async t => {
+  it('create_group on a worker goes to the hub, nothing is created here (rewrite R4)', async t => {
     const { rt, execute } = toolsWorld(t, 'worker')
     t.mock.method(rt, 'isMain', () => false)
-    assert.equal(await execute('create_group', { name: 'Team', members: ['Other'] }), 'E_WORKER_READONLY')
+    assert.match(await execute('create_group', { name: 'Team', members: ['Other'] }), /runs on the hub, and this machine's AC cannot reach it/)
     assert.equal(rt.createRoom.mock.callCount(), 0)
   })
 
