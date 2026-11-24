@@ -2219,25 +2219,30 @@ export function install(rt) {
     },
   }))
 
-  // ── pair_node：显示配对码，准备接受新节点 ───────────────────────────────
+  // ── pair_node：新机器加入团队需要的地址与步骤（配对码本身含主控口令，只在主控面板上显示）──
   rt.teamTools.push(defineTool({
     name: 'pair_node',
-    description: 'Get the current pairing code for this hub so a new machine can join the mesh network. The code is valid for 5 minutes. Share it with the operator of the new machine.',
+    description: 'Explain how a new machine joins the team: the addresses where machines can reach this hub, whether the hub is ready to accept them, and the firewall rule to open. The pairing code itself contains the hub\'s node token, so it is shown only in the hub panel, never in a chat.',
     isConcurrencySafe: true,
     parameters: {},
     output,
     async execute() {
-      const registry = (() => { try { return ctx.get?.('remote-agent:registry') } catch { return undefined } })()
-      const pairingCode = typeof registry?.getPairingCode === 'function' ? registry.getPairingCode() : null
-      if (!pairingCode) return 'Pairing service not available on this hub. Ensure AC 0.4.31+ is running and pairing is enabled.'
-      return [
-        '配对码（5分钟有效）：',
-        '',
-        `  ${pairingCode}`,
-        '',
-        '在新机器上运行：',
-        `  dsh-node-daemon pair --code ${pairingCode} --hub <this-machine-IP>`,
-      ].join('\n')
+      const pairInfo = (() => { try { return ctx.get?.('remote-agent:pair-info') } catch { return undefined } })()
+      if (typeof pairInfo !== 'function') return `This machine is not a hub, or its AC is older than ${AC_NEEDED}: open the AI Cluster panel on the hub to add a machine.`
+      let info
+      try { info = pairInfo() } catch (error) { return `Could not read the hub's pairing state: ${error?.message ?? error}` }
+      const lines = ['To add a machine: open the AI Cluster panel on this hub → Add machine, copy the pairing code, and paste it into the new machine\'s AI Cluster setup.']
+      if (!info?.tokenSet) lines.push('', 'The hub has no node token yet: generate one in the panel first, or no machine can join.')
+      if (info?.listener?.hint) lines.push('', `Listener: ${info.listener.hint}`)
+      const codes = Array.isArray(info?.codes) ? info.codes : []
+      const usable = codes.filter(code => code.usable)
+      if (codes.length > 0) {
+        lines.push('', 'Addresses machines can join at:')
+        for (const code of codes) lines.push(`  ${code.usable ? '✓' : '✗'} ${code.hubUrl}${code.private ? '' : ' (public)'}${code.usable ? '' : ' — not usable now'}`)
+      }
+      if (usable.length === 0) lines.push('', 'No address is usable right now; fix the listener above first.')
+      if (info?.firewallHint) lines.push('', `Windows hub: allow inbound connections with\n  ${info.firewallHint}`)
+      return lines.join('\n')
     },
   }))
 
