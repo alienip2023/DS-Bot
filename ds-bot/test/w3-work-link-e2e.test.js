@@ -29,6 +29,7 @@ const settle = async () => { for (let i = 0; i < 20; i += 1) await new Promise(r
 
 const bot = (id, name) => ({ id, sessionId: id, name, role: 'Exec', instructions: '', createdAt: 1 })
 const joined = (nodeId, id, name) => ({ ...bot(`joined:${nodeId}:${id}`, name), type: 'remote-worker', origin: 'joined', worker: { home: 'remote', online: true, nodeId, remoteBotId: id, hostname: `box-${nodeId}` } })
+const SURFACE = new Set(['system/message', 'developer/message', 'user/message', 'assistant/message', 'tool/result'])
 const team = bots => ({ version: 1, mainBotIds: [], revision: 1, whaleStored: true, bots: Object.fromEntries(bots.map(b => [b.id, b])), rooms: {}, exchanges: [], exchangeTurns: {}, questions: {} })
 
 async function cluster(t) {
@@ -50,14 +51,24 @@ async function cluster(t) {
   const hub = world('w3-hub-', team([bot('chief', 'Chief'), joined('node010', 'e10', 'Exec10'), joined('node011', 'e11', 'Exec11')]),
     { 'remote-agent:registry': registry, 'remote-agent:bot-network': hubNetwork })
   hubCtx = hub.ctx
-  // The hub's page Sessions keep what is appended, as DSH's do.
+  // The hub's page Sessions keep what is appended, and check surface markers, as DSH's do.
   const resolveHub = hub.ctx.sessionController.resolveAgent
   hub.ctx.sessionController.resolveAgent = async (sessionId) => {
     const out = await resolveHub(sessionId)
     const session = out.agent.session
-    if (typeof session.append !== 'function') session.append = (type, data) => { const event = { type, seq: ++session.seq, time: Date.now(), data }; session.log.push(event); return event }
+    if (typeof session.append !== 'function') {
+      session.append = (type, data, options) => {
+        if (SURFACE.has(type) && options?.surfaceOp === undefined) throw new Error(`session event "${type}" is surface-eligible and requires a surfaceOp marker`)
+        if (!SURFACE.has(type) && options?.surfaceOp !== undefined) throw new Error(`session event "${type}" is not surface-eligible and cannot carry surfaceOp`)
+        const event = { type, seq: ++session.seq, time: Date.now(), data }
+        session.log.push(event)
+        return event
+      }
+    }
     return out
   }
+  // A page of a hub Session is what was appended to it.
+  hub.ctx.sessionController.page = async ({ address }) => ({ records: (hub.agents.get(address.sessionId)?.session.log ?? []).map(event => ({ event })), hasMore: false })
   const machines = {}
   const node = (nodeId, local) => {
     const transport = new EventEmitter()
@@ -380,4 +391,39 @@ test('W4-2 a copy sent twice is written once, and a turn whose start the copy mi
   const page = pageOf(hub, 'joined:node010:e10')
   assert.deepEqual(page.log.map(e => [e.type, e.data.turn]), [['turn/start', 1], ['step/start', 1], ['assistant/message', 1], ['step/end', 1], ['turn/end', 1]])
   assert.deepEqual(hub.rt.ctx.get('remote-agent:bot-network').reliablePending(), [], 'nothing left to send again')
+})
+
+test('W4-3 a node Bot\'s work thread is copied to the hub too: listed on its page, readable there, standing between works', { skip }, async t => {
+  const { hub, n10 } = await cluster(t)
+  const chief = userTurn(hub, 'chief', 'have Exec10 check the build')
+  await messageBot(hub.rt, 'chief', 'Exec10', 'check the build')
+  chief.end('asked')
+  await until(() => workThread(n10.w.rt, 'e10') !== undefined && delivered(n10.w).some(d => d.sessionId === workThread(n10.w.rt, 'e10').sessionId), 'the request reached node010')
+  const thread = workThread(n10.w.rt, 'e10')
+  const request = delivered(n10.w).find(d => d.sessionId === thread.sessionId).message
+  runTurn(n10.w, thread.sessionId, request, 'the build is green')
+  const copyOf = () => hub.rt.state.replicas?.['joined:node010:e10']?.tasks?.[thread.id]
+  await until(() => copyOf()?.sessionId !== undefined && (hub.agents.get(copyOf().sessionId)?.session.log ?? []).some(e => e.type === 'turn/end'), 'the thread\'s turn is on the hub')
+  const copy = hub.agents.get(copyOf().sessionId).session
+  assert.deepEqual(copy.log.filter(e => e.type !== 'system/message').map(e => e.type), ['turn/start', 'user/message', 'assistant/message', 'turn/end'])
+  assert.equal(textOf(copy.log.find(e => e.type === 'user/message').data), '[Message from Chief]\ncheck the build')
+  // Not on the Bot's own page: that stays its chat with the user.
+  assert.equal((pageOf(hub, 'joined:node010:e10')?.log ?? []).some(e => /check the build/.test(JSON.stringify(e.data))), false)
+  // The hub lists it on Exec10's page, standing by, and opens it.
+  await until(() => thread.status === 'standing', 'the thread stands by on node010')
+  hub.rt.state.mainBotIds = ['chief']
+  const answer = await hub.call('state', {})
+  assert.equal(answer.ok, true, JSON.stringify(answer).slice(0, 400))
+  const row = answer.value.bots.find(b => b.id === 'joined:node010:e10')
+  const listed = (row.tasks ?? []).find(task => task.id === thread.id)
+  assert.equal(listed?.title, '@Chief · 工作')
+  assert.equal(listed.status, 'standing')
+  assert.equal(listed.viewable, true)
+  const read = await hub.call('bot-task-read', { botId: 'joined:node010:e10', taskId: thread.id })
+  assert.equal(read.ok, true, JSON.stringify(read))
+  assert.equal(read.value.sessionId, copyOf().sessionId)
+  // Only the copy writes there.
+  const before = copy.log.length
+  copy.append('user/message', { role: 'user', content: [{ type: 'text', text: 'made up' }] }, { surfaceOp: 'append' })
+  assert.equal(copy.log.length, before)
 })

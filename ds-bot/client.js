@@ -33698,6 +33698,7 @@ function taskOriginLabel(origin) {
     case "fg-handoff":
       return t("Moved from chat");
     case "bot-handoff":
+    case "bot-work":
       return t("Teammate request");
     default:
       return "";
@@ -33833,7 +33834,7 @@ function TaskIslandPanel({ bot, room: room2, roster, approvals = [], focusTaskId
     void Promise.resolve(actions.stopTask(ownerBot.id, task.id)).catch((err) => setError(hostText(err?.message ?? String(err)))).finally(() => setBusy(false));
   };
   const openTaskReader = () => {
-    if (!task || !ownerBot || task.remote) return;
+    if (!task || !ownerBot || task.remote && !task.viewable) return;
     actions.closeTaskDeck?.();
     actions.openTask?.(panelSubject, ownerBot.id, task.id);
   };
@@ -33943,7 +33944,7 @@ function TaskIslandPanel({ bot, room: room2, roster, approvals = [], focusTaskId
     (0, import_react36.createElement)(
       "div",
       { className: "bt-goal-foot bt-btask-foot" },
-      task && !task.remote ? (0, import_react36.createElement)(
+      task && (!task.remote || task.viewable) ? (0, import_react36.createElement)(
         "button",
         { type: "button", className: "bt-goal-checks", onClick: openTaskReader },
         t("View details"),
@@ -34201,10 +34202,10 @@ function DetailsTaskList({ tasks, sessionId, showBot = false, actions, run: run2
               role: "button",
               tabIndex: 0,
               onClick: () => {
-                if (!task.remote) actions.openTask?.(sessionId, ownerId, task.id);
+                if (!task.remote || task.viewable) actions.openTask?.(sessionId, ownerId, task.id);
               },
               onKeyDown: (event) => {
-                if (event.target !== event.currentTarget || task.remote) return;
+                if (event.target !== event.currentTarget || task.remote && !task.viewable) return;
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault();
                   actions.openTask?.(sessionId, ownerId, task.id);

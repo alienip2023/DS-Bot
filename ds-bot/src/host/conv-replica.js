@@ -12,6 +12,7 @@
 // frame already applied (same node Session and seq) is skipped.
 import { botOfRef, isRemoteBot, ownNodeId, refOf } from './bot-link.js'
 import { joinedShadow } from './roster-join.js'
+import { createSystemMessage } from '@deepseek-ai/dsh-llm'
 import { ensureMirrorSession } from './mirror.js'
 import { turnEnd } from './turn-end.js'
 
@@ -20,7 +21,9 @@ const HUB = 'hub'
 export const REPLICATED = new Set(['turn/start', 'step/start', 'user/message', 'assistant/message', 'tool/call', 'tool/result', 'step/end', 'turn/end'])
 const STRING_MAX = 16_000
 const FRAME_MAX = 200_000
-const SURFACED = new Set(['user/message', 'assistant/message'])
+// DSH's surface events: each is written with a surface marker (and only these may carry one).
+const SURFACED = new Set(['system/message', 'developer/message', 'user/message', 'assistant/message', 'tool/result'])
+const TITLE_MAX = 120
 
 function serviceOf(rt, name) {
   try { return rt.ctx?.get?.(name) } catch { return undefined }
@@ -63,9 +66,12 @@ function publishFrom(rt) {
   return (session, event) => {
     const sessionId = session?.id
     if (typeof sessionId !== 'string' || !REPLICATED.has(event?.type) || !Number.isInteger(event.seq)) return
-    // The Bot's own chat only: not its background tasks or work threads, not its group Sessions.
-    const botId = rt.chatOwners?.get(sessionId)
-    if (botId === undefined || rt.taskOwners?.has(sessionId) || rt.groupOwners?.has(sessionId)) return
+    // The Bot's own chat, and its own background tasks and work threads (read-only on the hub); not its group Sessions.
+    if (rt.groupOwners?.has(sessionId)) return
+    const owner = rt.taskOwners?.get(sessionId)
+    if (owner !== undefined && owner.roomId !== undefined) return
+    const botId = owner?.botId ?? rt.chatOwners?.get(sessionId)
+    if (botId === undefined) return
     const network = serviceOf(rt, 'remote-agent:bot-network')
     if (typeof network?.post !== 'function') return
     const own = ownNodeId(rt)
@@ -74,8 +80,13 @@ function publishFrom(rt) {
     if (bot === undefined || isRemoteBot(bot)) return
     const ref = refOf(rt, bot)
     if (ref === undefined) return
+    let task
+    if (owner !== undefined) {
+      const row = (bot.tasks ?? []).find(item => item?.id === owner.taskId)
+      task = { id: String(owner.taskId).slice(0, 64), title: String(row?.title ?? '').slice(0, TITLE_MAX), ...(typeof row?.origin === 'string' ? { origin: row.origin.slice(0, 32) } : {}) }
+    }
     try {
-      network.post('team/conv', { bot: ref, sid: sessionId, seq: event.seq, type: event.type, data: sanitize(event.data ?? {}) })
+      network.post('team/conv', { bot: ref, sid: sessionId, seq: event.seq, type: event.type, data: sanitize(event.data ?? {}), ...(task ? { task } : {}) })
     } catch (error) {
       rt.warn?.('ds-bot: an event of %s did not go to the hub: %s', bot.name, error?.message ?? error)
     }
@@ -129,12 +140,16 @@ async function onConv(rt, msg) {
   const bot = botOfRef(rt, data.bot)
   // Not known here yet (the node's roster comes after the link): not handled, so the link sends it again.
   if (!joinedShadow(bot)) throw new Error(`no page here yet for ${data.bot?.name ?? data.bot?.id} on ${msg.from}`)
-  const session = holdPage(rt, await ensureMirrorSession(rt, bot))
   const replicas = (rt.state.replicas ??= {})
   const mine = (replicas[bot.id] ??= { sessions: {} })
-  const from = (mine.sessions[data.sid] ??= { seq: -1, turns: {} })
+  const task = taskOf(data.task)
+  const copy = task === undefined ? undefined : await taskCopyOf(rt, bot, mine, task)
+  const session = copy === undefined ? holdPage(rt, await ensureMirrorSession(rt, bot)) : copy.session
+  const book = copy === undefined ? mine.sessions : (copy.entry.sessions ??= {})
+  const from = (book[data.sid] ??= { seq: -1, turns: {} })
   if (data.seq <= from.seq) return
   from.seq = data.seq
+  const running = copy === undefined ? on => noteRunning(rt, bot, on) : (on) => { copy.entry.running = on; copy.entry.at = Date.now() }
   const event = structuredClone(data.data ?? {})
   const nodeTurn = event.turn
   try {
@@ -146,7 +161,7 @@ async function onConv(rt, msg) {
         const turn = lastTurnOf(session) + 1
         if (Number.isInteger(nodeTurn)) from.turns[nodeTurn] = turn
         session.append('turn/start', { ...event, turn })
-        noteRunning(rt, bot, true)
+        running(true)
         return
       }
       let turn = Number.isInteger(nodeTurn) ? from.turns[nodeTurn] : openTurnOf(session)
@@ -157,19 +172,19 @@ async function onConv(rt, msg) {
         const open = openTurnOf(session)
         if (open !== undefined) session.append('turn/end', { turn: open, reason: turnEnd.interrupted() })
         session.append('turn/start', { turn })
-        noteRunning(rt, bot, true)
+        running(true)
       }
-      const copy = turn === undefined ? event : { ...event, turn }
-      if (data.type === 'user/message') {
+      const written = turn === undefined ? event : { ...event, turn }
+      if (data.type === 'user/message' && copy === undefined) {
         // The page's own message comes back with the id of the page's request, so the composer retires its echo.
-        const rpcId = copy.source?.rpcId
+        const rpcId = written.source?.rpcId
         const requestId = typeof rpcId === 'string' ? rt.joinedRequestOf?.(rpcId) : undefined
-        if (requestId !== undefined) copy.source = { ...copy.source, rpcId: requestId }
+        if (requestId !== undefined) written.source = { ...written.source, rpcId: requestId }
       }
-      session.append(data.type, copy, SURFACED.has(data.type) ? { surfaceOp: 'append' } : undefined)
+      session.append(data.type, written, SURFACED.has(data.type) ? { surfaceOp: 'append' } : undefined)
       if (data.type === 'turn/end') {
         if (Number.isInteger(nodeTurn)) delete from.turns[nodeTurn]
-        noteRunning(rt, bot, false)
+        running(false)
       }
     })
   } catch (error) {
@@ -178,6 +193,50 @@ async function onConv(rt, msg) {
   }
   await rt.ctx?.sessions?.flush?.(session).catch?.(() => {})
   void rt.save?.().catch(() => {})
+}
+
+// The task a frame is from, as the node names it, or undefined for the Bot's own chat.
+function taskOf(task) {
+  if (!task || typeof task !== 'object' || typeof task.id !== 'string' || task.id === '' || task.id.length > 64) return undefined
+  return { id: task.id, title: typeof task.title === 'string' ? task.title.slice(0, TITLE_MAX) : '', ...(typeof task.origin === 'string' ? { origin: task.origin.slice(0, 32) } : {}) }
+}
+
+const taskCopies = new WeakMap()
+/**
+ * The hub's read-only copy of a node Bot's background task or work thread: a Session of its own, written only by the
+ * copy, kept in `state.replicas[bot].tasks[taskId]` (the hub's task list shows it, and its reader pages it).
+ */
+async function taskCopyOf(rt, bot, mine, task) {
+  const tasks = (mine.tasks ??= {})
+  const entry = (tasks[task.id] ??= { title: task.title, startedAt: Date.now(), at: Date.now() })
+  if (task.title !== '') entry.title = task.title
+  if (task.origin !== undefined) entry.origin = task.origin
+  let pending = taskCopies.get(rt)
+  if (!pending) { pending = new Map(); taskCopies.set(rt, pending) }
+  const key = `${bot.id}\u0000${task.id}`
+  if (!pending.has(key)) pending.set(key, openTaskCopy(rt, bot, entry).finally(() => pending.delete(key)))
+  return { entry, session: holdPage(rt, await pending.get(key)) }
+}
+async function openTaskCopy(rt, bot, entry) {
+  if (typeof entry.sessionId === 'string' && entry.sessionId !== '') {
+    const agent = await rt.resolveAgent(entry.sessionId).catch(() => undefined)
+    if (agent?.session) return agent.session
+  }
+  const sessionId = await rt.createSession(`${bot.id} task (copy)`)
+  const session = (await rt.resolveAgent(sessionId)).session
+  if (!session) throw new Error('the copy of a node task has no Session')
+  try { session.append('system/message', createSystemMessage(`[copy: ${bot.name} · ${entry.title || 'task'}]`), { protected: true, surfaceOp: 'append' }) } catch {
+    try { session.append('system/message', createSystemMessage(`[copy: ${bot.name} · ${entry.title || 'task'}]`), { protected: true }) } catch { /* the copy goes on without a head */ }
+  }
+  entry.sessionId = sessionId
+  await rt.save?.()
+  return session
+}
+
+/** The hub's copy of a node Bot's task, if the node has sent any of it. */
+export function taskCopyEntry(rt, botId, taskId) {
+  const entry = rt.state?.replicas?.[botId]?.tasks?.[taskId]
+  return typeof entry?.sessionId === 'string' && entry.sessionId !== '' ? entry : undefined
 }
 
 function noteRunning(rt, bot, running) {

@@ -2298,7 +2298,13 @@ export function install(rt) {
   async function taskPage(botId, taskId, cursor, steps = false) {
     const bot = rt.botOf(botId)
     const task = (bot?.tasks ?? []).find(item => item?.id === taskId)
-    if (task === undefined) throw Object.assign(new Error('Unknown task'), { code: 'bot/not-found' })
+    if (task === undefined) {
+      // A node Bot's task: the hub's read-only copy of it (conv-replica.js).
+      const copy = bot === undefined ? undefined : rt.state?.replicas?.[bot.id]?.tasks?.[taskId]
+      if (typeof copy?.sessionId !== 'string' || copy.sessionId === '') throw Object.assign(new Error('Unknown task'), { code: 'bot/not-found' })
+      const copyParts = [{ sessionId: copy.sessionId }]
+      return { sessionId: copy.sessionId, ...(await partPage(copyParts, 0, cursor, steps, { taskView: true })) }
+    }
     const parts = [
       ...(task.segments ?? []).map(segment => ({ sessionId: segment.sessionId, startedAt: segment.startedAt, endedAt: segment.endedAt })),
       { sessionId: task.sessionId, startedAt: task.startedAt, endedAt: task.endedAt },

@@ -342,7 +342,7 @@ export function install(rt) {
       const peer = bot.origin === 'peer'
       const own = peer ? null : rt.chatOf(bot.id)
       const tail = peer ? undefined : rt.chatTail(own)
-      const botTasks = joinedShadow(bot) ? remoteTasksOf(bot, nodeTasks) : rt.taskViewOf?.(state.bots[bot.id]) ?? []
+      const botTasks = joinedShadow(bot) ? remoteTasksOf(bot, nodeTasks, state.replicas?.[bot.id]?.tasks) : rt.taskViewOf?.(state.bots[bot.id]) ?? []
       return {
         ...bot, sessionId: own, parts: (peer ? [] : segments ?? []).map(segment => segment.sessionId),
         ...(botTasks.length > 0 ? { tasks: botTasks } : {}), ...compatOf(rt, bot),
@@ -1623,8 +1623,15 @@ export function install(rt) {
 }
 
 // A joined Bot's tasks run on its node: shown read-only (no Session here) while the node is up.
-function remoteTasksOf(bot, nodeTasks) {
-  if (bot.worker?.online === false || !Array.isArray(nodeTasks)) return []
-  return nodeTasks.map(task => ({ ...task, remote: true, updatedAt: task.startedAt }))
+function remoteTasksOf(bot, nodeTasks, copies = {}) {
+  const online = bot.worker?.online !== false
+  const listed = (online && Array.isArray(nodeTasks) ? nodeTasks : []).map(task => ({ ...task, remote: true, updatedAt: task.startedAt, ...(copies?.[task.id]?.sessionId ? { viewable: true } : {}) }))
+  // The node's work threads and tasks the hub keeps a read-only copy of (conv-replica.js), also between works.
+  for (const [id, copy] of Object.entries(copies ?? {})) {
+    if (typeof copy?.sessionId !== 'string' || listed.some(task => task.id === id)) continue
+    const status = copy.running === true && online ? 'running' : copy.origin === 'bot-work' ? 'standing' : 'completed'
+    listed.push({ id, title: copy.title || id, status, origin: copy.origin, remote: true, viewable: true, startedAt: copy.startedAt, updatedAt: copy.at, ...(status === 'completed' ? { endedAt: copy.at } : {}) })
+  }
+  return listed
 }
 

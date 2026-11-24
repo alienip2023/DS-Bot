@@ -129,7 +129,8 @@ export function taskStatusLabel(status) {
 export function taskOriginLabel(origin) {
   switch (origin) {
     case 'fg-handoff': return t('Moved from chat')
-    case 'bot-handoff': return t('Teammate request')
+    case 'bot-handoff':
+    case 'bot-work': return t('Teammate request')
     default: return ''
   }
 }
@@ -278,7 +279,7 @@ export function TaskIslandPanel({ bot, room, roster, approvals = [], focusTaskId
   }
 
   const openTaskReader = () => {
-    if (!task || !ownerBot || task.remote) return
+    if (!task || !ownerBot || (task.remote && !task.viewable)) return
     actions.closeTaskDeck?.()
     actions.openTask?.(panelSubject, ownerBot.id, task.id)
   }
@@ -375,7 +376,7 @@ export function TaskIslandPanel({ bot, room, roster, approvals = [], focusTaskId
         sentNote ? h('div', { className: 'bt-btask-ok', role: 'status' }, h(CheckIcon), sentNote) : null)),
 
     h('div', { className: 'bt-goal-foot bt-btask-foot' },
-      task && !task.remote
+      task && (!task.remote || task.viewable)
         ? h('button', { type: 'button', className: 'bt-goal-checks', onClick: openTaskReader },
             t('View details'),
             h('span', { className: 'bt-task-foot-go', 'aria-hidden': true }, h(ChevronRightIcon)))
@@ -600,9 +601,9 @@ export function DetailsTaskList({ tasks, sessionId, showBot = false, actions, ru
             className: `bt-tlist-row${active ? ' is-active' : ''}`,
             role: 'button',
             tabIndex: 0,
-            onClick: () => { if (!task.remote) actions.openTask?.(sessionId, ownerId, task.id) },
+            onClick: () => { if (!task.remote || task.viewable) actions.openTask?.(sessionId, ownerId, task.id) },
             onKeyDown: (event) => {
-              if (event.target !== event.currentTarget || task.remote) return
+              if (event.target !== event.currentTarget || (task.remote && !task.viewable)) return
               if (event.key === 'Enter' || event.key === ' ') {
                 event.preventDefault()
                 actions.openTask?.(sessionId, ownerId, task.id)
