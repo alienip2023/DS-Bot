@@ -2281,6 +2281,67 @@ export function install(rt) {
   }))
 
 
+  // ── move_bot：把一个 Bot 迁移到另一台机器（§5.5）────────────────────────────────
+  rt.teamTools.push(defineTool({
+    name: 'move_bot',
+    description: 'Move a Bot from its current machine to another node. The Bot\'s identity, memory and history stay intact; only its execution home changes. Requires: the Bot must be a node Bot (joined), not private, the target node must be online, and you must be the Main Bot or the user. The move records a lease migration (epoch+1) and queues a hand-off summary in the new home\'s first turn.',
+    parameters: {
+      bot: { type: 'string', required: true, description: 'Name of the Bot to move.' },
+      to: { type: 'string', required: true, description: 'Name or nodeId of the target machine.' },
+    },
+    output,
+    async execute(args, exec) {
+      await rt.load()
+      if (!rt.isMain(rt.selfOf(exec.agent?.id))) return 'Only the Main Bot can move Bots between machines.'
+
+      const botName = typeof args.bot === 'string' ? args.bot.trim() : ''
+      const toArg = typeof args.to === 'string' ? args.to.trim() : ''
+      if (!botName) return 'Specify the Bot to move with `bot`.'
+      if (!toArg) return 'Specify the target machine with `to`.'
+
+      // Resolve Bot by name.
+      const bots = Object.values(rt.state?.bots ?? {})
+      const bot = bots.find(b => b.name?.toLowerCase() === botName.toLowerCase()) ??
+                  bots.find(b => b.identityId === botName)
+      if (!bot) return `No Bot named "${botName}" on the team.`
+      if (!bot.identityId) return `${bot.name} has no portable identity yet — it cannot be moved until it reports one (the node needs AC ${AC_NEEDED} or later).`
+      if (bot.worker?.home !== 'remote' || bot.origin !== 'joined') return `${bot.name} is not a node Bot and cannot be moved with this tool.`
+      if (bot.private) return `${bot.name} is private and stays on its current machine.`
+
+      // Resolve target node.
+      const registry = (() => { try { return ctx.get?.('remote-agent:registry') } catch { return undefined } })()
+      if (!registry) return 'Node registry not available.'
+      const nodes = typeof registry.onlineNodes === 'function' ? registry.onlineNodes() : []
+      const target = nodes.find(n => n.nodeId === toArg || n.hello?.hostname === toArg)
+      if (!target) return `No online node matching "${toArg}". Use list_machines to see what is available.`
+      if (target.nodeId === bot.worker?.nodeId) return `${bot.name} is already on ${toArg}.`
+
+      // Check target has bot-move/1 capability (for future enforcement; allowed if unknown).
+      const caps = Array.isArray(target.caps) ? target.caps : (target.hello?.caps ?? [])
+      const hasMove = caps.length === 0 || caps.includes('bot-move/1')
+      if (!hasMove) return `${toArg} does not support Bot migration yet (needs AC with bot-move/1). Upgrade that node first.`
+
+      // Record the migration in the Team Directory (bumps epoch).
+      const { migrateLease } = await import('./lease.js')
+      migrateLease(rt.state, bot.identityId, target.nodeId)
+
+      // Update the shadow row's home node.
+      const prevNodeId = bot.worker?.nodeId
+      bot.worker = { ...bot.worker, nodeId: target.nodeId, remoteBotId: bot.worker?.remoteBotId ?? bot.id, home: 'remote', online: false }
+      bot.homeNodeId = target.nodeId
+      await rt.save?.()
+
+      return [
+        `${bot.name} migration initiated.`,
+        `From: ${prevNodeId ?? 'unknown'}`,
+        `To: ${target.nodeId} (${target.hello?.hostname ?? target.nodeId})`,
+        '',
+        'The Bot will finish any running turn on the old machine, then its new home will start accepting turns.',
+        'Memory and history follow the Bot automatically (stored on the hub).',
+      ].join('\n')
+    },
+  }))
+
   rt.teamTools.push(defineTool({
     name: 'pair_node',
     description: 'Explain how a new machine joins the team: the addresses where machines can reach this hub, whether the hub is ready to accept them, and the firewall rule to open. The pairing code itself contains the hub\'s node token, so it is shown only in the hub panel, never in a chat.',
