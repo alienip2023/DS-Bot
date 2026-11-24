@@ -43,19 +43,13 @@ export const CATALOG_API = Object.freeze({
   ...Object.fromEntries(['meta', 'xai'].map(id => [id, 'openai-responses'])),
 })
 
-// Find the directory that actually contains settings.yaml.
-// Order: rt.dshHome → ~/.dsh → DSH_HOME env — first with settings.yaml wins.
-function findSettingsDir(rt) {
-  const candidates = []
-  if (typeof rt?.dshHome === 'string' && rt.dshHome !== '') candidates.push(rt.dshHome)
-  const homeCandidate = join(homedir(), '.dsh')
-  if (!candidates.includes(homeCandidate)) candidates.push(homeCandidate)
+// This DSH's own home: rt.dshHome (index.js resolves DSH_HOME, default ~/.dsh). Never another home on the same
+// machine: a desktop app or a second node runs with its own DSH_HOME, and reading ~/.dsh there would push the
+// providers and keys of a different DSH to this hub's nodes.
+function homeOf(rt) {
+  if (typeof rt?.dshHome === 'string' && rt.dshHome !== '') return rt.dshHome
   const envHome = env.DSH_HOME
-  if (typeof envHome === 'string' && envHome !== '' && !candidates.includes(envHome)) candidates.push(envHome)
-  for (const dir of candidates) {
-    try { if (existsSync(join(dir, 'settings.yaml'))) return dir } catch { /* skip */ }
-  }
-  return candidates[candidates.length - 1] ?? homeCandidate
+  return typeof envHome === 'string' && envHome !== '' ? envHome : join(homedir(), '.dsh')
 }
 
 // `refs:` section of $DSH_HOME/.credentials.yaml as a Map(name -> value). Text-level
@@ -90,22 +84,12 @@ function readRefsFile(rt) {
   // A test may count full builds here: the cheap hint only stats this file, so a read is a
   // build. Absent outside tests, and it never changes what is read.
   try { globalThis.__cfgQuietRead ??= readFileSync } catch { /* not a test */ }
-  // Merge from all candidates. Reversed loop → last wins: env.DSH_HOME < ~/.dsh < rt.dshHome.
-  const candidates = []
-  if (typeof rt?.dshHome === 'string' && rt.dshHome !== '') candidates.push(rt.dshHome)
-  const homeCandidate = join(homedir(), '.dsh')
-  if (!candidates.includes(homeCandidate)) candidates.push(homeCandidate)
-  const envHome = env.DSH_HOME
-  if (typeof envHome === 'string' && envHome !== '' && !candidates.includes(envHome)) candidates.push(envHome)
-  const merged = new Map()
-  for (const dir of [...candidates].reverse()) {
-    try {
-      const read = globalThis.__cfgQuietRead ?? readFileSync
-      const refs = parseCredentialRefs(read(join(dir, '.credentials.yaml'), 'utf8'))
-      for (const [k, v] of refs) merged.set(k, v)
-    } catch { /* skip */ }
+  try {
+    const read = globalThis.__cfgQuietRead ?? readFileSync
+    return parseCredentialRefs(read(join(homeOf(rt), '.credentials.yaml'), 'utf8'))
+  } catch {
+    return new Map()
   }
-  return merged
 }
 
 /**
@@ -134,6 +118,13 @@ function warnCount(rt, key, count, message, ...args) {
   seen.set(key, n)
   if (n === 0) return
   rt.warn?.(message, ...args)
+}
+
+/** The gateway host a node can use, or undefined for loopback / any-address binds (no address to give out). */
+export function gatewayReachableHost(host) {
+  const h = typeof host === 'string' ? host.trim().replace(/^\[|\]$/g, '') : ''
+  if (h === '' || h === 'localhost' || h === '0.0.0.0' || h === '::' || h === '::1' || /^127\./.test(h)) return undefined
+  return h.includes(':') ? `[${h}]` : h
 }
 
 export function buildConfigPayload(rt, { defaultModel = null, readRefs = readRefsFile, gateway, schema = 1 } = {}) {
@@ -299,8 +290,8 @@ export function install(rt) {
     return result
   }
 
-  const settingsDir = findSettingsDir(rt)
-  rt.warn?.('ds-bot: settingsDir=%s credsDir=%s', settingsDir, (() => { const e = env.DSH_HOME; return (e && e !== '') ? e : join(homedir(), '.dsh') })())
+  const settingsDir = homeOf(rt)
+  rt.warn?.('ds-bot: settings and credentials from %s', settingsDir)
 
   const pushOnline = (service, reason) => {
     try {
@@ -319,7 +310,7 @@ export function install(rt) {
   }
 
   const readGatewaySettings = () => {
-    let host, port, from = 'default'
+    let host, port, loopback, from = 'default'
     // Priority 1: settings.describe() 'ds-bot' ns
     try {
       const settings = ctx?.get?.('settings')
@@ -329,6 +320,7 @@ export function install(rt) {
         const cfg = section?.value ?? {}
         if (typeof cfg.gatewayHost === 'string' && cfg.gatewayHost !== '') host = cfg.gatewayHost
         if (typeof cfg.gatewayPort === 'number') port = cfg.gatewayPort
+        if (typeof cfg.gatewayLoopback === 'boolean') loopback = cfg.gatewayLoopback
         if (host !== undefined || port !== undefined) from = 'settings.describe'
       }
     } catch { /* ignore */ }
@@ -347,13 +339,17 @@ export function install(rt) {
       const p = Number(env.DS_BOT_GATEWAY_PORT)
       if (Number.isInteger(p) && p >= 0 && p < 65536) { port = p; from = 'env' }
     }
-    return { host, port, from }
+    if (loopback === undefined && typeof env.DS_BOT_GATEWAY_LOOPBACK === 'string') loopback = env.DS_BOT_GATEWAY_LOOPBACK === '1' || env.DS_BOT_GATEWAY_LOOPBACK === 'true'
+    return { host, port, loopback: loopback === true, from }
   }
 
   const secrets = new Map()
   const tokenStore = createTokenStore()
   let actualPort = null
   let gwHost = '127.0.0.1'
+  // Every node runs on this machine (a test bench, one computer with several DSH homes): a loopback
+  // gateway is then reachable after all. Off unless set.
+  let gwLoopback = false
   let gwServer = null
 
   // ensureToken(nodeId): synchronous — register + read creds + generate if missing + persist async
@@ -374,8 +370,9 @@ export function install(rt) {
 
   ctx?.effect?.(() => {
     void (async () => {
-      const { host, port, from } = readGatewaySettings()
+      const { host, port, loopback, from } = readGatewaySettings()
       gwHost = host ?? '127.0.0.1'
+      gwLoopback = loopback
       const gwPort = typeof port === 'number' ? port : 4387
       rt.warn?.('ds-bot: gateway config host=%s port=%s from=%s', host ?? '(default)', port ?? '(default)', from)
       const providersFn = () => {
@@ -469,8 +466,7 @@ export function install(rt) {
     try { sections = JSON.stringify(rt.ctx?.get?.('settings')?.describe?.({ redactSecrets: true }) ?? null) } catch { return undefined }
     let providers
     try { providers = JSON.stringify(rt.ctx?.llm?.listConfigurableProviders?.() ?? null) } catch { return undefined }
-    const dirs = [rt.dshHome, join(homedir(), '.dsh'), env.DSH_HOME].filter(dir => typeof dir === 'string' && dir !== '')
-    const creds = [...new Set(dirs)].map(dir => fileStamp(join(dir, '.credentials.yaml'))).join('|')
+    const creds = fileStamp(join(homeOf(rt), '.credentials.yaml'))
     // The team's default is a preference. Reading it is free, and it is the only signal a
     // changed default gives, so it belongs in the hint.
     let pref
@@ -625,6 +621,7 @@ export function install(rt) {
     } catch { return 1 }
   }
   let attached = false
+  let warnedUnreachable = false
   const attach = () => {
     if (attached) return
     let service
@@ -637,8 +634,15 @@ export function install(rt) {
       if (actualPort === null) {
         rt.warn?.('ds-bot: gateway not ready, providers pushed direct')
       }
-      const gw = (nodeId && actualPort !== null)
-        ? { host: gwHost, port: actualPort, token: ensureToken(nodeId) }
+      // A gateway on a loopback or wildcard address cannot be reached by another machine: rewriting a node's
+      // providers to it would break every model call there. Push the providers direct and say why, once.
+      const reachable = gwLoopback ? gwHost : gatewayReachableHost(gwHost)
+      if (nodeId && actualPort !== null && reachable === undefined && !warnedUnreachable) {
+        warnedUnreachable = true
+        rt.warn?.('ds-bot: model gateway listens on %s, which other machines cannot reach; providers are pushed direct. Set the gateway host to this machine\'s LAN address to use it.', gwHost)
+      }
+      const gw = (nodeId && actualPort !== null && reachable !== undefined)
+        ? { host: reachable, port: actualPort, token: ensureToken(nodeId) }
         : null
       return buildConfigPayload(rt, { defaultModel, gateway: gw, schema: schemaOf(nodeId) })
     })
