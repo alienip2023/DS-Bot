@@ -1967,7 +1967,10 @@ export function install(rt) {
 
       const bot = rt.findBot(botName)
       if (!bot) return `No Bot named "${botName}". Use list_bots to see your team.`
-      if (bot.type !== 'remote-worker') return `"${botName}" is not a Worker Bot. burst_task only dispatches to remote-worker Bots on node machines.`
+      // Phase 5+: burst_task works with both legacy remote-worker and Phase 1 joined Bots.
+      const isJoined = bot.origin === 'joined'
+      const isLegacyWorker = bot.type === 'remote-worker' && !isJoined
+      if (!isJoined && !isLegacyWorker) return `"${botName}" is not a node Bot. burst_task only dispatches to Bots that run on remote nodes.`
 
       // Resolve the hub dispatch tool (same as handleRemoteTurn uses internally).
       const tools = (() => {
@@ -1984,10 +1987,17 @@ export function install(rt) {
       if (!tools) return 'Cluster tools are not available. Make sure AI Unified (dsh-ai-cluster) is running in hub mode.'
 
       // Resolve target node.
-      const node = typeof rt.pickWorkerNode === 'function' ? rt.pickWorkerNode(bot.worker ?? {}) : null
-      if (!node) return `Worker Bot "${botName}" has no available node (all offline or not configured).`
-
-      const nodeId = node.nodeId
+      // Phase 5+: for joined Bots, the node is the Bot's home node (from worker.nodeId);
+      // for legacy remote-worker Bots, use pickWorkerNode (fleet selection).
+      let nodeId
+      if (isJoined) {
+        nodeId = bot.worker?.nodeId
+        if (!nodeId) return `"${botName}" is a joined Bot but has no home node set.`
+      } else {
+        const node = typeof rt.pickWorkerNode === 'function' ? rt.pickWorkerNode(bot.worker ?? {}) : null
+        if (!node) return `Worker Bot "${botName}" has no available node (all offline or not configured).`
+        nodeId = node.nodeId
+      }
       const deadline = Date.now() + timeoutMs
 
       // Dispatch all subtasks in parallel; each is a Promise that resolves to
