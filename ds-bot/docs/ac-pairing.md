@@ -12,7 +12,7 @@
 | 0.3.10-fork.109 | 0.4.29 | 安全加固：@路径附件拒绝符号链接遍历（`lstat` 替代 `stat`）、扩充受保护目录名单（`.npm`/`.gitconfig`/`.cursor` 等）、TOCTOU 安全读取（同一 fd 的 open+fstat+read）、bot/attach 大附件背压、roster Bot id 上限 80→200、D2 lsof/ps 改异步防事件循环阻塞、node-team 首次检查 500ms→100ms |
 | 0.3.10-fork.110 | 0.4.30 | `bot/stream`（`bot-stream/1`）：节点 Bot 回答逐字流式到主控页面；`record_routine` 工具：一句话把当前任务固化为定时 routine；stalled handoff 双阶段定时器（25分钟 nudge delegatee，30分钟通知 sender）；`mirrorTurnStream` 增量写入镜像回合 |
 | 0.3.10-fork.111 | 0.4.31 | 持久机器身份（`machine-identity/1`）、LAN 自动发现（`lan-discovery/1`）、配对码（`pairing/1`）；节点 E2E 未就绪时 `bot/turn` 立即失败而不是等到超时 |
-| 0.3.10-fork.112 | 0.4.33 | `bot-locate/1`：节点为每个 Bot 配发可迁移的 ed25519 身份（名册带 `identityId`），主控用 `locate_bot` 定位 Bot 并以 Bot 自己的签名验证；AC 每回合写步骤日志（`bot_journal` 可读） |
+| 0.3.10-fork.112 | 0.4.33 | `bot-locate/1`：节点为每个 Bot 配发可迁移的 ed25519 身份（名册带 `identityId`），主控用 `locate_bot` 定位 Bot 并以 Bot 自己的签名验证；AC 每回合写步骤日志（`bot_journal` 可读）；`dshbot1://` 配对串格式（统一三种配对码格式）；目录下发帧（`directory/snapshot`、`directory/delta`，E2E 加密），节点缓存团队机器与 Bot 目录；Phase 0–7 全部功能（Team Directory、执行租约 epoch、Sentinel 巡检、三平台自启说明、工作账本 away 状态与崩溃重跑规则） |
 
 能力位与功能的对应（`src/host/node-compat.js` 的 `NODE_FEATURES`）：
 
@@ -28,5 +28,6 @@
 | `pairing/1` | 配对码零配置接入 |
 | `machine-identity/1` | 持久机器身份 |
 | `bot-locate/1` | Bot 定位（签名证明 Bot 在哪台节点上） |
+| `bot-move/1` | Bot 迁移（`move_bot` 工具，epoch+1 执行租约切换） |
 
 升级顺序：先装 AC（主控、再节点），再装 ds-bot；两者可以分开升级，缺能力时 ds-bot 会提示而不会出错。
