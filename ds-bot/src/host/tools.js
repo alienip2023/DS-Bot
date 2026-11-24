@@ -2219,7 +2219,68 @@ export function install(rt) {
     },
   }))
 
-  // ── pair_node：新机器加入团队需要的地址与步骤（配对码本身含主控口令，只在主控面板上显示）──
+  // ── list_machines：列出团队所有机器（主控 + 节点），含能力、负载、链路状态——合并 node_network ──
+  rt.teamTools.push(defineTool({
+    name: 'list_machines',
+    description: 'List every machine in the team: this hub and all connected nodes with their OS, capabilities, AC version, RTT, online state, and resource usage. Use this to pick a machine for create_bot or burst_task.',
+    isConcurrencySafe: true,
+    parameters: {
+      node: { type: 'string', description: 'Show details for one machine only (by name or nodeId). Omit for all.' },
+    },
+    output,
+    async execute(args) {
+      await rt.load()
+      const registry = (() => { try { return ctx.get?.('remote-agent:registry') } catch { return undefined } })()
+      const dir = rt.state?.directory
+      const lines = []
+
+      // This hub always appears first.
+      const hubName = rt.state?.name ?? 'Hub'
+      lines.push(`📍 ${hubName} (this hub)`)
+      if (rt.state?.directory?.machines) {
+        const local = Object.values(dir.machines).find(m => m.machineId === 'hub' || m.role === 'hub')
+        if (local?.resources) lines.push(`  CPU ${local.resources.cpu ?? '?'}%  Mem ${local.resources.mem ?? '?'}%`)
+      }
+
+      // Connected nodes from the registry.
+      const nodes = registry ? (typeof registry.onlineNodes === 'function' ? registry.onlineNodes() : []) : []
+      const all = registry ? (typeof registry.getNodes === 'function' ? registry.getNodes() : nodes) : nodes
+      const target = args.node ? all.filter(n => n.nodeId === args.node || n.hello?.hostname === args.node) : all
+      if (target.length === 0 && !args.node) {
+        lines.push('', 'No nodes connected yet. Use pair_node to add a machine.')
+        return lines.join('\n')
+      }
+      if (target.length === 0) return `No machine matching "${args.node}".`
+
+      for (const n of target) {
+        const caps = Array.isArray(n.caps) ? n.caps : (n.hello?.caps ?? [])
+        const rtt = typeof registry?.rttOf === 'function' ? registry.rttOf(n.nodeId) : null
+        const online = n.online !== false
+        const icon = online ? '🟢' : '🔴'
+        const host = n.hello?.hostname ?? n.nodeId
+        const os = n.hello?.os ?? ''
+        lines.push('')
+        lines.push(`${icon} ${host}  (${n.nodeId})${os ? '  ' + os : ''}`)
+        if (n.hello?.acVersion) lines.push(`  AC ${n.hello.acVersion}`)
+        if (rtt !== null) lines.push(`  RTT ${rtt} ms`)
+        // Directory home info: how many Bots run here.
+        if (dir?.bots) {
+          const myBots = Object.values(dir.bots).filter(b => b.home?.machineId === n.nodeId)
+          if (myBots.length > 0) lines.push(`  Bots: ${myBots.map(b => b.name || b.identityId).join(', ')}`)
+        }
+        const capLabels = []
+        if (caps.includes('bot-locate/1')) capLabels.push('locate')
+        if (caps.includes('lan-discovery/1')) capLabels.push('LAN')
+        if (caps.includes('pairing/1')) capLabels.push('pairing')
+        if (caps.includes('machine-identity/1')) capLabels.push('identity')
+        if (caps.includes('bot-attach/1')) capLabels.push('attach')
+        if (capLabels.length > 0) lines.push(`  Caps: ${capLabels.join(' · ')}`)
+      }
+      return lines.join('\n')
+    },
+  }))
+
+
   rt.teamTools.push(defineTool({
     name: 'pair_node',
     description: 'Explain how a new machine joins the team: the addresses where machines can reach this hub, whether the hub is ready to accept them, and the firewall rule to open. The pairing code itself contains the hub\'s node token, so it is shown only in the hub panel, never in a chat.',
