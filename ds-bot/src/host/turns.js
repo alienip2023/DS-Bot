@@ -1752,16 +1752,6 @@ export function install(rt) {
             : replyText()
           const settled = settleJoinForTurns(rt, joinInfo, entry.userRpcIds, reply, failure)
           if (!settled && info !== undefined) finish(info, replyText())
-          // A node Bot answering what its background task brought back: the hub's page that asked
-          // for the work is told too (it would otherwise never see the result).
-          if (!settled && info?.role === 'task-report' && failure === undefined && reason?.kind !== 'aborted') {
-            rt.reportTaskToHub?.(rt.botOf(rt.chatOwners.get(id) ?? rt.taskOwners?.get(id)?.botId), replyText())
-          }
-          // A node Bot going on in its own chat with a teammate's answer (rewrite R3): the hub's page shows what it
-          // did — every round, not only the first one the hub asked for.
-          if (!settled && info?.role === 'reply' && failure === undefined && reason?.kind !== 'aborted' && rt.chatOwners.has(id) && !rt.taskOwners?.has(id)) {
-            rt.reportTaskToHub?.(rt.botOf(rt.chatOwners.get(id)), replyText(), { kind: 'continuation' })
-          }
         }
         // A turn with no work of its own (the user's) that handed something on.
         if (rootWork !== undefined && rt.workOf?.(info) !== rootWork) endRootWork(rootWork, replyText())

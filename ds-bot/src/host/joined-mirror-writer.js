@@ -33,26 +33,6 @@ function pageBusy(rt, botId) {
   return rt.joinedInFlight?.has(botId) === true
 }
 
-/**
- * Resolve when no Bot-to-Bot turn is open, so the page may take its own turn.
- * Times out with E_BUSY rather than writing into an open turn.
- */
-export function waitForJoinedMirror(rt, botId, timeoutMs = 600_000) {
-  const writer = writerOf(rt, botId)
-  if (writer.open === null) return Promise.resolve()
-  return new Promise((resolve, reject) => {
-    const waiter = { resolve, timer: undefined }
-    waiter.timer = setTimeout(() => {
-      const at = writer.waiters.indexOf(waiter)
-      if (at >= 0) writer.waiters.splice(at, 1)
-      const error = new Error('the Bot-to-Bot turn on this page did not finish')
-      error.code = 'E_BUSY'
-      reject(error)
-    }, timeoutMs)
-    waiter.timer.unref?.()
-    writer.waiters.push(waiter)
-  })
-}
 
 function wakeOne(writer) {
   const waiter = writer.waiters.shift()

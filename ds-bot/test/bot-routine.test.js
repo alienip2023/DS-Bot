@@ -97,7 +97,8 @@ test('a joined routine reaches the node real Session and mirrors the result with
   assert.equal(w.frames[0].payload.remoteBotId, 'remote')
   assert.equal(w.nodePrompts[0].sessionId, 'node-real-session')
   assert.equal(w.prompts.length, 0)
-  assert.match(JSON.stringify(w.sessions.get('mirror').log), /node result/)
+  // The page is a copy of the node Bot's chat (W4): the hub writes nothing there; the run's outcome is the node's answer.
+  assert.equal(w.sessions.get('mirror')?.log?.length ?? 0, 0)
   assert.equal(task.lastRun.status, 'succeeded')
 })
 
@@ -107,7 +108,8 @@ test('an offline joined node leaves a failed routine and visible mirror failure'
   const task = await w.due()
   assert.equal(task.lastRun.status, 'failed')
   assert.match(task.lastRun.error, /E_OFFLINE|offline/i)
-  assert.match(JSON.stringify(w.sessions.get('mirror').log), /E_OFFLINE/)
+  // The failure is the run's, not a line on the page (W4: the page is a copy of the node Bot's chat).
+  assert.equal(w.sessions.get('mirror')?.log?.length ?? 0, 0)
   assert.equal(w.prompts.length, 0)
 })
 

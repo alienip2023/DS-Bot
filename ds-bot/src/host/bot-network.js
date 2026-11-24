@@ -1,7 +1,4 @@
 import { hostname as osHostname } from 'node:os'
-import { joinedShadow } from './roster-join.js'
-import { ensureMirrorSession, mirrorStateOf } from './mirror.js'
-import { writeNodeReport, repliedAlready } from './executor.js'
 // The hub publishes destinations; nodes keep the directory in remote-agent memory.
 const DIRECTORY_DELAY_MS = 1_000
 const REFRESH_MS = 60_000
@@ -202,35 +199,6 @@ export async function publishDirectory(rt) {
 }
 
 
-// A node Bot reporting a result to the hub (its background task finished): the message names the
-// Bot as both sender and recipient, on the hub's side of the link, at the depth cap. An older hub
-// drops it at the depth check, so it never reaches a Bot as a turn.
-const isNodeReport = payload => payload?.kind === 'reply' && payload.depth >= 3
-  && payload.to?.nodeId === HUB_NODE && payload.to.id === payload.from?.id && typeof payload.text === 'string' && payload.text.trim() !== ''
-const reports = new WeakMap()
-
-export async function handleNodeReport(rt, payload) {
-  await rt.load?.()
-  const bot = Object.values(rt.state.bots ?? {}).find(item => joinedShadow(item)
-    && item.worker?.nodeId === payload.from.nodeId && item.worker?.remoteBotId === payload.from.id)
-  if (!bot) { rt.warn?.('ds-bot: a node report for an unknown Bot %s was dropped', payload.from.id); return }
-  let seen = reports.get(rt)
-  if (!seen) { seen = new Set(); reports.set(rt, seen) }
-  if (seen.has(payload.exchangeId)) return
-  seen.add(payload.exchangeId)
-  if (repliedAlready(rt, bot.id, payload.text)) return   // the answer a turn just delivered: already on the page
-  if (seen.size > 512) seen.delete(seen.values().next().value)
-  const session = await ensureMirrorSession(rt, bot)
-  const continuation = typeof payload.exchangeId === 'string' && payload.exchangeId.startsWith('cont:')
-  writeNodeReport({ rt, bot, session, state: mirrorStateOf(rt, bot.id, session), text: payload.text, ...(continuation ? { mark: '' } : {}) })
-}
-
-// Node reports (a node Bot's background work, for the hub page that asked) still come as depth-3 replies; Bot-to-Bot
-// messages no longer come this way (bot/message is gone: work across machines is bot-link.js, work model W3).
-export async function handleNodeMessage(rt, payload) {
-  if (isNodeReport(payload)) return handleNodeReport(rt, payload)
-}
-
 export function install(rt) {
   const { ctx } = rt
   let stopped = false
@@ -265,11 +233,6 @@ export function install(rt) {
     lastDirectory = next
     dirty()
   })
-  const receive = payload => stopped ? undefined : handleNodeMessage(rt, payload)
-  const previous = serviceOf(rt, 'remote-agent:bot-message')
-  let offReceiver
-  if (previous === undefined) offReceiver = ctx?.provide?.('remote-agent:bot-message', receive)
-  else if (typeof ctx?.set === 'function') ctx.set('remote-agent:bot-message', receive)
 
   rt.botNetwork = serviceOf(rt, 'remote-agent:bot-network')
   // remote-agent exposes no link state: allow the first directory a stale window,
@@ -294,8 +257,6 @@ export function install(rt) {
     offSaved?.()
     offDirectory?.()
     reapStalePeers(rt, Infinity)
-    offReceiver?.()
-    if (previous !== undefined && typeof ctx.set === 'function' && serviceOf(rt, 'remote-agent:bot-message') === receive) ctx.set('remote-agent:bot-message', previous)
     rt.botNetwork = undefined
     rt.hubOnline = undefined
   }, 'ds-bot: Bot network')

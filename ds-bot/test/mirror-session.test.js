@@ -191,7 +191,7 @@ function makeChannelRt(bot, registryOptions = {}) {
 }
 
 describe('S22: channel sendUser routing (via createSendUser)', () => {
-  it('S22-send-routes-executor: joined bot → bot/turn sent once, mirror events written', async () => {
+  it('S22-send-routes-executor: joined bot → bot/turn sent once, nothing written on the page (W4: it is a copy of the node chat)', async () => {
     // Knife: delete `if (joinedBot) { ... }` block in createSendUser → falls through to sessionController.prompt → sent=[],prompts=[1] → fail
     const bot = makeJoinedBotFull()
     const { rt, sent, appendedEvents, prompts } = makeChannelRt(bot)
@@ -199,10 +199,7 @@ describe('S22: channel sendUser routing (via createSendUser)', () => {
     await sendUser({ sessionId: bot.id, content: [{ type: 'text', text: 'ping' }] })
     assert.equal(sent.filter(f => f.type === 'bot/turn').length, 1, 'bot/turn must be sent exactly once')
     assert.equal(prompts.length, 0, 'sessionController.prompt must NOT be called for joined bot')
-    const userMsgs = appendedEvents.filter(e => e.t === 'user/message')
-    const asstMsgs = appendedEvents.filter(e => e.t === 'assistant/message')
-    assert.equal(userMsgs.length, 1, 'mirror must write exactly 1 user/message')
-    assert.equal(asstMsgs.length, 0, 'the mirror writes no assistant line before the node answers')
+    assert.deepEqual(appendedEvents.filter(e => e.t !== 'system/message').map(e => e.t), [], 'the hub writes no turn on the page')
   })
 
   it('S22-by-session: mirror sessionId resolves to joined bot via bySessionId', async () => {

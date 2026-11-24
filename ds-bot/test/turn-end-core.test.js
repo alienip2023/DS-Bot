@@ -11,7 +11,7 @@ import assert from 'node:assert/strict'
 import { coreSource, REQUIRE_CORE_SOURCE } from './core-source.js'
 import {
   allocateTurn, mirrorTurn, mirrorTurnStart, mirrorTurnFinish, mirrorTurnFail, mirrorTurnAbort,
-  mirrorLateReply, mirrorTurnEnd, importHistory, mirrorStateOf,
+  mirrorLateReply, importHistory, mirrorStateOf,
 } from '../src/host/mirror.js'
 import { turnEnd, DUPLICATE_RESULT } from '../src/host/turn-end.js'
 
@@ -170,15 +170,6 @@ describe('S43: the core\'s own readers accept what ds-bot writes', { skip: SKIP 
     const result = await importHistory(bad, [{ userText: 'a', botText: 'b', turn: 1, seq: 1 }], { watermark: 0 })
     assert.equal(result.warnings.length, 1)
     assert.equal(coreAccepts(endsOf(bad)[0]).code, 'E_MIRROR_WRITE')
-  })
-
-  it('S43-mirrorTurnEnd: the small closer writes a valid ending both ways', () => {
-    const stopped = makeSession(); const failed = makeSession()
-    stopped.append('turn/start', { turn: 1 }); failed.append('turn/start', { turn: 1 })
-    mirrorTurnEnd(stopped, 1)
-    mirrorTurnEnd(failed, 1, 'it broke')
-    assert.equal(coreAccepts(endsOf(stopped)[0]), undefined)
-    assert.equal(coreAccepts(endsOf(failed)[0]).message, 'it broke')
   })
 
   it('S43-rebuild: a log made of every kind of ending is read end to end without a throw (the reload that showed no history)', async () => {

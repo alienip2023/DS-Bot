@@ -6,7 +6,6 @@ import { joinedShadow, shadowId } from './roster-join.js'
 import {
   ensureMirrorSession, hasPromptRequest, mirrorLateReply, mirrorStateOf,
 } from './mirror.js'
-import { classify } from './msg-classes.js'
 import { beginJoinedMirror, closeJoinedMirror, deferMirrorWrite, markJoinedMirrorPending, mirrorTurnOpen } from './joined-mirror-writer.js'
 import { createTraceFeed } from './node-trace.js'
 import { noteTraceGap, openTraceSink } from './hub-trace.js'
@@ -74,9 +73,6 @@ function closeMirrorTurn(rt, mirror, botId, { text, seq, error, stopped } = {}) 
 }
 
 
-export function joinedDispatchRole(role) {
-  return classify(role) === 'visible'
-}
 
 function trimmed(value) {
   return typeof value === 'string' ? value.trim() : ''
@@ -533,7 +529,6 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
   rt.settleJoinedTurn = (exchangeId, text, error) => {
     const waiter = pending.get(exchangeId)
     if (!waiter) return false
-    if (!error && typeof text === 'string' && text.trim() !== '') rememberDelivered(rt, waiter.sessionId, text)
     pending.delete(exchangeId)
     if (waiter.sessionId) {
       const bySession = pendingBySession.get(waiter.sessionId)
@@ -569,8 +564,6 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
       result = await acceptTurn(turn, control, tracking)
     } finally {
       tracking.final = tracking.tracer?.finish()
-      // Flush any buffered stream deltas before the result is sent.
-      await tracking.streamer?.finish?.().catch(() => {})
     }
     return tracking.final === undefined ? result : { ...result, trace: tracking.final }
   }
@@ -588,8 +581,6 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
       rt.discardAttachmentParts?.(turn)   // its chunks came ahead of it and will never be used
       return { ok: false, error: 'bot-not-on-roster', ...roomFields }
     }
-    // The hub asked this Bot: what its background tasks report later is owed to that hub's page.
-    markHubAsked(rt, bot)
     // The images and files the hub sent ahead of this turn: all of them, intact, or the turn is refused.
     let attachedParts = []
     if (Array.isArray(turn?.attachments) && turn.attachments.length > 0) {
@@ -615,14 +606,8 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
       // when the turn finishes, resolving `done`.
       if (typeof rt.sendUser !== 'function') throw new Error('sendUser unavailable')
       const sessionIdForTurn = roomId ? await groupSessionFor(bot, roomId, trimmed(turn.roomName)) : rt.chatOf?.(bot.id)
-      // Before anything is sent: the exchange's own user/message is what opens the trace and stream.
+      // Before anything is sent: the exchange's own user/message is what opens the trace.
       tracking.tracer = feed.start({ sessionId: sessionIdForTurn, exchangeId, control })
-      // bot/stream: wire the streaming forwarder if the hub supports it.
-      // Use rt.ctx (the node's cordis context), not the outer `ctx` parameter which is the hub
-      // lifecycle context and is out of scope inside this closure — accessing it throws ReferenceError.
-      if (typeof control?.stream?.start === 'function' && sessionIdForTurn) {
-        tracking.streamer = control.stream.start(rt.ctx, sessionIdForTurn)
-      }
       const send = async () => {
         const senderName = typeof turn.senderName === 'string' ? turn.senderName.trim() : ''
         const senderBotId = typeof turn.senderBotId === 'string' ? turn.senderBotId.trim() : ''
@@ -732,66 +717,7 @@ export function exposeBotTurnReceiver(ctx, accept) {
   try { ctx?.provide?.('remote-agent:bot-turn', accept) } catch { /* registry plugin may be absent */ }
 }
 
-// Whether this hub has ever asked the Bot something: what its background tasks report later is owed to that hub.
-// Kept on the Bot's own row (it survives a restart of the node: a task that finishes after it still reports) and
-// in memory for the Bots this process has seen.
-export function markHubAsked(rt, bot) {
-  ;(rt.hubAskedBots ??= new Set()).add(bot.id)
-  if (typeof bot.hubAskedAt !== 'number') {
-    bot.hubAskedAt = Date.now()
-    void Promise.resolve(rt.save?.()).catch(() => {})
-  }
-}
-export const hubAsked = (rt, bot) => rt.hubAskedBots?.has(bot.id) === true || typeof bot.hubAskedAt === 'number'
-
-// Answers this node already sent for a hub's turns (by Bot id), so a task report with the same words is not
-// sent a second time.
-const DELIVERED_MS = 600_000
-function rememberDelivered(rt, botId, text) {
-  const book = (rt._deliveredReplies ??= new Map())
-  const list = (book.get(botId) ?? []).filter(item => Date.now() - item.at < DELIVERED_MS)
-  list.push({ text: text.trim(), at: Date.now() })
-  book.set(botId, list.slice(-12))
-}
-const deliveredAlready = (rt, botId, body) => (rt._deliveredReplies?.get(botId) ?? []).some(item => item.text === body && Date.now() - item.at < DELIVERED_MS)
-
-/**
- * A node Bot's background task finished and the Bot answered what it brought back: the answer goes
- * to the hub as one bot/message (kind reply, the Bot as both ends, depth at the cap — the hub reads
- * that as a report; an older hub drops it). Only a Bot the hub has asked, and only while the link
- * is up; the page of that Bot on the hub shows it as a marked turn. Returns whether it was sent.
- */
-export function reportTaskToHub(rt, bot, text, { kind } = {}) {
-  const network = rt.botNetwork
-  const body = typeof text === 'string' ? text.trim() : ''
-  if (body === '' || !bot || !hubAsked(rt, bot)) return false
-  // The same words were just sent to the hub as a turn's answer: nothing more to report.
-  if (deliveredAlready(rt, bot.id, body)) return false
-  if (typeof network?.send !== 'function' || typeof network.nodeId !== 'string') return false
-  const identity = { id: bot.id, name: bot.name || bot.id, nodeId: network.nodeId }
-  // `cont:`: what the Bot did on a teammate's answer (shown as its plain answer); otherwise a background task result.
-  const frame = { from: identity, to: { ...identity, nodeId: 'hub' }, exchangeId: `${kind === 'continuation' ? 'cont:' : ''}${randomUUID()}`, kind: 'reply', text: body.slice(0, 60000), depth: 3 }
-  const attempt = () => { try { return network.send(frame) === true } catch { return false } }
-  if (attempt()) return true
-  // The link is down right now: the report is not dropped. It is retried (same exchange id, so the hub shows it
-  // once) at growing intervals for a few minutes; a report only matters when its Bot is still on this hub's
-  // roster, and the hub drops a repeat it already has.
-  let tries = 0
-  const delays = Number.isFinite(rt.taskReportRetryMs) ? [rt.taskReportRetryMs, rt.taskReportRetryMs, rt.taskReportRetryMs] : [15_000, 30_000, 60_000, 120_000, 300_000]
-  const again = () => {
-    if (tries >= delays.length || rt.joinedLateClosed === true) return
-    const timer = setTimeout(() => { if (!attempt()) again() }, delays[tries++])
-    timer.unref?.()
-    if (!rt.joinedLate) rt.joinedLate = new Set()
-    const stop = () => clearTimeout(timer)
-    rt.joinedLate.add(stop)
-  }
-  again()
-  return false
-}
-
 export function install(rt) {
-  rt.reportTaskToHub = (bot, text, options) => reportTaskToHub(rt, bot, text, options)
   rt.handleJoinedTurn = (msg) => handleJoinedTurn(rt, msg)
   const accept = createBotTurnReceiver(rt)
   exposeBotTurnReceiver(rt.ctx, accept)

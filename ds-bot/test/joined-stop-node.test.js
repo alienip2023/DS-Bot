@@ -1,11 +1,16 @@
 // Stop on a node Bot's page really ends the work on the node (bot/stop), as it does for a local Bot, instead of
-// only ending the wait on this host. A node that cannot be reached or does not answer is said so on the page.
+// only ending the wait on this host. A node that cannot be reached or does not answer is logged (rt.warn); the page is
+// a copy of the node Bot's chat (W4), so a node that did not stop shows there as still running.
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { makeWorld, textRequest } from './joined-world.js'
+import { makeWorld as makeJoinedWorld, textRequest, types } from './joined-world.js'
 
+// The composer waits a moment for an immediate node refusal (joined-prompt.js REFUSAL_WAIT_MS); keep it short here.
+const makeWorld = (options) => { const w = makeJoinedWorld(options); w.rt.joinedRefusalWaitMs = 5; return w }
 const ticks = async () => { for (let i = 0; i < 8; i += 1) await new Promise(resolve => setImmediate(resolve)) }
 const notes = w => w.sessionOf('mirror-1').log.filter(event => event.type === 'assistant/message').map(event => event.data.message.content[0].text).filter(text => text.startsWith('⚠ 停止'))
+// The warnings that say the node did not stop: [bot name, reason].
+const notStopped = w => w.warnings.filter(args => args[0] === 'ds-bot: %s did not stop on its node: %s').map(args => args.slice(1))
 
 test('the page Stop sends bot/stop to the node and ends the wait; a node that stopped it needs no note', async () => {
   const w = makeWorld({ tracker: true })
@@ -21,26 +26,31 @@ test('the page Stop sends bot/stop to the node and ends the wait; a node that st
   assert.equal(w.rt.joinedInFlight.size, 0, 'and the wait here is over too')
 })
 
-test('a Stop the node cannot take is said on the page, never left looking stopped', async () => {
+test('a Stop the node cannot take is logged with its reason, and nothing is written on the page', async () => {
   const w = makeWorld({ tracker: true })
   await w.prompt(textRequest('long work', 'req-1'))
   await w.cancel()
   await ticks()
   const stop = w.frames.find(frame => frame.type === 'bot/stop')
+  assert.deepEqual(notStopped(w), [], 'nothing is said before the node answers')
   w.emitter.emit('botStopResult', { requestId: stop.payload.requestId, nodeId: 'n1', ok: false, stopped: false, error: 'bot-stop-unavailable' })
   await ticks()
-  assert.equal(notes(w).length, 1)
-  assert.match(notes(w)[0], /没能让节点停下：bot-stop-unavailable。它可能仍在运行/)
+  // The page is a copy of the node Bot's chat (W4): the node's own chat shows it still running; here it is a warning.
+  assert.deepEqual(notStopped(w), [[w.bot.name, 'bot-stop-unavailable']])
+  assert.deepEqual(types(w.sessionOf('mirror-1')), [])
+  assert.equal(w.rt.joinedInFlight.size, 0, 'the wait here is over all the same')
 })
 
-test('a node that is offline when Stop is pressed is said so', async () => {
+test('a node that is offline when Stop is pressed is logged as not online, and nothing is written on the page', async () => {
   const w = makeWorld({ tracker: true })
   await w.prompt(textRequest('long work', 'req-1'))
   await w.cancel()
   await ticks()
   w.emitter.emit('nodeOffline', { nodeId: 'n1' })
   await ticks()
-  assert.match(notes(w)[0] ?? '', /节点不在线/)
+  // The page is a copy of the node Bot's chat (W4): nothing is written here; the warning names the reason.
+  assert.deepEqual(notStopped(w), [[w.bot.name, '节点不在线']])
+  assert.deepEqual(types(w.sessionOf('mirror-1')), [])
 })
 
 test('stop_bot already waited for the node: the page stop it triggers does not send a second bot/stop', async () => {

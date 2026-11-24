@@ -159,15 +159,6 @@ export function mirrorTurnPending(session, { turn, step = 1, text } = {}) {
   appendAssistant(session, turn, step, text)
 }
 
-/**
- * Append a streaming text delta while a page-origin turn is open.
- * Writes an assistant/message with the accumulated-so-far text so the page shows it live.
- * Does NOT close the step or turn — mirrorTurnFinish does that when the result arrives.
- * `text` is the full accumulated text so far (not a delta), so the page always shows the latest.
- */
-export function mirrorTurnStream(session, { turn, step = 1, text } = {}) {
-  appendAssistant(session, turn, step, text ?? '')
-}
 
 /**
  * assistant/message, step/end, turn/end completed. A node result already written
@@ -235,12 +226,6 @@ export function mirrorTurnAbort(session, { turn, step = 1, closedTurns, reasonin
 
 /** The line a late reply starts with: the page shows which message it answers is already behind it. */
 export const LATE_REPLY_MARK = '↩ 节点迟到回复'
-/** The first line of what a node Bot's background task reports after its turn was answered. */
-export const TASK_RESULT_MARK = '↩ 节点后台任务结果'
-/** The first line of a note that a Stop could not reach the node. */
-export const STOP_NOTE_MARK = '⚠ 停止'
-/** The first line of a node Bot's answer to a steer whose page turn had already ended. */
-export const STEER_REPLY_MARK = '↩ 对插话的回复'
 
 /**
  * The node answered AFTER the page turn ended with E_TIMEOUT. The answer is written as a NEW
@@ -275,28 +260,6 @@ export function mirrorLateReply(session, { step = 1, botText, botId, nodeSeq, se
   return { skipped: false, turn }
 }
 
-/**
- * One "Message from X" / "Reply from X" line on a node Bot's page here: a message another Bot sent it, which the
- * page draws as a folded event line (open it for the exchange). It is not an answer of the Bot; the Bot answers
- * on its node, out of the user's window (docs/plans/2026-11-24-bot-assign.md).
- */
-export function mirrorRelayEvent(session, { role, fromId, fromName, exchangeId, text = '' } = {}) {
-  const turn = allocateTurn(session)
-  session.append('turn/start', { turn })
-  try {
-    session.append('step/start', { turn, step: 1 })
-    session.append('user/message', createUserMessage({
-      content: [{ type: 'text', text: `[${role === 'reply' ? 'Reply' : 'Message'} from ${fromName}]\n${String(text).slice(0, 2000)}` }],
-      source: { kind: 'bot', form: 'relay', role, exchangeId, senderName: fromName, senderSessionId: fromId },
-    }), { surfaceOp: 'append' })
-    session.append('step/end', { turn, step: 1 })
-    session.append('turn/end', { turn, reason: turnEnd.completed() })
-  } catch (err) {
-    try { session.append('turn/end', { turn, reason: turnEnd.error(err?.message ?? err, 'E_MIRROR_WRITE') }) } catch {}
-    throw err
-  }
-  return turn
-}
 
 /** Per-Bot idempotency state shared by every path that mirrors a joined Bot's turns. */
 export function mirrorStateOf(rt, botId, session) {
@@ -320,9 +283,6 @@ export function hasPromptRequest(session, requestId) {
   return log.some(event => event?.type === 'user/message' && event.data?.source?.rpcId === requestId)
 }
 
-export function mirrorTurnEnd(session, turn, errorMessage) {
-  session.append('turn/end', { turn, reason: errorMessage ? turnEnd.error(errorMessage) : turnEnd.stopped() })
-}
 
 /**
  * Ensure a mirror Session exists for a joined Bot.

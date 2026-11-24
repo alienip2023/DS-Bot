@@ -34,7 +34,8 @@ test('a send to the mirror Session id is dispatched to the node, not prompted lo
   assert.equal(w.frames[0].type, 'bot/turn')
   assert.equal(w.frames[0].payload.text, 'hello')
   assert.equal(w.originalCalls.length, 0, 'the local prompt was not called')
-  assert.ok(types(w.sessionOf(w.bot.sessionId)).includes('user/message'), 'the user message is on the page')
+  // The page is a copy of the node Bot's chat (W4): the message shows once the node has it, nothing is written here.
+  assert.equal(types(w.sessionOf(w.bot.sessionId)).includes('user/message'), false)
 })
 
 test('a send to a Session that is no joined Bot\'s mirror takes the ordinary prompt path', async () => {

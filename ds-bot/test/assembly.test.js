@@ -250,20 +250,6 @@ describe('S30-asm: the page Stop is wired into the running chain', () => {
     assert.deepEqual(w.cancelCalls, [{ sessionId: 'ordinary-session' }])
   })
 
-  it('S30-asm-late-unload: a late reply queued behind an open page turn is not written once the real runtime\'s effects are disposed', async () => {
-    const w = world({ config: { joinedTurnTimeoutMs: 1000 } })
-    await w.mirror()
-    await w.prompt(textRequest('mirror-1', 'stuck', 'req-1'))
-    await w.cancel('mirror-1')                                     // stopped: a late listener is armed
-    await w.prompt(textRequest('mirror-1', 'second', 'req-2'))     // a newer turn is open
-    w.emitter.emit('botTurnResult', { exchangeId: w.frames[0].payload.exchangeId, ok: true, text: 'answer to stopped', seq: 1 })
-    assert.equal(w.rt.joinedLateQueue.get(w.bot.id).length, 1)
-    await w.ctx.dispose()                                          // the plugin unloads
-    w.emitter.emit('botTurnResult', { exchangeId: w.frames[1].payload.exchangeId, ok: true, text: 'answer to second', seq: 2 })
-    await new Promise(resolve => setTimeout(resolve, 20))
-    const texts = w.sessionOf('mirror-1').log.filter(event => event.type === 'assistant/message').map(event => event.data.message.content[0].text)
-    assert.equal(texts.some(text => text.includes('answer to stopped')), false)
-  })
 })
 
 describe('S33-asm: the running bit, the phone Stop and the sweep are wired into the running chain', () => {

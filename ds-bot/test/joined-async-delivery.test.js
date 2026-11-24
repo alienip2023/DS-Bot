@@ -246,22 +246,3 @@ test('a link loss before the node had the work is a failure and nothing is waite
   assert.equal(w.replies[0].text, BRIDGE_DOWN_TEXT, 'the short text: the work never left')
 })
 
-test('an answer that arrives after a lost link while a page turn is open waits for it instead of closing it as interrupted', async t => {
-  const { flushLateReplies } = await import('../src/host/executor.js')
-  const w = joinedWorld(t)
-  await w.send({ joinedAsync: true })
-  w.registry.emit('nodeOffline', { nodeId: 'n1' })
-  await drain()
-  // the user kept talking: a page turn of this Bot is open
-  w.rt.joinedInFlight = new Map([[w.bot.id, { requestId: 'page' }]])
-  const turnStarts = () => w.session.log.filter(event => event.type === 'turn/start').length
-  const before = turnStarts()
-  w.reply(0, 'finished while the link was down')
-  await drain()
-  assert.equal(turnStarts(), before, 'nothing is written into the page while its turn is open')
-  w.rt.joinedInFlight.delete(w.bot.id)
-  flushLateReplies(w.rt, w.bot.id)
-  assert.equal(turnStarts(), before + 1, 'then it is written as a turn of its own')
-  assert.match(JSON.stringify(w.session.log), /节点迟到回复[^"]*finished while the link was down/)
-  assert.equal(w.session.log.filter(event => event.type === 'turn/end' && event.data.reason?.kind === 'interrupted').length, 0)
-})

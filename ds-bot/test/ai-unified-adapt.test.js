@@ -22,7 +22,8 @@ test('remote-agent:* service names stay frozen in src/host', () => {
     .filter(f => String(f).endsWith('.js'))
     .map(f => readFileSync(join(dir, String(f)), 'utf8'))
     .join('\n')
-  for (const name of ['registry', 'role', 'node-policy', 'config-sync', 'bot-create', 'bot-message']) {
+  // remote-agent:bot-message is gone (W5: node task reports are in the node Bot's chat, which the hub page copies).
+  for (const name of ['registry', 'role', 'node-policy', 'config-sync', 'bot-create']) {
     assert.ok(source.includes(`remote-agent:${name}`), `missing literal remote-agent:${name}`)
   }
 })

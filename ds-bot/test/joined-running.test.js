@@ -3,24 +3,31 @@
 // the controller. Real install(rt) (joined-world.js) + real Session events.
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { makeWorld, textRequest, types } from './joined-world.js'
-import { mirrorTurnStart, mirrorTurnFinish, mirrorTurnFail, mirrorTurnAbort, STOPPED_TEXT, mirrorStateOf } from '../src/host/mirror.js'
+import { makeWorld as makeJoinedWorld, textRequest, types } from './joined-world.js'
+import { mirrorTurnStart, mirrorTurnFinish, mirrorTurnFail, mirrorTurnAbort, mirrorStateOf } from '../src/host/mirror.js'
 import { startPageTurn, stopPageTurn } from '../src/host/executor.js'
 
 const { Session } = await import('@deepseek-ai/dsh-session')
-const assistantTexts = session => session.log.filter(event => event.type === 'assistant/message').map(event => event.data.message.content[0].text)
 const MIRROR = 'mirror-1'
+// The composer waits a moment for an immediate node refusal (joined-prompt.js REFUSAL_WAIT_MS); keep it short here.
+const makeWorld = (options) => { const w = makeJoinedWorld(options); w.rt.joinedRefusalWaitMs = 5; return w }
+// The tracker entry of the n-th bot/turn frame: how that page message ended (done / E_REJECTED / E_ABORTED).
+const turnOf = (w, index = 0) => w.rt.turnTracker.get(w.frames.filter(frame => frame.type === 'bot/turn')[index].payload.exchangeId)
 
 describe('S33-run: the mirror Session reports running while its page turn is in flight', () => {
-  it('S33-run-a: the status event goes out once with true when the user message is on the page, and once with false when the answer is written', async () => {
+  it('S33-run-a: the status event goes out once with true when the message is sent, and once with false when the node answered', async () => {
     const w = makeWorld()
     assert.deepEqual(w.statuses(), [])
     await w.prompt(textRequest('hello'))
     assert.deepEqual(w.statuses(), [[MIRROR, true]], 'running from the moment the turn starts')
-    assert.equal(types(w.sessionOf(MIRROR)).includes('user/message'), true, 'the message is already on the page')
+    assert.equal(w.frames.filter(frame => frame.type === 'bot/turn').length, 1, 'the message went to the node')
+    // The page is a copy of the node Bot's chat (W4): nothing is written here.
+    assert.deepEqual(types(w.sessionOf(MIRROR)), [])
     w.reply(0)
     await w.idle()
     assert.deepEqual(w.statuses(), [[MIRROR, true], [MIRROR, false]])
+    assert.equal(w.rt.joinedInFlight.has(w.bot.id), false)
+    assert.deepEqual(types(w.sessionOf(MIRROR)), [])
   })
 
   it('S33-run-b: every way the turn ends brings running back to false — rejection, node offline, Stop — exactly once', async () => {
@@ -31,19 +38,14 @@ describe('S33-run: the mirror Session reports running while its page turn is in 
       ['send refused', () => makeWorld({ sendResult: false }), async () => {}],
     ]) {
       const w = setup()
-      await w.prompt(textRequest('x'))
+      // A message that could not leave is the composer's error now (nothing is written on the page).
+      if (name === 'send refused') await assert.rejects(w.prompt(textRequest('x')), { code: 'session/agent-unavailable' }, name)
+      else await w.prompt(textRequest('x'))
       await trigger(w)
       await w.idle()
       assert.deepEqual(w.statuses(), [[MIRROR, true], [MIRROR, false]], name)
+      assert.equal(w.rt.joinedInFlight.has(w.bot.id), false, `${name}: the Bot is free again`)
     }
-  })
-
-  it('S33-run-c: a page that could not be written says nothing about running (no true, no false), and nothing was sent', async () => {
-    const w = makeWorld({ failAppendOn: 'user/message' })
-    await w.prompt(textRequest('x')).catch(() => {})
-    assert.deepEqual(w.statuses(), [])
-    assert.equal(w.frames.length, 0)
-    assert.equal(w.rt.joinedInFlight.size, 0)
   })
 
   it('S33-run-d: the session list marks the in-flight mirror Session running:true and returns every other item as the same object', async () => {
@@ -125,37 +127,45 @@ describe('S33-unload: unloading restores the controller methods', () => {
 })
 
 describe('S33-stop-received: Stop does not throw away an answer that has already arrived', () => {
-  it('S33-stop-h: the node answers and Stop comes in the same tick — the answer is written as a normal completed turn, no "已停止" line', async () => {
-    const w = makeWorld()
+  // The page is a copy of the node Bot's chat (W4): how a message ended is read from its tracker entry, not the page.
+  it('S33-stop-h: the node answers and Stop comes in the same tick — the message ends as answered (done), not as stopped', async () => {
+    const w = makeWorld({ tracker: true })
     await w.prompt(textRequest('x'))
     w.reply(0, { text: 'the real answer', seq: 5 })
     const ack = await w.cancel()   // same tick: settle() has not run yet
     assert.deepEqual(ack, { accepted: true })
     await w.idle()
-    const session = w.sessionOf(MIRROR)
-    assert.deepEqual(assistantTexts(session), ['the real answer'])
-    assert.equal(session.log.at(-1).data.reason.kind, 'completed')
-    assert.equal(types(session).filter(type => type === 'turn/end').length, 1)
-    assert.equal(assistantTexts(session).some(text => text.includes(STOPPED_TEXT)), false)
+    assert.equal(turnOf(w).status, 'done')
+    assert.equal(turnOf(w).error, undefined)
+    assert.deepEqual(w.statuses(), [[MIRROR, true], [MIRROR, false]])
+    assert.equal(w.rt.joinedInFlight.has(w.bot.id), false)
+    assert.deepEqual(types(w.sessionOf(MIRROR)), [])
     assert.equal(w.emitter.listenerCount('botTurnResult'), 0)
   })
 
-  it('S33-stop-h2: a rejection that has already arrived is written as the rejection, not as a Stop', async () => {
-    const w = makeWorld()
+  it('S33-stop-h2: a rejection that has already arrived ends the message as the rejection, not as a Stop', async () => {
+    const w = makeWorld({ tracker: true })
     await w.prompt(textRequest('x'))
     w.reply(0, { ok: false, text: undefined, error: 'node-said-no' })
     await w.cancel()
     await w.idle()
-    const session = w.sessionOf(MIRROR)
-    assert.equal(session.log.at(-1).data.reason.error.code, 'E_REJECTED')
-    assert.equal(assistantTexts(session).some(text => text.includes(STOPPED_TEXT)), false)
+    assert.deepEqual([turnOf(w).status, turnOf(w).error], ['failed', 'E_REJECTED'])
+    assert.deepEqual(w.statuses(), [[MIRROR, true], [MIRROR, false]])
+    assert.deepEqual(types(w.sessionOf(MIRROR)), [])
   })
 
-  it('S33-stop-h3: the contrast — Stop before the node answers still stops (and the answer is then a late reply)', async () => {
-    const w = makeWorld()
+  it('S33-stop-h3: the contrast — Stop before the node answers still stops (the slot frees at once; the answer after it settles nothing)', async () => {
+    const w = makeWorld({ tracker: true })
     await w.prompt(textRequest('x'))
     await w.cancel()
-    assert.equal(w.sessionOf(MIRROR).log.at(-1).data.reason.kind, 'aborted')
+    assert.deepEqual([turnOf(w).status, turnOf(w).error], ['failed', 'E_ABORTED'])
+    assert.equal(w.rt.joinedInFlight.has(w.bot.id), false, 'freed by the Stop itself')
+    assert.deepEqual(w.statuses(), [[MIRROR, true], [MIRROR, false]])
+    w.reply(0, { text: 'too late', seq: 7 })
+    await w.idle()
+    assert.deepEqual([turnOf(w).status, turnOf(w).error], ['failed', 'E_ABORTED'], 'the later answer does not reopen it')
+    assert.equal(w.statuses().length, 2)
+    assert.deepEqual(types(w.sessionOf(MIRROR)), [])
   })
 })
 
@@ -214,15 +224,16 @@ describe('S33-abort-guard: one turn/end per turn, whichever of Finish / Fail / A
 })
 
 describe('S33-phone: the phone\'s Stop reaches a joined Bot\'s page turn', () => {
-  it('S33-phone-a: rt.stopJoinedTurn(botId) ends the page turn once and answers true; with nothing in flight it answers false and writes nothing', async () => {
-    const w = makeWorld()
+  it('S33-phone-a: rt.stopJoinedTurn(botId) ends the page turn once and answers true; with nothing in flight it answers false', async () => {
+    const w = makeWorld({ tracker: true })
     assert.equal(w.rt.stopJoinedTurn(w.bot.id), false)
     await w.prompt(textRequest('x'))
     assert.equal(w.rt.stopJoinedTurn(w.bot.id), true)
-    assert.equal(w.sessionOf(MIRROR).log.at(-1).data.reason.kind, 'aborted')
-    const written = w.sessionOf(MIRROR).log.length
+    // The page is a copy of the node Bot's chat (W4): the Stop frees the slot and writes nothing here.
+    assert.deepEqual([turnOf(w).status, turnOf(w).error], ['failed', 'E_ABORTED'])
+    assert.equal(w.rt.joinedInFlight.has(w.bot.id), false)
     assert.equal(w.rt.stopJoinedTurn(w.bot.id), false)
-    assert.equal(w.sessionOf(MIRROR).log.length, written)
+    assert.deepEqual(types(w.sessionOf(MIRROR)), [])
     assert.deepEqual(w.statuses(), [[MIRROR, true], [MIRROR, false]])
   })
 
@@ -237,21 +248,21 @@ describe('S33-phone: the phone\'s Stop reaches a joined Bot\'s page turn', () =>
 describe('S36-e4: another exchange\'s result is not "my answer has arrived"', () => {
   const OTHER = 'someone-elses-exchange'
 
-  it('S36-e4-a: a result for a DIFFERENT exchange (same node, another Bot) arrives, then Stop — the wait is stopped, "已停止" is written, no answer is invented', async () => {
-    const w = makeWorld()
+  // The page is a copy of the node Bot's chat (W4): the outcome is the message's tracker entry, nothing is written here.
+  it('S36-e4-a: a result for a DIFFERENT exchange (same node, another Bot) arrives, then Stop — the wait is stopped, no answer is invented', async () => {
+    const w = makeWorld({ tracker: true })
     await w.prompt(textRequest('x'))
     w.emitter.emit('botTurnResult', { exchangeId: OTHER, ok: true, text: 'for another Bot', seq: 9 })
+    assert.equal(turnOf(w).status, 'pending', 'another exchange\'s result did not settle this one')
     assert.deepEqual(await w.cancel(), { accepted: true })
     await w.idle()
-    const session = w.sessionOf(MIRROR)
-    assert.equal(session.log.at(-1).data.reason.kind, 'aborted')
-    assert.equal(assistantTexts(session).some(text => text.includes(STOPPED_TEXT)), true)
-    assert.equal(assistantTexts(session).includes('for another Bot'), false)
+    assert.deepEqual([turnOf(w).status, turnOf(w).error], ['failed', 'E_ABORTED'])
     assert.equal(w.rt.joinedInFlight.has(w.bot.id), false)
+    assert.deepEqual(types(w.sessionOf(MIRROR)), [])
   })
 
   it('S36-e4-b: the node answers two Bots; the answer for Bot 2 arrives first and Stop on Bot 1 still stops Bot 1 (and only Bot 1)', async () => {
-    const w = makeWorld({ otherBots: [{}] })
+    const w = makeWorld({ otherBots: [{}], tracker: true })
     const [first, second] = w.bots
     await w.prompt(textRequest('one', 'r1', first.sessionId))
     await w.prompt(textRequest('two', 'r2', second.sessionId))
@@ -259,19 +270,24 @@ describe('S36-e4: another exchange\'s result is not "my answer has arrived"', ()
     w.reply(1, { text: 'answer two', seq: 1 })
     await w.cancel(first.sessionId)
     await w.idle()
-    assert.equal(w.sessionOf(first.sessionId).log.at(-1).data.reason.kind, 'aborted', 'Bot 1 stopped')
-    assert.deepEqual(assistantTexts(w.sessionOf(second.sessionId)), ['answer two'], 'Bot 2 got its own answer')
+    assert.deepEqual([turnOf(w, 0).status, turnOf(w, 0).error], ['failed', 'E_ABORTED'], 'Bot 1 stopped')
+    assert.equal(turnOf(w, 1).status, 'done', 'Bot 2 got its own answer')
     assert.equal(w.rt.joinedInFlight.size, 0)
+    for (const each of [first, second]) assert.deepEqual(w.statuses().filter(([sid]) => sid === each.sessionId), [[each.sessionId, true], [each.sessionId, false]], each.sessionId)
+    assert.deepEqual(types(w.sessionOf(first.sessionId)), [])
+    assert.deepEqual(types(w.sessionOf(second.sessionId)), [])
   })
 
-  it('S36-e4-c: once the real answer HAS arrived, a result for another exchange that follows changes nothing — the answer is kept', async () => {
-    const w = makeWorld()
+  it('S36-e4-c: once the real answer HAS arrived, a result for another exchange that follows changes nothing — the message stays answered', async () => {
+    const w = makeWorld({ tracker: true })
     await w.prompt(textRequest('x'))
     w.reply(0, { text: 'mine', seq: 3 })
     w.emitter.emit('botTurnResult', { exchangeId: OTHER, ok: true, text: 'other', seq: 4 })
     await w.cancel()
     await w.idle()
-    assert.deepEqual(assistantTexts(w.sessionOf(MIRROR)), ['mine'])
+    assert.equal(turnOf(w).status, 'done')
+    assert.equal(turnOf(w).error, undefined)
+    assert.deepEqual(w.statuses(), [[MIRROR, true], [MIRROR, false]])
   })
 })
 
@@ -308,8 +324,7 @@ describe('S36-j4: two joined Bots, one in flight and one idle', () => {
 })
 
 describe('S36-e9: what happens at the moment the slot is released', () => {
-  // a first turn is stopped (its late reply is armed), a second turn is in flight, the late reply
-  // arrives and waits, then the second turn ends: running goes false, THEN the late reply is written
+  // a first turn is stopped, a second turn is in flight, then the second turn ends: running goes false with the slot free
   async function lateWorld() {
     const w = makeWorld({ timeoutMs: 20 })
     await w.prompt(textRequest('first (slow)', 'req-1'))
@@ -328,18 +343,6 @@ describe('S36-e9: what happens at the moment the slot is released', () => {
     }
     return { w, session, timeline, append }
   }
-
-  it('S36-e9-a: running:false goes out after the turn\'s own turn/end and BEFORE the late reply is written; the late reply is written after', async () => {
-    const { w, timeline } = await lateWorld()
-    w.reply(0, { text: 'late answer', seq: 1 })
-    w.reply(1, { text: 'second answer', seq: 2 })
-    await w.idle()
-    const falseAt = timeline.findIndex(entry => entry.startsWith('status:false'))
-    const turnEnds = timeline.reduce((acc, entry, index) => (entry === 'append:turn/end' ? [...acc, index] : acc), [])
-    assert.ok(falseAt > turnEnds[0], `after the page turn closed: ${timeline}`)
-    assert.ok(falseAt < turnEnds[1], `before the late turn closed: ${timeline}`)
-    assert.equal(timeline[falseAt + 1], 'append:turn/start', `the late reply starts right after: ${timeline}`)
-  })
 
   it('S36-e9-b: when running:false is sent the slot is already free — a list read at that moment says "not running", and a new message is accepted', async () => {
     const { w, timeline } = await lateWorld()

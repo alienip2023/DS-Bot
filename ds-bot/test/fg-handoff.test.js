@@ -571,7 +571,7 @@ test('P0 #7: stopping a running bot-handoff task sends exactly ONE reply to the 
   assert.equal(replies.length, 1, 'stopping a running bot-handoff task must send exactly one reply, never two')
 })
 
-test('P0 #8: spawnBotHandoffTask failure in openTaskPart or deliver leaks zero works and sends no duplicate reply', async (t) => {
+test('P0 #8: a work thread that cannot open or deliver leaks no work and sends no duplicate reply', async (t) => {
   const env = await startEnv()
   t.after(env.stop)
   const dmA = env.agentMap.get('dm-a')

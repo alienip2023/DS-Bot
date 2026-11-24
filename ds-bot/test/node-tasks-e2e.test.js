@@ -65,32 +65,6 @@ test('running tasks of a node Bot reach the hub row through the real AC roster p
   assert.deepEqual(Object.values(hubState.bots).find(row => row.worker.remoteBotId === 'k1').nodeTasks, [])
 })
 
-test('a node Bot\'s task report crosses the real AC bot/message path and is written on the hub page', { skip }, async () => {
-  const { createBotNetwork } = await load('node/bot-network.js')
-  const { withIngest } = await load('hub/registry-ingest.js')
-  const { NODE_TO_HUB } = await load('protocol.js')
-  const { handleNodeMessage } = await import('../src/host/bot-network.js')
-  const { reportTaskToHub } = await import('../src/host/joined-turn.js')
-  const { TASK_RESULT_MARK } = await import('../src/host/mirror.js')
-  const { makeWorld } = await import('./joined-world.js')
-
-  const w = makeWorld({ tracker: true })
-  const registry = hubRegistry(withIngest, 'n1')
-  registry.on('botMessage', message => { void handleNodeMessage(w.rt, message) })
-
-  // the node: the real transport, its frames go to the hub's real ingest
-  const frames = []
-  const network = createBotNetwork({ nodeId: 'n1', send: (type, data) => { frames.push({ type, data }); registry.handleFrameFor('n1', { t: type, d: data }); return true } })
-  const nodeRt = { hubAskedBots: new Set(['rb1']), botNetwork: network }
-  assert.equal(reportTaskToHub(nodeRt, { id: 'rb1', name: 'Joined' }, 'the build is done'), true)
-  assert.equal(frames[0].type, NODE_TO_HUB.BOT_MESSAGE)
-  for (let i = 0; i < 8; i += 1) await new Promise(resolve => setImmediate(resolve))
-
-  const texts = w.sessionOf('mirror-1').log.filter(event => event.type === 'assistant/message').map(event => event.data.message.content[0].text)
-  assert.deepEqual(texts, [`${TASK_RESULT_MARK}\n\nthe build is done`])
-  assert.equal(w.frames.length, 0, 'nothing is sent back to the node')
-})
-
 test('a node card reaches the hub through the real AC roster path and its answer comes back through the real bot/action handler', { skip }, async () => {
   const { bindRosterReport } = await load('roster-report.js')
   const { withIngest } = await load('hub/registry-ingest.js')

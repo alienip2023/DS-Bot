@@ -139,7 +139,8 @@ test('page input keeps its original four-field frame and unsigned mirror text', 
   assert.deepEqual(frame.payload, {
     nodeId: 'n1', remoteBotId: 'rb1', exchangeId: frame.payload.exchangeId, text: BODY,
   })
-  assert.deepEqual(mirrorPrompt(w).content, [{ type: 'text', text: BODY }])
+  // The page is a copy of the node Bot's chat (W4): the hub writes no message of its own there.
+  assert.equal((w.sessionOf('mirror-1')?.log ?? []).some(event => event.type === 'user/message'), false)
   w.reply(0)
   await w.idle()
 })

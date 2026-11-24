@@ -11,7 +11,7 @@ export function mapNodeModel(m) {
 
 // Client channel: the team view the browser renders, and the POST /api/bot endpoints.
 import { randomUUID } from 'node:crypto'
-import { collectPrompt, forgetAttachments, hasAttachments, holdAttachments, stageFileParts, stashAttachments, userContentOf } from './joined-attachments.js'
+import { collectPrompt, forgetAttachments, hasAttachments, holdAttachments, stageFileParts, stashAttachments } from './joined-attachments.js'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { PUBLISH_ISSUE } from './issue-report.js'
 import { install as installBtw } from './btw.js'
@@ -23,7 +23,7 @@ import { BACKGROUND_AFTER_MAX_SEC, COLORS, EXTRA_COLORS, HISTORY_TIMEOUT_MS, ROU
 import { mainThreadId, ownerOfSession, threadOf, threadsOfBot } from './bot-store.js'
 import { joinedRouteRefusal, joinedShadow } from './roster-join.js'
 import { compatOf } from './node-compat.js'
-import { ensureMirrorSession, mirrorStateOf, hasPromptRequest, mirrorTurnPending } from './mirror.js'
+import { ensureMirrorSession, hasPromptRequest } from './mirror.js'
 import { mirrorTurnOpen } from './joined-mirror-writer.js'
 import { startPageTurn } from './executor.js'
 import { JOINED_TURN_TIMEOUT_MS } from './joined-turn.js'
@@ -84,31 +84,17 @@ export function trackerSweepMs(rt) {
 // front of it ends. It is never folded into the running turn (that would need a frame the node
 // does not know) and never waits out JOINED_TURN_TIMEOUT_MS to be accepted.
 const QUEUE_POLL_MS = 50
-export const JOINED_TIMEOUT_ROW = '⏱ 这一轮已超时，已释放队列，排队的消息现在开始'
 
 const joinedBusy = (rt, botId) => rt.joinedInFlight?.has(botId) === true || mirrorTurnOpen(rt, botId)
 
-function openTurnOf(session) {
-  let open = null
-  for (const ev of Array.isArray(session?.log) ? session.log : []) {
-    if (ev?.type === 'turn/start') open = ev.data?.turn ?? null
-    else if (ev?.type === 'turn/end') open = null
-  }
-  return open
-}
-
 // Resolves when the Bot has no turn in flight. A turn that itself outlived the joined timeout
 // gets a visible timeout row and is released, so the queue cannot be held by it forever.
-function whenJoinedIdle(rt, bot, session, timeoutMs) {
+function whenJoinedIdle(rt, bot, timeoutMs) {
   return new Promise(resolve => {
     const check = () => {
       if (!joinedBusy(rt, bot.id)) { clearInterval(timer); resolve(); return }
       const claim = rt.joinedInFlight?.get(bot.id)
-      if (claim !== undefined && Date.now() - claim.startedAt >= timeoutMs) {
-        const turn = openTurnOf(session)
-        if (turn !== null) { try { mirrorTurnPending(session, { turn, text: JOINED_TIMEOUT_ROW }) } catch { /* the release below still happens */ } }
-        claim.abort?.()
-      }
+      if (claim !== undefined && Date.now() - claim.startedAt >= timeoutMs) claim.abort?.()
     }
     const timer = setInterval(check, QUEUE_POLL_MS)
     timer.unref?.()
@@ -116,7 +102,7 @@ function whenJoinedIdle(rt, bot, session, timeoutMs) {
   })
 }
 
-function pumpJoinedQueue(rt, bot, session) {
+function pumpJoinedQueue(rt, bot) {
   const queues = rt._joinedNextQueues ??= new Map()
   const queue = queues.get(bot.id) ?? { items: [], pumping: false }
   queues.set(bot.id, queue)
@@ -127,27 +113,11 @@ function pumpJoinedQueue(rt, bot, session) {
       while (queue.items.length > 0) {
         const item = queue.items[0]
         const timeoutMs = rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS
-        await whenJoinedIdle(rt, bot, session, timeoutMs)
+        await whenJoinedIdle(rt, bot, timeoutMs)
         queue.items.shift()
         try {
-          // The user message is already on the timeline; the turn must not write it a second time.
-          let skipped = false
-          const view = new Proxy(session, {
-            get(target, key) {
-              if (key === 'append') {
-                return (type, data, opts) => {
-                  if (!skipped && type === 'user/message' && data?.source?.rpcId === item.requestId) { skipped = true; return undefined }
-                  return target.append(type, data, opts)
-                }
-              }
-              const value = target[key]
-              return typeof value === 'function' ? value.bind(target) : value
-            },
-          })
-          const started = startPageTurn({
-            rt, bot, text: item.text, requestId: item.requestId, session: view, state: mirrorStateOf(rt, bot.id, session),
-            tracker: rt.turnTracker, timeoutMs,
-          })
+          // The page is a copy of the node Bot's chat (conv-replica.js): the message shows once the node has it.
+          const started = startPageTurn({ rt, bot, text: item.text, requestId: item.requestId, tracker: rt.turnTracker, timeoutMs })
           started.done.then(item.resolve, item.reject)
         } catch (error) {
           rt.warn?.('ds-bot: a queued message for %s did not start: %s', bot.id, error?.message ?? error)
@@ -166,11 +136,10 @@ function pumpJoinedQueue(rt, bot, session) {
  * Create the sendUser function for a given rt.
  * Exported for testing; install() consumes it via Object.assign(rt, { sendUser }).
  * @param {object} rt
- * @param {{ textOfContent: Function, getMirrorState: Function, ctx: object }} deps
+ * @param {{ textOfContent: Function, ctx: object }} deps
  */
-export function createSendUser(rt, { textOfContent, getMirrorState, ctx, ownThreadTarget } = {}) {
+export function createSendUser(rt, { textOfContent, ctx, ownThreadTarget } = {}) {
   const _textOfContent = textOfContent ?? ((c) => (typeof c === 'string' ? c : Array.isArray(c) ? c.map(b => typeof b?.text === 'string' ? b.text : '').join('') : ''))
-  const _getMirrorState = getMirrorState ?? mirrorStateOf
   return async function sendUser({ sessionId: ref, content, requestId = randomUUID(), wait = false, mode = 'queue' }) {
     // Joined shadow: ensureMirrorSession + startPageTurn (user message on the page first, node answer after)
     const directBot = rt.botOf(ref)
@@ -180,22 +149,17 @@ export function createSendUser(rt, { textOfContent, getMirrorState, ctx, ownThre
     if (joinedBot) {
       // A message already taken is acknowledged, not run again (its upload receipts were spent the first time).
       const session = await ensureMirrorSession(rt, joinedBot)
-      if (hasPromptRequest(session, requestId) || hasAttachments(requestId) || (rt._joinedNextQueues?.get(joinedBot.id)?.items ?? []).some(item => item.requestId === requestId)) return { accepted: true }
+      // On its way to the node right now counts as taken too (the page shows it only once the node's copy comes back).
+      const inFlight = rt.joinedInFlight?.get(joinedBot.id)?.requestId === requestId || [...(rt.joinedSide?.get(joinedBot.id) ?? [])].some(record => record.requestId === requestId)
+      if (inFlight || hasPromptRequest(session, requestId) || hasAttachments(requestId) || (rt._joinedNextQueues?.get(joinedBot.id)?.items ?? []).some(item => item.requestId === requestId)) return { accepted: true }
       const prompt = await collectPrompt(rt, joinedBot, content, { sessionId: joinedBot.sessionId, requestId })
       const text = prompt.text
       stashAttachments(requestId, prompt.collected)
-      const ms = _getMirrorState(rt, joinedBot.id, session)
       // A turn is running: accept now, show the message now, start it when that turn ends.
       const queuedBehind = joinedBusy(rt, joinedBot.id) || (rt._joinedNextQueues?.get(joinedBot.id)?.items.length ?? 0) > 0
       if (queuedBehind) {
         // It waits here with its attachments until its turn comes (the bytes are not let go by the clock).
         holdAttachments(requestId)
-        try {
-          session.append('user/message', createUserMessage({
-            content: userContentOf(requestId, text),
-            source: { kind: 'user', rpcId: requestId },
-          }), { surfaceOp: 'append' })
-        } catch (error) { forgetAttachments(requestId); throw error }
         const item = { text, requestId }
         const finished = new Promise((resolve, reject) => { item.resolve = resolve; item.reject = reject })
         finished.catch(() => {})
@@ -203,19 +167,16 @@ export function createSendUser(rt, { textOfContent, getMirrorState, ctx, ownThre
         const queue = queues.get(joinedBot.id) ?? { items: [], pumping: false }
         queues.set(joinedBot.id, queue)
         queue.items.push(item)
-        pumpJoinedQueue(rt, joinedBot, session)
+        pumpJoinedQueue(rt, joinedBot)
         if (wait === true) return finished
         return { accepted: true, queued: true }
       }
       // One in-flight turn per Bot (the same table the page's prompt takeover uses); the
       // user's message is on the page before the node answers.
-      const started = startPageTurn({
-        rt, bot: joinedBot, text, requestId, session, state: ms,
-        tracker: rt.turnTracker,
-        timeoutMs: rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS,
-      })
-      // The page acknowledges dispatch; a programmatic caller (a routine) needs the real
-      // outcome, so it opts into awaiting the turn.
+      const started = startPageTurn({ rt, bot: joinedBot, text, requestId, tracker: rt.turnTracker, timeoutMs: rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS })
+      // The page is a copy of the node Bot's chat (conv-replica.js): a message that could not leave is the caller's
+      // error, not a line on the page. A programmatic caller (a routine) needs the real outcome, so it awaits the turn.
+      await started.sent
       if (wait === true) return started.done
       return { accepted: true }
     }
@@ -1571,18 +1532,11 @@ export function install(rt) {
     return undefined
   }
 
-  function getMirrorState(rt, botId) {
-    if (!rt._mirrorState) rt._mirrorState = new Map()
-    let s = rt._mirrorState.get(botId)
-    if (!s) { s = { seenKeys: new Set(), closedKeys: new Set(), seenSteps: new Set() }; rt._mirrorState.set(botId, s) }
-    return s
-  }
-
   // Removed turnTracker start/finish from channel — executor.send handles tracker lifecycle.
   // Channel only creates and owns the tracker instance + sweep interval.
 
   // Exported via createSendUser for testing — install() consumes it via rt.sendUser.
-  const sendUser = createSendUser(rt, { textOfContent, getMirrorState, ctx, ownThreadTarget })
+  const sendUser = createSendUser(rt, { textOfContent, ctx, ownThreadTarget })
 
   // The user's answer to an ask_user card, from the web or an IM chat. A Bot id or an
   // earlier part of its own chat means the current one.

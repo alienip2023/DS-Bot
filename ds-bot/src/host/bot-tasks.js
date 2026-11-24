@@ -1139,49 +1139,6 @@ export function install(rt) {
     return record.promise
   }
 
-  // Spawns a dedicated background task (`origin: 'bot-handoff'`) for an incoming peer
-  // Bot request while the target Bot's foreground chat is busy, without switching the
-  // user's visible foreground session or interrupting desktop drafts/IME.
-  async function spawnBotHandoffTask(target, fromSessionId, { fromBot, fromPart, parentWork, text, files = [], length, exchangeId }) {
-    const id = newId()
-    const now = Date.now()
-    const title = oneLine(`From ${fromBot.name}: ${text}`, TITLE_MAX)
-    const baseTask = {
-      id,
-      title,
-      brief: oneLine(text, BRIEF_KEPT),
-      from: fromSessionId,
-      ...(target.segments?.length ? { inheritedSegments: target.segments.map(seg => ({ ...seg })) } : {}),
-      origin: 'bot-handoff',
-      exchangeId,
-      status: 'running',
-      startedAt: now,
-      updatedAt: now,
-    }
-    const { sessionId, task } = await rt.openTaskPart(target, fromSessionId, baseTask)
-    rt.openWork?.(exchangeId, { from: fromBot.id, to: target.id, parent: parentWork, ...(fromPart ? { fromPart } : {}) })
-    try {
-      await rt.deliver({
-        fromId: fromBot.id,
-        toId: target.id,
-        sessionId,
-        ...(fromPart ? { fromPart } : {}),
-        text,
-        files,
-        ...(length === undefined ? {} : { length }),
-        role: 'request',
-        steer: false,
-        exchangeId,
-      })
-    } catch (error) {
-      rt.forgetDelivery?.(exchangeId)
-      rt.dropWork?.(exchangeId)
-      await settleTask(target, task, 'failed', { error: error?.message ?? String(error), notifyForeground: false })
-      throw error
-    }
-    emitTaskEvent('task.started', target, task, { origin: 'bot-handoff' })
-    return { ...task, sessionId }
-  }
 
   // Intercepts Desktop/Web user messages sent to a busy foreground Bot (or landing on a
   // just-moved background task during the UI polling gap). Runs on `agent/inbox/inserted`
@@ -1587,7 +1544,6 @@ export function install(rt) {
     isHandingOff: id => id !== undefined && [...handoffing.values()].some(record => record.oldSid === id),
     consumeEmptyTaskWake: id => id !== undefined && rejectEmptyTaskWake.delete(id),
     handoffForeground,
-    spawnBotHandoffTask,
     workThreadFor,
     workThreadTakes,
     partKeyOf,

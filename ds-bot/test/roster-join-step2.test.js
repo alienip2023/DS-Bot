@@ -5,7 +5,7 @@ import { handleJoinedTurn, createBotTurnReceiver, install, BRIDGE_DOWN_TEXT } fr
 import { install as installDelivery } from '../src/host/delivery.js'
 import { install as installTurns } from '../src/host/turns.js'
 import { createSendUser } from '../src/host/channel.js'
-import { makeWorld, types } from './joined-world.js'
+import { makeWorld } from './joined-world.js'
 
 function shadowFor(nodeId, remoteBotId) {
   const id = shadowId(nodeId, remoteBotId)
@@ -228,10 +228,9 @@ test('a page send to a joined Bot whose bridge is down does not prompt a local s
     roomOf: () => undefined, ensureCapabilities: async () => {},
   })
   const sendUser = createSendUser(w.rt, { ctx: w.rt.ctx })
-  const result = await sendUser({ sessionId: w.bot.sessionId, content: [{ type: 'text', text: 'hi' }], requestId: 'req-1' })
+  // The message cannot leave: the caller is told (W4: the page is a copy of the node Bot's chat, nothing is written there).
+  await assert.rejects(sendUser({ sessionId: w.bot.sessionId, content: [{ type: 'text', text: 'hi' }], requestId: 'req-1' }), error => error?.code === 'E_OFFLINE')
   for (let i = 0; i < 6; i += 1) await new Promise(resolve => setImmediate(resolve))
-  assert.deepEqual(result, { accepted: true }, 'the page is not blocked')
   assert.equal(w.originalCalls.length, 0, 'no local Session is prompted')
-  assert.ok(types(w.sessionOf(w.bot.sessionId)).includes('user/message'), 'the message is on the page')
-  assert.ok(w.sessionOf(w.bot.sessionId).log.some(event => event.type === 'assistant/message'), 'and the page says why nothing came back')
+  assert.equal(w.sessionOf(w.bot.sessionId)?.log?.length ?? 0, 0, 'nothing is made up on the page')
 })

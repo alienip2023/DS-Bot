@@ -8,7 +8,7 @@ import { test } from 'node:test'
 import {
   CHUNK_BYTES, MAX_ATTACHMENTS, MAX_TOTAL_BYTES, attachmentsOf, collectPrompt, createAttachReceiver, forgetAttachments, holdAttachments, releaseBytes, sendChunks, stashAttachments, userContentOf,
 } from '../src/host/joined-attachments.js'
-import { makeWorld, textRequest, types } from './joined-world.js'
+import { makeWorld, textRequest } from './joined-world.js'
 
 const sha = buffer => createHash('sha256').update(buffer).digest('hex')
 const png = Buffer.from('89504e470d0a1a0a', 'hex')
@@ -143,16 +143,13 @@ test('NA-6: a page prompt with an image reaches the node as chunks then a turn, 
   assert.equal(turn.text, 'what is this?')
   assert.deepEqual(turn.attachments.map(item => [item.index, item.kind, item.bytes, item.sha256, item.chunks]), [[0, 'image', png.length, sha(png), 1]])
   assert.equal(w.frames[0].payload.exchangeId, turn.exchangeId)
-  // the user's message on the page carries the image
-  const log = w.sessionOf(w.bot.sessionId).log
-  const message = log.find(event => event.type === 'user/message')
-  assert.deepEqual(message.data.content.map(block => block.type), ['text', 'image'])
+  // The page is a copy of the node Bot's chat (W4): the hub writes nothing there; what was attached is in the frames.
+  assert.equal(w.sessionOf(w.bot.sessionId).log.some(event => event.type === 'user/message'), false)
   // and the node can put it back together from exactly what the hub sent
   const node = createAttachReceiver(rtWith(fakeStore))
   node.receive(w.frames[0].payload)
   const [part] = await node.assembleParts(turn)
   assert.deepEqual([part.type, part.mediaType, part.data], ['image', 'image/png', data])
-  assert.ok(types(w.sessionOf(w.bot.sessionId)).includes('user/message'))
 })
 
 test('NA-7: an image alone, without words, is a message', async () => {
@@ -269,8 +266,8 @@ test('NA-12: a page prompt of receipts reaches the node as chunks and a turn, wi
   await settle()
   assert.deepEqual(w.frames.map(frame => frame.type), ['bot/attach', 'bot/turn'])
   assert.equal(w.frames[1].payload.attachments[0].name, 'shot.png')
-  const message = w.sessionOf(w.bot.sessionId).log.find(event => event.type === 'user/message')
-  assert.deepEqual(message.data.content.map(block => block.type), ['text', 'image'])
+  // The page is a copy of the node Bot's chat (W4): the hub writes nothing there; what was attached is in the frames.
+  assert.equal(w.sessionOf(w.bot.sessionId).log.some(event => event.type === 'user/message'), false)
   assert.equal(up.bound[0].requestId, 'req-rcpt')
 })
 
@@ -406,8 +403,8 @@ test('NA-20: the whole page path: a mentioned document reaches the node as chunk
   const turn = w.frames[1].payload
   assert.equal(turn.text, '1100个tm.txt 读取这个文档')
   assert.deepEqual(turn.attachments.map(item => [item.name, item.kind, item.bytes]), [['1100个tm.txt', 'file', 18]])
-  const message = w.sessionOf(w.bot.sessionId).log.find(event => event.type === 'user/message')
-  assert.deepEqual(message.data.content, [{ type: 'text', text: words }], 'the page shows the user\'s own words')
+  // The page is a copy of the node Bot's chat (W4): the hub writes nothing there; what was attached is in the frames.
+  assert.equal(w.sessionOf(w.bot.sessionId).log.some(event => event.type === 'user/message'), false)
   // the node puts the file back together
   const node = createAttachReceiver(rtWith(fakeStore))
   node.receive(w.frames[0].payload)

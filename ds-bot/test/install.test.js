@@ -216,7 +216,6 @@ test('apply registers listeners and effects in a fixed order', (t) => {
     'provide remote-agent:bot-update',
     'provide remote-agent:bot-delete',
     'effect ds-bot: local agents',
-    'provide remote-agent:bot-message',
     'effect ds-bot: Bot network',
     'effect ds-bot: work across machines',
     'on session/event',

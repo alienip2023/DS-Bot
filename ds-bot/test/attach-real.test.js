@@ -249,9 +249,8 @@ describe('attach-real: the whole way — the page\'s prompt on the hub, the fram
     assert.ok(kinds.slice(0, -1).every(kind => kind === 'bot/attach'), 'every chunk is on the link before the turn that names them')
     await world.carry()
     await until(() => userMessageOf(world.nodeAgent, world.delivered[0].payload.exchangeId))
-    const page = world.mirrorAgent.session.log.findLast(event => event.type === 'user/message').data
-    assert.deepEqual(page.content.map(block => block.type), ['text', 'image', 'image', 'file'], 'the page\'s own message shows what was attached')
-    assert.equal(page.source.rpcId, 'page-1')
+    // The page is a copy of the node Bot's chat (W4): the hub writes no message of its own there.
+    assert.equal(world.mirrorAgent.session.log.some(event => event.type === 'user/message'), false)
     const message = userMessageOf(world.nodeAgent, world.delivered[0].payload.exchangeId)
     assert.notEqual(message, undefined, 'the node Bot got the message with its file')
     assert.deepEqual(message.content.map(block => block.type), ['text', 'image', 'image', 'file'])
@@ -259,9 +258,8 @@ describe('attach-real: the whole way — the page\'s prompt on the hub, the fram
     const chunks = []
     for await (const chunk of world.real.ctx.attachments.readFileStream(message.content[3].attachment)) chunks.push(Buffer.from(chunk))
     assert.equal(Buffer.concat(chunks).equals(up.file), true)
-    // spent: the page's upload receipts are gone with the user message; the hub's bytes went out with the frames and
-    // the rest is let go when the turn ends
-    assert.equal(world.real.uploads.resolve(world.mirrorAgent, up.stored.receiptId), undefined)
+    // The hub's bytes went out with the frames and the rest is let go when the turn ends. (The page's upload receipt is
+    // no longer spent by a message the hub writes: the page is a copy of the node Bot's chat, W4.)
     const held = attachmentsOf('page-1')
     assert.deepEqual(held.items, [], 'the bytes are not kept once the frames are out')
     world.nodeRt.settleJoinedTurn(world.delivered[0].payload.exchangeId, 'they say hello')
@@ -311,8 +309,8 @@ describe('attach-real: the page\'s other ways in', () => {
     const attach = hub.frames.filter(frame => frame.type === 'bot/attach')
     assert.equal(attach.length, 1, 'the queued message\'s file goes out when it is sent')
     assert.deepEqual(turns[1].payload.attachments.map(item => [item.kind, item.name, item.bytes]), [['file', 'notes.txt', up.file.length]])
-    const page = mirrorAgent.session.log.findLast(event => event.type === 'user/message').data.content
-    assert.deepEqual(page.map(block => block.type), ['text', 'file'])
+    // The page is a copy of the node Bot's chat (W4): the hub writes no message of its own there.
+    assert.equal(mirrorAgent.session.log.some(event => event.type === 'user/message'), false)
     await real.dispose()
   })
 
@@ -399,24 +397,4 @@ describe('attach-real: the other shapes the page and the phone send', () => {
     await real.dispose()
   })
 
-  it('AR-14: a steer written as a turn of its own after a wait still shows its attachments on the page', async () => {
-    const w = makeWorld({ tracker: true })
-    const { startSideTurn } = await import('../src/host/executor.js')
-    const other = { id: 'other-session' }
-    w.rt.joinedInFlight = new Map([[w.bot.id, { requestId: 'running', session: other, startedAt: Date.now() }]])
-    stashAttachments('side-1', { items: [{ index: 0, kind: 'file', name: 'a.txt', data: Buffer.from('abc'), sha256: sha(Buffer.from('abc')) }], blocks: [{ type: 'file', attachment: { attachmentId: 'f1', name: 'a.txt', bytes: 3 } }] })
-    const session = w.sessionOf('mirror-1')
-    const started = startSideTurn({ rt: w.rt, bot: w.bot, text: 'the file', requestId: 'side-1', session, state: {}, tracker: w.rt.turnTracker, timeoutMs: 5000, mode: 'steer' })
-    await settle()
-    assert.equal(w.frames.filter(frame => frame.type === 'bot/attach').length, 1)
-    w.emitter.emit('botTurnResult', { exchangeId: w.frames.find(frame => frame.type === 'bot/turn').payload.exchangeId, ok: true, text: 'got it', seq: 0 })
-    await started.done
-    assert.equal(attachmentsOf('side-1'), undefined, 'the turn is over: the hub let the attachments go')
-    // the page write waited for the running turn; it still carries the file
-    assert.equal(session.log.some(event => event.type === 'user/message'), false)
-    w.rt.joinedInFlight.clear()
-    w.rt.flushLateReplies(w.bot.id)
-    const written = session.log.find(event => event.type === 'user/message').data.content
-    assert.deepEqual(written.map(block => block.type), ['text', 'file'])
-  })
 })

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { test } from 'node:test'
 import { MODULES } from '../index.js'
-import { directoryOf, publishDirectory, handleNodeMessage, install } from '../src/host/bot-network.js'
+import { directoryOf, publishDirectory, install } from '../src/host/bot-network.js'
 import { install as installTools } from '../src/host/tools.js'
 import { fakeContext } from './fake-ctx.js'
 
@@ -42,13 +42,6 @@ function world(t, { network, registry = new EventEmitter() } = {}) {
   return { rt, ctx, registry, services, frames, local, joined, peer, joinedTurns, delivered, injected, warnings, saved }
 }
 
-const message = (patch = {}) => ({
-  exchangeId: 'exchange-1', kind: 'ask',
-  from: { id: 'source', name: 'Source', nodeId: 'n1' },
-  to: { id: 'joined:n2:b', name: 'Remote', nodeId: 'n2' }, text: 'Hello', depth: 0,
-  ...patch,
-})
-
 test('the plugin assembles the Bot network module', () => {
   assert.ok(MODULES.some(module => module.install === install))
 })
@@ -72,56 +65,11 @@ test('publishDirectory sends the current directory to every online node', async 
   }
 })
 
-test('depth >= 3 is dropped before routing', async t => {
-  const w = world(t)
-  for (const depth of [3, 4]) await handleNodeMessage(w.rt, message({ depth }))
-  assert.equal(w.joinedTurns.length, 0)
-  assert.equal(w.delivered.length, 0)
-})
-
 test('private Bots stay outside the network directory and cannot receive network messages', async t => {
   const w = world(t)
   w.local.private = true
   assert.equal(directoryOf(w.rt).some(bot => bot.id === w.local.id), false)
-  await handleNodeMessage(w.rt, message({ to: { id: w.local.id } }))
   assert.equal(w.delivered.length, 0)
-})
-
-test('install provides an absent receiver and only sets and restores a provided receiver', async t => {
-  for (const provided of [false, true]) {
-    await t.test(provided ? 'already provided' : 'not provided', async t => {
-      const w = world(t)
-      const name = 'remote-agent:bot-message'
-      const previous = () => null
-      if (provided) w.ctx.provide(name, previous)
-      const originalProvide = w.ctx.provide.bind(w.ctx)
-      let offReceiver
-      const provide = t.mock.method(w.ctx, 'provide', (name, value) => {
-        offReceiver = t.mock.fn(originalProvide(name, value))
-        return offReceiver
-      })
-      const set = t.mock.method(w.ctx, 'set')
-
-      assert.doesNotThrow(() => install(w.rt))
-      const receive = w.ctx.get(name)
-      assert.equal(typeof receive, 'function')
-      assert.notEqual(receive, previous)
-      assert.equal(provide.mock.callCount(), provided ? 0 : 1)
-      assert.equal(set.mock.callCount(), provided ? 1 : 0)
-      const registration = (provided ? set : provide).mock.calls[0]
-      assert.deepEqual(registration.arguments, [name, receive])
-
-      const cleanup = await w.ctx.dispose()
-      assert.ok(cleanup.every(result => result.status === 'fulfilled'))
-      assert.equal(w.ctx.get(name), provided ? previous : undefined)
-      assert.equal(set.mock.callCount(), provided ? 2 : 0)
-      if (provided) assert.deepEqual(set.mock.calls[1].arguments, [name, previous])
-      else assert.equal(offReceiver.mock.callCount(), 1)
-      await w.ctx.dispose()
-      assert.equal(set.mock.callCount(), provided ? 2 : 0)
-      if (!provided) assert.equal(offReceiver.mock.callCount(), 1)
-    })
-  }
 })
 
 test('install registers the hub receiver and publishes on online, roster changes, and a 60s fallback', async t => {
@@ -131,10 +79,8 @@ test('install registers the hub receiver and publishes on online, roster changes
   await Promise.resolve()
   await Promise.resolve()
   w.frames.length = 0
-  assert.equal(typeof w.ctx.get('remote-agent:bot-message'), 'function')
-  // A Bot-to-Bot ask no longer comes this way (work across machines is bot-link.js, work model W3): no turn.
-  await w.ctx.get('remote-agent:bot-message')(message())
-  assert.equal(w.joinedTurns.length, 0)
+  // No bot/message receiver any more (W5: node reports are in the node Bot's chat, which the hub page copies).
+  assert.equal(w.ctx.get('remote-agent:bot-message'), undefined)
   w.registry.emit('nodeOnline', { nodeId: 'n1' })
   await Promise.resolve()
   assert.ok(w.frames.some(f => f.nodeId === 'n1'))

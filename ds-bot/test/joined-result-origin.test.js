@@ -5,8 +5,6 @@ import { Session } from '@deepseek-ai/dsh-session'
 import { createBotOnNode } from '../src/host/joined-create.js'
 import { joinedChatPage, joinedUpdateBot, joinedDeleteBot } from '../src/host/joined-page.js'
 import { handleJoinedTurn, listenBotStopResult } from '../src/host/joined-turn.js'
-import { startPageTurn } from '../src/host/executor.js'
-import { mirrorStateOf } from '../src/host/mirror.js'
 
 function world() {
   const registry = new EventEmitter()
@@ -88,22 +86,3 @@ test('a stop result from another node cannot acknowledge the stop', async () => 
   assert.equal(w.registry.listenerCount('botStopResult'), 0)
 })
 
-test('a late result from another node cannot consume the real late reply or write the mirror', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] })
-  const w = world()
-  let frame
-  w.registry.send = (_nodeId, _type, payload) => { frame = payload; return true }
-  const page = startPageTurn({ rt: w.rt, bot: w.bot, session: w.session, text: 'question', requestId: 'page-a', timeoutMs: 5, state: mirrorStateOf(w.rt, w.bot.id, w.session) })
-  t.mock.timers.tick(5)
-  assert.equal(w.session.log.some(event => event.type === 'turn/end'), false)
-  w.registry.emit('botTurnResult', { exchangeId: frame.exchangeId, nodeId: 'n2', ok: true, text: 'wrong late answer', seq: 7 })
-  assert.equal(w.session.log.filter(event => event.type === 'assistant/message').length, 1)
-  w.registry.emit('botTurnResult', { exchangeId: frame.exchangeId, nodeId: 'n1', ok: true, text: 'right late answer', seq: 7 })
-  assert.equal((await page.done).ok, true)
-  const answers = w.session.log.filter(event => event.type === 'assistant/message').map(event => event.data.message.content[0].text)
-  assert.equal(answers.length, 2)
-  assert.match(answers[1], /right late answer/)
-  assert.doesNotMatch(answers.join('\n'), /wrong late answer/)
-  assert.equal(w.session.log.filter(event => event.type === 'turn/start').length, 1)
-  assert.equal(w.registry.listenerCount('botTurnResult'), 0)
-})

@@ -16,20 +16,21 @@
 // 'gateway/internal'. The composer's toast (dsh-client-ui-conversation lib/client.js:21754)
 // is `${message} (${code})` except for the two attachment-invalid codes.
 import { joinedShadow } from './roster-join.js'
-import { ensureMirrorSession, mirrorStateOf, hasPromptRequest } from './mirror.js'
-import { startPageTurn, startSideTurn, stopPageTurn, failureText, flushLateReplies } from './executor.js'
+import { ensureMirrorSession, hasPromptRequest } from './mirror.js'
+import { startPageTurn, startSideTurn, stopPageTurn, failureText, flushQueuedMessages } from './executor.js'
 import { JOINED_TURN_TIMEOUT_MS } from './joined-turn.js'
-import { dropJoinedMirrorQueues, waitForJoinedMirror, mirrorTurnOpen } from './joined-mirror-writer.js'
+import { dropJoinedMirrorQueues } from './joined-mirror-writer.js'
 import { installRunning } from './joined-running.js'
 import { wrapControllerMethod } from './controller-wrap.js'
 import { sendBotAction } from './node-cards.js'
 import { nodeCan } from './node-compat.js'
 import { stopOnNode } from './joined-turn.js'
 import { collectPrompt, forgetAttachments, hasAttachments, holdAttachments, stashAttachments } from './joined-attachments.js'
-import { writeNodeReport } from './executor.js'
-import { STOP_NOTE_MARK } from './mirror.js'
 
 const BUSY = '副机 Bot 正在回复上一条，请稍候再发'
+// A node refuses a message it cannot take (its Bot is not on its roster, an attachment it rejects…) right after it got
+// it. The composer waits this long for such a refusal and shows it; a message still running by then is accepted.
+export const REFUSAL_WAIT_MS = 1_500
 const NO_ATTACHMENTS = '副机 Bot 暂不支持附件，请改为文字发送'
 
 /**
@@ -95,6 +96,9 @@ async function collectPromptOrReject(rt, bot, content, ids) {
 /** Is a message with this requestId already waiting behind the turn in front of it (here, or in the gate's queue)? */
 function isWaiting(rt, botId, requestId) {
   if (typeof requestId !== 'string' || requestId === '') return false
+  // On its way to the node right now (the page shows it only once the node's copy comes back).
+  if (rt.joinedInFlight?.get(botId)?.requestId === requestId) return true
+  if ([...(rt.joinedSide?.get(botId) ?? [])].some(record => record.requestId === requestId)) return true
   if ((rt.joinedUserQueue?.get(botId) ?? []).some(item => item.requestId === requestId)) return true
   if ((rt._joinedNextQueues?.get(botId)?.items ?? []).some(item => item.requestId === requestId)) return true
   return hasAttachments(requestId)
@@ -105,7 +109,7 @@ export function install(rt) {
   // The Bot-to-Bot writer closes turns in joined-mirror-writer.js; when a late node answer is
   // waiting behind that turn it re-arms itself through this hook (the writer must not import
   // the executor, which already imports the writer).
-  rt.flushLateReplies = botId => flushLateReplies(rt, botId)
+  rt.flushLateReplies = botId => flushQueuedMessages(rt, botId)
   // Late-reply listeners (executor.js armLateReply) end with the plugin.
   // Unloading also drops the replies still waiting for an open page turn to end, and nothing
   // new is armed afterwards: a page turn that ends later writes no late reply.
@@ -126,10 +130,9 @@ export function install(rt) {
   const tellNodeToStop = (botId) => {
     const bot = rt.botOf?.(botId)
     if (!joinedShadow(bot) || bot.worker?.home !== 'remote') return
-    void stopOnNode(rt, bot).then(async (result) => {
-      if (result.ok) return
-      const session = await ensureMirrorSession(rt, bot)
-      writeNodeReport({ rt, bot, session, state: mirrorStateOf(rt, bot.id, session), mark: STOP_NOTE_MARK, text: `没能让节点停下：${stopReasons[result.error] ?? result.error ?? '未知原因'}。它可能仍在运行。` })
+    // The page is a copy of the node Bot's chat (conv-replica.js): a node that did not stop shows it still running.
+    void stopOnNode(rt, bot).then((result) => {
+      if (!result.ok) rt.warn?.('ds-bot: %s did not stop on its node: %s', bot.name, stopReasons[result.error] ?? result.error ?? 'unknown')
     }).catch(error => rt.warn?.('ds-bot: telling the node to stop %s failed: %s', botId, error?.message ?? error))
   }
   rt.tellNodeToStop = tellNodeToStop
@@ -160,8 +163,6 @@ export function install(rt) {
 
     const timeoutMs = rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS
     // isBusy: a page turn is already in-flight on this Bot's mirror Session.
-    // A Bot-to-Bot exchange is NOT considered busy here — waitForJoinedMirror
-    // below blocks until the exchange turn is closed, so the page starts after.
     const isBusy = () => rt.joinedInFlight?.has(bot.id) === true
 
     // mode: 'steer' means "join the turn in flight": the message goes to the node now, as a bot/turn
@@ -174,11 +175,27 @@ export function install(rt) {
     const hold = () => {
       if (!rt.joinedUserQueue) rt.joinedUserQueue = new Map()
       const q = rt.joinedUserQueue.get(bot.id) ?? []
-      q.push({ text, requestId: request.requestId, session, state: mirrorStateOf(rt, bot.id, session) })
+      q.push({ text, requestId: request.requestId })
       rt.joinedUserQueue.set(bot.id, q)
       holdAttachments(request.requestId)
     }
-    const steerNow = () => startSideTurn({ rt, bot, text, requestId: request.requestId, session, state: mirrorStateOf(rt, bot.id, session), tracker: rt.turnTracker, timeoutMs, mode: 'steer' })
+    // What could not reach the node is the composer's error (the page shows only what the node did).
+    const refused = async error => remoteError('session/agent-unavailable', `无法送达节点：${failureText(error)}`, { reason: `JOINED_NODE_${error?.code ?? 'ERROR'}` })
+    // The page is a copy of the node Bot's chat: what could not go, or what the node refused at once, is the composer's error.
+    const sentOrRefused = async (started) => {
+      try { await started.sent } catch (error) { throw await refused(error) }
+      const waitMs = Number.isFinite(rt.joinedRefusalWaitMs) ? rt.joinedRefusalWaitMs : REFUSAL_WAIT_MS
+      let timer
+      const early = await Promise.race([
+        started.done.then(() => undefined, error => error),
+        new Promise(resolve => { timer = setTimeout(resolve, waitMs); timer.unref?.() }),
+      ])
+      clearTimeout(timer)
+      if (early !== undefined && early?.code !== 'E_ABORTED') throw await refused(early)
+    }
+    const steerNow = async () => {
+      await sentOrRefused(startSideTurn({ rt, bot, text, requestId: request.requestId, tracker: rt.turnTracker, timeoutMs, mode: 'steer' }))
+    }
     if (isBusy() && mode === 'steer' && rt.state?.prefs?.steerAsk === true) {
       // Opt-in: ask where it goes (never blocks; unanswered, it steers). Only the composer reaches this.
       const asked = rt.askSteer?.({
@@ -189,7 +206,7 @@ export function install(rt) {
         apply: async (choice) => {
           if (choice === 'queue') return hold()
           if (choice === 'independent' || choice === 'related') return sendBotAction(rt, bot, 'task-start', { text, relation: choice })
-          try { steerNow() } catch (error) { if (error?.code === 'E_BUSY') hold(); else throw error }
+          try { await steerNow() } catch (error) { if (error?.code === 'E_BUSY') hold(); else throw error }
         },
       })
       if (asked === true) return { accepted: true }
@@ -200,36 +217,36 @@ export function install(rt) {
       // turn in flight ends — queue means wait, on a node as on this host.
       // A node without bot-turn-mode would queue a steer on its side anyway: hold it here, honestly as a queue.
       if (mode === 'steer' && rt.joinedConcurrent !== false && nodeCan(rt, bot, 'steer')) {
+        let started
         try {
-          startSideTurn({ rt, bot, text, requestId: request.requestId, session, state: mirrorStateOf(rt, bot.id, session), tracker: rt.turnTracker, timeoutMs, mode: 'steer' })
-          return { accepted: true }
+          started = startSideTurn({ rt, bot, text, requestId: request.requestId, tracker: rt.turnTracker, timeoutMs, mode: 'steer' })
         } catch (error) {
           if (error?.code !== 'E_BUSY') {
             forgetAttachments(request.requestId)
-            throw await remoteError('session/agent-unavailable', `无法送达节点：${failureText(error)}`, { reason: `JOINED_NODE_${error?.code ?? 'ERROR'}` })
+            throw await refused(error)
           }
+        }
+        if (started !== undefined) {
+          await sentOrRefused(started)
+          return { accepted: true }
         }
       }
       hold()
       return { accepted: true }
     }
 
+    let started
     try {
-      await waitForJoinedMirror(rt, bot.id, timeoutMs)
-      startPageTurn({
-        rt, bot, text, requestId: request.requestId, session,
-        state: mirrorStateOf(rt, bot.id, session),
-        tracker: rt.turnTracker,
-        timeoutMs,
-      })
+      started = startPageTurn({ rt, bot, text, requestId: request.requestId, tracker: rt.turnTracker, timeoutMs })
     } catch (error) {
       if (error?.code === 'E_BUSY') {
         hold()
         return { accepted: true }
       }
       forgetAttachments(request.requestId)
-      throw await remoteError('session/agent-unavailable', `无法送达节点：${failureText(error)}`, { reason: `JOINED_NODE_${error?.code ?? 'ERROR'}` })
+      throw await refused(error)
     }
+    await sentOrRefused(started)
     return { accepted: true }
   }, 'ds-bot: joined Bot prompt takeover')
 }
