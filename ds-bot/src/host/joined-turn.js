@@ -761,7 +761,7 @@ const deliveredAlready = (rt, botId, body) => (rt._deliveredReplies?.get(botId) 
  * that as a report; an older hub drops it). Only a Bot the hub has asked, and only while the link
  * is up; the page of that Bot on the hub shows it as a marked turn. Returns whether it was sent.
  */
-export function reportTaskToHub(rt, bot, text) {
+export function reportTaskToHub(rt, bot, text, { kind } = {}) {
   const network = rt.botNetwork
   const body = typeof text === 'string' ? text.trim() : ''
   if (body === '' || !bot || !hubAsked(rt, bot)) return false
@@ -769,7 +769,8 @@ export function reportTaskToHub(rt, bot, text) {
   if (deliveredAlready(rt, bot.id, body)) return false
   if (typeof network?.send !== 'function' || typeof network.nodeId !== 'string') return false
   const identity = { id: bot.id, name: bot.name || bot.id, nodeId: network.nodeId }
-  const frame = { from: identity, to: { ...identity, nodeId: 'hub' }, exchangeId: randomUUID(), kind: 'reply', text: body.slice(0, 60000), depth: 3 }
+  // `cont:`: what the Bot did on a teammate's answer (shown as its plain answer); otherwise a background task result.
+  const frame = { from: identity, to: { ...identity, nodeId: 'hub' }, exchangeId: `${kind === 'continuation' ? 'cont:' : ''}${randomUUID()}`, kind: 'reply', text: body.slice(0, 60000), depth: 3 }
   const attempt = () => { try { return network.send(frame) === true } catch { return false } }
   if (attempt()) return true
   // The link is down right now: the report is not dropped. It is retried (same exchange id, so the hub shows it
@@ -790,7 +791,7 @@ export function reportTaskToHub(rt, bot, text) {
 }
 
 export function install(rt) {
-  rt.reportTaskToHub = (bot, text) => reportTaskToHub(rt, bot, text)
+  rt.reportTaskToHub = (bot, text, options) => reportTaskToHub(rt, bot, text, options)
   rt.handleJoinedTurn = (msg) => handleJoinedTurn(rt, msg)
   const accept = createBotTurnReceiver(rt)
   exposeBotTurnReceiver(rt.ctx, accept)

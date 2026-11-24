@@ -259,7 +259,7 @@ export function mirrorLateReply(session, { step = 1, botText, botId, nodeSeq, se
   session.append('turn/start', { turn })
   try {
     session.append('step/start', { turn, step })
-    appendAssistant(session, turn, step, `${mark}\n\n${String(botText ?? '')}`, usage)
+    appendAssistant(session, turn, step, mark ? `${mark}\n\n${String(botText ?? '')}` : String(botText ?? ''), usage)
     session.append('step/end', { turn, step })
     session.append('turn/end', { turn, reason: turnEnd.completed() })
   } catch (err) {
@@ -273,6 +273,29 @@ export function mirrorLateReply(session, { step = 1, botText, botId, nodeSeq, se
   }
   if (seenSteps instanceof Set) seenSteps.add(turn + ':' + step)
   return { skipped: false, turn }
+}
+
+/**
+ * One "Message from X" / "Reply from X" line on a node Bot's page here: a message another Bot sent it, which the
+ * page draws as a folded event line (open it for the exchange). It is not an answer of the Bot; the Bot answers
+ * on its node, out of the user's window (docs/plans/2026-11-24-bot-assign.md).
+ */
+export function mirrorRelayEvent(session, { role, fromId, fromName, exchangeId, text = '' } = {}) {
+  const turn = allocateTurn(session)
+  session.append('turn/start', { turn })
+  try {
+    session.append('step/start', { turn, step: 1 })
+    session.append('user/message', createUserMessage({
+      content: [{ type: 'text', text: `[${role === 'reply' ? 'Reply' : 'Message'} from ${fromName}]\n${String(text).slice(0, 2000)}` }],
+      source: { kind: 'bot', form: 'relay', role, exchangeId, senderName: fromName, senderSessionId: fromId },
+    }), { surfaceOp: 'append' })
+    session.append('step/end', { turn, step: 1 })
+    session.append('turn/end', { turn, reason: turnEnd.completed() })
+  } catch (err) {
+    try { session.append('turn/end', { turn, reason: turnEnd.error(err?.message ?? err, 'E_MIRROR_WRITE') }) } catch {}
+    throw err
+  }
+  return turn
 }
 
 /** Per-Bot idempotency state shared by every path that mirrors a joined Bot's turns. */

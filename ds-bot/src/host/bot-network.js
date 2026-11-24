@@ -248,7 +248,8 @@ export async function handleNodeReport(rt, payload) {
   if (repliedAlready(rt, bot.id, payload.text)) return   // the answer a turn just delivered: already on the page
   if (seen.size > 512) seen.delete(seen.values().next().value)
   const session = await ensureMirrorSession(rt, bot)
-  writeNodeReport({ rt, bot, session, state: mirrorStateOf(rt, bot.id, session), text: payload.text })
+  const continuation = typeof payload.exchangeId === 'string' && payload.exchangeId.startsWith('cont:')
+  writeNodeReport({ rt, bot, session, state: mirrorStateOf(rt, bot.id, session), text: payload.text, ...(continuation ? { mark: '' } : {}) })
 }
 
 // The hub's joined shadow of a node Bot named in a bot/message: by its portable id first (the node's

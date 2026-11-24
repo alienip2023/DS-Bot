@@ -17,6 +17,8 @@ import { randomUUID } from 'node:crypto'
 import { joinedShadow, shadowId } from './roster-join.js'
 import { replyToSender } from './joined-turn.js'
 import { threadCurrentOfPart } from './threads.js'
+import { ensureMirrorSession, mirrorRelayEvent } from './mirror.js'
+import { deferMirrorWrite } from './joined-mirror-writer.js'
 
 export const RETRY_MS = 30_000
 export const OUTBOX_TTL_MS = 30 * 24 * 60 * 60 * 1000
@@ -268,6 +270,19 @@ export async function noteRelayed(rt, { frame, outcome }) {
     seenFrames.set(frame.frameId, { from: from.id, to: to.id, id: frame.exchangeId })
     if (seenFrames.size > 2000) seenFrames.delete(seenFrames.keys().next().value)
     await rt.recordPairMessage?.({ from: from.id, to: to.id, id: frame.exchangeId, role: frame.role, text: frame.text, replyTo: frame.replyTo })
+    // The recipient's page here gets a line for it: one line per message, as many as there are.
+    if (outcome === 'forwarded' && joinedShadow(to)) {
+      try {
+        const session = await ensureMirrorSession(rt, to)
+        deferMirrorWrite(rt, to.id, () => {
+          try { mirrorRelayEvent(session, { role: frame.role === 'request' ? 'request' : 'reply', fromId: from.id, fromName: from.name, exchangeId: frame.exchangeId, text: frame.text }) } catch (error) {
+            rt.warn?.('ds-bot: the line for a message to %s was not written: %s', to.name, error?.message ?? error)
+          }
+        })
+      } catch (error) {
+        rt.warn?.('ds-bot: the page of %s is not available for a relayed message: %s', to.name, error?.message ?? error)
+      }
+    }
   } else if (frame.op === 'ack') {
     const sent = seenFrames.get(frame.frameId)
     if (sent === undefined) return

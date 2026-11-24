@@ -50,7 +50,8 @@ async function cluster(t) {
     getNode(nodeId) { return this.nodes.get(nodeId) }
   }
   const registry = new (withIngest(Core))()
-  const hubNetwork = createHubBotNetwork({ registry, ctx: { get: () => undefined } })
+  let hubCtx
+  const hubNetwork = createHubBotNetwork({ registry, ctx: { get: (name, d) => hubCtx?.get(name, d) } })
   const world = (home, state, services) => {
     writeFileSync(join(home, 'state.json'), JSON.stringify(state))
     return threadWorld({ home, services })
@@ -58,9 +59,19 @@ async function cluster(t) {
   const hub = world(mkdtempSync(join(tmpdir(), 'r2-hub-')), team([bot('chief', 'Chief', {}), joined('node010', 'e10', 'node010执行'), joined('node011', 'e11', 'node011执行')]),
     { 'remote-agent:registry': registry, 'remote-agent:bot-network': hubNetwork })
   const node = (nodeId, local) => {
-    const network = createBotNetwork({ nodeId, sendHub: (type, data) => { if (!registry.nodes.get(nodeId)?.online) return false; registry.handleFrameFor(nodeId, { t: type, d: structuredClone(data) }); return true } })
+    const toHub = (type, data) => { if (!registry.nodes.get(nodeId)?.online) return false; registry.handleFrameFor(nodeId, { t: type, d: structuredClone(data) }); return true }
+    const network = createBotNetwork({ nodeId, send: toHub, sendHub: toHub })
     nodes.set(nodeId, network)
     return { network, w: world(mkdtempSync(join(tmpdir(), `r2-${nodeId}-`)), team([local]), { 'remote-agent:bot-network': network }) }
+  }
+  hubCtx = hub.ctx
+  // The hub writes node Bots' mirror pages: its stand-in Sessions log what is appended, as DSH's do.
+  const resolve = hub.ctx.sessionController.resolveAgent
+  hub.ctx.sessionController.resolveAgent = async (sessionId) => {
+    const out = await resolve(sessionId)
+    const session = out.agent.session
+    if (typeof session.append !== 'function') session.append = (type, data) => { const event = { type, seq: ++session.seq, time: Date.now(), data }; session.log.push(event); return event }
+    return out
   }
   const n10 = node('node010', bot('e10', 'node010执行'))
   const n11 = node('node011', bot('e11', 'node011执行'))
@@ -113,6 +124,9 @@ test('R2-E2E-1 node011 ↔ node010: three rounds, each reply closes the sender w
   }
   // The read-only exchange view (the "Reply from" line opens it) shows both sides on both machines.
   const peer10 = peerOf(n11.w.rt, 'node010执行')
+  const peer11early = peerOf(n10.w.rt, 'node011执行')
+  // A message shows once the other side acked it: wait for the last ack on both sides.
+  await until(() => n11.w.rt.exchangesOf('e11', peer10.id).length === 6 && n10.w.rt.exchangesOf('e10', peer11early.id).length === 6, 'six delivered messages on both machines')
   const onSender = n11.w.rt.exchangesOf('e11', peer10.id)
   assert.deepEqual(onSender.map(item => item.role), ['request', 'reply', 'request', 'reply', 'request', 'reply'])
   assert.ok(onSender[5].text.includes('第 3 回合收到'))
@@ -320,4 +334,41 @@ test('R4-E2E-6 Chief → node011 task → node010 and back: node011 resumes on t
   await emit11('turn/end', { turn: 2, reason: { kind: 'completed' } })
   await until(() => [...hub.followups, ...hub.steers].some(item => JSON.stringify(item.message).includes('沟通完成')), 'Chief got the final answer from node011')
   assert.equal(Object.values(hub.rt.state.works ?? {}).filter(w => w.from === 'chief').length, 0, 'Chief work closed')
+})
+
+
+// What the hub page of each node Bot shows: one "Message from" line per message it got, one "Reply from" line per
+// answer it got, and what it did on each answer — as many as there are (the user watches from the hub).
+const relayLines = (w, botId) => {
+  const sid = w.rt.chatOf(botId)
+  const session = w.agentOf(sid).session
+  return (session.log ?? []).filter(e => e.type === 'user/message' && e.data?.source?.kind === 'bot').map(e => `${e.data.source.role}:${e.data.source.senderName}`)
+}
+const mirrorLog = (w, botId) => w.agentOf(w.rt.chatOf(botId)).session.log ?? []
+
+test('R4-E2E-7 hub pages: node010 shows every "Message from node011", node011 every "Reply from node010" and what it did next', { skip }, async t => {
+  const { hub, n10, n11 } = await cluster(t)
+  n11.w.rt.state.bots.e11.hubAskedAt = Date.now()   // node011's Bot works for the hub's page
+  for (let round = 1; round <= 2; round += 1) {
+    await messageBot(n11.w.rt, 'e11', 'node010执行', `第 ${round} 回合：你好`)
+    await until(() => taskTexts(n10.w, 'e10').some(text => text.includes(`第 ${round} 回合：`)), `round ${round} reached node010`)
+    await answer(n10.w.rt, 'e10', `第 ${round} 回合`, `第 ${round} 回合收到`)
+    await until(() => textsIn(n11.w, 'e11').some(text => text.includes(`第 ${round} 回合收到`)), `round ${round} reply reached node011`)
+  }
+  await until(() => relayLines(hub, 'joined:node010:e10').length === 2 && relayLines(hub, 'joined:node011:e11').length === 2, 'two lines on each hub page')
+  assert.deepEqual(relayLines(hub, 'joined:node010:e10'), ['request:node011执行', 'request:node011执行'])
+  assert.deepEqual(relayLines(hub, 'joined:node011:e11'), ['reply:node010执行', 'reply:node010执行'])
+
+  // node011 goes on in its own chat with the answer: that turn reaches its hub page, as a plain answer.
+  const chat = n11.w.rt.chatOf('e11')
+  const agent = n11.w.agentOf(chat)
+  agent.session.seq = agent.session.seq ?? 0
+  const emit = async (type, data) => { const event = { type, seq: ++agent.session.seq, data }; agent.session.log.push(event); for (const l of n11.w.ctx.listeners.get('session/event') ?? []) await l(agent.session, event) }
+  const got = [...n11.w.followups, ...n11.w.steers].find(item => item.sessionId === chat && JSON.stringify(item.message).includes('第 2 回合收到'))
+  await emit('turn/start', { turn: 1 })
+  await emit('user/message', got.message)
+  await emit('assistant/message', { turn: 1, message: { role: 'assistant', content: [{ type: 'text', text: '两轮都收到了，继续第 3 回合' }] } })
+  await emit('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  const shown = () => mirrorLog(hub, 'joined:node011:e11').filter(e => e.type === 'assistant/message').map(e => e.data.message.content.map(b => b.text).join(''))
+  await until(() => shown().some(text => text === '两轮都收到了，继续第 3 回合'), "node011's next step shows on its hub page, without a task-result mark")
 })
