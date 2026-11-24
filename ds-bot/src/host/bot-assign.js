@@ -134,9 +134,13 @@ function transmit(rt, entry, now = Date.now()) {
 export async function sendAssign(rt, { fromId, toId, role, text, exchangeId = randomUUID(), replyTo }) {
   const from = rt.botOf?.(fromId)
   const to = rt.botOf?.(toId)
-  if (from === undefined || to === undefined || !isRemoteBot(to) || isRemoteBot(from)) return { ok: false, error: 'E_PEER_UNKNOWN' }
+  // An answer goes back to where its request came from, even when this machine's stand-in row for the asker is
+  // not there right now (rows from the team directory are memory-only and come back with the next directory).
+  const request = role === 'reply' && typeof replyTo === 'string' ? inbound(rt)[replyTo] : undefined
+  const knownAsker = to === undefined && request !== null && typeof request === 'object' ? request.remote : undefined
+  if (from === undefined || isRemoteBot(from) || (knownAsker === undefined && (to === undefined || !isRemoteBot(to)))) return { ok: false, error: 'E_PEER_UNKNOWN' }
   const fromRef = refOf(rt, from)
-  const toRef = refOf(rt, to)
+  const toRef = knownAsker ?? refOf(rt, to)
   if (fromRef === undefined || toRef === undefined) return { ok: false, error: 'E_PEER_UNKNOWN' }
   const frame = {
     op: 'deliver', frameId: randomUUID(), from: fromRef, to: toRef,
@@ -191,7 +195,7 @@ export async function receiveAssign(rt, frame) {
   if (to === undefined || isRemoteBot(to)) { rt.warn?.('ds-bot: bot/assign for %s: no such Bot here', frame.to?.id); return 'unknown-target' }
   if (from === undefined || !isRemoteBot(from)) { rt.warn?.('ds-bot: bot/assign from %s on %s: no stand-in here yet', frame.from?.id, frame.from?.nodeId); return 'unknown-sender' }
   if (frame.role === 'request') {
-    inbound(rt)[frame.exchangeId] = { at: Date.now(), pair: pairKey(from.id, to.id), q: clip(frame.text) }
+    inbound(rt)[frame.exchangeId] = { at: Date.now(), pair: pairKey(from.id, to.id), q: clip(frame.text), remote: frame.from }
     const earlier = earlierRounds(rt, from, to)
     const text = earlier === '' ? frame.text : `${earlier}\n\n${frame.text}`
     // Not in the Bot's own chat (the user's window): a background task of its own, forked from that
@@ -328,6 +332,8 @@ export function install(rt) {
   rt.assign = {
     send: args => sendAssign(rt, args),
     owes: exchangeId => owesAnswer(rt, exchangeId),
+    // The asker of a request that came in over bot/assign, by address (its stand-in may be gone).
+    askerOf: exchangeId => { const entry = rt.state.assignInbound?.[exchangeId]; return entry !== null && typeof entry === 'object' ? entry.remote : undefined },
     receive: frame => receiveAssign(rt, frame),
     flush: options => flushOutbox(rt, options),
     pending: () => Object.values(outbox(rt)).map(entry => ({ frameId: entry.frame.frameId, to: entry.frame.to.name, role: entry.frame.role, away: entry.away === true, at: entry.at })),

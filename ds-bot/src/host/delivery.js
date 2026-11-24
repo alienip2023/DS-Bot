@@ -177,6 +177,11 @@ export function install(rt) {
   async function deliver({ fromId, fromName: senderName, toId, sessionId, text, role, replyTo, roomId, audience, note, exchangeId = randomUUID(), steer = false, deferred = false, resumed = false, retried = false, resent = false, merged = false, abandoned = false, recordExchange = true, askedBy, fromRoomId, fromPart, images = [], files = [], length, work, taskId, imOrigin, failureRequestId, joinedTurn = false, joinedAsync = false, wait = false, stopped = false }) {
     const from = rt.botOf(fromId)
     const to = rt.botOf(toId)
+    // The answer to a request from another machine, whose stand-in row is not here at this moment: it still goes
+    // home over bot/assign, to the address the request came from (bot-assign.js). Never dropped as an unknown Bot.
+    if (to === undefined && role === 'reply' && typeof rt.assign?.askerOf === 'function' && rt.assign.askerOf(replyTo) !== undefined) {
+      return rt.assign.send({ fromId, toId, role, text, exchangeId, replyTo })
+    }
     if (to === undefined) throw new Error(`Unknown Bot ${toId}`)
     // Joined members have no local model turn to settle the group's waiter.
     // Route their result through the same collection/late-reply path as local members.

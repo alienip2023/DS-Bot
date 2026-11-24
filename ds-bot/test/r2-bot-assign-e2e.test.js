@@ -11,6 +11,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { test } from 'node:test'
 import { threadWorld } from './thread-t2-world.js'
 import { publishDirectory } from '../src/host/bot-network.js'
+import { handlePeerRoster } from '../src/host/federation.js'
 
 const PLUGIN = dirname(dirname(fileURLToPath(import.meta.url)))
 const repo = [process.env.REMOTE_AGENT_REPO, resolve(PLUGIN, '../../dsh-ai-cluster'), resolve(PLUGIN, '../../../Projects/dsh-ai-cluster')]
@@ -371,4 +372,34 @@ test('R4-E2E-7 hub pages: node010 shows every "Message from node011", node011 ev
   await emit('turn/end', { turn: 1, reason: { kind: 'completed' } })
   const shown = () => mirrorLog(hub, 'joined:node011:e11').filter(e => e.type === 'assistant/message').map(e => e.data.message.content.map(b => b.text).join(''))
   await until(() => shown().some(text => text === '两轮都收到了，继续第 3 回合'), "node011's next step shows on its hub page, without a task-result mark")
+})
+
+
+// Found on the cluster (task-board/evidence/T-20261124-node-no-reply-forensics): round 1 answered, round 2/3 were
+// answered on the node but the answer never left — "reply delivery failed: Unknown Bot peer:hub:node010:…". A
+// peer/roster frame with federation off cleared every peer row, the team directory's too, and the answer had no
+// stand-in to go to until the next directory.
+test('R4-E2E-8 a peer/roster frame (federation off) between rounds keeps the directory rows: round 2 is answered', { skip }, async t => {
+  const { n10, n11 } = await cluster(t)
+  await messageBot(n11.w.rt, 'e11', 'node010执行', '第 1 回合：你好')
+  await until(() => taskTexts(n10.w, 'e10').some(text => text.includes('第 1 回合：')), 'round 1 reached node010')
+  await answer(n10.w.rt, 'e10', '第 1 回合', '第 1 回合收到')
+  await until(() => textsIn(n11.w, 'e11').some(text => text.includes('第 1 回合收到')), 'round 1 reply reached node011')
+  await messageBot(n11.w.rt, 'e11', 'node010执行', '第 2 回合：你好')
+  await until(() => taskTexts(n10.w, 'e10').some(text => text.includes('第 2 回合：')), 'round 2 reached node010')
+  // The hub's roster push lands on node010 now, before it answers.
+  assert.equal(await handlePeerRoster(n10.w.rt, { hubId: 'hub-1', level: 'off', bots: [] }), true)
+  assert.ok(peerOf(n10.w.rt, 'node011执行'), "the directory's row for node011 is still there")
+  await answer(n10.w.rt, 'e10', '第 2 回合', '第 2 回合收到')
+  await until(() => textsIn(n11.w, 'e11').some(text => text.includes('第 2 回合收到')), 'round 2 reply reached node011')
+})
+
+test('R4-E2E-9 the asker stand-in is gone when the answer is ready: it still goes home to the address the request came from', { skip }, async t => {
+  const { n10, n11 } = await cluster(t)
+  await messageBot(n11.w.rt, 'e11', 'node010执行', '第 1 回合：你好')
+  await until(() => taskTexts(n10.w, 'e10').some(text => text.includes('第 1 回合：')), 'round 1 reached node010')
+  delete n10.w.rt.state.bots[peerOf(n10.w.rt, 'node011执行').id]
+  await answer(n10.w.rt, 'e10', '第 1 回合', '第 1 回合收到')
+  await until(() => textsIn(n11.w, 'e11').some(text => text.includes('第 1 回合收到')), 'the answer reached node011 anyway')
+  assert.equal(Object.values(n11.w.rt.state.works ?? {}).filter(w => w.from === 'e11').length, 0, 'node011 work closed')
 })

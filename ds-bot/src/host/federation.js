@@ -45,6 +45,10 @@ export function emptyFederation() {
 export const peerId = (hubId, botId) => `${PEER_PREFIX}${encodeURIComponent(hubId)}:${encodeURIComponent(botId)}`
 
 export const isPeerBot = (bot) => bot !== null && typeof bot === 'object' && bot.origin === 'peer'
+// The rows this roster makes. A row from the team directory (bot-network.js) is also a peer row, but it carries
+// homeNodeId and hubId and belongs to the directory: a roster frame (federation off clears its own rows) must
+// never take it away — it is how a node Bot's answer finds the Bot that asked (bot-assign.js).
+const isRosterRow = (bot) => isPeerBot(bot) && !(typeof bot.homeNodeId === 'string' && typeof bot.hubId === 'string')
 
 // Same limits as the node-side validator: the two ends must agree on what a roster is.
 export function sanitizePeerRoster(input) {
@@ -312,7 +316,7 @@ function pruneSeen(fed, now = Date.now()) {
 
 function clearPeerState(state) {
   for (const [id, bot] of Object.entries(state.bots ?? {})) {
-    if (isPeerBot(bot)) delete state.bots[id]
+    if (isRosterRow(bot)) delete state.bots[id]
   }
   const fed = state.federation ?? (state.federation = emptyFederation())
   fed.inbox = {}
@@ -398,7 +402,7 @@ export async function applyPeerRoster(rt, payload) {
   }
   const removals = []
   for (const bot of Object.values(state.bots ?? {})) {
-    if (!isPeerBot(bot) || bot.worker?.hubId !== hubId) continue
+    if (!isRosterRow(bot) || bot.worker?.hubId !== hubId) continue
     if (incoming.has(bot.id)) continue
     const missing = (Number.isInteger(bot.worker?.missingFrames) ? bot.worker.missingFrames : 0) + 1
     if (missing >= MISSING_FRAMES) {
