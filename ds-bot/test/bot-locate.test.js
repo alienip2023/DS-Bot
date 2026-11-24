@@ -135,3 +135,34 @@ test('bot_journal reads the caller\'s journal and flags an unfinished turn', asy
   assert.match(out, /Incomplete turns.*ex-crash-2/)
   assert.doesNotMatch(out, /Incomplete turns.*ex-done-1/)
 })
+
+test('pair_node lists where machines can join, never the pairing code or token', async (t) => {
+  const pairInfo = () => ({
+    tokenSet: true,
+    codes: [
+      { hubUrl: 'ws://192.168.1.5:19387/api/remote-agent/node', usable: true, private: true, pairCode: 'cluster1://SECRET', includesToken: false },
+      { hubUrl: 'ws://10.0.0.9:19387/api/remote-agent/node', usable: false, private: true, pairCode: 'cluster1://SECRET2' },
+    ],
+    listener: { hint: '' },
+    firewallHint: 'netsh advfirewall firewall add rule name="dsh-ai-cluster" dir=in action=allow protocol=TCP localport=19387',
+  })
+  const { call } = await start(t, { on() {}, off() {}, send: () => true, getNode: () => undefined })
+  // Service registered after start: the tool looks it up per call.
+  const { rt } = await start(t, { on() {}, off() {}, send: () => true, getNode: () => undefined })
+  rt.ctx.provide('remote-agent:pair-info', pairInfo)
+  const out = await rt.teamTools.find(def => def.name === 'pair_node').execute({}, { agent: { id: 'chief' }, callId: 'c', signal: new AbortController().signal })
+  assert.match(out, /✓ ws:\/\/192\.168\.1\.5:19387/)
+  assert.match(out, /✗ ws:\/\/10\.0\.0\.9:19387.*not usable now/)
+  assert.match(out, /netsh advfirewall/)
+  assert.doesNotMatch(out, /SECRET|cluster1:\/\//)
+  assert.match(await call('pair_node', {}), /not a hub, or its AC is older/)
+})
+
+test('pair_node says when the hub has no node token or no usable address', async (t) => {
+  const { rt } = await start(t)
+  rt.ctx.provide('remote-agent:pair-info', () => ({ tokenSet: false, codes: [], listener: { hint: '独立监听尚未就绪' } }))
+  const out = await rt.teamTools.find(def => def.name === 'pair_node').execute({}, { agent: { id: 'chief' }, callId: 'c', signal: new AbortController().signal })
+  assert.match(out, /no node token yet/)
+  assert.match(out, /Listener: 独立监听尚未就绪/)
+  assert.match(out, /No address is usable/)
+})
