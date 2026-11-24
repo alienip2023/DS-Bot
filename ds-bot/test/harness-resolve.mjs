@@ -10,6 +10,14 @@ import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const plugin = resolve(import.meta.dirname, '..')
+
+// A Bot's portable state (skills, journal) lives under botsRoot() = DSH_BOTS_DIR or ~/.dsh/bots.
+// Tests never touch ~/.dsh (AGENTS.md): point it at a temp dir for this run unless set.
+if (!process.env.DSH_BOTS_DIR) {
+  const { mkdtempSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  process.env.DSH_BOTS_DIR = mkdtempSync(join(tmpdir(), 'ds-bot-bots-'))
+}
 const above = (start) => {
   for (let dir = start; ; dir = dirname(dir)) {
     if (existsSync(join(dir, 'deepseek-harness'))) return join(dir, 'deepseek-harness')

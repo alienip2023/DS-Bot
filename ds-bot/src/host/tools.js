@@ -20,6 +20,7 @@ import { plainToolSchema } from './tool-schema.js'
 import { viewCardText } from './parts.js'
 import { checkShownView, showViewDescription, showViewParameters } from 'deep-view/core'
 import { install as installBuiltinPacks } from './builtin-packs.js'
+import { SKILL_NAME, botsRoot, loadBotSkills, saveSkill } from './skill-loader.js'
 
 export const output = { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: String(value) }] }
 export const GROUP_REF = { type: 'string', required: true, description: 'Exact group chat name from list_bots' }
@@ -2213,17 +2214,15 @@ export function install(rt) {
     output,
     async execute(args, exec) {
       await rt.load()
-      const self = rt.selfOf(exec.agent?.id)
-      const target = args.bot ? rt.findBot(args.bot) : self
+      const caller = rt.botOf(rt.selfOf(exec.agent?.id))
+      const target = args.bot ? rt.findBot(args.bot) : caller
       if (!target) return args.bot ? `No Bot named "${args.bot}".` : 'Could not identify caller.'
-      const { readdirSync, existsSync } = await import('node:fs')
-      const { join } = await import('node:path')
-      const { homedir } = await import('node:os')
-      const skillsDir = join(homedir(), '.dsh', 'bots', target.id, 'skills')
-      if (!existsSync(skillsDir)) return `${target.name} has no skills yet. Use create_skill to add one.`
-      const files = readdirSync(skillsDir).filter(f => f.endsWith('.md'))
-      if (files.length === 0) return `${target.name} has no skills yet.`
-      return [`${target.name}'s skills:`, ...files.map(f => `  • ${f.replace(/\.md$/, '')}`)].join('\n')
+      const skills = loadBotSkills(target.id)
+      if (skills.length === 0) return `${target.name} has no skills yet. Use create_skill to add one.`
+      return [`${target.name}'s skills:`, ...skills.map(s => {
+        const trig = s.triggers.length > 0 ? ` [triggers: ${s.triggers.join(', ')}]` : ''
+        return `  • ${s.name}${trig}${s.description ? ` — ${s.description}` : ''}`
+      })].join('\n')
     },
   }))
 
@@ -2239,17 +2238,16 @@ export function install(rt) {
     output,
     async execute(args, exec) {
       await rt.load()
-      const self = rt.selfOf(exec.agent?.id)
-      const target = args.bot ? rt.findBot(args.bot) : self
+      const caller = rt.botOf(rt.selfOf(exec.agent?.id))
+      const target = args.bot ? rt.findBot(args.bot) : caller
       if (!target) return args.bot ? `No Bot named "${args.bot}".` : 'Could not identify caller.'
-      if (!/^[a-z0-9-]+$/.test(args.name)) return 'Skill name must be kebab-case (lowercase letters, digits, hyphens).'
-      const { mkdirSync, writeFileSync } = await import('node:fs')
-      const { join } = await import('node:path')
-      const { homedir } = await import('node:os')
-      const skillsDir = join(homedir(), '.dsh', 'bots', target.id, 'skills')
-      mkdirSync(skillsDir, { recursive: true })
-      writeFileSync(join(skillsDir, `${args.name}.md`), args.content, 'utf8')
-      return `Skill "${args.name}" saved for ${target.name}.`
+      // A skill is pulled into its Bot's turns automatically, so writing one for another Bot is
+      // writing into that Bot's prompt: only a Main Bot may (same rule as capabilities).
+      if (caller && target.id !== caller.id && !rt.isMain(caller.id)) return 'Only a Main Bot can create skills for another Bot.'
+      if (!SKILL_NAME.test(args.name)) return 'Skill name must be kebab-case (lowercase letters, digits, hyphens; up to 64 characters).'
+      if (typeof args.content !== 'string' || args.content.trim() === '') return 'Skill content is empty.'
+      saveSkill(target.id, args.name, args.content)
+      return `Skill "${args.name}" saved for ${target.name}. It is pulled into a turn when a message names it or one of its triggers.`
     },
   }))
 
@@ -2265,13 +2263,13 @@ export function install(rt) {
     output,
     async execute(args, exec) {
       await rt.load()
-      const self = rt.selfOf(exec.agent?.id)
-      const target = args.bot ? rt.findBot(args.bot) : self
+      const caller = rt.botOf(rt.selfOf(exec.agent?.id))
+      const target = args.bot ? rt.findBot(args.bot) : caller
       if (!target) return args.bot ? `No Bot named "${args.bot}".` : 'Could not identify caller.'
       const { existsSync, readFileSync } = await import('node:fs')
       const { join } = await import('node:path')
-      const { homedir } = await import('node:os')
-      const journalPath = join(homedir(), '.dsh', 'bots', target.id, 'journal.jsonl')
+      // AC writes the journal on the machine that runs the turn, keyed by that machine's Bot id.
+      const journalPath = join(botsRoot(), target.id, 'journal.jsonl')
       if (!existsSync(journalPath)) return `${target.name} has no journal entries yet.`
       const raw = readFileSync(journalPath, 'utf8').trim().split('\n').filter(Boolean)
       const limit = Math.min(Math.max(1, args.lines ?? 20), 100)
