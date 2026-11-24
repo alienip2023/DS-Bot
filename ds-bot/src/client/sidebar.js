@@ -2,7 +2,7 @@ import { createElement as h, Fragment, useEffect, useLayoutEffect, useMemo, useR
 import { createPortal } from 'react-dom'
 import { FishLogo } from './dsh-primitives.js'
 import { inkFill } from './inks.js'
-import { isMainOf } from './sources.js'
+import { homeOf, isMainOf } from './sources.js'
 import { currentPart, previewOf, relativeShort } from './text.js'
 import { PlusIcon, SearchIcon, SidebarIcon, GaugeIcon, ClockIcon, GearIcon, PinMarkIcon, ConnectorIcon, PlugIcon, SwitchIcon, CloudDownloadIcon, SignInIcon, SignOutIcon, SlidersIcon, ChevronRightIcon, DotsIcon, FolderIcon } from './icons.js'
 import { lookOf, MAIN_LOOK } from './characters.js'
@@ -1471,7 +1471,8 @@ export function useLandOnMainBot(roster, useSessions, actions) {
   })
   const lastBot = useRef(null)
   useEffect(() => {
-    if (!roster.ready || !roster.mainBotId) return undefined
+    const homeBot = homeOf(roster)
+    if (!roster.ready || !homeBot) return undefined
     const [id, blank] = mainView.split('|')
     const bot = id === '' ? undefined : roster.byId[id]
     if (bot !== undefined) {
@@ -1508,7 +1509,7 @@ export function useLandOnMainBot(roster, useSessions, actions) {
     // empty, so the Host is asked before the view goes home. A question that could not
     // be asked is not an answer — the view stays rather than bouncing on a guess.
     const last = lastBot.current
-    const home = () => actions.landOn(roster.mainBotId, last)
+    const home = () => actions.landOn(homeBot, last)
     const ask = id === '' ? undefined : actions.threadOwnerOf
     let live = true
     const timer = setTimeout(() => {

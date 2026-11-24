@@ -10,6 +10,7 @@ export function mapNodeModel(m) {
 }
 
 // Client channel: the team view the browser renders, and the POST /api/bot endpoints.
+import { homeBotOf } from './node-team.js'
 import { randomUUID } from 'node:crypto'
 import { collectPrompt, forgetAttachments, hasAttachments, holdAttachments, stageFileParts, stashAttachments } from './joined-attachments.js'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -335,6 +336,9 @@ export function install(rt) {
     // `mainBotId` is the first Main Bot, which the sidebar shows as its tile.
     mainBotId: state.mainBotIds[0] ?? null,
     mainBotIds: state.mainBotIds,
+    // `homeBotId`: where the interface goes home to (Bot mode, the home button): the Main Bot, or on a node, which has
+    // none, its first Bot. No Bot is marked or shown apart for it.
+    homeBotId: homeBotOf(state),
     // `sessionId` is the Bot's current own-chat part; `parts` its earlier ones.
     // `waiting`: the Bot holds its greeting until the user picks its model or fixes
     // what failed it. `blocked`: the facts of a failure only the user can fix (turns.js).

@@ -14,8 +14,28 @@ export const NODE_NO_MAIN = '这台机器是节点，节点上没有主 Bot：Bo
 
 const ENFORCE_MS = 5_000
 
+// A node: AC says this machine is a worker, or it is joined to a hub as a node (it has a node id on the Bot network
+// and no node registry of its own, which only a hub has) — whatever role its configuration names.
 export const isNodeRole = (rt) => {
-  try { return rt.ctx?.get?.('remote-agent:role') === 'worker' } catch { return false }
+  const get = (name) => { try { return rt.ctx?.get?.(name) } catch { return undefined } }
+  if (get('remote-agent:role') === 'worker') return true
+  const registry = get('remote-agent:registry')
+  if (typeof registry?.send === 'function' || typeof registry?.onlineNodes === 'function') return false
+  const nodeId = get('remote-agent:bot-network')?.nodeId
+  return typeof nodeId === 'string' && nodeId !== '' && nodeId !== 'hub'
+}
+
+/**
+ * The Bot the team's interface goes home to: the first Main Bot, or on a team without one (a node, where every Bot is
+ * an ordinary first-class Bot) the first Bot of this machine. Never a Bot of another machine or a hidden one.
+ */
+export function homeBotOf(state) {
+  const bots = state?.bots ?? {}
+  const main = (state?.mainBotIds ?? []).find(id => bots[id] !== undefined)
+  if (main !== undefined) return main
+  return Object.values(bots)
+    .filter(bot => bot && bot.origin !== 'peer' && bot.origin !== 'joined' && bot.hidden !== true && bot.type !== 'remote-worker')
+    .sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0) || String(a.id).localeCompare(String(b.id)))[0]?.id ?? null
 }
 
 const refusal = () => Object.assign(new Error(NODE_NO_MAIN), { code: 'E_NODE_NO_MAIN' })

@@ -156,3 +156,17 @@ test('a Thread Session the cache already knows is never sent home', async () => 
   await home()
   assert.deepEqual(calls, [])
 })
+
+// 2026-11-25: a node has no Main Bot; entering Bot mode there went nowhere. It goes to the home Bot.
+test('entering Bot mode on a node (no Main Bot) goes home to its first Bot', async () => {
+  const calls = []
+  const home = threadHomeGuard({
+    roster: { getSnapshot: () => ({ ready: true, mainBotId: null, homeBotId: 'worker-1', byId: { 'worker-1': { id: 'worker-1' } }, roomsById: {}, agentOf: {} }) },
+    mainView: () => 'outside-session',
+    threadBotOfSession: () => undefined,
+    threadOwnerOf: async () => null,
+    openSession: id => calls.push(id),
+  })
+  await home()
+  assert.deepEqual(calls, ['worker-1'])
+})

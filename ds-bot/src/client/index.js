@@ -1,7 +1,7 @@
 import { call } from './api.js'
 import { isHex, inkText, paintCss } from './inks.js'
 import { DEFAULT_MASK, SHAPES, markupCache, maskOf } from './characters.js'
-import { createSource, EMPTY_ROSTER, indexRoster, isAgentSession } from './sources.js'
+import { createSource, EMPTY_ROSTER, homeOf, indexRoster, isAgentSession } from './sources.js'
 import { teamActions } from './team-actions.js'
 import { themeCss, shellTokens, registry, registerShape, registerTheme, allThemes, layoutOf, effectsOf, widthOf, flatWidthOf } from './themes.js'
 import { readSkinSurfaceVars, writeSkinSurfaceVars } from './skin.js'
@@ -649,7 +649,7 @@ export function apply(ctx) {
           page,
           ownerOf: (sessionId) => threadOwnerOf(sessionId),
           forget: forgetThreadPage,
-          home: () => actions.openSession(snapshot.mainBotId),
+          home: () => actions.openSession(homeOf(snapshot)),
           alreadyOpen: true,
           isCurrent,
         })
@@ -673,7 +673,7 @@ export function apply(ctx) {
         open: (sessionId) => openThreadSession(sessionId),
         ownerOf: (sessionId) => threadOwnerOf(sessionId),
         forget: forgetThreadPage,
-        home: () => actions.openSession(snapshot.mainBotId),
+        home: () => actions.openSession(homeOf(snapshot)),
         isCurrent,
       })
     }
@@ -791,7 +791,7 @@ export function apply(ctx) {
       if (main !== sessionId) return
       const rest = roster.getSnapshot().agentsById[agentId]?.sessions ?? []
       if (rest.length > 0) actions.openAgent(agentId)
-      else if (roster.getSnapshot().mainBotId) actions.openSession(roster.getSnapshot().mainBotId)
+      else if (homeOf(roster.getSnapshot())) actions.openSession(homeOf(roster.getSnapshot()))
     },
     renameAgentSession: (agentId, sessionId, title) => after(call('agent-rename', { agentId, sessionId, title })),
     beginAgentRename: sessionId => ui.set(state => ({ ...state, renameAgent: sessionId })),
@@ -803,7 +803,7 @@ export function apply(ctx) {
       const result = await after(call('remove-agent', { agentId }))
       const list = ctx.sessions.list.getSnapshot()
       const main = Object.values(list.byId ?? {}).find(session => (session?.retainedBy?.mainView ?? 0) > 0)?.id
-      if (main !== undefined && owned.includes(main) && roster.getSnapshot().mainBotId) actions.openSession(roster.getSnapshot().mainBotId)
+      if (main !== undefined && owned.includes(main) && homeOf(roster.getSnapshot())) actions.openSession(homeOf(roster.getSnapshot()))
       return result
     },
     // `last` is the Bot conversation the view held before it cleared: when that part

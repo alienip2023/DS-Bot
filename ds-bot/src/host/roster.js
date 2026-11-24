@@ -1,5 +1,6 @@
 // Roster: creating, changing, and deleting Bots and group chats, the Main Bot role, and
 // the first Main Bot of a new team.
+import { isNodeRole } from './node-team.js'
 import { openSessions } from './threads.js'
 import { randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
@@ -1230,9 +1231,8 @@ export function install(rt) {
   async function bootstrap() {
     await rt.load()
     void rt.syncModels()
-    let workerRole
-    try { workerRole = ctx.get('remote-agent:role') } catch { workerRole = undefined }
-    if (workerRole === 'worker') {
+    // A node has no Main Bot and never gets a new one made for it: its Bots are all first-class (node-team.js).
+    if (isNodeRole(rt)) {
       if (state.mainBotIds.length > 0) {
         rt.warn?.('ds-bot: worker node — clearing mainBotIds (Bots and sessions preserved)')
         state.mainBotIds = []

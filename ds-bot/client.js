@@ -17370,7 +17370,8 @@ function createSource(initial) {
     }
   };
 }
-var EMPTY_ROSTER = { revision: -1, mainBotId: null, mainBotIds: [], bots: [], rooms: [], agents: [], sections: [], exchangeTurns: {}, questions: {}, views: {}, btwCards: {}, sideChats: {}, learning: {}, secrets: [], capabilities: [], capabilityStatuses: {}, phone: null, secretRequests: {}, connectorRequests: {}, mailRequests: {}, models: [], defaultModel: null, modelsKey: null, prefs: {}, byId: {}, roomsById: {}, agentsById: {}, agentOf: {}, ready: false };
+var EMPTY_ROSTER = { revision: -1, mainBotId: null, homeBotId: null, mainBotIds: [], bots: [], rooms: [], agents: [], sections: [], exchangeTurns: {}, questions: {}, views: {}, btwCards: {}, sideChats: {}, learning: {}, secrets: [], capabilities: [], capabilityStatuses: {}, phone: null, secretRequests: {}, connectorRequests: {}, mailRequests: {}, models: [], defaultModel: null, modelsKey: null, prefs: {}, byId: {}, roomsById: {}, agentsById: {}, agentOf: {}, ready: false };
+var homeOf = (roster) => roster?.homeBotId ?? roster?.mainBotId ?? null;
 var isMainOf = (roster, id) => id !== void 0 && (roster.mainBotIds ?? []).includes(id);
 function indexRoster(value) {
   const byId = {};
@@ -36473,7 +36474,8 @@ function useLandOnMainBot(roster, useSessions, actions) {
   });
   const lastBot = (0, import_react38.useRef)(null);
   (0, import_react38.useEffect)(() => {
-    if (!roster.ready || !roster.mainBotId) return void 0;
+    const homeBot = homeOf(roster);
+    if (!roster.ready || !homeBot) return void 0;
     const [id, blank3] = mainView.split("|");
     const bot = id === "" ? void 0 : roster.byId[id];
     if (bot !== void 0) {
@@ -36497,7 +36499,7 @@ function useLandOnMainBot(roster, useSessions, actions) {
     }
     if (actions.hasThreadPage?.() === true) return void 0;
     const last = lastBot.current;
-    const home = () => actions.landOn(roster.mainBotId, last);
+    const home = () => actions.landOn(homeBot, last);
     const ask = id === "" ? void 0 : actions.threadOwnerOf;
     let live = true;
     const timer = setTimeout(() => {
@@ -36711,7 +36713,8 @@ var SIDEBAR_CSS = `
 function threadHomeGuard({ roster, mainView, threadBotOfSession, threadOwnerOf, threadPage, openSession }) {
   return async function homeToMainBot() {
     const snapshot = roster.getSnapshot();
-    if (!snapshot.ready || !snapshot.mainBotId) return;
+    const home = homeOf(snapshot);
+    if (!snapshot.ready || !home) return;
     const main = mainView();
     if (threadBotOfSession(main) !== void 0) return;
     if (main === void 0) return;
@@ -36720,7 +36723,7 @@ function threadHomeGuard({ roster, mainView, threadBotOfSession, threadOwnerOf, 
     if (owner !== null) return;
     if (threadPage?.() !== void 0) return;
     if (mainView() !== main) return;
-    openSession(snapshot.mainBotId);
+    openSession(home);
   };
 }
 
@@ -57056,7 +57059,7 @@ function apply(ctx) {
           page,
           ownerOf: (sessionId) => threadOwnerOf(sessionId),
           forget: forgetThreadPage,
-          home: () => actions.openSession(snapshot.mainBotId),
+          home: () => actions.openSession(homeOf(snapshot)),
           alreadyOpen: true,
           isCurrent
         });
@@ -57073,7 +57076,7 @@ function apply(ctx) {
         open: (sessionId) => openThreadSession(sessionId),
         ownerOf: (sessionId) => threadOwnerOf(sessionId),
         forget: forgetThreadPage,
-        home: () => actions.openSession(snapshot.mainBotId),
+        home: () => actions.openSession(homeOf(snapshot)),
         isCurrent
       });
     };
@@ -57203,7 +57206,7 @@ function apply(ctx) {
       if (main !== sessionId) return;
       const rest = roster.getSnapshot().agentsById[agentId]?.sessions ?? [];
       if (rest.length > 0) actions.openAgent(agentId);
-      else if (roster.getSnapshot().mainBotId) actions.openSession(roster.getSnapshot().mainBotId);
+      else if (homeOf(roster.getSnapshot())) actions.openSession(homeOf(roster.getSnapshot()));
     },
     renameAgentSession: (agentId, sessionId, title) => after(call("agent-rename", { agentId, sessionId, title })),
     beginAgentRename: (sessionId) => ui.set((state) => ({ ...state, renameAgent: sessionId })),
@@ -57215,7 +57218,7 @@ function apply(ctx) {
       const result = await after(call("remove-agent", { agentId }));
       const list = ctx.sessions.list.getSnapshot();
       const main = Object.values(list.byId ?? {}).find((session) => (session?.retainedBy?.mainView ?? 0) > 0)?.id;
-      if (main !== void 0 && owned.includes(main) && roster.getSnapshot().mainBotId) actions.openSession(roster.getSnapshot().mainBotId);
+      if (main !== void 0 && owned.includes(main) && homeOf(roster.getSnapshot())) actions.openSession(homeOf(roster.getSnapshot()));
       return result;
     },
     // `last` is the Bot conversation the view held before it cleared: when that part

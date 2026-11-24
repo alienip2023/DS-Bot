@@ -2,7 +2,7 @@
 // The hub's Main Bot also changes and deletes the Bots of a node with its tools (not only from the page).
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { NODE_NO_MAIN, demoteNodeMains, install, isNodeRole } from '../src/host/node-team.js'
+import { NODE_NO_MAIN, demoteNodeMains, homeBotOf, install, isNodeRole } from '../src/host/node-team.js'
 import { deleteBotTool, isNodeBot, updateNodeBot } from '../src/host/node-bot-tools.js'
 
 const rtOf = ({ role, mains = ['m1'], extra = {} } = {}) => {
@@ -117,4 +117,28 @@ test('NT-7: a node that does not confirm the delete keeps the Bot, and the reaso
   const rt = deleteRt()
   rt.deleteBot = async () => { throw new Error('Worker was not deleted: the node did not confirm it (node-offline). Delete it again when the node is online') }
   assert.match(await deleteBotTool(rt, execOf(), { bot: 'Worker', confirm: 'Worker' }, { nodeRole: false }), /was not deleted: .*node did not confirm/)
+})
+
+// 2026-11-25: on a node every Bot is first-class. A node whose AC role is not `worker` (configured as 'both', say)
+// still counts as a node when it is joined to a hub as one; it never gets a Main Bot made for it.
+test('NT-8: a machine joined to a hub as a node is a node whatever role its configuration names; a hub never is', () => {
+  const ctx = services => ({ get: name => services[name] })
+  assert.equal(isNodeRole({ ctx: ctx({ 'remote-agent:role': 'both', 'remote-agent:bot-network': { nodeId: 'node011' } }) }), true)
+  assert.equal(isNodeRole({ ctx: ctx({ 'remote-agent:role': 'both', 'remote-agent:bot-network': { nodeId: 'node011' }, 'remote-agent:registry': { onlineNodes: () => [] } }) }), false, 'a hub has the node registry')
+  assert.equal(isNodeRole({ ctx: ctx({ 'remote-agent:role': 'hub' }) }), false)
+  assert.equal(isNodeRole({ ctx: ctx({}) }), false, 'not known yet: never a node')
+})
+
+test('NT-9: the home Bot is the Main Bot; without one (a node) the first Bot of this machine, never one of another machine or a hidden one', () => {
+  const bots = {
+    peer: { id: 'peer', origin: 'peer', createdAt: 0 },
+    shadow: { id: 'shadow', origin: 'joined', createdAt: 0 },
+    hidden: { id: 'hidden', hidden: true, createdAt: 1 },
+    second: { id: 'second', createdAt: 3 },
+    first: { id: 'first', createdAt: 2 },
+  }
+  assert.equal(homeBotOf({ mainBotIds: ['second'], bots }), 'second')
+  assert.equal(homeBotOf({ mainBotIds: [], bots }), 'first')
+  assert.equal(homeBotOf({ mainBotIds: ['gone'], bots }), 'first', 'a Main Bot that was deleted is not home')
+  assert.equal(homeBotOf({ mainBotIds: [], bots: {} }), null)
 })

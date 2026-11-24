@@ -1,3 +1,4 @@
+import { homeOf } from './sources.js'
 // Bot mode's view must hold a team conversation; an outside Session wears the
 // Bot skin without one. At a cold start the Thread cache is empty, so a Session
 // neither the roster nor the cache recognizes is put to the Host before it is
@@ -6,7 +7,8 @@
 export function threadHomeGuard({ roster, mainView, threadBotOfSession, threadOwnerOf, threadPage, openSession }) {
   return async function homeToMainBot() {
     const snapshot = roster.getSnapshot()
-    if (!snapshot.ready || !snapshot.mainBotId) return
+    const home = homeOf(snapshot)
+    if (!snapshot.ready || !home) return
     const main = mainView()
     // A Thread page belongs to a Bot: it is a team conversation, never an outside
     // Session the Bot surface would be wrong for.
@@ -23,6 +25,6 @@ export function threadHomeGuard({ roster, mainView, threadBotOfSession, threadOw
     if (threadPage?.() !== undefined) return
     // The user may have moved on while the question was in flight.
     if (mainView() !== main) return
-    openSession(snapshot.mainBotId)
+    openSession(home)
   }
 }
