@@ -304,7 +304,7 @@ export function AssistantCell({ node, groupPart, sessionId, openFile, fileMentio
   return h(Fragment, null,
     relays.map(relay => {
       const source = relay.source
-      if (source.role === 'results') return h(ResultsLine, { key: relay.seq, source, content: relay.content, roster, selfId, actions })
+      if (source.role === 'results') return h(ResultsLine, { key: relay.seq, source, roster, selfId, actions })
       const sender = roster.byId[source.senderSessionId] ?? { id: source.senderSessionId, name: source.senderName ?? t('a Bot'), color: 'gray' }
       return h(EventLine, {
         key: relay.seq,
@@ -325,30 +325,17 @@ export function AssistantCell({ node, groupPart, sessionId, openFile, fileMentio
     texts.length ? h(Bubbles, { texts, roster, selfId, actions, streaming: running, sessionId, msgKey: `${sessionId}:${data.turn}:${node.key ?? data.seq ?? ''}`, useUi, mentions, fold: FOLD_HUGE, time: speaker === undefined ? data.time : undefined, textInteractionSource }) : null)
 }
 
-// The text a results message brings back, without its header line.
-export const resultsBody = text => String(text ?? '').replace(/^\[Work handed back[^\]\n]*\]\s*\n?/, '').trim()
-const RESULTS_FOLD = 420
-
 // Everything handed back for one work, in the one message that resumes it (work model): who handed back, each
-// opening the pair's conversation, and what came back.
-export function ResultsLine({ source, content, roster, selfId, actions }) {
-  const [open, setOpen] = useState(false)
+// opening the pair's conversation, where what came back is read.
+export function ResultsLine({ source, roster, selfId, actions }) {
   const bots = Object.values(roster.byId)
   let from = (Array.isArray(source.resultFrom) ? source.resultFrom : []).map(id => roster.byId[id]).filter(Boolean)
   if (from.length === 0) {
     from = String(source.note ?? source.senderName ?? '').split(', ').filter(Boolean)
       .map(name => bots.find(bot => bot?.name === name) ?? { id: undefined, name, color: 'gray' })
   }
-  const body = resultsBody(contentText(content))
-  const long = body.length > RESULTS_FOLD || body.split('\n').length > 8
-  const line = from.length === 0
-    ? h('div', { className: 'bt-event' }, t('Work handed back'))
-    : h(EventLine, { prefix: t('Work handed back by'), bots: from, onOpen: bot => { if (bot.id) actions.openExchange(selfId, bot.id) }, whole: true })
-  if (body === '') return line
-  return h('div', { className: 'bt-results' },
-    line,
-    h('div', { className: `bt-results-body${long && !open ? ' is-folded' : ''}` }, body),
-    long ? h('button', { type: 'button', className: 'bt-results-more', onClick: () => setOpen(value => !value) }, open ? t('Show less') : t('Show more')) : null)
+  if (from.length === 0) return h('div', { className: 'bt-event' }, t('Work handed back'))
+  return h(EventLine, { prefix: t('Work handed back by'), bots: from, onOpen: bot => { if (bot.id) actions.openExchange(selfId, bot.id) }, whole: true })
 }
 
 // `code` in an activity line is the command or path the agent works on.
@@ -779,7 +766,7 @@ export function TriggerCell({ node, sessionId, useRoster, useSessions, useTurnCl
       }
       // Everything handed back for one work, in the one message that resumes it: who handed back, each opening the
       // pair's conversation (work model, docs/plans/2026-11-24-work-model.md).
-      if (source.role === 'results') return h(ResultsLine, { source, content: data.content, roster, selfId, actions })
+      if (source.role === 'results') return h(ResultsLine, { source, roster, selfId, actions })
       // A request carried on keeps its role, but its message line was shown already.
       if (source.role === 'resume' || source.resumed === true) return h('div', { className: 'bt-event' }, t('Picked up its work after a restart'))
       if (source.role === 'retry' || source.retried === true) return h('div', { className: 'bt-event' }, t('Asked to make the tool call it wrote as text'))
@@ -913,6 +900,34 @@ export function TurnTailCell({ turn: location, sessionId, useTurnClock, useUi, a
   return h(Fragment, null,
     label ? h('div', { className: 'bt-time-sep', role: 'separator' }, label) : null,
     fresh ? h(NewDivider) : null)
+}
+
+// What other Bots handed this Bot (work model W2) is done in its work threads, not in this chat: the chat says
+// so where it happened, between this turn and the next, with the work thread to open. A node Bot's work threads are
+// the hub's read-only copies.
+const askerOfThread = title => /^@(.+?) · /.exec(String(title ?? ''))?.[1]
+export function WorkTurnTail({ turn: location, sessionId, useRoster, useTurnClock, actions }) {
+  const turn = location.turn
+  const from = location.end?.time
+  const to = useTurnClock(state => nextTurnStart(state[sessionId] ?? {}, turn))
+  const roster = useRoster(value => value)
+  const bot = roster.byId[sessionId]
+  if (bot === undefined || typeof from !== 'number') return null
+  const threads = (Array.isArray(bot.tasks) ? bot.tasks : []).filter((task) => {
+    if (task?.origin !== 'bot-work' || (task.remote === true && task.viewable !== true)) return false
+    const at = task.updatedAt ?? task.startedAt
+    return typeof at === 'number' && at >= from && (to === undefined || at < to)
+  })
+  if (threads.length === 0) return null
+  const bots = Object.values(roster.byId)
+  return h(Fragment, null, threads.map((task) => {
+    const name = askerOfThread(task.title) ?? task.title
+    const asker = bots.find(item => item?.name === name) ?? { name, color: 'gray' }
+    const running = task.status === 'running' || task.status === 'waiting_work' || task.status === 'waiting_approval'
+    return h('div', { key: task.id, className: 'bt-event' },
+      h('button', { type: 'button', className: 'bt-event-whole', title: task.title, onClick: () => actions.openTask?.(sessionId, bot.id, task.id) },
+        h('span', null, running ? t('Working on work from') : t('Handled work from')), h(BotMark, { bot: asker, size: 16 }), h('span', { className: 'bt-event-name' }, asker.name)))
+  }))
 }
 
 export function Shimmer({ children }) {

@@ -935,6 +935,8 @@ export const ES = {
   'Reply from': 'Respuesta de',
   'Work handed back': 'Trabajo devuelto',
   'Work handed back by': 'Resultado devuelto por',
+  'Handled work from': 'Trabajo atendido de',
+  'Working on work from': 'Atendiendo trabajo de',
   'Standing by': 'En espera',
   'ReplyFrom': 'Respuesta del bot remoto: ',
   'Message from': 'Mensaje de',

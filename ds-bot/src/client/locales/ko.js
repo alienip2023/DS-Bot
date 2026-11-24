@@ -935,6 +935,8 @@ export const KO = {
   'Reply from': '답장:',
   'Work handed back': '돌려받은 작업 결과',
   'Work handed back by': '결과를 돌려준 Bot:',
+  'Handled work from': '처리한 요청:',
+  'Working on work from': '처리 중인 요청:',
   'Standing by': '대기 중',
   'ReplyFrom': '원격 봇의 답장: ',
   'Message from': '메시지 발신:',

@@ -1045,6 +1045,8 @@ var JA = {
   "Reply from": "返信元:",
   "Work handed back": "返ってきた作業結果",
   "Work handed back by": "結果を返した Bot:",
+  "Handled work from": "依頼を処理しました：",
+  "Working on work from": "依頼を処理中：",
   "Standing by": "待機中",
   "ReplyFrom": "リモートBotからの返信：",
   "Message from": "メッセージ送信元:",
@@ -3897,6 +3899,8 @@ var KO = {
   "Reply from": "답장:",
   "Work handed back": "돌려받은 작업 결과",
   "Work handed back by": "결과를 돌려준 Bot:",
+  "Handled work from": "처리한 요청:",
+  "Working on work from": "처리 중인 요청:",
   "Standing by": "대기 중",
   "ReplyFrom": "원격 봇의 답장: ",
   "Message from": "메시지 발신:",
@@ -6765,6 +6769,8 @@ var ES = {
   "Reply from": "Respuesta de",
   "Work handed back": "Trabajo devuelto",
   "Work handed back by": "Resultado devuelto por",
+  "Handled work from": "Trabajo atendido de",
+  "Working on work from": "Atendiendo trabajo de",
   "Standing by": "En espera",
   "ReplyFrom": "Respuesta del bot remoto: ",
   "Message from": "Mensaje de",
@@ -9604,6 +9610,8 @@ var FR = {
   "Reply from": "Réponse de",
   "Work handed back": "Travail rendu",
   "Work handed back by": "Résultat rendu par",
+  "Handled work from": "Travail traité pour",
+  "Working on work from": "Travail en cours pour",
   "Standing by": "En attente",
   "ReplyFrom": "Réponse du bot distant : ",
   "Message from": "Message de",
@@ -12456,6 +12464,8 @@ var DE = {
   "Reply from": "Antwort von",
   "Work handed back": "Arbeitsergebnis zurück",
   "Work handed back by": "Ergebnis zurück von",
+  "Handled work from": "Auftrag erledigt für",
+  "Working on work from": "Auftrag in Arbeit für",
   "Standing by": "Bereit",
   "ReplyFrom": "Antwort vom Remote-Bot: ",
   "Message from": "Nachricht von",
@@ -15445,6 +15455,8 @@ var ZH = {
   "Work handed back": "交回的工作结果",
   "Standing by": "待命",
   "Work handed back by": "交回结果：",
+  "Handled work from": "处理了交来的工作：",
+  "Working on work from": "正在处理交来的工作：",
   "ReplyFrom": "收到来自跨机 Bot 的回复：",
   "Message from": "收到消息：",
   "Stopped by": "叫停者：",
@@ -20585,11 +20597,6 @@ body[data-bt-layout=flat] .bt-think{max-width:calc(var(--bt-flat-w) * 100%)}
 .bt-agent-work{gap:6px}
 .bt-agent-work .bt-task-dot{flex:none}
 .bt-agent-sub-meta{margin-left:auto;font-size:11px;color:var(--bt-accent);flex:none}
-.bt-results{display:flex;flex-direction:column;align-items:center;gap:4px;margin:4px 0 8px}
-.bt-results-body{max-width:min(560px,92%);box-sizing:border-box;padding:8px 12px;border-left:3px solid var(--bt-line-2);border-radius:8px;background:var(--bt-hover);color:var(--bt-ink);font-size:13px;line-height:20px;white-space:pre-wrap;overflow-wrap:anywhere}
-.bt-results-body.is-folded{max-height:160px;overflow:hidden;-webkit-mask-image:linear-gradient(#000 70%,transparent)}
-.bt-results-more{border:0;background:none;color:var(--bt-ink-2);font-size:12px;cursor:pointer;padding:2px 6px;border-radius:6px}
-.bt-results-more:hover{background:var(--bt-hover)}
 .bt-event{display:flex;justify-content:center;align-items:center;gap:2px;min-height:24px;margin:2px 0;font-size:12px;line-height:16px;color:var(--bt-ink-2);flex-wrap:wrap}
 .bt-event>span{padding:0 2px}
 .bt-event button:not(.bt-soft){border:0;background:none;color:inherit;font:inherit;display:inline-flex;align-items:center;gap:4px;cursor:pointer;height:24px;padding:4px 6px 4px 4px;border-radius:999px;box-sizing:border-box;transition:background-color .12s ease}
@@ -32560,7 +32567,7 @@ function AssistantCell({ node, groupPart, sessionId, openFile, fileMentions, use
     null,
     relays.map((relay) => {
       const source = relay.source;
-      if (source.role === "results") return (0, import_react35.createElement)(ResultsLine, { key: relay.seq, source, content: relay.content, roster, selfId, actions });
+      if (source.role === "results") return (0, import_react35.createElement)(ResultsLine, { key: relay.seq, source, roster, selfId, actions });
       const sender = roster.byId[source.senderSessionId] ?? { id: source.senderSessionId, name: source.senderName ?? t("a Bot"), color: "gray" };
       return (0, import_react35.createElement)(EventLine, {
         key: relay.seq,
@@ -32586,28 +32593,16 @@ function AssistantCell({ node, groupPart, sessionId, openFile, fileMentions, use
     texts2.length ? (0, import_react35.createElement)(Bubbles, { texts: texts2, roster, selfId, actions, streaming: running, sessionId, msgKey: `${sessionId}:${data.turn}:${node.key ?? data.seq ?? ""}`, useUi, mentions, fold: FOLD_HUGE, time: speaker === void 0 ? data.time : void 0, textInteractionSource }) : null
   );
 }
-var resultsBody = (text2) => String(text2 ?? "").replace(/^\[Work handed back[^\]\n]*\]\s*\n?/, "").trim();
-var RESULTS_FOLD = 420;
-function ResultsLine({ source, content, roster, selfId, actions }) {
-  const [open, setOpen] = (0, import_react35.useState)(false);
+function ResultsLine({ source, roster, selfId, actions }) {
   const bots = Object.values(roster.byId);
   let from = (Array.isArray(source.resultFrom) ? source.resultFrom : []).map((id) => roster.byId[id]).filter(Boolean);
   if (from.length === 0) {
     from = String(source.note ?? source.senderName ?? "").split(", ").filter(Boolean).map((name) => bots.find((bot) => bot?.name === name) ?? { id: void 0, name, color: "gray" });
   }
-  const body = resultsBody(contentText(content));
-  const long = body.length > RESULTS_FOLD || body.split("\n").length > 8;
-  const line = from.length === 0 ? (0, import_react35.createElement)("div", { className: "bt-event" }, t("Work handed back")) : (0, import_react35.createElement)(EventLine, { prefix: t("Work handed back by"), bots: from, onOpen: (bot) => {
+  if (from.length === 0) return (0, import_react35.createElement)("div", { className: "bt-event" }, t("Work handed back"));
+  return (0, import_react35.createElement)(EventLine, { prefix: t("Work handed back by"), bots: from, onOpen: (bot) => {
     if (bot.id) actions.openExchange(selfId, bot.id);
   }, whole: true });
-  if (body === "") return line;
-  return (0, import_react35.createElement)(
-    "div",
-    { className: "bt-results" },
-    line,
-    (0, import_react35.createElement)("div", { className: `bt-results-body${long && !open ? " is-folded" : ""}` }, body),
-    long ? (0, import_react35.createElement)("button", { type: "button", className: "bt-results-more", onClick: () => setOpen((value) => !value) }, open ? t("Show less") : t("Show more")) : null
-  );
 }
 var activityParts = (line) => line.split("`").map((part, index) => index % 2 === 1 ? (0, import_react35.createElement)("code", { key: index }, part) : part);
 function EventLine({ prefix, bots, joiner = t("and"), onOpen, whole = false }) {
@@ -33037,7 +33032,7 @@ function TriggerCell({ node, sessionId, useRoster, useSessions, useTurnClock, us
       if (source.role === "report") {
         return (0, import_react35.createElement)(GroupEvent, { prefix: t("Replies from"), room: roster.roomsById[source.roomId], name: t("a group chat"), roster, actions });
       }
-      if (source.role === "results") return (0, import_react35.createElement)(ResultsLine, { source, content: data.content, roster, selfId, actions });
+      if (source.role === "results") return (0, import_react35.createElement)(ResultsLine, { source, roster, selfId, actions });
       if (source.role === "resume" || source.resumed === true) return (0, import_react35.createElement)("div", { className: "bt-event" }, t("Picked up its work after a restart"));
       if (source.role === "retry" || source.retried === true) return (0, import_react35.createElement)("div", { className: "bt-event" }, t("Asked to make the tool call it wrote as text"));
       if (source.role === "continue") return (0, import_react35.createElement)("div", { className: "bt-event" }, t("Went on after the failed turn"));
@@ -33152,6 +33147,38 @@ function TurnTailCell({ turn: location2, sessionId, useTurnClock, useUi, actions
     label ? (0, import_react35.createElement)("div", { className: "bt-time-sep", role: "separator" }, label) : null,
     fresh ? (0, import_react35.createElement)(NewDivider) : null
   );
+}
+var askerOfThread = (title) => /^@(.+?) · /.exec(String(title ?? ""))?.[1];
+function WorkTurnTail({ turn: location2, sessionId, useRoster, useTurnClock, actions }) {
+  const turn = location2.turn;
+  const from = location2.end?.time;
+  const to = useTurnClock((state) => nextTurnStart(state[sessionId] ?? {}, turn));
+  const roster = useRoster((value) => value);
+  const bot = roster.byId[sessionId];
+  if (bot === void 0 || typeof from !== "number") return null;
+  const threads = (Array.isArray(bot.tasks) ? bot.tasks : []).filter((task) => {
+    if (task?.origin !== "bot-work" || task.remote === true && task.viewable !== true) return false;
+    const at = task.updatedAt ?? task.startedAt;
+    return typeof at === "number" && at >= from && (to === void 0 || at < to);
+  });
+  if (threads.length === 0) return null;
+  const bots = Object.values(roster.byId);
+  return (0, import_react35.createElement)(import_react35.Fragment, null, threads.map((task) => {
+    const name = askerOfThread(task.title) ?? task.title;
+    const asker = bots.find((item) => item?.name === name) ?? { name, color: "gray" };
+    const running = task.status === "running" || task.status === "waiting_work" || task.status === "waiting_approval";
+    return (0, import_react35.createElement)(
+      "div",
+      { key: task.id, className: "bt-event" },
+      (0, import_react35.createElement)(
+        "button",
+        { type: "button", className: "bt-event-whole", title: task.title, onClick: () => actions.openTask?.(sessionId, bot.id, task.id) },
+        (0, import_react35.createElement)("span", null, running ? t("Working on work from") : t("Handled work from")),
+        (0, import_react35.createElement)(BotMark, { bot: asker, size: 16 }),
+        (0, import_react35.createElement)("span", { className: "bt-event-name" }, asker.name)
+      )
+    );
+  }));
 }
 function Shimmer({ children }) {
   return (0, import_react35.createElement)("span", { className: "bt-shimmer" }, children);
@@ -57775,6 +57802,8 @@ function apply(ctx) {
     // sits on that turn's tail, ahead of the time separator.
     () => shadow("conversation.chat.turnTail", { id: "bot-btw", order: 800, priority: BOT_PRIORITY, inject: face }, BtwTurnTail),
     () => shadow("conversation.chat.turnTail", { id: "bot-learning", order: 850, priority: BOT_PRIORITY, inject: face }, LearningTurnTail),
+    // What other Bots handed this Bot, where it happened in its chat (work model W2): before the next turn's time.
+    () => shadow("conversation.chat.turnTail", { id: "bot-work-received", order: 900, priority: BOT_PRIORITY, inject: face }, WorkTurnTail),
     // The cards of the files a turn delivered get a Save action beside DSH's own
     // actions, so a phone browser can put the file on the device.
     () => ctx.slots.inject("deliverables.file.actions", () => ctx.slots.register({ name: "deliverables.file.actions", id: "bot-file-save", locale: "chat" }, SaveFileAction)),

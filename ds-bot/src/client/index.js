@@ -29,7 +29,7 @@ import { CHANGES_CSS } from './changes-card.js'
 import { HandoffDock, HANDOFF_CSS } from './handoff-card.js'
 import { AppAccessDock, ComputerHandoffDock, ComputerIndicator, COMPUTER_CSS } from './computer.js'
 import { installHeaderNavigation } from './header-navigation.js'
-import { AssistantCell, TriggerCell, TurnProcessCell, Nothing, CellEmpty, TurnTailCell, ToolCell } from './cells.js'
+import { AssistantCell, TriggerCell, TurnProcessCell, Nothing, CellEmpty, TurnTailCell, ToolCell, WorkTurnTail } from './cells.js'
 import { SaveFileAction } from './file-save.js'
 import { fileMentionSource } from './mention-source.js'
 import { FailureCell, TURN_ERROR_CSS } from './turn-error.js'
@@ -1427,6 +1427,8 @@ export function apply(ctx) {
     // sits on that turn's tail, ahead of the time separator.
     () => shadow('conversation.chat.turnTail', { id: 'bot-btw', order: 800, priority: BOT_PRIORITY, inject: face }, BtwTurnTail),
     () => shadow('conversation.chat.turnTail', { id: 'bot-learning', order: 850, priority: BOT_PRIORITY, inject: face }, LearningTurnTail),
+    // What other Bots handed this Bot, where it happened in its chat (work model W2): before the next turn's time.
+    () => shadow('conversation.chat.turnTail', { id: 'bot-work-received', order: 900, priority: BOT_PRIORITY, inject: face }, WorkTurnTail),
     // The cards of the files a turn delivered get a Save action beside DSH's own
     // actions, so a phone browser can put the file on the device.
     () => ctx.slots.inject('deliverables.file.actions', () => ctx.slots.register({ name: 'deliverables.file.actions', id: 'bot-file-save', locale: 'chat' }, SaveFileAction)),

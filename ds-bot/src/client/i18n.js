@@ -1071,6 +1071,8 @@ const ZH = {
   'Work handed back': '交回的工作结果',
   'Standing by': '待命',
   'Work handed back by': '交回结果：',
+  'Handled work from': '处理了交来的工作：',
+  'Working on work from': '正在处理交来的工作：',
   'ReplyFrom': '收到来自跨机 Bot 的回复：',
   'Message from': '收到消息：',
   'Stopped by': '叫停者：',

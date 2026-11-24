@@ -923,6 +923,8 @@ export const FR = {
   "Reply from": "Réponse de",
   "Work handed back": "Travail rendu",
   "Work handed back by": "Résultat rendu par",
+  'Handled work from': 'Travail traité pour',
+  'Working on work from': 'Travail en cours pour',
   "Standing by": "En attente",
   'ReplyFrom': 'Réponse du bot distant : ',
   "Message from": "Message de",
