@@ -119,6 +119,11 @@ test('R2-E2E-1 node011 ↔ node010: three rounds, each reply closes the sender w
   const peer11 = peerOf(n10.w.rt, 'node011执行')
   const onRecipient = n10.w.rt.exchangesOf('e10', peer11.id)
   assert.deepEqual(onRecipient.map(item => item.role), ['request', 'reply', 'request', 'reply', 'request', 'reply'])
+  // The hub carried every frame: its own exchange view of the two node Bots shows the whole conversation too.
+  await until(() => hub.rt.exchangesOf('joined:node011:e11', 'joined:node010:e10').length === 6, 'the hub shows all six messages')
+  const onHub = hub.rt.exchangesOf('joined:node011:e11', 'joined:node010:e10')
+  assert.deepEqual(onHub.map(item => item.role), ['request', 'reply', 'request', 'reply', 'request', 'reply'])
+  assert.ok(onHub[5].text.includes('第 3 回合收到'))
   assert.equal(Object.keys(hub.rt.state.assignOutbox ?? {}).length, 0, 'the hub only carried frames')
 })
 

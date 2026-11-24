@@ -27,7 +27,7 @@ function fakeSession() {
 }
 function fakeRt(registry) {
   const warnings = []
-  return { rt: { ctx: { get: key => (key === 'remote-agent:registry' ? registry : undefined) }, warn: (...a) => warnings.push(a) }, warnings }
+  return { rt: { state: { prefs: { mirrorStreamPreview: true } }, ctx: { get: key => (key === 'remote-agent:registry' ? registry : undefined) }, warn: (...a) => warnings.push(a) }, warnings }
 }
 const frame = (seq, text) => ({ exchangeId: 'x1', nodeId: 'n1', seq, text })
 const previews = log => log.filter(e => e.type === 'assistant/message')
@@ -131,6 +131,7 @@ const R = (i, id, out = 'ok', ok = true) => ({ i, t: 'r', id, ok, out })
 
 test('T5 端到端：trace 打开 step 2 后的 12 帧流式预览零写入，回合收尾后整卷合法', async () => {
   const w = makeWorld()
+  w.rt.state.prefs = { ...(w.rt.state.prefs ?? {}), mirrorStreamPreview: true }
   await w.prompt(textRequest('hi', 'req-1'))
   await drain(2)
   const exchangeId = w.frames.filter(f => f.type === 'bot/turn')[0].payload.exchangeId
@@ -145,4 +146,18 @@ test('T5 端到端：trace 打开 step 2 后的 12 帧流式预览零写入，�
   await w.idle()
   assertStrict(session)
   assert.equal(textOf(answers(session).at(-1)), 'a.txt is there')
+})
+
+test('T6 默认关闭镜像流式预览：一条消息只回一条答案（不再"发一条、回两条"）', async () => {
+  const w = makeWorld()
+  await w.prompt(textRequest('是否在线', 'req-1'))
+  await drain(2)
+  const exchangeId = w.frames.filter(f => f.type === 'bot/turn')[0].payload.exchangeId
+  const session = w.sessionOf('mirror-1')
+  for (let i = 1; i <= 6; i += 1) w.emitter.emit('botStream', { nodeId: 'n1', exchangeId, seq: i, text: '在线。'.slice(0, 1) })
+  w.reply(0, { text: '身份：node013执行。在线。' })
+  await w.idle()
+  const said = answers(session).map(textOf).filter(text => text !== '')
+  assert.deepEqual(said, ['身份：node013执行。在线。'])
+  assertStrict(session)
 })

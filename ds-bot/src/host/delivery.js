@@ -99,6 +99,16 @@ export function install(rt) {
     return [...shown.values()].sort((x, y) => ((x.time ?? 0) - (y.time ?? 0)) || ((at.get(x.id) ?? 0) - (at.get(y.id) ?? 0)))
   }
 
+  // A message between two Bots of other machines that this hub carried (bot/assign relay): kept in their
+  // pair's book here too, so the hub's exchange view shows node-to-node conversations.
+  rt.recordPairMessage = async ({ from, to, id, role, text, replyTo }) => {
+    if (typeof id !== 'string' || id === '' || rt.botOf(from) === undefined || rt.botOf(to) === undefined) return
+    const book = pairBook(from, to)
+    if (rt.ledger.records(book).some(record => record.event === undefined && record.id === id)) return
+    rt.ledger.append(book, { id, from, to, role, text, time: Date.now(), ...(replyTo ? { replyTo } : {}) })
+    await rt.ledger.written(book).catch(() => {})
+  }
+
   // A message that left for another machine (bot/assign) is shown in the pair's view once that machine
   // has it: the ack marks it delivered, as a Session marks a local one.
   rt.markPairDelivered = async (a, b, id) => {

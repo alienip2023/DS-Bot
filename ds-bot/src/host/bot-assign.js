@@ -254,6 +254,28 @@ export async function flushOutbox(rt, { now = Date.now(), force = false } = {}) 
   if (changed) await rt.save?.().catch(() => {})
 }
 
+// On the hub: frames it carries between two nodes go into those two Bots' pair book here, and an ack marks
+// the message delivered — the hub, where the user works, shows what node Bots say to each other.
+const relayedFrames = new WeakMap()
+export async function noteRelayed(rt, { frame, outcome }) {
+  if (ownNodeId(rt) !== HUB || frame?.from?.nodeId === HUB || frame?.to?.nodeId === HUB) return
+  let seenFrames = relayedFrames.get(rt)
+  if (seenFrames === undefined) { seenFrames = new Map(); relayedFrames.set(rt, seenFrames) }
+  if (frame.op === 'deliver' && (outcome === 'forwarded' || outcome === 'target-offline')) {
+    const from = botOfRef(rt, frame.from)
+    const to = botOfRef(rt, frame.to)
+    if (from === undefined || to === undefined) return
+    seenFrames.set(frame.frameId, { from: from.id, to: to.id, id: frame.exchangeId })
+    if (seenFrames.size > 2000) seenFrames.delete(seenFrames.keys().next().value)
+    await rt.recordPairMessage?.({ from: from.id, to: to.id, id: frame.exchangeId, role: frame.role, text: frame.text, replyTo: frame.replyTo })
+  } else if (frame.op === 'ack') {
+    const sent = seenFrames.get(frame.frameId)
+    if (sent === undefined) return
+    seenFrames.delete(frame.frameId)
+    await rt.markPairDelivered?.(sent.from, sent.to, sent.id)
+  }
+}
+
 export function install(rt) {
   const { ctx } = rt
   let stopped = false
@@ -276,7 +298,12 @@ export function install(rt) {
     // A machine coming back: send what waited for it at once.
     const registry = serviceOf(rt, 'remote-agent:registry')
     const onOnline = () => flush(true)
-    if (typeof registry?.on === 'function') { registry.on('nodeOnline', onOnline); offOnline = () => registry.off?.('nodeOnline', onOnline) }
+    const onRelayed = event => { if (!stopped) void noteRelayed(rt, event).catch(error => rt.warn?.('ds-bot: relayed bot/assign not recorded: %s', error?.message ?? error)) }
+    if (typeof registry?.on === 'function') {
+      registry.on('nodeOnline', onOnline)
+      registry.on('botAssignRelayed', onRelayed)
+      offOnline = () => { registry.off?.('nodeOnline', onOnline); registry.off?.('botAssignRelayed', onRelayed) }
+    }
     else if (typeof network?.on === 'function') { network.on('directory', onOnline); offOnline = () => network.off?.('directory', onOnline) }
     else offOnline = undefined
   }

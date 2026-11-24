@@ -15,6 +15,7 @@
 | 0.3.10-fork.112 | 0.4.33 | `bot-locate/1`：节点为每个 Bot 配发可迁移的 ed25519 身份（名册带 `identityId`），主控用 `locate_bot` 定位 Bot 并以 Bot 自己的签名验证；AC 每回合写步骤日志（`bot_journal` 可读）；`dshbot1://` 配对串格式（统一三种配对码格式）；目录下发帧（`directory/snapshot`、`directory/delta`，E2E 加密），节点缓存团队机器与 Bot 目录；Phase 0–7 全部功能（Team Directory、执行租约 epoch、Sentinel 巡检、三平台自启说明、工作账本 away 状态与崩溃重跑规则） |
 | 0.3.10-fork.113 | 0.4.34 | 重写 R1–R4：全队目录带 `identityId`/机器/状态/模型与整张机器列表（`bot/directory` 扩充）；跨机 Bot 间投递 `bot/assign`（ack/重发/away/补发，主控转发或退回）；跨机请求在接收方后台任务里答、不进会话框；节点 Bot 的管理工具经 `team/act` 由主控执行；集群工具每机 ACL（有 `acl.json` 才拦）；修 `bot/stream` 预览写进已关闭 step 导致镜像会话损坏。**主控与全部节点须同时升级**，不兼容 fork.112/0.4.33 及更早 |
 | 0.3.10-fork.114 | 0.4.34 | 修：队友的回复在发问方正在跑回合时插进当前回合（不再进用户队列）；跨机回复回到发问的那个后台任务并接上它的工作（不再只到主对话、链条单向中断）。AC 不变；主控与节点的 ds-bot 都须升到 .114 |
+| 0.3.10-fork.115 | 0.4.35 | 主控上看得到节点之间的对话（主控转发的每帧记进两个节点 Bot 的往来账本，AC 0.4.35 写审计 `bot.assign`）；主控镜像页默认不再写流式预览（DSH 日志只能追加，预览会变成多余的气泡：一条消息回两条），`prefs.mirrorStreamPreview: true` 可恢复。只需升级主控，节点保持 fork.114 / AC 0.4.34 可用 |
 
 能力位与功能的对应（`src/host/node-compat.js` 的 `NODE_FEATURES`）：
 

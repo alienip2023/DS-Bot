@@ -24,6 +24,12 @@ import { mirrorTurnStream } from './mirror.js'
  * @returns {object|undefined} sink, or undefined when streaming is unavailable/unsupported
  */
 export function openStreamSink(rt, { bot, exchangeId, nodeId, binding, stepOf }) {
+  // Off by default. The mirror Session has no live Agent, so a preview can only be written as an
+  // assistant/message, and the log is append-only: every frame stayed as a bubble of its own and the
+  // final answer came after them ("one message, two replies" on the hub page), and the previews entered
+  // the mirror's history. The node's thinking and tool steps still show live (hub-trace.js); the answer
+  // shows once, whole, when the node is done. `prefs.mirrorStreamPreview: true` brings the old preview back.
+  if (rt.state?.prefs?.mirrorStreamPreview !== true) return undefined
   let registry
   try { registry = rt.ctx?.get?.('remote-agent:registry') } catch { registry = undefined }
   if (typeof registry?.on !== 'function' || typeof exchangeId !== 'string' || exchangeId === '') return undefined
