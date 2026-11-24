@@ -11,7 +11,7 @@
 // page's own (a node's chat counts its turns per Session from 1); the mapping is kept in state.replicas, and a
 // frame already applied (same node Session and seq) is skipped.
 import { botOfRef, isRemoteBot, ownNodeId, refOf } from './bot-link.js'
-import { joinedShadow } from './roster-join.js'
+import { joinedShadow, shadowId } from './roster-join.js'
 import { randomUUID } from 'node:crypto'
 import { ensureMirrorSession } from './mirror.js'
 import { turnEnd } from './turn-end.js'
@@ -134,6 +134,29 @@ const lastTurnOf = (session) => {
   return last
 }
 
+// A Bot the node names by its own id (its local Bot, or its row for a Bot elsewhere, `peer:<hub>:<home>:<id>`),
+// by the id the hub knows it under; an id the hub cannot place stays as it is.
+function hubIdOf(rt, nodeId, id) {
+  if (typeof id !== 'string' || id === '') return id
+  const peer = /^peer:[^:]+:[^:]+:(.+)$/.exec(id)
+  if (peer !== null) {
+    let remote
+    try { remote = decodeURIComponent(peer[1]) } catch { return id }
+    return rt.botOf?.(remote) !== undefined ? remote : id
+  }
+  const shadow = shadowId(nodeId, id)
+  return rt.botOf?.(shadow) !== undefined ? shadow : id
+}
+// The Bots a copied message's source names (who sent it, whose results it brings back), as the hub knows them, so
+// the page names them and opens their conversation.
+function hubSource(rt, nodeId, source) {
+  if (!source || typeof source !== 'object' || source.kind !== 'bot') return source
+  const out = { ...source }
+  if (typeof out.senderSessionId === 'string') out.senderSessionId = hubIdOf(rt, nodeId, out.senderSessionId)
+  if (Array.isArray(out.resultFrom)) out.resultFrom = out.resultFrom.map(id => hubIdOf(rt, nodeId, id))
+  return out
+}
+
 const eventsOf = session => (typeof session.snapshotEvents === 'function' ? session.snapshotEvents() : Array.isArray(session.log) ? session.log : [])
 
 // The page's open step and the tool calls in it that have no result yet (DSH refuses to load a Session whose step
@@ -227,6 +250,7 @@ async function onConv(rt, msg) {
         running(true)
       }
       const written = turn === undefined ? event : { ...event, turn }
+      if (data.type === 'user/message') written.source = hubSource(rt, msg.from, written.source)
       if (data.type === 'user/message' && copy === undefined) {
         // The page's own message comes back with the id of the page's request, so the composer retires its echo.
         const rpcId = written.source?.rpcId

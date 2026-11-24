@@ -398,6 +398,8 @@ export const isRelayContext = (data) => {
   const source = data?.source
   if (source === null || typeof source !== 'object' || source.kind !== 'bot' || source.handoff === true) return false
   if (source.deferred === true || source.resumed === true || source.retried === true) return false
+  // What comes back for a work (role 'results') names who handed back in `resultFrom`, not a sender.
+  if (source.role === 'results') return true
   return RELAY_ROLES.has(source.role) && typeof source.senderSessionId === 'string'
 }
 

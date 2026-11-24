@@ -150,9 +150,30 @@ export function ThreadRow({ thread, bot, actions, useSessionRetainInfo, index, b
   }, h('span', { className: 'bt-agent-sub-title' }, thread.title))
 }
 
+// A Bot's work thread for another Bot (work model W2): what that Bot handed it, and its answers. A node Bot's is
+// the hub's read-only copy. Opens in the task reader beside the Bot's chat.
+export function WorkThreadRow({ task, bot, part, actions, index }) {
+  const running = task.status === 'running' || task.status === 'waiting_work' || task.status === 'waiting_approval'
+  return h('button', {
+    type: 'button', className: 'bt-agent-sub-row bt-agent-work', style: { '--i': index }, title: task.title,
+    onClick: () => {
+      openThreadBots.add(bot.id)
+      const home = bot.origin === 'joined' && bot.worker?.home === 'remote' ? actions.openJoinedHome(bot.id) : actions.openSession(bot.id)
+      void Promise.resolve(home).then(() => actions.openTask?.(part, bot.id, task.id))
+    },
+  },
+  h('span', { className: 'bt-task-dot', 'data-status': task.status, 'aria-hidden': true }),
+  h('span', { className: 'bt-agent-sub-title' }, task.title),
+  running ? h('span', { className: 'bt-agent-sub-meta' }, t('Running')) : null)
+}
+export const workThreadsOf = bot => (Array.isArray(bot?.tasks) ? bot.tasks : [])
+  .filter(task => task?.origin === 'bot-work' && (task.remote !== true || task.viewable === true))
+  .sort((a, b) => (b.updatedAt ?? b.startedAt ?? 0) - (a.updatedAt ?? a.startedAt ?? 0))
+
 // The Thread list a Bot row expands to: new Thread first, then Main, then the rest in
-// creation order. Archived Threads are not drawn; they still count against the limit.
-export function ThreadList({ bot, threads, status, actions, useSessionRetainInfo, botActive, onRetry }) {
+// creation order, then the Bot's work threads for other Bots. Archived Threads are not drawn; they still count
+// against the limit.
+export function ThreadList({ bot, threads, status, actions, useSessionRetainInfo, botActive, onRetry, part }) {
   const joined = bot.origin === 'joined' && bot.worker?.home === 'remote'
   const all = Array.isArray(threads) ? threads : []
   const visible = sortThreads(all.filter(thread => thread?.archived !== true))
@@ -188,6 +209,7 @@ export function ThreadList({ bot, threads, status, actions, useSessionRetainInfo
     list.map((thread, index) => h(ThreadRow, {
       key: thread.id, thread, bot, actions, useSessionRetainInfo, botActive, index: index + 1,
     })),
+    workThreadsOf(bot).map((task, index) => h(WorkThreadRow, { key: `work:${task.id}`, task, bot, part: part ?? bot.sessionId ?? bot.id, actions, index: list.length + index + 1 })),
     status === 'error'
       ? h('button', {
         type: 'button', className: 'bt-agent-sub-row bt-agent-new',
@@ -339,7 +361,7 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
       h('div', { className: 'bt-agent-sub-in' },
         h(ThreadList, {
           bot, threads: threadSlot.threads, status: threadSlot.status, actions, useSessionRetainInfo,
-          botActive: active, onRetry: () => actions.loadThreads?.(id, true),
+          botActive: active, onRetry: () => actions.loadThreads?.(id, true), part,
         }))))
 }
 

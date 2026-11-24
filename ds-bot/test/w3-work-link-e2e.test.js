@@ -487,3 +487,18 @@ test('W4-6 a work-thread copy fork.119 made (nothing of it stored) is started ag
   assert.notEqual(entry.sessionId, 'old-copy')
   assert.deepEqual(entry.sessions, { 'w-1': { seq: 51, turns: { 9: 1 } } })
 })
+
+test('W4-7 a copied message names its Bots as the hub knows them: who sent it, and whose results it brings back', { skip }, async t => {
+  const { hub, n10 } = await cluster(t)
+  const ref = { id: 'joined:node010:e10', name: 'Exec10', nodeId: 'node010' }
+  const post = (seq, type, data) => n10.network.post('team/conv', { bot: ref, sid: 'e10', seq, type, data })
+  post(1, 'turn/start', { turn: 1 })
+  post(2, 'step/start', { turn: 1, step: 1 })
+  // On node010, Exec11 is its peer row and Chief the hub's; Exec10 itself is a local id there.
+  post(3, 'user/message', { role: 'user', content: [{ type: 'text', text: '[Work handed back to you · from Exec11]\nExec11:\nok' }], source: { kind: 'bot', role: 'results', resultFrom: ['peer:hub:node011:joined%3Anode011%3Ae11', 'peer:hub:hub:chief', 'e10', 'peer:hub:node099:gone'] } })
+  post(4, 'user/message', { role: 'user', content: [{ type: 'text', text: '[Message from Chief]\nhi' }], source: { kind: 'bot', role: 'request', senderSessionId: 'peer:hub:hub:chief', senderName: 'Chief' } })
+  await until(() => (pageOf(hub, 'joined:node010:e10')?.log ?? []).filter(e => e.type === 'user/message').length === 2, 'both messages on the page')
+  const [results, request] = pageOf(hub, 'joined:node010:e10').log.filter(e => e.type === 'user/message')
+  assert.deepEqual(results.data.source.resultFrom, ['joined:node011:e11', 'chief', 'joined:node010:e10', 'peer:hub:node099:gone'])
+  assert.equal(request.data.source.senderSessionId, 'chief')
+})

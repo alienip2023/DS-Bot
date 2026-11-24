@@ -18558,6 +18558,7 @@ var isRelayContext = (data) => {
   const source = data?.source;
   if (source === null || typeof source !== "object" || source.kind !== "bot" || source.handoff === true) return false;
   if (source.deferred === true || source.resumed === true || source.retried === true) return false;
+  if (source.role === "results") return true;
   return RELAY_ROLES.has(source.role) && typeof source.senderSessionId === "string";
 };
 var stepShows = (step) => (step?.blocks ?? []).some((block) => {
@@ -20581,6 +20582,14 @@ body[data-bt-layout=flat] .bt-think{max-width:calc(var(--bt-flat-w) * 100%)}
 .bt-think-text[data-fade=top]{mask-image:linear-gradient(to bottom,transparent,#000 18px)}
 .bt-think-text[data-fade=bottom]{mask-image:linear-gradient(to top,transparent,#000 18px)}
 .bt-think-text[data-fade=both]{mask-image:linear-gradient(to bottom,transparent,#000 18px,#000 calc(100% - 18px),transparent)}
+.bt-agent-work{gap:6px}
+.bt-agent-work .bt-task-dot{flex:none}
+.bt-agent-sub-meta{margin-left:auto;font-size:11px;color:var(--bt-accent);flex:none}
+.bt-results{display:flex;flex-direction:column;align-items:center;gap:4px;margin:4px 0 8px}
+.bt-results-body{max-width:min(560px,92%);box-sizing:border-box;padding:8px 12px;border-left:3px solid var(--bt-line-2);border-radius:8px;background:var(--bt-hover);color:var(--bt-ink);font-size:13px;line-height:20px;white-space:pre-wrap;overflow-wrap:anywhere}
+.bt-results-body.is-folded{max-height:160px;overflow:hidden;-webkit-mask-image:linear-gradient(#000 70%,transparent)}
+.bt-results-more{border:0;background:none;color:var(--bt-ink-2);font-size:12px;cursor:pointer;padding:2px 6px;border-radius:6px}
+.bt-results-more:hover{background:var(--bt-hover)}
 .bt-event{display:flex;justify-content:center;align-items:center;gap:2px;min-height:24px;margin:2px 0;font-size:12px;line-height:16px;color:var(--bt-ink-2);flex-wrap:wrap}
 .bt-event>span{padding:0 2px}
 .bt-event button:not(.bt-soft){border:0;background:none;color:inherit;font:inherit;display:inline-flex;align-items:center;gap:4px;cursor:pointer;height:24px;padding:4px 6px 4px 4px;border-radius:999px;box-sizing:border-box;transition:background-color .12s ease}
@@ -32551,6 +32560,7 @@ function AssistantCell({ node, groupPart, sessionId, openFile, fileMentions, use
     null,
     relays.map((relay) => {
       const source = relay.source;
+      if (source.role === "results") return (0, import_react35.createElement)(ResultsLine, { key: relay.seq, source, content: relay.content, roster, selfId, actions });
       const sender = roster.byId[source.senderSessionId] ?? { id: source.senderSessionId, name: source.senderName ?? t("a Bot"), color: "gray" };
       return (0, import_react35.createElement)(EventLine, {
         key: relay.seq,
@@ -32574,6 +32584,29 @@ function AssistantCell({ node, groupPart, sessionId, openFile, fileMentions, use
       ...thinking !== void 0 ? { at: typeof thinking.time === "number" ? thinking.time - (ms ?? 0) : void 0 } : { ms }
     }) : null,
     texts2.length ? (0, import_react35.createElement)(Bubbles, { texts: texts2, roster, selfId, actions, streaming: running, sessionId, msgKey: `${sessionId}:${data.turn}:${node.key ?? data.seq ?? ""}`, useUi, mentions, fold: FOLD_HUGE, time: speaker === void 0 ? data.time : void 0, textInteractionSource }) : null
+  );
+}
+var resultsBody = (text2) => String(text2 ?? "").replace(/^\[Work handed back[^\]\n]*\]\s*\n?/, "").trim();
+var RESULTS_FOLD = 420;
+function ResultsLine({ source, content, roster, selfId, actions }) {
+  const [open, setOpen] = (0, import_react35.useState)(false);
+  const bots = Object.values(roster.byId);
+  let from = (Array.isArray(source.resultFrom) ? source.resultFrom : []).map((id) => roster.byId[id]).filter(Boolean);
+  if (from.length === 0) {
+    from = String(source.note ?? source.senderName ?? "").split(", ").filter(Boolean).map((name) => bots.find((bot) => bot?.name === name) ?? { id: void 0, name, color: "gray" });
+  }
+  const body = resultsBody(contentText(content));
+  const long = body.length > RESULTS_FOLD || body.split("\n").length > 8;
+  const line = from.length === 0 ? (0, import_react35.createElement)("div", { className: "bt-event" }, t("Work handed back")) : (0, import_react35.createElement)(EventLine, { prefix: t("Work handed back by"), bots: from, onOpen: (bot) => {
+    if (bot.id) actions.openExchange(selfId, bot.id);
+  }, whole: true });
+  if (body === "") return line;
+  return (0, import_react35.createElement)(
+    "div",
+    { className: "bt-results" },
+    line,
+    (0, import_react35.createElement)("div", { className: `bt-results-body${long && !open ? " is-folded" : ""}` }, body),
+    long ? (0, import_react35.createElement)("button", { type: "button", className: "bt-results-more", onClick: () => setOpen((value) => !value) }, open ? t("Show less") : t("Show more")) : null
   );
 }
 var activityParts = (line) => line.split("`").map((part, index) => index % 2 === 1 ? (0, import_react35.createElement)("code", { key: index }, part) : part);
@@ -33004,11 +33037,7 @@ function TriggerCell({ node, sessionId, useRoster, useSessions, useTurnClock, us
       if (source.role === "report") {
         return (0, import_react35.createElement)(GroupEvent, { prefix: t("Replies from"), room: roster.roomsById[source.roomId], name: t("a group chat"), roster, actions });
       }
-      if (source.role === "results") {
-        const from = (Array.isArray(source.resultFrom) ? source.resultFrom : []).map((id) => roster.byId[id]).filter(Boolean);
-        if (from.length === 0) return (0, import_react35.createElement)("div", { className: "bt-event" }, t("Work handed back"));
-        return (0, import_react35.createElement)(EventLine, { prefix: t("Work handed back by"), bots: from, onOpen: (bot) => actions.openExchange(selfId, bot.id), whole: true });
-      }
+      if (source.role === "results") return (0, import_react35.createElement)(ResultsLine, { source, content: data.content, roster, selfId, actions });
       if (source.role === "resume" || source.resumed === true) return (0, import_react35.createElement)("div", { className: "bt-event" }, t("Picked up its work after a restart"));
       if (source.role === "retry" || source.retried === true) return (0, import_react35.createElement)("div", { className: "bt-event" }, t("Asked to make the tool call it wrote as text"));
       if (source.role === "continue") return (0, import_react35.createElement)("div", { className: "bt-event" }, t("Went on after the failed turn"));
@@ -34954,7 +34983,28 @@ function ThreadRow({ thread, bot, actions, useSessionRetainInfo, index, botActiv
     }
   }, (0, import_react38.createElement)("span", { className: "bt-agent-sub-title" }, thread.title));
 }
-function ThreadList({ bot, threads, status, actions, useSessionRetainInfo, botActive, onRetry }) {
+function WorkThreadRow({ task, bot, part, actions, index }) {
+  const running = task.status === "running" || task.status === "waiting_work" || task.status === "waiting_approval";
+  return (0, import_react38.createElement)(
+    "button",
+    {
+      type: "button",
+      className: "bt-agent-sub-row bt-agent-work",
+      style: { "--i": index },
+      title: task.title,
+      onClick: () => {
+        openThreadBots.add(bot.id);
+        const home = bot.origin === "joined" && bot.worker?.home === "remote" ? actions.openJoinedHome(bot.id) : actions.openSession(bot.id);
+        void Promise.resolve(home).then(() => actions.openTask?.(part, bot.id, task.id));
+      }
+    },
+    (0, import_react38.createElement)("span", { className: "bt-task-dot", "data-status": task.status, "aria-hidden": true }),
+    (0, import_react38.createElement)("span", { className: "bt-agent-sub-title" }, task.title),
+    running ? (0, import_react38.createElement)("span", { className: "bt-agent-sub-meta" }, t("Running")) : null
+  );
+}
+var workThreadsOf = (bot) => (Array.isArray(bot?.tasks) ? bot.tasks : []).filter((task) => task?.origin === "bot-work" && (task.remote !== true || task.viewable === true)).sort((a, b) => (b.updatedAt ?? b.startedAt ?? 0) - (a.updatedAt ?? a.startedAt ?? 0));
+function ThreadList({ bot, threads, status, actions, useSessionRetainInfo, botActive, onRetry, part }) {
   const joined = bot.origin === "joined" && bot.worker?.home === "remote";
   const all = Array.isArray(threads) ? threads : [];
   const visible = sortThreads(all.filter((thread) => thread?.archived !== true));
@@ -35005,6 +35055,7 @@ function ThreadList({ bot, threads, status, actions, useSessionRetainInfo, botAc
       botActive,
       index: index + 1
     })),
+    workThreadsOf(bot).map((task, index) => (0, import_react38.createElement)(WorkThreadRow, { key: `work:${task.id}`, task, bot, part: part ?? bot.sessionId ?? bot.id, actions, index: list.length + index + 1 })),
     status === "error" ? (0, import_react38.createElement)("button", {
       type: "button",
       className: "bt-agent-sub-row bt-agent-new",
@@ -35171,7 +35222,8 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
           actions,
           useSessionRetainInfo,
           botActive: active,
-          onRetry: () => actions.loadThreads?.(id, true)
+          onRetry: () => actions.loadThreads?.(id, true),
+          part
         })
       )
     )

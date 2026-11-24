@@ -137,3 +137,22 @@ test('the new-Thread row is disabled at the host limit', () => {
   const create = byClass(nodes, 'bt-agent-new')
   assert.equal(create[0].props.disabled, true)
 })
+
+// Work model W2/W4: what another Bot handed a Bot is in its work thread, listed under the Bot (a node Bot's is the
+// hub's read-only copy), so the receiving side shows what it got.
+test('a Bot row lists its work threads for other Bots, a node Bot\'s copies too, and opens one in the task reader', async () => {
+  const tasks = [
+    { id: 'w1', title: '@Chief · 工作', origin: 'bot-work', status: 'standing', remote: true, viewable: true, updatedAt: 5 },
+    { id: 'w2', title: '@Other · 工作', origin: 'bot-work', status: 'running', remote: true, updatedAt: 9 },
+    { id: 'b1', title: 'a background task', origin: 'fg-handoff', status: 'running', remote: true, viewable: true },
+  ]
+  const { calls, actions: api } = actions({ openTask: (part, botId, taskId) => calls.push(['openTask', part, botId, taskId]) })
+  const nodes = collect(ThreadList({ bot: { ...joined, tasks }, threads: [], status: 'ready', actions: api, useSessionRetainInfo: () => false, botActive: false, onRetry: () => {}, part: 'mirror-1' }))
+  const rows = nodes.filter(node => node.type?.name === 'WorkThreadRow')
+  // Only work threads the hub can open: w2 has no copy here, b1 is not a work thread.
+  assert.deepEqual(rows.map(row => row.props.task.id), ['w1'])
+  const button = renderedRow(rows[0])[0]
+  button.props.onClick()
+  await new Promise(r => setImmediate(r))
+  assert.deepEqual(calls, [['openJoinedHome', 'remote'], ['openTask', 'mirror-1', 'remote', 'w1']])
+})
