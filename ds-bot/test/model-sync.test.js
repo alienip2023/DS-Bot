@@ -110,8 +110,11 @@ test('applyModelSync scope=all: applyModel 失败时回滚并继续其他 bot', 
   assert.equal(rt.state.bots.b.model, 'deepseek/deepseek-chat')
 })
 
-test('applyModelSync scope=default: 返回空 applied 列表', { timeout: 5000 }, async (t) => {
+test('applyModelSync scope=default is refused: Bots never follow the DSH default model', { timeout: 5000 }, async (t) => {
   const rt = await start(t)
+  let selected = false
+  rt.ctx.provide?.('agentDefaultModel', { select: async () => { selected = true } })
   const result = await rt.applyModelSync({ nodeId: 'n1', requestId: 'r1', scope: 'default', modelRef: 'openai/gpt-4o' })
-  assert.deepEqual(result, [], 'scope=default yields empty applied list')
+  assert.deepEqual(result, [])
+  assert.equal(selected, false, 'the DSH default model is left alone')
 })
