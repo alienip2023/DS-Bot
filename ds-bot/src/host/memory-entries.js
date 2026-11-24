@@ -14,7 +14,7 @@ export const MEMORY_LIMITS = { entry: 300, group: 12_000, bot: 8_000, node: 8_00
 export const SNAPSHOT_TRUNCATED = '[memory truncated: the rest did not fit the snapshot budget]'
 // The order sections are kept in when the snapshot does not fit: what everyone reads
 // first, then what the machine reads, then what one Bot reads.
-const SNAPSHOT_RANK = { team: 0, node: 1, bot: 2 }
+const SNAPSHOT_RANK = { team: 0, node: 1, group: 2, bot: 3 }
 
 // Cut `text` to `budget` characters without leaving half a line, then say it was cut.
 // A section that gets no budget at all still carries the marker, so a reader can tell

@@ -76,7 +76,10 @@ test('private-bot-no-node-memory', async t => {
   assert.deepEqual((await rt.memoryHost.readScope(scope)).flatMap(file => file.entries.map(item => item.text)), [text])
 })
 
-test('room-memory-stays-local-and-denial-carries-only-the-code', async t => {
+// A group's memory reaches a node only in the snapshot, only for the node Bots that are members of that
+// group (docs/plans/2026-10-09-context-and-memory.md: members read their group's memory). Direct reads and
+// writes of a group scope from a node stay refused.
+test('room-memory-reaches-members-only-and-denial-carries-only-the-code', async t => {
   const { rt, frame, warnings } = await memoryWorld(t)
   const room = { kind: 'group', roomId: 'room-only' }
   const text = 'A fact only for this room.'
@@ -88,7 +91,9 @@ test('room-memory-stays-local-and-denial-carries-only-the-code', async t => {
     assert.deepEqual(reply.entries, [])
   }
   const rendered = await rt.memoryHub.snapshotOf('node-a')
-  assert.deepEqual(rendered, { seq: 0, team: '', node: '', bots: {} })
+  assert.deepEqual(rendered, { seq: 0, team: '', node: '', bots: {}, groups: { 'room-only': { members: ['public-bot'], text: `- ${text}` } } })
+  rt.state.rooms['room-only'].members = []
+  assert.deepEqual(await rt.memoryHub.snapshotOf('node-a'), { seq: 0, team: '', node: '', bots: {} })
   for (const [event, op] of [['memoryRead'], ['memoryWrite', 'add']]) {
     const requestId = `denied-${event}`
     const reply = await frame(event, { requestId, scope: 'group', roomId: room.roomId, op, text })
