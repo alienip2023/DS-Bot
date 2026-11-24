@@ -151,3 +151,14 @@ test('the real AC advertises every capability ds-bot depends on, and AC_NEEDED i
   const { version } = JSON.parse((await import('node:fs')).readFileSync(join(repo, 'package.json'), 'utf8'))
   assert.equal(version, AC_NEEDED, `AC_NEEDED (${AC_NEEDED}) must be the AC this ds-bot pairs with (the AC repo is at ${version})`)
 })
+
+test('the roster identityId survives AC\'s whitelist, and the real locateBot answers with every field locate_bot reads', { skip }, async () => {
+  const { cleanRosterBots } = await load('roster-report.js')
+  const [entry] = cleanRosterBots([{ id: 'ada', name: 'Ada', role: 'r', identityId: '0123456789abcdef' }])
+  assert.equal(entry.identityId, '0123456789abcdef')
+  const { locateBot } = await load('hub/bot-locate.js')
+  const registry = { nodes: new Map(), send: () => true, on() {}, off() {} }
+  const result = await locateBot(registry, '0123456789abcdef', { timeoutMs: 10 })
+  for (const key of ['locations', 'notHere', 'silent', 'unsupported', 'unsent', 'rejected']) assert.ok(Array.isArray(result[key]), `locateBot result lacks ${key}`)
+  assert.equal((await locateBot(registry, 'bad')).error, 'bad-bot-id')
+})
