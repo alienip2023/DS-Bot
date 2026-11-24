@@ -106,7 +106,10 @@ test('a node discovers the published hub Bot and message_bot reaches its hub-loc
   hub.rt.state.bots[sent[0].from.id] = { id: sent[0].from.id, sessionId: sent[0].from.id, name: 'Exec9', role: '', instructions: '', createdAt: 1, type: 'remote-worker', origin: 'joined', worker: { home: 'remote', online: true, nodeId: 'n9', remoteBotId: exec9.id } }
   assert.equal(await hub.rt.assign.receive(sent[0]), 'applied')
   assert.equal(hub.followups.length, 1, 'the published hub Bot must receive the node message')
-  assert.equal(hub.followups[0].sessionId, hub.rt.chatOf(commander.id))
+  // Rewrite R3: a cross-machine request runs in a background task of the Bot, not in its own chat.
+  const taskSession = hub.rt.botOf(commander.id).tasks.at(-1).sessionId
+  assert.notEqual(taskSession, hub.rt.chatOf(commander.id))
+  assert.equal(hub.followups[0].sessionId, taskSession)
   assert.equal(hub.followups[0].message.content[0].text, '[Message from Exec9]\nAcross the hub boundary')
   assert.equal(hub.followups[0].message.source.exchangeId, sent[0].exchangeId)
   assert.deepEqual(frames.filter(frame => frame.type !== 'bot/directory'), [], 'the inbound hub sentinel must not be forwarded to any node')

@@ -1250,7 +1250,9 @@ export function install(rt) {
   async function freshRoute(bot, session) {
     const ref = await rt.desiredModel(bot)
     if (ref !== undefined) return { ref, effort: await rt.desiredEffort(bot, ref) }
-    const route = session.requestHeader()?.config
+    // No live Agent for the source chat (a Bot whose chat has not been opened since start, e.g. one
+    // a cross-machine request wakes): no route to copy, the part keeps the profile default.
+    const route = session?.requestHeader?.()?.config
     return route?.provider && route?.model ? { ref: `${route.provider}/${route.model}`, effort: route.reasoningEffort } : undefined
   }
   const selectRoute = (named, sessionId, { ref, effort }) => rt.selectSessionModel(sessionId, { ...splitRef(ref), ...(effort === undefined ? {} : { reasoningEffort: effort }) })

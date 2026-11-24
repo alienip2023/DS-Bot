@@ -84,8 +84,28 @@ export function botOfRef(rt, ref) {
 
 const outbox = rt => (rt.state.assignOutbox ??= {})
 const seen = rt => (rt.state.assignSeen ??= {})
-// Requests this machine took in over bot/assign (exchangeId → when): only their answers go back over it.
+// Requests this machine took in over bot/assign (exchangeId → { at, pair, q }): only their answers go back
+// over it, and each answered one is remembered as a round of that pair's conversation.
 const inbound = rt => (rt.state.assignInbound ??= {})
+// The last rounds of each cross-machine conversation, kept on the side that answers (pair key →
+// [{ q, a, at }]): each request runs in a fresh background task, which reads them first.
+const rounds = rt => (rt.state.assignRounds ??= {})
+export const ROUNDS_KEPT = 3
+const ROUND_TEXT = 1500
+const pairKey = (remoteId, localId) => `${remoteId}\u0000${localId}`
+const clip = text => { const t = String(text ?? '').trim(); return t.length > ROUND_TEXT ? `${t.slice(0, ROUND_TEXT)}…` : t }
+
+/** What a fresh task needs to carry the conversation on: the last rounds with this Bot. */
+export function earlierRounds(rt, remote, local) {
+  const kept = rounds(rt)[pairKey(remote.id, local.id)] ?? []
+  if (kept.length === 0) return ''
+  const where = remote.worker?.hostname || remote.homeNodeId || remote.worker?.nodeId
+  return [
+    `[Earlier in your conversation with ${remote.name}${where ? ` (on ${where})` : ''}, oldest first:`,
+    ...kept.flatMap(round => [`- ${remote.name}: ${round.q}`, `- You: ${round.a}`]),
+    ']',
+  ].join('\n')
+}
 
 /** Is `exchangeId` a request a Bot on another machine sent here over bot/assign? */
 export const owesAnswer = (rt, exchangeId) => typeof exchangeId === 'string' && Object.hasOwn(rt.state.assignInbound ?? {}, exchangeId)
@@ -122,6 +142,13 @@ export async function sendAssign(rt, { fromId, toId, role, text, exchangeId = ra
   }
   const entry = { frame, at: Date.now(), tries: 0, away: false }
   outbox(rt)[frame.frameId] = entry
+  // An answer to a request that came in over bot/assign closes one round of that conversation.
+  const asked = frame.role === 'reply' ? inbound(rt)[frame.replyTo] : undefined
+  if (asked !== undefined && typeof asked === 'object' && typeof asked.pair === 'string') {
+    const list = [...(rounds(rt)[asked.pair] ?? []), { q: asked.q, a: clip(frame.text), at: Date.now() }]
+    rounds(rt)[asked.pair] = list.slice(-ROUNDS_KEPT)
+    delete inbound(rt)[frame.replyTo]
+  }
   await rt.save?.({ immediate: true })
   transmit(rt, entry)
   return { ok: true, exchangeId, frameId: frame.frameId, away: entry.away }
@@ -139,7 +166,13 @@ function ack(rt, frame) {
 export async function receiveAssign(rt, frame) {
   await rt.load?.()
   if (frame?.op === 'ack') {
-    if (Object.hasOwn(outbox(rt), frame.frameId)) { delete outbox(rt)[frame.frameId]; await rt.save?.() }
+    const entry = outbox(rt)[frame.frameId]
+    if (entry === undefined) return 'acked'
+    delete outbox(rt)[frame.frameId]
+    await rt.save?.()
+    const local = botOfRef(rt, entry.frame.from)
+    const remote = botOfRef(rt, entry.frame.to)
+    if (local !== undefined && remote !== undefined) await rt.markPairDelivered?.(local.id, remote.id, entry.frame.exchangeId)
     return 'acked'
   }
   if (frame?.op === 'bounce') {
@@ -155,9 +188,17 @@ export async function receiveAssign(rt, frame) {
   if (to === undefined || isRemoteBot(to)) { rt.warn?.('ds-bot: bot/assign for %s: no such Bot here', frame.to?.id); return 'unknown-target' }
   if (from === undefined || !isRemoteBot(from)) { rt.warn?.('ds-bot: bot/assign from %s on %s: no stand-in here yet', frame.from?.id, frame.from?.nodeId); return 'unknown-sender' }
   if (frame.role === 'request') {
-    inbound(rt)[frame.exchangeId] = Date.now()
-    rt.openWork?.(frame.exchangeId, { from: from.id, to: to.id })
-    await rt.deliver({ fromId: from.id, toId: to.id, text: frame.text, role: 'request', exchangeId: frame.exchangeId })
+    inbound(rt)[frame.exchangeId] = { at: Date.now(), pair: pairKey(from.id, to.id), q: clip(frame.text) }
+    const earlier = earlierRounds(rt, from, to)
+    const text = earlier === '' ? frame.text : `${earlier}\n\n${frame.text}`
+    // Not in the Bot's own chat (the user's window): a background task of its own, forked from that
+    // chat so it knows what the Bot knows, opens the work and answers it (rewrite R3).
+    if (typeof rt.spawnBotHandoffTask === 'function') {
+      await rt.spawnBotHandoffTask(to, rt.chatOf(to.id), { fromBot: from, text, exchangeId: frame.exchangeId })
+    } else {
+      rt.openWork?.(frame.exchangeId, { from: from.id, to: to.id })
+      await rt.deliver({ fromId: from.id, toId: to.id, text, role: 'request', exchangeId: frame.exchangeId })
+    }
   } else {
     // The answer to a request this machine's Bot sent: close its work and bring the answer to it.
     await replyToSender(rt, { fromId: to.id, toId: from.id, exchangeId: frame.replyTo ?? frame.exchangeId, text: frame.text, answered: frame.role === 'reply' })
@@ -191,7 +232,10 @@ export async function flushOutbox(rt, { now = Date.now(), force = false } = {}) 
     changed = true
   }
   for (const [id, at] of Object.entries(seen(rt))) if (now - at > SEEN_TTL_MS) { delete seen(rt)[id]; changed = true }
-  for (const [id, at] of Object.entries(inbound(rt))) if (now - at > OUTBOX_TTL_MS) { delete inbound(rt)[id]; changed = true }
+  for (const [id, entry] of Object.entries(inbound(rt))) {
+    const at = typeof entry === 'object' && entry !== null ? entry.at : entry
+    if (!(now - at <= OUTBOX_TTL_MS)) { delete inbound(rt)[id]; changed = true }
+  }
   if (changed) await rt.save?.().catch(() => {})
 }
 

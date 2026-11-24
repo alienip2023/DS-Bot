@@ -456,8 +456,9 @@ export function install(rt) {
         if (target.origin === 'joined' || (target.type === 'remote-worker' && target.origin !== 'joined')) {
           const exchangeId = randomUUID()
           if (!toUser) rt.openWork(exchangeId, { from: sender.id, to: target.id, parent: work })
+          let delivered
           try {
-            const delivered = await rt.deliver({
+            delivered = await rt.deliver({
               fromId: sender.id,
               toId: target.id,
               text,
@@ -472,6 +473,7 @@ export function install(rt) {
             throw error
           }
           const machine = target.worker?.hostname ?? 'its machine'
+          if (!toUser && delivered?.away === true) return `${target.name}'s machine (${machine}) is not connected right now. The message waits and is delivered when it is back; no time limit runs meanwhile. End your turn: its reply will arrive later as a new message.`
           const note = toUser
             ? `It will answer the user there; nothing comes back to you.`
             : `Its reply will arrive later as a new message; do not wait for it.`

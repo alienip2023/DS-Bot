@@ -128,8 +128,13 @@ test('stop_bot leaves a sibling Bot on the same node running until its own reply
   const sibling = new Session('mirror-sibling')
   w.sessions.set('mirror-sibling', sibling)
   try {
-    await w.tool('message_bot', { to: 'Remote', message: 'first job' }, 'a')
-    await w.tool('message_bot', { to: 'Sibling', message: 'second job' }, 'a')
+    // message_bot now goes over bot/assign (rewrite R3); a caller that waits for the node turn keeps bot/turn.
+    for (const [toId, exchangeId, text] of [[REMOTE, 'job-1', 'first job'], [otherId, 'job-2', 'second job']]) {
+      w.rt.openWork(exchangeId, { from: 'a', to: toId })
+      void w.rt.deliver({ fromId: 'a', toId, text, role: 'request', exchangeId, wait: true }).catch(() => {})
+    }
+    const deadline = Date.now() + 2000
+    while (w.frames.filter(f => f.type === 'bot/turn').length < 2 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10))
     const job = w.frames.find(f => f.type === 'bot/turn' && f.payload.remoteBotId === 'rb2')
     assert.ok(job)
     const pending = w.tool('stop_bot', { bot: 'Remote', reason: 'stop first only' }, 'a')

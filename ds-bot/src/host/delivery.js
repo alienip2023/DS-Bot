@@ -99,6 +99,16 @@ export function install(rt) {
     return [...shown.values()].sort((x, y) => ((x.time ?? 0) - (y.time ?? 0)) || ((at.get(x.id) ?? 0) - (at.get(y.id) ?? 0)))
   }
 
+  // A message that left for another machine (bot/assign) is shown in the pair's view once that machine
+  // has it: the ack marks it delivered, as a Session marks a local one.
+  rt.markPairDelivered = async (a, b, id) => {
+    if (typeof id !== 'string' || id === '') return
+    const book = pairBook(a, b)
+    if (rt.ledger.records(book).some(record => record.event === 'delivered' && record.id === id)) return
+    rt.ledger.append(book, { event: 'delivered', id, time: Date.now() })
+    await rt.ledger.written(book).catch(() => {})
+  }
+
   function deliveredReplyOf(fromId, toId, replyTo) {
     if (typeof fromId !== 'string' || fromId === '' || typeof replyTo !== 'string' || replyTo === '') return undefined
     if (typeof toId === 'string' && toId !== '') {
@@ -183,6 +193,14 @@ export function install(rt) {
     const refused = refuseJoinedDispatch(to)
     // The answer to a request a node Bot sent over bot/assign: it goes back to that Bot's machine.
     if (refused && role === 'reply' && roomId === undefined && rt.assign?.owes?.(replyTo) === true) {
+      await writeBook()
+      return rt.assign.send({ fromId, toId, role, text, exchangeId, replyTo })
+    }
+    // A hub Bot's request to a node Bot (rewrite R3): it goes over bot/assign and the node answers it in a
+    // background task, so nothing of it is written into the node Bot's page here as if the user had said it.
+    // A caller that waits for the node's turn itself (`wait: true`) keeps the bot/turn path.
+    if (refused && role === 'request' && wait !== true && roomId === undefined && audience !== 'user' && from !== undefined && !joinedShadow(from) && typeof rt.assign?.send === 'function') {
+      await writeBook()
       return rt.assign.send({ fromId, toId, role, text, exchangeId, replyTo })
     }
     if (refused) {
@@ -204,7 +222,11 @@ export function install(rt) {
     // A peer row is another machine's Bot: the hub carries the message, and it never
     // falls through to a local Session.
     if (to.origin === 'peer') {
-      if (typeof rt.assign?.send === 'function') return rt.assign.send({ fromId, toId, role, text, exchangeId, replyTo })
+      if (typeof rt.assign?.send === 'function') {
+        // Kept in the pair's book like a local message, so the exchange dialog shows both sides.
+        await writeBook()
+        return rt.assign.send({ fromId, toId, role, text, exchangeId, replyTo })
+      }
       return sendToPeer(rt, { fromId, toId, text, exchangeId })
     }
     // Worker Bot routing: dispatch to the remote hub instead of a local Session turn.

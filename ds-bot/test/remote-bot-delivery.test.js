@@ -109,28 +109,23 @@ async function start(seed) {
   return { rt, ctx, registry, frames, sessions, resolved, tool, stop }
 }
 
-test('message_bot to a joined Bot on another machine sends bot/turn without a local session', async (t) => {
+test('message_bot to a joined Bot on another machine goes over bot/assign, never into its page here (rewrite R3)', async (t) => {
   const w = await start(team())
   t.after(w.stop)
   let reply
   try {
   reply = await w.tool('message_bot', { to: 'Remote', message: 'please run one turn' }, 'a')
-  assert.equal(reply, 'Delivered to Remote on box-1. Its reply will arrive later as a new message; do not wait for it.')
-  assert.deepEqual(w.frames.map(frame => frame.type), ['bot/turn'])
-  assert.equal(w.frames[0].nodeId, 'n1')
-  assert.equal(w.frames[0].payload.remoteBotId, 'rb1')
-  assert.equal(w.frames[0].payload.text, 'please run one turn')
+  // This fixture has no AC bot-network that can carry bot/assign: the request waits in the outbox (away).
+  assert.match(reply, /^Remote's machine \(box-1\) is not connected right now\./)
+  assert.deepEqual(w.frames.map(frame => frame.type), [], 'no bot/turn')
   assert.ok(!w.resolved.includes('joined:n1:rb1'), 'the shadow id was never resolved as a local Session')
   const session = w.sessions.get('mirror-j')
-  assert.deepEqual(session.log.filter(event => event.type === 'user/message').map(event => event.data.content.map(part => part.text).join('')), ['please run one turn'])
-
-  w.registry.emit('botTurnResult', { exchangeId: w.frames[0].payload.exchangeId, ok: true, text: 'one turn done', seq: 1 })
-  await settle()
-  assert.deepEqual(
-    session.log.filter(event => event.type === 'assistant/message').map(event => event.data.message.content.map(part => part.text).join('')),
-    ['one turn done'],
-  )
-  assert.equal(w.rt.state.exchanges.at(-1)?.text, 'one turn done')
+  assert.equal((session?.log ?? []).filter(event => event.type === 'user/message').length, 0, 'nothing written into the mirror as if the user had said it')
+  const [pending] = w.rt.assign.pending()
+  assert.equal(pending.to, 'Remote')
+  assert.equal(pending.role, 'request')
+  assert.equal(pending.away, true)
+  assert.ok(Object.values(w.rt.state.works).some(work => work.from === 'a' && work.to === 'joined:n1:rb1'), 'the sender waits for the answer')
   } finally {
     // Clear any wait left by a failed assertion so the test process can exit.
     for (const frame of w.frames) w.registry.emit('botTurnResult', { exchangeId: frame.payload.exchangeId, ok: false, error: 'test-over', seq: 99 })

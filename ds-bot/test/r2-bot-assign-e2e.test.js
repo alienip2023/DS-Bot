@@ -66,12 +66,16 @@ async function cluster(t) {
   await Promise.all([hub.rt.load(), n10.w.rt.load(), n11.w.rt.load()])
   t.after(async () => { for (const w of [hub, n10.w, n11.w]) await w.ctx.dispose?.() })
   await publishDirectory(hub.rt)
+  if (process.env.R3_DEBUG) for (const [name, w] of [['hub', hub], ['n10', n10.w], ['n11', n11.w]]) { const warn = w.rt.warn; w.rt.warn = (...a) => { console.log('WARN', name, ...a); return warn?.(...a) } }
   return { registry, hub, n10, n11 }
 }
 
 const textsIn = (w, sessionId) => [...w.followups, ...w.steers, ...w.prompts.map(p => ({ sessionId: p.request.sessionId, message: p.request.message ?? p.request }))]
   .filter(item => item.sessionId === sessionId)
   .map(item => JSON.stringify(item.message))
+// Where a cross-machine request runs (rewrite R3): a background task of the recipient, not its chat.
+const taskSessions = (w, botId) => (w.rt.botOf(botId)?.tasks ?? []).map(task => task.sessionId)
+const taskTexts = (w, botId) => taskSessions(w, botId).flatMap(sessionId => textsIn(w, sessionId))
 const peerOf = (rt, name) => Object.values(rt.state.bots).find(b => b.origin === 'peer' && b.name === name)
 const messageBot = (rt, from, to, message) => rt.teamTools.find(def => def.name === 'message_bot')
   .execute({ to, message }, { agent: { id: from }, callId: 'c', signal: new AbortController().signal })
@@ -93,13 +97,27 @@ test('R2-E2E-1 node011 ↔ node010: three rounds, each reply closes the sender w
     assert.match(String(out), /Delivered to node010执行/)
     const opened = Object.values(n11.w.rt.state.works ?? {}).filter(w => w.from === 'e11')
     assert.equal(opened.length, 1, `round ${round}: node011 waits for one answer`)
-    await until(() => textsIn(n10.w, 'e10').some(text => text.includes(`第 ${round} 回合：`)), `round ${round}: the request reached node010 Bot chat`)
+    await until(() => taskTexts(n10.w, 'e10').some(text => text.includes(`第 ${round} 回合：`)), `round ${round}: the request reached a node010 background task`)
+    assert.equal(textsIn(n10.w, 'e10').length, 0, `round ${round}: nothing in node010 Bot's own chat (the user's window)`)
+    if (round > 1) {
+      const latest = taskTexts(n10.w, 'e10').find(text => text.includes(`第 ${round} 回合：`))
+      assert.match(latest, /Earlier in your conversation with node011执行/, `round ${round}: the fresh task carries the conversation on`)
+      assert.ok(latest.includes(`第 ${round - 1} 回合收到`), `round ${round}: it knows its last answer`)
+    }
     await until(() => n11.w.rt.assign.pending().length === 0, `round ${round}: node010 acked the request`)
     await answer(n10.w.rt, 'e10', `第 ${round} 回合`, `第 ${round} 回合收到`)
     await until(() => textsIn(n11.w, 'e11').some(text => text.includes(`第 ${round} 回合收到`)), `round ${round}: the reply reached node011 Bot chat`)
     assert.equal(Object.values(n11.w.rt.state.works ?? {}).filter(w => w.from === 'e11').length, 0, `round ${round}: the reply closed node011 work`)
     await until(() => n10.w.rt.assign.pending().length === 0, `round ${round}: node011 acked the reply`)
   }
+  // The read-only exchange view (the "Reply from" line opens it) shows both sides on both machines.
+  const peer10 = peerOf(n11.w.rt, 'node010执行')
+  const onSender = n11.w.rt.exchangesOf('e11', peer10.id)
+  assert.deepEqual(onSender.map(item => item.role), ['request', 'reply', 'request', 'reply', 'request', 'reply'])
+  assert.ok(onSender[5].text.includes('第 3 回合收到'))
+  const peer11 = peerOf(n10.w.rt, 'node011执行')
+  const onRecipient = n10.w.rt.exchangesOf('e10', peer11.id)
+  assert.deepEqual(onRecipient.map(item => item.role), ['request', 'reply', 'request', 'reply', 'request', 'reply'])
   assert.equal(Object.keys(hub.rt.state.assignOutbox ?? {}).length, 0, 'the hub only carried frames')
 })
 
@@ -111,24 +129,41 @@ test('R2-E2E-2 node010 offline: the request waits (away, no time limit), then go
   assert.match(String(out), /Delivered to node010执行|not connected/)
   const [pending] = n11.w.rt.assign.pending()
   assert.equal(pending.away, true, 'the hub bounced it: away')
-  assert.equal(textsIn(n10.w, 'e10').length, 0)
+  assert.equal(taskTexts(n10.w, 'e10').length, 0)
   registry.nodes.get('node010').online = true
   await n11.w.rt.assign.flush({ force: true })
-  await until(() => textsIn(n10.w, 'e10').some(text => text.includes('离线时发的')), 'delivered once node010 is back')
+  await until(() => taskTexts(n10.w, 'e10').some(text => text.includes('离线时发的')), 'delivered once node010 is back')
   await until(() => n11.w.rt.assign.pending().length === 0, 'acked once node010 is back')
   // A resend of the same frame (its ack lost) is acked again, never applied twice.
-  const before = textsIn(n10.w, 'e10').length
+  const before = taskTexts(n10.w, 'e10').length
   const frame = { op: 'deliver', frameId: Object.keys(n10.w.rt.state.assignSeen)[0], from: { id: 'joined:node011:e11', name: 'node011执行', nodeId: 'node011' }, to: { id: 'joined:node010:e10', name: 'node010执行', nodeId: 'node010' }, role: 'request', exchangeId: 'dup', text: '离线时发的' }
   assert.equal(await n10.w.rt.assign.receive(frame), 'duplicate')
-  assert.equal(textsIn(n10.w, 'e10').length, before)
+  assert.equal(taskTexts(n10.w, 'e10').length, before)
 })
 
 test('R2-E2E-3 node Bot → hub Bot: the hub Bot answers through the joined shadow, the reply goes home', { skip }, async t => {
   const { hub, n11 } = await cluster(t)
   const out = await messageBot(n11.w.rt, 'e11', 'Chief', '主控你好')
   assert.match(String(out), /Delivered to Chief/)
-  await until(() => textsIn(hub, 'chief').some(text => text.includes('主控你好')), 'the request reached Chief')
+  await until(() => taskTexts(hub, 'chief').some(text => text.includes('主控你好')), 'the request reached a Chief background task')
+  assert.equal(textsIn(hub, 'chief').length, 0, "nothing in Chief's own chat")
   await answer(hub.rt, 'chief', '主控你好', '收到，我是主控')
   await until(() => textsIn(n11.w, 'e11').some(text => text.includes('收到，我是主控')), 'the reply reached node011 Bot')
   assert.equal(Object.values(n11.w.rt.state.works ?? {}).filter(w => w.from === 'e11').length, 0)
+})
+
+test('R3-E2E-4 hub Bot → node Bot: over bot/assign, never written into the node Bot page on the hub', { skip }, async t => {
+  const { hub, n10 } = await cluster(t)
+  let mirrored = 0
+  const realJoinedTurn = hub.rt.handleJoinedTurn
+  hub.rt.handleJoinedTurn = (...args) => { mirrored += 1; return realJoinedTurn?.(...args) }
+  const out = await messageBot(hub.rt, 'chief', 'node010执行', '主控派活：查一下磁盘')
+  assert.match(String(out), /Delivered to node010执行/)
+  await until(() => taskTexts(n10.w, 'e10').some(text => text.includes('主控派活')), 'the request reached a node010 background task')
+  assert.equal(mirrored, 0, 'no bot/turn: nothing goes into the mirror Session as if the user had said it')
+  assert.equal(textsIn(n10.w, 'e10').length, 0, "nothing in node010 Bot's own chat")
+  await answer(n10.w.rt, 'e10', '主控派活', '磁盘还剩 120G')
+  await until(() => textsIn(hub, 'chief').some(text => text.includes('磁盘还剩 120G')), 'the answer reached Chief')
+  assert.equal(Object.values(hub.rt.state.works ?? {}).filter(w => w.from === 'chief').length, 0, 'Chief work closed')
+  assert.equal(mirrored, 0)
 })
