@@ -52,21 +52,29 @@ export function install(rt) {
   // Supports two modes:
   //   Single-node: bot.worker.nodeId (legacy, Phase 2 behavior)
   //   Fleet: bot.worker.nodes = [{ nodeId, relayUrl?, hubUrl? }, ...]
+  // ── Node picker: load-balanced across the fleet ───────────────────────────
   //
-  // Picks by lowest taskCount, then random to break ties.
+  // For Phase 1 joined Bots, the caller passes worker.nodeId directly — no fleet.
+  // For legacy remote-worker Bots with a nodes[] list, picks by:
+  //   1. Lowest activeCount (in-flight tasks right now)
+  //   2. Lowest cpu (last reported, 0–100)
+  //   3. Lowest taskCount (lifetime total) as final tiebreaker
+  //   4. Random to break exact ties
   function pickNode(worker) {
     const nodes = Array.isArray(worker.nodes) && worker.nodes.length > 0
       ? worker.nodes.filter(n => n?.nodeId && n.online !== false)
       : worker.nodeId ? [{ nodeId: worker.nodeId }] : []
     if (nodes.length === 0) return null
     if (nodes.length === 1) return nodes[0]
-    // Sort by activeCount (in-flight) ascending, then taskCount (lifetime) as tiebreaker.
+    // Sort by activeCount, then cpu, then taskCount (lifetime), then random.
     const sorted = [...nodes].sort((a, b) => {
       const aa = typeof a.activeCount === 'number' ? a.activeCount : 0
       const ab = typeof b.activeCount === 'number' ? b.activeCount : 0
-      const ca = typeof a.taskCount === 'number' ? a.taskCount : 0
-      const cb = typeof b.taskCount === 'number' ? b.taskCount : 0
-      return aa - ab || ca - cb || Math.random() - 0.5
+      const ca = typeof a.cpu === 'number' ? a.cpu : 0
+      const cb = typeof b.cpu === 'number' ? b.cpu : 0
+      const ta = typeof a.taskCount === 'number' ? a.taskCount : 0
+      const tb = typeof b.taskCount === 'number' ? b.taskCount : 0
+      return aa - ab || ca - cb || ta - tb || Math.random() - 0.5
     })
     return sorted[0]
   }
