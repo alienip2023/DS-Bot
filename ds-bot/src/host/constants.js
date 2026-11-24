@@ -154,3 +154,7 @@ export const LEASE_DURATION_MS = 60_000  // lease valid for 60 s
 // 一个 Bot 的记忆后端可选项。'auto' 是默认值：这台机器装了 dsh-mneme 就用它，
 // 没装就用 ds-bot 自己的文件记忆。别的值一律不算后端。
 export const MEMORY_BACKENDS = ['auto', 'mneme', 'file', 'federation', 'none']
+
+// How many hands one piece of work may be passed through, Bot to Bot, from the turn that started it (OpenMausBot's
+// depth limit, fork.125). Deeper is refused: with no clock on a wait, a chain that loops would wait forever.
+export const WORK_DEPTH_MAX = 4

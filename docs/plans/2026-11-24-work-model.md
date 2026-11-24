@@ -69,6 +69,7 @@ R1–R4 之后实机反复出现：回复进了用户排队区、node 间只有�
 - **不再自动重建页面**：roster 报告不再触发 `migrateLegacyJoined`（把节点历史导成新页面并换掉页面 Session，与"页面就是副本、已有内容保留"冲突，且节点历史里有未答回合时每 5 秒重试）；需要时显式调用（`rt.autoMigrateJoined` 打开旧行为）。
 - **看得见**（fork.121）：副本不带节点的 inbox 事件，DSH 把 Bot 发来的消息算作 context（ds-bot 不画），所以交回与请求要走 relay 行：`role: 'results'` 也算 relay，画成「交回结果：X」并在下面显示交回的内容（长的可展开），本机页面（turn-trigger）同一组件。主控写副本时把消息来源里的节点本地 id（`senderSessionId`、`resultFrom`；`peer:<hub>:<home>:<id>` 或节点本地 Bot id）换成主控上的 id。侧栏 Bot 展开后列出它的工作线程（本机的与节点副本），点开在任务阅读器里看。
 - **收件方对话里的一行**（fork.122）：收件 Bot 的主对话按时间在两轮之间（最后一轮之后也算）显示它这段时间处理过的工作线程：「处理了交来的工作：X」/「正在处理交来的工作：X」，点开在任务阅读器里看那条线程（`WorkTurnTail`，按线程的 `updatedAt` 落在哪两轮之间）。维护者 2026-11-25 定：发问方页面的交回行只显示交回方名字（fork.121 下面显示的内容去掉），点名字打开两人的往来记录。
+- **停止级联与防循环**（fork.125，对齐 OpenMausBot）：用户停止一回合（`aborted/user`，或跨机 `work/cancel` 的 `ds-bot/cancelled`）时，这回合在做的 work 交出去的全部子 work 一起停：本机停正在做的回合并从工作线程收件箱撤下未开始的请求，跨机发 `work/cancel`，收件方 `onCancel` 再往下级联；停掉的 id 记在 `state.stoppedWorks`（保留 24 小时），其回答不再投递。只在等待、没有回合在跑的 Bot 上按停止，同样停掉它这段对话的根 work。DSH 关机（`aborted/disposed`）不算停止。`work/handoff` 带 `chain`（等在上面的 Bot 的全队引用，根在前，至多 16 个）：发送方 `upstreamOf` 把链也算作上游，拒绝交回；经手超过 `WORK_DEPTH_MAX`（4）拒绝；接收方再查一遍（目标在链上或链太长 → 立即 `work/result failed`）。
 - **不带过去的**：图片、文件块换成一行文字；超长文本截断并注明；`assistant/message` 的流式片段不带（页面按步更新，不逐字）。已经在主控上的旧页面内容保留，W4 之后只增加副本。
 
 ## W5 落地：清理（2026-11-25）

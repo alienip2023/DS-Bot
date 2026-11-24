@@ -311,6 +311,59 @@ export function install(rt) {
     }).catch(() => {})
   }
 
+  // Work stopped because the user stopped the work it was handed on for (fork.125, OpenMausBot's stopRequester):
+  // kept a day, so a turn doing it that ends now, or an answer that arrives late, wakes nobody.
+  const STOPPED_KEPT_MS = 24 * 60 * 60 * 1000
+  const stoppedWorks = () => (state.stoppedWorks ??= {})
+  const isStoppedWork = id => typeof id === 'string' && stoppedWorks()[id] !== undefined
+  // Everything work `id` handed on, and what that handed on in turn, stops: a Bot of this machine doing it is stopped,
+  // one on another machine is sent `work/cancel` (which stops what it handed on there), and nothing of it comes back.
+  // A group's round is left to the group. Returns how many works stopped.
+  function stopHandedOn(id, seen = new Set()) {
+    if (typeof id !== 'string' || seen.has(id)) return 0
+    seen.add(id)
+    let count = 0
+    for (const [childId, child] of Object.entries(works())) {
+      if (child.parent !== id || child.room !== undefined) continue
+      count += 1 + stopHandedOn(childId, seen)
+      stoppedWorks()[childId] = Date.now()
+      if (child.remote !== undefined) rt.link?.cancel?.(childId)
+      else void rt.stopWorkTurns?.(childId)
+      dropWork(childId)
+      log('stopped', childId, { parent: id })
+    }
+    const now = Date.now()
+    for (const [key, at] of Object.entries(stoppedWorks())) if (now - at > STOPPED_KEPT_MS) delete stoppedWorks()[key]
+    if (count > 0) save()
+    return count
+  }
+  // The works a Session is waiting on, while no turn runs there: the root works of that conversation. Stop there (the
+  // user stops a Bot that only waits) stops them and what they handed on.
+  function stopWaitingIn(sessionId) {
+    let count = 0
+    for (const [id, work] of Object.entries(works())) {
+      if (work.origin !== 'person' || work.part !== sessionId) continue
+      count += stopHandedOn(id)
+      dropWork(id)
+    }
+    return count
+  }
+
+  // The Bots waiting, above work `id`, root first: each asker on this machine, and the chain a work from another
+  // machine came with (team refs, resolved by the caller). Used for loop and depth refusals (fork.125).
+  function chainOf(id) {
+    const local = []
+    let remote = []
+    const seen = new Set()
+    for (let at = id; at !== undefined && !seen.has(at) && works()[at] !== undefined; at = works()[at].parent) {
+      seen.add(at)
+      const work = works()[at]
+      if (work.from !== undefined && work.link === undefined) local.unshift(work.from)
+      if (Array.isArray(work.chain)) remote = work.chain
+    }
+    return { local, remote }
+  }
+
   function taken(workId, id) {
     const work = works()[workId]
     if (work === undefined || !work.open.includes(id)) return
@@ -379,7 +432,8 @@ export function install(rt) {
     return work?.late === true ? `[This request reached ${botName} only after DeepSeek Harness restarted.]\n\n${body}` : body
   }
 
-  // The Bots waiting for the result of these works: whoever asked for each, and on up.
+  // The Bots waiting for the result of these works: whoever asked for each, and on up — across machines too, through
+  // the chain a work from another machine came with (fork.125).
   function upstreamOf(workIds) {
     const bots = new Set()
     for (const workId of workIds) {
@@ -387,9 +441,19 @@ export function install(rt) {
       for (let id = workId; id !== undefined && !seen.has(id) && works()[id] !== undefined; id = works()[id].parent) {
         seen.add(id)
         if (works()[id].from) bots.add(works()[id].from)
+        for (const ref of Array.isArray(works()[id].chain) ? works()[id].chain : []) {
+          const bot = rt.link?.botOfRef?.(ref)
+          if (bot !== undefined) bots.add(bot.id)
+        }
       }
     }
     return bots
+  }
+  // How many hands a work handed on from `workId` would be passed through, counting the new one.
+  const depthAfter = (workId) => {
+    if (workId === undefined) return 1
+    const { local, remote } = chainOf(workId)
+    return remote.length + local.length + 1
   }
 
   // Two requests from one sender belong to the same work when they were sent for it.
@@ -578,5 +642,5 @@ export function install(rt) {
     }
   }
 
-  Object.assign(rt, { workOf, openWork, openRootWork, isRootWork, resumeWork, workTurnEnded, noteWorkPart: notePart, closeWork, dropWork, takenWork: taken, lateWork, answerMissed, ownsWork: owns, waitsWork: waits, holdWork: hold, workAsker: askedBy, answerText, upstreamOf, sameWork, forgetBotWork: forgetBot, statusOf, waitingView, settleSubWork, subWorkRun, nameSubWork, abandonWork, abandonedWork: takeAbandoned, notifyBlockedDelegators })
+  Object.assign(rt, { workOf, openWork, openRootWork, isRootWork, resumeWork, workTurnEnded, noteWorkPart: notePart, closeWork, dropWork, stopHandedOn, stopWaitingIn, isStoppedWork, chainOf, depthAfter, takenWork: taken, lateWork, answerMissed, ownsWork: owns, waitsWork: waits, holdWork: hold, workAsker: askedBy, answerText, upstreamOf, sameWork, forgetBotWork: forgetBot, statusOf, waitingView, settleSubWork, subWorkRun, nameSubWork, abandonWork, abandonedWork: takeAbandoned, notifyBlockedDelegators })
 }

@@ -8,7 +8,7 @@ import { deleteBotTool, isNodeBot, updateNodeBot } from './node-bot-tools.js'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { readAvatar } from './avatar.js'
 import { listenBotStopResult, settleStoppedTurns } from './joined-turn.js'
-import { COLORS, EXTRA_COLORS, MESSAGE_INLINE_MAX, ROOM_MODES, SOURCE_KIND, TEXT_KEPT } from './constants.js'
+import { COLORS, EXTRA_COLORS, MESSAGE_INLINE_MAX, ROOM_MODES, SOURCE_KIND, TEXT_KEPT, WORK_DEPTH_MAX } from './constants.js'
 import { within } from './folders.js'
 import { missingFileRefs } from './claims.js'
 import { absoluteLinks } from './links.js'
@@ -336,6 +336,12 @@ export function install(rt) {
     return `${plain} ${kept}${whole} If you end your turn without writing any text, ${cut ? 'that part' : 'it'} goes up to ${to}; any text you write for this work from now on goes up instead.`
   }
 
+  // Work passed through more hands than the team allows is not handed on (fork.125, OpenMausBot's depth limit 4).
+  const depthRefusal = (work) => {
+    const depth = rt.depthAfter?.(work) ?? 1
+    return depth > WORK_DEPTH_MAX ? `Not sent: this work has already passed through ${depth - 1} Bots; the team hands one piece of work on at most ${WORK_DEPTH_MAX} times. Do this part yourself, or end your turn with what you have.` : undefined
+  }
+
   const BACK = 'What it hands back reaches you in one message once everything you handed on is back; do not wait for it, end your turn when you have handed on all you need.'
   rt.teamTools.push(defineTool({
     name: 'message_bot',
@@ -378,6 +384,8 @@ export function install(rt) {
           if (typeof rt.link?.handoff !== 'function') refuse(`Not sent to ${target.name}: work across machines is not available on this machine.`)
           const works = worksOf(exec)
           if (rt.upstreamOf(works).has(target.id)) return upstreamRefusal(exec, sender, target, String(args.message).trim(), args)
+          const deep = depthRefusal(works[0] ?? rt.rootWorkOf?.(exec.agent?.id))
+          if (deep !== undefined) return deep
           const text = absoluteLinks(String(args.message), rt.sessionFolder?.(exec.agent?.session ?? exec.agent))
           const { fromPart } = callerPart(exec)
           const work = works[0] ?? rt.rootWorkOf?.(exec.agent?.id)
@@ -441,6 +449,10 @@ export function install(rt) {
       // bare error the Bot cannot act on.
       const works = worksOf(exec)
       if (rt.upstreamOf(works).has(target.id)) return upstreamRefusal(exec, sender, target, text.trim(), args)
+      if (args.reply_to !== 'user') {
+        const deep = depthRefusal(works[0] ?? rt.rootWorkOf?.(exec.agent?.id))
+        if (deep !== undefined) return deep
+      }
       const send = async () => {
         const toUser = args.reply_to === 'user'
         // A turn the user started hands on under a root work of its own (work model): what comes back resumes it once.

@@ -112,6 +112,8 @@ function dropSuppressedWork(rt, exchangeId, name, text) {
 // for closes, and the answer goes up to the Bot that asked. `id` is the Session the
 // answer comes from; `source` is the trigger the turn answered.
 export function answerSender(rt, id, source, text, long, options = {}) {
+  // Work stopped because the user stopped what it was handed on for: nobody waits for its answer (fork.125).
+  if (rt.isStoppedWork?.(source?.exchangeId) === true) return false
   const back = rt.roomOf(source.senderRoomId)?.sessions?.[source.senderSessionId]
   // The asking Bot may have written from a background part of its own chat: its reply
   // goes back to that part's thread, not to the part the user is reading. When the part
@@ -671,7 +673,8 @@ export function install(rt) {
     if (sessionId === undefined) return false
     const turnRunning = live.get(sessionId)?.turn !== undefined
     const subRunning = hasSubagents?.(sessionId) === true
-    if (!turnRunning && !subRunning) return false
+    // A Bot that only waits for what it handed on: Stop stops that work (fork.125).
+    if (!turnRunning && !subRunning) return (rt.stopWaitingIn?.(sessionId) ?? 0) > 0
     await stopSubagents(sessionId)
     if (turnRunning) {
       const agent = await rt.resolveAgent(sessionId).catch(() => undefined)
@@ -1698,8 +1701,15 @@ export function install(rt) {
         // The work a turn the user started hands on (handoffs.js openRootWork): nobody waits for its answer, which is
         // this turn's own text. A stopped turn gives it up; otherwise it waits for what it handed on, and the Bot goes
         // on here in one turn once all of it is back.
+        // The user pressed Stop (or the machine that asked for this work called it off): what this turn's work handed
+        // on stops too, and nothing comes back for it (fork.125). DSH shutting down is not a stop.
+        const stoppedByUser = reason?.kind === 'aborted' && (reason.reason?.kind === 'user' || reason.reason?.reason === 'ds-bot/cancelled')
         const endRootWork = (work, reply) => {
-          if (reason?.kind === 'aborted') { rt.dropWork?.(work); return }
+          if (reason?.kind === 'aborted') {
+            if (stoppedByUser) rt.stopHandedOn?.(work)
+            rt.dropWork?.(work)
+            return
+          }
           if (rt.workTurnEnded?.(work, failure !== undefined ? '' : reply, id) === 'done') rt.dropWork?.(work)
         }
         // Work a Bot asked for, also when what came back for it opens the turn: while
@@ -1710,6 +1720,7 @@ export function install(rt) {
           if (!rt.ownsWork?.(rt.selfOf(id), work)) return answer(source, reply)
           if (rt.isRootWork?.(work)) return endRootWork(work, reply)
           const asker = rt.workAsker(work)
+          if (stoppedByUser) rt.stopHandedOn?.(work)
           if (failure !== undefined || reason?.kind === 'aborted') return answer(asker, reply)
           // Still waiting for what it handed on: the answer is held, and the Bot goes on with this work in one turn
           // here once all of it is back (handoffs.js resumeWork).
@@ -1834,6 +1845,27 @@ export function install(rt) {
     return undefined
   }
 
+  // Stops every turn doing work `workId` on this machine (fork.125: its asker was stopped), and takes the request out
+  // of the inbox of the work thread it waits in, so it never starts.
+  const stopWorkTurns = async (workId) => {
+    for (const [sessionId, entry] of live) {
+      if (entry.turn === undefined || (entry.rootWork !== workId && rt.workOf?.(entry.info) !== workId)) continue
+      const agent = await rt.resolveAgent(sessionId).catch(() => undefined)
+      agent?.cancel?.({ kind: 'hook', reason: 'ds-bot/cancelled' })
+    }
+    for (const bot of Object.values(state.bots ?? {})) {
+      for (const task of Array.isArray(bot?.tasks) ? bot.tasks : []) {
+        if (task?.exchangeId !== workId || typeof task.sessionId !== 'string') continue
+        const agent = await rt.resolveAgent(task.sessionId).catch(() => undefined)
+        for (const list of [agent?.inbox?.nextTurn, agent?.inbox?.nextStep]) {
+          for (const message of Array.isArray(list) ? [...list] : []) {
+            if (message?.source?.exchangeId === workId && message.id !== undefined) agent.inbox.remove?.(message.id)
+          }
+        }
+      }
+    }
+  }
+
   const markSteerCut = (id) => {
     const entry = live.get(id)
     if (entry?.turn !== undefined) entry.cut = { texts: entry.texts.length }
@@ -1841,7 +1873,7 @@ export function install(rt) {
 
   installPromptReasons(rt, placeOf)
 
-  Object.assign(rt, { live, liveOf, roomWaiters, roomProgress, roomInbox, activityView, workView, agentWorkView, roomWorkView, turnsView, steeredView, callDetail, doingOf, noteLocalAgentEvent, stopRoomTurn, stopChat, stopAgent, releaseBot, unblockBots, resumeBot, markSteerCut, clearActivity: id => setActivity(id, undefined), hasSubagents, stopSubagents, adoptLiveWork, rootWorkOf, busyWithWork, workTurnSessionOf, resumeTargetOf: laterTarget })
+  Object.assign(rt, { live, liveOf, roomWaiters, roomProgress, roomInbox, activityView, workView, agentWorkView, roomWorkView, turnsView, steeredView, callDetail, doingOf, noteLocalAgentEvent, stopRoomTurn, stopChat, stopAgent, releaseBot, unblockBots, resumeBot, markSteerCut, stopWorkTurns, clearActivity: id => setActivity(id, undefined), hasSubagents, stopSubagents, adoptLiveWork, rootWorkOf, busyWithWork, workTurnSessionOf, resumeTargetOf: laterTarget })
 
   // ── Worker Bot 路由（Phase4 融合）────────────────────────────────────────
   // 拦截发往 remote-worker 类型 Bot 的 deliver 调用，转交 worker-bridge 处理。

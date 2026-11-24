@@ -937,24 +937,93 @@ test('a queued or user-facing message to a Bot that waits for the result is not 
   assert.equal(textOf(callsOf(agents, 'a')[0][1].content), '[Work handed back to you · from Writer · everything you handed on is back]\nWriter:\nWriter finished without a reply.')
 })
 
-test('a stopped turn answers at once, and what it handed on comes back to it alone', async (t) => {
+// Changed by the maintainer 2026-11-25 (fork.125, OpenMausBot's stopRequester): Stop also stops what the stopped
+// work handed on, and nothing of it comes back to anyone.
+test('a stopped turn answers its asker at once, and what it handed on stops too: Tester\'s turn is stopped and its answer goes nowhere', async (t) => {
   const team = await start(threeBots())
   t.after(team.stop)
   const { agents, emit } = team
   const { take, end, sessionOf } = await handedOn(team)
+  take('c')
   emit(sessionOf('b'), 'turn/end', { turn: 1, reason: { kind: 'aborted', reason: { kind: 'user' } } })
   await settled(() => callsOf(agents, 'a').length === 1)
   assert.equal(textOf(callsOf(agents, 'a')[0][1].content), '[Work handed back to you · from Writer · everything you handed on is back]\nWriter:\nWriter was stopped before it could answer your message.')
-
-  take('c')
+  // Tester was working on it: its turn is stopped.
+  await settled(() => callsOf(agents, 'c').some(([kind]) => kind === 'cancel'))
+  assert.deepEqual(callsOf(agents, 'c').find(([kind]) => kind === 'cancel')[1], { kind: 'hook', reason: 'ds-bot/cancelled' })
   end('c', 'reviewed')
-  await settled(() => callsOf(agents, 'b').length === 2)
-  // Writer's work ended when it was stopped: Tester's answer comes back to Writer alone, as a plain reply.
-  assert.equal(textOf(callsOf(agents, 'b')[1][1].content), '[Reply from Tester]\nreviewed')
-  take('b')
-  end('b', 'noted')
-  await delay(20)
+  await delay(30)
+  assert.equal(callsOf(agents, 'b').filter(([kind]) => kind !== 'cancel').length, 1, 'nothing comes back to Writer')
   assert.equal(callsOf(agents, 'a').length, 1)
+  assert.equal(Object.values(team.rt.state.works ?? {}).some(work => work.to === 'c' || work.to === 'b'), false, 'nothing open for Writer or Tester; only Chief\'s own work, until it reads what came back')
+})
+
+test('Stop stops a chain on this machine all the way down: Chief → Writer → Tester, Chief stopped, both stop and nothing wakes anyone', async (t) => {
+  const team = await start(threeBots())
+  t.after(team.stop)
+  const { agents, emit, tool } = team
+  const turns = turnTaker(agents, emit)
+  turns.userTurn('a', 'have Writer do it')
+  await tool('message_bot', { to: 'Writer', message: 'carry out the plan' }, 'a')
+  turns.take('b')
+  await tool('message_bot', { to: 'Tester', message: 'review my work' }, 'b')
+  turns.take('c')
+  // The user stops Chief's turn.
+  emit('a', 'turn/end', { turn: 1, reason: { kind: 'aborted', reason: { kind: 'user' } } })
+  await settled(() => callsOf(agents, 'b').some(([kind]) => kind === 'cancel') && callsOf(agents, 'c').some(([kind]) => kind === 'cancel'))
+  turns.end('c', 'reviewed')
+  turns.end('b', 'done')
+  await delay(30)
+  assert.deepEqual(callsOf(agents, 'a'), [], 'Chief is not woken')
+  assert.equal(callsOf(agents, 'b').filter(([kind]) => kind === 'followup' || kind === 'steer').length, 1, 'Writer gets nothing back')
+  assert.equal(Object.keys(team.rt.state.works ?? {}).length, 0)
+})
+
+test('Stop on a Bot that only waits stops what it handed on; a request still waiting for its turn is never started', async (t) => {
+  const team = await start(threeBots())
+  t.after(team.stop)
+  const { agents, emit, tool, call } = team
+  const turns = turnTaker(agents, emit)
+  turns.userTurn('a', 'have Writer do it')
+  await tool('message_bot', { to: 'Writer', message: 'carry out the plan' }, 'a')
+  turns.end('a', 'asked Writer')
+  // Chief only waits now; the user presses Stop on its chat.
+  assert.equal((await call('stop-chat', { botId: 'a' })).value, true)
+  await delay(20)
+  assert.equal(Object.keys(team.rt.state.works ?? {}).length, 0)
+  turns.take('b')
+  turns.end('b', 'the plan')
+  await delay(30)
+  assert.deepEqual(callsOf(agents, 'a'), [], 'nothing comes back to Chief')
+})
+
+test('a request stopped while it still waits in the work thread\'s inbox is taken out, so it never starts', async (t) => {
+  const team = await start(threeBots())
+  t.after(team.stop)
+  const { agents, emit, tool, call } = team
+  const turns = turnTaker(agents, emit)
+  turns.userTurn('a', 'have Writer do it')
+  await tool('message_bot', { to: 'Writer', message: 'carry out the plan' }, 'a')
+  turns.end('a', 'asked Writer')
+  // The request waits in the work thread's inbox (its Session is busy), as DSH keeps it.
+  const delivery = callsOf(agents, 'b').find(([kind]) => kind === 'followup')
+  const thread = agents.get(delivery.sessionId)
+  thread.inbox.nextTurn.push({ ...delivery[1], id: 'queued-1' })
+  assert.equal((await call('stop-chat', { botId: 'a' })).value, true)
+  await settled(() => thread.inbox.nextTurn.length === 0)
+  assert.deepEqual(thread.inbox.nextTurn, [], 'taken out of the inbox')
+})
+
+test('DSH shutting down mid-turn is not a Stop: what the turn handed on goes on', async (t) => {
+  const team = await start(threeBots())
+  t.after(team.stop)
+  const { agents, emit } = team
+  const { take, sessionOf } = await handedOn(team)
+  take('c')
+  emit(sessionOf('b'), 'turn/end', { turn: 1, reason: { kind: 'aborted', reason: { kind: 'disposed' } } })
+  await delay(30)
+  assert.equal(callsOf(agents, 'c').some(([kind]) => kind === 'cancel'), false)
+  assert.equal(Object.values(team.rt.state.works ?? {}).some(work => work.to === 'c'), true, 'Tester\'s work is still open')
 })
 
 test('a result read during other work comes back in a turn of its own and goes on with its work', async (t) => {

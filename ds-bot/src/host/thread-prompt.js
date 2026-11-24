@@ -88,7 +88,7 @@ export function install(rt) {
   // The core's cancel throws when no agent runs; a message we just dropped is still a
   // successful stop from the user's side.
   wrapControllerMethod(ctx, controller, 'cancel', original => async function (request, ...rest) {
-    const dropped = rt.dropThreadQueueSession?.(request?.sessionId) ?? 0
+    const dropped = (rt.dropThreadQueueSession?.(request?.sessionId) ?? 0) + (rt.live?.get(request?.sessionId)?.turn === undefined ? (rt.stopWaitingIn?.(request?.sessionId) ?? 0) : 0)
     try {
       return await original.call(this, request, ...rest)
     } catch (error) {

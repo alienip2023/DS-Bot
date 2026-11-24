@@ -9,7 +9,7 @@
 // while the other machine is away (no clock runs), and node-to-node frames are stored and forwarded by the hub.
 // Who sent a frame is the link's fact (`msg.from`), never what the frame says.
 import { randomUUID } from 'node:crypto'
-import { LATE_ANSWER } from './constants.js'
+import { LATE_ANSWER, WORK_DEPTH_MAX } from './constants.js'
 import { joinedShadow, shadowId } from './roster-join.js'
 import { threadCurrentOfPart } from './threads.js'
 
@@ -18,6 +18,21 @@ const TEXT_MAX = 65_536
 const IDENTITY_ID = /^[0-9a-f]{16}$/
 const ATTACH_MS = 5_000
 const OUTCOMES = new Set(['done', 'failed', 'stopped'])
+const CHAIN_MAX = 16
+const sameRef = (a, b) => a?.id === b?.id && a?.nodeId === b?.nodeId
+
+/** The Bots waiting above work `parent`, root first, as team refs (fork.125): what came from another machine, then
+ *  each asker here, then `sender`. Sent with `work/handoff` so the other machine can refuse loops and depth. */
+export function chainFor(rt, parent, sender) {
+  const { local = [], remote = [] } = parent === undefined ? {} : rt.chainOf?.(parent) ?? {}
+  const refs = [...remote.filter(ref => ref && typeof ref.id === 'string' && typeof ref.nodeId === 'string').map(ref => ({ id: ref.id, nodeId: ref.nodeId }))]
+  for (const botId of [...local, sender.id]) {
+    const bot = rt.botOf(botId)
+    const ref = bot === undefined ? undefined : refOf(rt, bot)
+    if (ref !== undefined && !refs.some(other => sameRef(other, ref))) refs.push({ id: ref.id, nodeId: ref.nodeId })
+  }
+  return refs.slice(-CHAIN_MAX)
+}
 
 function serviceOf(rt, name) {
   try { return rt.ctx?.get?.(name) } catch { return undefined }
@@ -114,8 +129,9 @@ export async function handoff(rt, { sender, target, text, parent, fromPart }) {
   const body = String(text ?? '').slice(0, TEXT_MAX)
   // The asker's conversation, by a name the other machine keeps one work thread for.
   const part = `${fromRef.nodeId}:${rt.partKeyOf?.(fromPart) ?? fromPart ?? 'main'}`
+  const chain = chainFor(rt, parent, sender)
   try {
-    post(rt, machine, 'work/handoff', { id, from: fromRef, to: toRef, part, text: body })
+    post(rt, machine, 'work/handoff', { id, from: fromRef, to: toRef, part, text: body, chain })
   } catch (error) {
     rt.dropWork(id)
     return { ok: false, error: String(error?.message ?? error) }
@@ -174,8 +190,21 @@ async function onHandoff(rt, msg) {
   // link sends it again.
   const asker = botOfRef(rt, data.from)
   if (asker === undefined || !isRemoteBot(asker)) throw new Error(`no stand-in here yet for ${data.from?.name ?? data.from?.id} on ${msg.from}`)
+  // The Bots waiting above it (fork.125): work that would come back round to one of them, or pass through more hands
+  // than the team allows, is refused here too, whatever the other machine checked.
+  const chain = (Array.isArray(data.chain) ? data.chain : []).filter(ref => ref && typeof ref.id === 'string' && typeof ref.nodeId === 'string').slice(-CHAIN_MAX).map(ref => ({ id: ref.id, nodeId: ref.nodeId }))
+  const own = refOf(rt, to)
+  if (own !== undefined && chain.some(ref => sameRef(ref, own))) {
+    post(rt, msg.from, 'work/result', { id: data.id, outcome: 'failed', text: `Not taken: ${to.name} is already waiting for the result of this work, further up. It gets that answer by itself once the work is done; do not send the work back round.` })
+    return
+  }
+  if (chain.length > WORK_DEPTH_MAX) {
+    post(rt, msg.from, 'work/result', { id: data.id, outcome: 'failed', text: `Not taken: this work has already passed through ${chain.length} Bots, more than the ${WORK_DEPTH_MAX} the team allows. Do it yourself, or give the user what you have.` })
+    return
+  }
   rt.openWork(data.id, { from: asker.id, to: to.id })
   rt.state.works[data.id].link = { nodeId: msg.from, from: data.from }
+  if (chain.length > 0) rt.state.works[data.id].chain = chain
   const thread = await rt.workThreadFor(to, asker, `remote:${typeof data.part === 'string' ? data.part.slice(0, 200) : msg.from}`)
   await rt.workThreadTakes(thread.task, data.id)
   await rt.deliver({ fromId: asker.id, toId: to.id, sessionId: thread.sessionId, text: String(data.text ?? ''), role: 'request', exchangeId: data.id })
@@ -232,7 +261,9 @@ async function onCancel(rt, msg) {
   const id = msg.data?.id
   const work = rt.state.works?.[id]
   if (work?.link?.nodeId !== msg.from) return
-  // Answers nothing any more; a turn doing it right now is stopped.
+  // Answers nothing any more; what it handed on stops too (fork.125), and a turn doing it right now is stopped.
+  rt.stopHandedOn?.(id)
+  ;(rt.state.stoppedWorks ??= {})[id] = Date.now()
   rt.dropWork(id)
   for (const [sessionId, entry] of rt.live ?? []) {
     if (entry?.turn === undefined || entry.info?.exchangeId !== id) continue
@@ -285,6 +316,7 @@ export function install(rt) {
     owes: id => owes(rt, id),
     answer: args => answer(rt, args),
     cancel: id => cancel(rt, id),
+    botOfRef: ref => botOfRef(rt, ref),
     available: () => typeof networkOf(rt)?.post === 'function',
   }
   ctx?.effect?.(() => () => {
