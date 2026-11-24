@@ -206,7 +206,7 @@ export async function createBotOnNode(rt, { nodeId, name, role, modelRef = null,
     id: shadowBotId,
     name: (result.name || trimmed(name)).slice(0, 40),
     role: (result.role || (typeof role === 'string' ? trimmed(role) : '')).slice(0, 24),
-    type: 'remote-worker',
+    // Phase 1: joined rows use origin:'joined' as the discriminator; type:'remote-worker' retired.
     origin: 'joined',
     // Hub-created: the node's turn runs the model the hub chose or fails with a repair
     // card, never a silent fallback (models.js desiredModel).

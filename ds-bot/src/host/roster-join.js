@@ -3,6 +3,7 @@
 import { isColor } from './text.js'
 import { ensureMainThread, mainThreadOf } from './bot-store.js'
 import { mirrorTurnOpen } from './joined-mirror-writer.js'
+import { applyBotIdentity } from './team-directory.js'
 import { hasHistoryIdentity, syncJoinedHistory } from './joined-history.js'
 import { applySharedSkills, sharedSkillSnapshot } from './skill-share.js'
 
@@ -53,7 +54,8 @@ export function taskSummaryOf(taskView) {
 export function reportableBots(bots, taskViewOf, cardsOf) {
   return Object.values(bots ?? {}).flatMap((bot) => {
     if (!bot || typeof bot !== 'object') return []
-    if (bot.type === 'remote-worker' || bot.origin === 'peer') return []
+    // Joined shadow rows (origin:'joined') are reported; legacy remote-worker dispatch rows and peer rows are not.
+    if ((bot.type === 'remote-worker' && bot.origin !== 'joined') || bot.origin === 'peer') return []
     const id = typeof bot.id === 'string' ? bot.id.trim() : ''
     if (id === '') return []
     const entry = {
@@ -123,7 +125,9 @@ export function applyRosterReport(state, report, now = Date.now(), onChange) {
   const seenIds = new Set()
   let changed = false
   for (const bot of bots) {
-    if (!bot || typeof bot !== 'object' || bot.type === 'remote-worker') continue
+    // The node reports its own Bots: every local Bot it runs. A legacy remote-worker row on
+    // the node itself (not a joined shadow) is the retired dispatch path — kept readable.
+    if (!bot || typeof bot !== 'object' || (bot.type === 'remote-worker' && bot.origin !== 'joined')) continue
     const remoteBotId = typeof bot.id === 'string' ? bot.id.trim() : ''
     if (remoteBotId === '') continue
     const id = shadowId(nodeId, remoteBotId)
@@ -137,7 +141,9 @@ export function applyRosterReport(state, report, now = Date.now(), onChange) {
       id,
       name: String(bot.name ?? existing?.name ?? remoteBotId).slice(0, 40),
       role: String(bot.role ?? existing?.role ?? '').slice(0, 24),
-      type: 'remote-worker',
+      // Phase 1: joined shadow rows no longer use type:'remote-worker'; origin:'joined' is the
+      // canonical discriminator. Existing rows that still carry type:'remote-worker' are migrated
+      // on first read (the type field is preserved but origin:'joined' takes precedence).
       origin: 'joined',
       homeNodeId: nodeId,
       createdAt: existing?.createdAt ?? now,
@@ -154,15 +160,26 @@ export function applyRosterReport(state, report, now = Date.now(), onChange) {
         missingFromReport: false,
       },
     }
+    // Remove legacy type:'remote-worker' from joined rows; origin:'joined' is the discriminator.
+    if (row.type === 'remote-worker') delete row.type
     // No model in this report keeps existing?.model. Do not write null or ''.
     if (reportedModel !== '') row.model = reportedModel
     // The node's own look. Not reported (an older node) keeps what the hub row has.
     if (isColor(bot.color)) row.color = bot.color
     if (typeof bot.avatarShape === 'string' && /^[a-z][\w-]{0,31}$/.test(bot.avatarShape)) row.avatar = { ...(existing?.avatar ?? {}), shape: bot.avatarShape }
     if (typeof bot.effort === 'string' && /^[a-z][a-z0-9-]{0,15}$/.test(bot.effort)) row.effort = bot.effort
-    // The Bot's portable identity (AC 0.4.33): what locate_bot finds it by. An older node reports none; the
-    // last known id stays.
-    if (typeof bot.identityId === 'string' && /^[0-9a-f]{16}$/.test(bot.identityId)) row.worker.identityId = bot.identityId
+    // The Bot's portable identity (AC 0.4.33+): 16-hex ed25519 public key fingerprint.
+    // Promoted to top-level (Phase 1): the global primary key for cross-machine references.
+    // An older node reports none; the last known id stays.
+    if (typeof bot.identityId === 'string' && /^[0-9a-f]{16}$/.test(bot.identityId)) {
+      row.identityId = bot.identityId
+      row.worker.identityId = bot.identityId
+      // Update the Team Directory with the latest identity + home information.
+      applyBotIdentity(state, {
+        identityId: bot.identityId, name: row.name, role: row.role, model: row.model,
+        machineId: nodeId,
+      }, { now })
+    }
     // The node's running background tasks (read-only on the hub). A report from an older node has
     // none: what was known stays; an empty list clears it. Equal lists keep the old array so an
     // unchanged report does not count as a change.
