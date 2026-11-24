@@ -17,6 +17,7 @@ const DEBOUNCE_MS = 500
 const ATTACH_MS = 5_000
 const DEFAULT_READ = 30
 const MAX_READ = 50
+const MAX_SNAPSHOT_GROUPS = 32
 const MAX_SNAPSHOT_BOTS = 64
 const USER = { id: 'user', name: 'user' }
 
@@ -180,9 +181,22 @@ export function install(rt) {
       if (body === '') continue
       bots.push({ remoteBotId, text: body })
     }
+    // The hub group memory of every room a Bot on this node is in. `members` are the node-local ids of
+    // this node's Bots in that room: the node shows a room's memory only to them (members-only, as on the hub).
+    const groups = []
+    const onNode = new Map(botsOn(nodeId).map(bot => [bot.id, bot.worker.remoteBotId]).filter(([, remote]) => typeof remote === 'string' && remote !== ''))
+    for (const room of Object.values(rt.state?.rooms ?? {})) {
+      if (groups.length >= MAX_SNAPSHOT_GROUPS) break
+      const members = (room?.members ?? []).map(id => onNode.get(id)).filter(Boolean)
+      if (members.length === 0) continue
+      const body = renderScope(await host.readScope({ kind: 'group', roomId: room.id }))
+      if (body === '') continue
+      groups.push({ roomId: room.id, members, text: body })
+    }
     const fitted = fitSnapshot([
       { kind: 'team', text: team },
       { kind: 'node', text: node },
+      ...groups.map(group => ({ kind: 'group', roomId: group.roomId, members: group.members, text: group.text })),
       ...bots.map(bot => ({ kind: 'bot', botId: bot.remoteBotId, text: bot.text })),
     ])
     const section = kind => fitted.sections.find(item => item.kind === kind)
@@ -195,6 +209,11 @@ export function install(rt) {
     for (const item of fitted.sections) {
       if (item.kind !== 'bot') continue
       out.bots[item.botId] = { text: item.text, ...(item.truncated === true ? { truncated: true } : {}) }
+    }
+    const groupSections = fitted.sections.filter(item => item.kind === 'group')
+    if (groupSections.length > 0) {
+      out.groups = {}
+      for (const item of groupSections) out.groups[item.roomId] = { text: item.text, members: item.members, ...(item.truncated === true ? { truncated: true } : {}) }
     }
     if (fitted.truncated === true) {
       out.truncated = true
@@ -646,6 +665,7 @@ export function install(rt) {
     if (typeof cache.team !== 'string') cache.team = ''
     if (typeof cache.node !== 'string') cache.node = ''
     if (cache.bots === null || typeof cache.bots !== 'object' || Array.isArray(cache.bots)) cache.bots = {}
+    if (cache.groups === null || typeof cache.groups !== 'object' || Array.isArray(cache.groups)) cache.groups = {}
     cache.truncated = cache.truncated === true
     return cache
   }
@@ -720,6 +740,18 @@ export function install(rt) {
       if (segment === null || typeof segment !== 'object') continue
       cache.bots[remoteBotId] = {
         text: typeof segment.text === 'string' ? segment.text : '',
+        truncated: segment.truncated === true,
+      }
+    }
+    // Hub group memory for the rooms this node's Bots are in (memory-sync with groups, AC 0.4.34+). A hub
+    // that sends none leaves none: a room's memory is never kept past the snapshot that dropped it.
+    cache.groups = {}
+    const groups = data.groups !== null && typeof data.groups === 'object' ? Object.entries(data.groups) : []
+    for (const [roomId, segment] of groups.slice(0, MAX_SNAPSHOT_GROUPS)) {
+      if (segment === null || typeof segment !== 'object' || !Array.isArray(segment.members)) continue
+      cache.groups[roomId] = {
+        text: typeof segment.text === 'string' ? segment.text : '',
+        members: segment.members.filter(member => typeof member === 'string'),
         truncated: segment.truncated === true,
       }
     }
@@ -810,6 +842,13 @@ export function install(rt) {
       truncated: cache.truncated === true,
       synced: key !== '' && own !== undefined,
     }
+  }
+
+  // A hub room's memory, for one of its members on this node; undefined for anyone else.
+  function nodeGroupCached(bot, roomId) {
+    const group = nodeCache().groups[text(roomId)]
+    if (group === undefined || !group.members.includes(text(bot?.id))) return undefined
+    return { roomId: text(roomId), text: group.text, truncated: group.truncated === true, at: nodeCache().at }
   }
 
   function nodeStatus() {
@@ -936,6 +975,7 @@ export function install(rt) {
       nodeId: () => nodeIdOf(),
       status: nodeStatus,
       cached: nodeCached,
+      groupCached: nodeGroupCached,
       write: nodeWrite,
       read: nodeRead,
       apply: nodeSnapshot,
