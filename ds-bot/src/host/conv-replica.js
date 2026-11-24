@@ -12,7 +12,7 @@
 // frame already applied (same node Session and seq) is skipped.
 import { botOfRef, isRemoteBot, ownNodeId, refOf } from './bot-link.js'
 import { joinedShadow } from './roster-join.js'
-import { createSystemMessage } from '@deepseek-ai/dsh-llm'
+import { randomUUID } from 'node:crypto'
 import { ensureMirrorSession } from './mirror.js'
 import { turnEnd } from './turn-end.js'
 
@@ -24,6 +24,7 @@ const FRAME_MAX = 200_000
 // DSH's surface events: each is written with a surface marker (and only these may carry one).
 const SURFACED = new Set(['system/message', 'developer/message', 'user/message', 'assistant/message', 'tool/result'])
 const TITLE_MAX = 120
+const COPY_VERSION = 2
 
 function serviceOf(rt, name) {
   try { return rt.ctx?.get?.(name) } catch { return undefined }
@@ -133,6 +134,57 @@ const lastTurnOf = (session) => {
   return last
 }
 
+const eventsOf = session => (typeof session.snapshotEvents === 'function' ? session.snapshotEvents() : Array.isArray(session.log) ? session.log : [])
+
+// The page's open step and the tool calls in it that have no result yet (DSH refuses to load a Session whose step
+// ends with one: "step/end leaves unresolved tool call").
+function openStepOf(session) {
+  let step
+  let calls = new Map()
+  for (const event of eventsOf(session)) {
+    const data = event?.data ?? {}
+    if (event?.type === 'step/start') {
+      step = { turn: data.turn, step: data.step }
+      calls = new Map()
+    } else if (event?.type === 'step/end' || event?.type === 'turn/end') {
+      step = undefined
+      calls = new Map()
+    } else if (step !== undefined && event?.type === 'assistant/message') {
+      for (const block of data.message?.content ?? []) {
+        if (block?.type === 'tool-call' && typeof block.id === 'string') calls.set(block.id, { name: block.name, arguments: block.arguments, started: false })
+      }
+    } else if (step !== undefined && event?.type === 'tool/call' && calls.has(data.callId)) {
+      calls.get(data.callId).started = true
+    } else if (step !== undefined && event?.type === 'tool/result') {
+      calls.delete(data.message?.source?.callId ?? data.callId)
+    }
+  }
+  return step === undefined ? undefined : { ...step, calls }
+}
+
+const UNCOPIED = '[The result of this call did not reach the hub; the call itself ran on the node.]'
+/**
+ * Before the page ends a step (or a turn), every call in it gets a result: a result the copy lost (a frame the page
+ * could not take) would otherwise leave the Session unloadable. With `close`, a step still open is ended too.
+ */
+function settleStep(session, close) {
+  const open = openStepOf(session)
+  if (open === undefined) return
+  for (const [callId, call] of open.calls) {
+    if (!call.started) session.append('tool/call', { turn: open.turn, step: open.step, callId, name: call.name, arguments: call.arguments })
+    session.append('tool/result', {
+      turn: open.turn,
+      step: open.step,
+      message: { role: 'tool', source: { kind: 'tool', callId }, toolCallId: callId, content: [{ type: 'text', text: UNCOPIED }], isError: false, id: randomUUID() },
+    }, { surfaceOp: 'append' })
+  }
+  if (close) session.append('step/end', { turn: open.turn, step: open.step })
+}
+const closeTurn = (session, turn) => {
+  settleStep(session, true)
+  session.append('turn/end', { turn, reason: turnEnd.interrupted() })
+}
+
 async function onConv(rt, msg) {
   const data = msg.data ?? {}
   if (ownNodeId(rt) !== HUB || data.bot?.nodeId !== msg.from || !REPLICATED.has(data.type) || typeof data.sid !== 'string' || !Number.isInteger(data.seq)) return
@@ -157,7 +209,7 @@ async function onConv(rt, msg) {
       if (data.type === 'turn/start') {
         // A turn the page still holds open (a node turn whose end never came) is closed first.
         const open = openTurnOf(session)
-        if (open !== undefined) session.append('turn/end', { turn: open, reason: turnEnd.interrupted() })
+        if (open !== undefined) closeTurn(session, open)
         const turn = lastTurnOf(session) + 1
         if (Number.isInteger(nodeTurn)) from.turns[nodeTurn] = turn
         session.append('turn/start', { ...event, turn })
@@ -170,7 +222,7 @@ async function onConv(rt, msg) {
         turn = lastTurnOf(session) + 1
         from.turns[nodeTurn] = turn
         const open = openTurnOf(session)
-        if (open !== undefined) session.append('turn/end', { turn: open, reason: turnEnd.interrupted() })
+        if (open !== undefined) closeTurn(session, open)
         session.append('turn/start', { turn })
         running(true)
       }
@@ -181,6 +233,8 @@ async function onConv(rt, msg) {
         const requestId = typeof rpcId === 'string' ? rt.joinedRequestOf?.(rpcId) : undefined
         if (requestId !== undefined) written.source = { ...written.source, rpcId: requestId }
       }
+      if (data.type === 'step/end') settleStep(session, false)
+      else if (data.type === 'turn/end') settleStep(session, true)
       session.append(data.type, written, SURFACED.has(data.type) ? { surfaceOp: 'append' } : undefined)
       if (data.type === 'turn/end') {
         if (Number.isInteger(nodeTurn)) delete from.turns[nodeTurn]
@@ -191,7 +245,11 @@ async function onConv(rt, msg) {
     // One event the page cannot take does not stop the rest (the order holds; nothing is sent again for it).
     rt.warn?.('ds-bot: the copy of a %s event of %s was not written: %s', data.type, bot.name, error?.message ?? error)
   }
-  await rt.ctx?.sessions?.flush?.(session).catch?.(() => {})
+  try {
+    await rt.ctx?.sessions?.flush?.(session)
+  } catch (error) {
+    rt.warn?.('ds-bot: the copy of %s could not be stored: %s', bot.name, error?.message ?? error)
+  }
   void rt.save?.().catch(() => {})
 }
 
@@ -208,7 +266,9 @@ const taskCopies = new WeakMap()
  */
 async function taskCopyOf(rt, bot, mine, task) {
   const tasks = (mine.tasks ??= {})
-  const entry = (tasks[task.id] ??= { title: task.title, startedAt: Date.now(), at: Date.now() })
+  // v2: a copy fork.119 made carries a head DSH cannot store, so nothing after it was kept; it starts again.
+  if (tasks[task.id]?.v !== COPY_VERSION) tasks[task.id] = { v: COPY_VERSION, title: task.title, startedAt: Date.now(), at: Date.now() }
+  const entry = tasks[task.id]
   if (task.title !== '') entry.title = task.title
   if (task.origin !== undefined) entry.origin = task.origin
   let pending = taskCopies.get(rt)
@@ -222,12 +282,10 @@ async function openTaskCopy(rt, bot, entry) {
     const agent = await rt.resolveAgent(entry.sessionId).catch(() => undefined)
     if (agent?.session) return agent.session
   }
+  // No system/message head: DSH stores one only inside a turn, and a Session it cannot store keeps nothing after it.
   const sessionId = await rt.createSession(`${bot.id} task (copy)`)
   const session = (await rt.resolveAgent(sessionId)).session
   if (!session) throw new Error('the copy of a node task has no Session')
-  try { session.append('system/message', createSystemMessage(`[copy: ${bot.name} · ${entry.title || 'task'}]`), { protected: true, surfaceOp: 'append' }) } catch {
-    try { session.append('system/message', createSystemMessage(`[copy: ${bot.name} · ${entry.title || 'task'}]`), { protected: true }) } catch { /* the copy goes on without a head */ }
-  }
   entry.sessionId = sessionId
   await rt.save?.()
   return session
@@ -236,7 +294,7 @@ async function openTaskCopy(rt, bot, entry) {
 /** The hub's copy of a node Bot's task, if the node has sent any of it. */
 export function taskCopyEntry(rt, botId, taskId) {
   const entry = rt.state?.replicas?.[botId]?.tasks?.[taskId]
-  return typeof entry?.sessionId === 'string' && entry.sessionId !== '' ? entry : undefined
+  return entry?.v === COPY_VERSION && typeof entry.sessionId === 'string' && entry.sessionId !== '' ? entry : undefined
 }
 
 function noteRunning(rt, bot, running) {

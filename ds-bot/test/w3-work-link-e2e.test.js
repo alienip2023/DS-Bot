@@ -51,15 +51,23 @@ async function cluster(t) {
   const hub = world('w3-hub-', team([bot('chief', 'Chief'), joined('node010', 'e10', 'Exec10'), joined('node011', 'e11', 'Exec11')]),
     { 'remote-agent:registry': registry, 'remote-agent:bot-network': hubNetwork })
   hubCtx = hub.ctx
-  // The hub's page Sessions keep what is appended, and check surface markers, as DSH's do.
+  // The hub's page Sessions keep what is appended, and check it as DSH's store does: surface markers, and every tool
+  // call of a step answered before the step (or turn) ends.
   const resolveHub = hub.ctx.sessionController.resolveAgent
   hub.ctx.sessionController.resolveAgent = async (sessionId) => {
     const out = await resolveHub(sessionId)
     const session = out.agent.session
     if (typeof session.append !== 'function') {
+      const calls = new Map()
       session.append = (type, data, options) => {
         if (SURFACE.has(type) && options?.surfaceOp === undefined) throw new Error(`session event "${type}" is surface-eligible and requires a surfaceOp marker`)
         if (!SURFACE.has(type) && options?.surfaceOp !== undefined) throw new Error(`session event "${type}" is not surface-eligible and cannot carry surfaceOp`)
+        if (type === 'tool/call' && calls.get(data.callId) !== 'advertised') throw new Error(`tool/call ${data.callId} does not match one advertised tool call`)
+        if (type === 'tool/result' && calls.get(data.message?.source?.callId) !== 'started') throw new Error(`tool/result ${data.message?.source?.callId} has no started tool call`)
+        if ((type === 'step/end' || type === 'turn/end') && calls.size > 0) throw new Error(`${type} leaves unresolved tool call ${calls.keys().next().value}`)
+        if (type === 'assistant/message') for (const block of data.message?.content ?? []) if (block.type === 'tool-call') calls.set(block.id, 'advertised')
+        if (type === 'tool/call') calls.set(data.callId, 'started')
+        if (type === 'tool/result') calls.delete(data.message.source.callId)
         const event = { type, seq: ++session.seq, time: Date.now(), data }
         session.log.push(event)
         return event
@@ -330,8 +338,9 @@ function nodeTurn(w, sessionId, turn, { seqFrom, said, rpcId }) {
   emit('request/context', { provider: 'p', model: 'm' })
   emit('step/start', { turn, step: 1 })
   emit('user/message', { role: 'user', content: [{ type: 'text', text: `question ${turn}` }, { type: 'image', attachment: { id: 'node-local-1', name: 'shot.png' } }], source: { kind: 'user', ...(rpcId ? { rpcId } : {}) } })
-  emit('assistant/message', { turn, step: 1, message: { role: 'assistant', content: [{ type: 'reasoning', text: 'let me look' }, { type: 'tool-call', id: 'c1', name: 'bash', arguments: '{"command":"ls"}' }] }, stream: [{ type: 'text-delta', text: 'x'.repeat(5000) }] })
-  emit('tool/result', { turn, step: 1, callId: 'c1', result: { isError: false, value: 'y'.repeat(40_000) } })
+  emit('assistant/message', { turn, step: 1, message: { role: 'assistant', content: [{ type: 'reasoning', text: 'let me look' }, { type: 'tool-call', id: `c${turn}`, name: 'bash', arguments: '{"command":"ls"}' }] }, stream: [{ type: 'text-delta', text: 'x'.repeat(5000) }] })
+  emit('tool/call', { turn, step: 1, callId: `c${turn}`, name: 'bash', arguments: '{"command":"ls"}' })
+  emit('tool/result', { turn, step: 1, message: { role: 'tool', source: { kind: 'tool', callId: `c${turn}` }, toolCallId: `c${turn}`, content: [{ type: 'text', text: 'y'.repeat(40_000) }], isError: false } })
   emit('step/end', { turn, step: 1 })
   emit('step/start', { turn, step: 2 })
   emit('assistant/message', { turn, step: 2, message: { role: 'assistant', content: [{ type: 'text', text: said }] }, stream: [] })
@@ -350,8 +359,8 @@ test('W4-1 a node Bot\'s own chat is copied to its hub page in order, with the p
   await until(() => (pageOf(hub, 'joined:node010:e10')?.log ?? []).filter(e => e.type === 'turn/end').length === 2, 'both turns on the hub page')
   const page = pageOf(hub, 'joined:node010:e10')
   // What a page shows, in order; the request context stays on the node.
-  assert.deepEqual(page.log.filter(e => e.data?.turn === 1 || e.type === 'user/message').slice(0, 10).map(e => e.type),
-    ['turn/start', 'step/start', 'user/message', 'assistant/message', 'tool/result', 'step/end', 'step/start', 'assistant/message', 'step/end', 'turn/end'])
+  assert.deepEqual(page.log.filter(e => e.data?.turn === 1 || e.type === 'user/message').slice(0, 11).map(e => e.type),
+    ['turn/start', 'step/start', 'user/message', 'assistant/message', 'tool/call', 'tool/result', 'step/end', 'step/start', 'assistant/message', 'step/end', 'turn/end'])
   assert.equal(page.log.some(e => e.type === 'request/context'), false)
   assert.deepEqual(page.log.filter(e => e.type === 'turn/start').map(e => e.data.turn), [1, 2])
   // The page's own message comes back with the page's request id; a node attachment is a line of text.
@@ -360,7 +369,7 @@ test('W4-1 a node Bot\'s own chat is copied to its hub page in order, with the p
   assert.deepEqual(user.data.content.map(b => b.text ?? b.type), ['question 1', '[图片 shot.png]'])
   // No stream chunks; a huge tool result is cut and says so.
   assert.deepEqual(page.log.filter(e => e.type === 'assistant/message').map(e => e.data.stream.length), [0, 0, 0, 0])
-  const result = page.log.find(e => e.type === 'tool/result').data.result.value
+  const result = page.log.find(e => e.type === 'tool/result').data.message.content[0].text
   assert.ok(result.length < 17_000 && /more characters on the node\]$/.test(result))
   assert.deepEqual(page.log.filter(e => e.type === 'assistant/message').at(-1).data.message.content, [{ type: 'text', text: 'second answer' }])
 
@@ -405,7 +414,8 @@ test('W4-3 a node Bot\'s work thread is copied to the hub too: listed on its pag
   const copyOf = () => hub.rt.state.replicas?.['joined:node010:e10']?.tasks?.[thread.id]
   await until(() => copyOf()?.sessionId !== undefined && (hub.agents.get(copyOf().sessionId)?.session.log ?? []).some(e => e.type === 'turn/end'), 'the thread\'s turn is on the hub')
   const copy = hub.agents.get(copyOf().sessionId).session
-  assert.deepEqual(copy.log.filter(e => e.type !== 'system/message').map(e => e.type), ['turn/start', 'user/message', 'assistant/message', 'turn/end'])
+  // No system/message head: DSH stores one only inside a turn, and would keep nothing after it.
+  assert.deepEqual(copy.log.map(e => e.type), ['turn/start', 'user/message', 'assistant/message', 'turn/end'])
   assert.equal(textOf(copy.log.find(e => e.type === 'user/message').data), '[Message from Chief]\ncheck the build')
   // Not on the Bot's own page: that stays its chat with the user.
   assert.equal((pageOf(hub, 'joined:node010:e10')?.log ?? []).some(e => /check the build/.test(JSON.stringify(e.data))), false)
@@ -426,4 +436,54 @@ test('W4-3 a node Bot\'s work thread is copied to the hub too: listed on its pag
   const before = copy.log.length
   copy.append('user/message', { role: 'user', content: [{ type: 'text', text: 'made up' }] }, { surfaceOp: 'append' })
   assert.equal(copy.log.length, before)
+})
+
+test('W4-4 a tool result the copy lost does not leave the page unloadable: the step is answered before it ends', { skip }, async t => {
+  const { hub, n10 } = await cluster(t)
+  const ref = { id: 'joined:node010:e10', name: 'Exec10', nodeId: 'node010' }
+  const post = (seq, type, data) => n10.network.post('team/conv', { bot: ref, sid: 'e10', seq, type, data })
+  post(1, 'turn/start', { turn: 1 })
+  post(2, 'step/start', { turn: 1, step: 1 })
+  post(3, 'assistant/message', { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'tool-call', id: 'k1', name: 'message_bot', arguments: '{}' }, { type: 'tool-call', id: 'k2', name: 'list_bots', arguments: '{}' }] }, stream: [] })
+  post(4, 'tool/call', { turn: 1, step: 1, callId: 'k1', name: 'message_bot', arguments: '{}' })
+  // seq 5 (k1's result) and k2's call and result never reach the page.
+  post(8, 'step/end', { turn: 1, step: 1 })
+  post(9, 'step/start', { turn: 1, step: 2 })
+  post(10, 'assistant/message', { turn: 1, step: 2, message: { role: 'assistant', content: [{ type: 'text', text: 'handed on' }] }, stream: [] })
+  post(11, 'step/end', { turn: 1, step: 2 })
+  post(12, 'turn/end', { turn: 1, reason: { kind: 'completed' } })
+  await until(() => (pageOf(hub, 'joined:node010:e10')?.log ?? []).some(e => e.type === 'turn/end'), 'the turn ended on the page')
+  const page = pageOf(hub, 'joined:node010:e10')
+  assert.deepEqual(page.log.map(e => e.type), ['turn/start', 'step/start', 'assistant/message', 'tool/call', 'tool/result', 'tool/call', 'tool/result', 'step/end', 'step/start', 'assistant/message', 'step/end', 'turn/end'])
+  const results = page.log.filter(e => e.type === 'tool/result')
+  assert.deepEqual(results.map(e => e.data.message.source.callId), ['k1', 'k2'])
+  assert.match(results[0].data.message.content[0].text, /did not reach the hub/)
+})
+
+test('W4-5 a node turn whose end never came is closed whole when the next one starts: open calls answered, step ended', { skip }, async t => {
+  const { hub, n10 } = await cluster(t)
+  const ref = { id: 'joined:node010:e10', name: 'Exec10', nodeId: 'node010' }
+  const post = (seq, type, data) => n10.network.post('team/conv', { bot: ref, sid: 'e10', seq, type, data })
+  post(1, 'turn/start', { turn: 1 })
+  post(2, 'step/start', { turn: 1, step: 1 })
+  post(3, 'assistant/message', { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'tool-call', id: 'k1', name: 'bash', arguments: '{}' }] }, stream: [] })
+  post(4, 'tool/call', { turn: 1, step: 1, callId: 'k1', name: 'bash', arguments: '{}' })
+  // The node restarted and goes on in a new part of the chat: its next turn begins there.
+  n10.network.post('team/conv', { bot: ref, sid: 'e10-part2', seq: 1, type: 'turn/start', data: { turn: 1 } })
+  await until(() => (pageOf(hub, 'joined:node010:e10')?.log ?? []).filter(e => e.type === 'turn/start').length === 2, 'the next turn is on the page')
+  const page = pageOf(hub, 'joined:node010:e10')
+  assert.deepEqual(page.log.map(e => [e.type, e.data.turn]), [['turn/start', 1], ['step/start', 1], ['assistant/message', 1], ['tool/call', 1], ['tool/result', 1], ['step/end', 1], ['turn/end', 1], ['turn/start', 2]])
+  assert.equal(page.log.find(e => e.type === 'turn/end').data.reason.kind, 'interrupted')
+})
+
+test('W4-6 a work-thread copy fork.119 made (nothing of it stored) is started again', { skip }, async t => {
+  const { hub, n10 } = await cluster(t)
+  hub.rt.state.replicas = { 'joined:node010:e10': { sessions: {}, tasks: { t1: { title: '@Chief · 工作', sessionId: 'old-copy', sessions: { 'w-1': { seq: 50, turns: {} } } } } } }
+  const ref = { id: 'joined:node010:e10', name: 'Exec10', nodeId: 'node010' }
+  const task = { id: 't1', title: '@Chief · 工作', origin: 'bot-work' }
+  n10.network.post('team/conv', { bot: ref, sid: 'w-1', seq: 51, type: 'turn/start', data: { turn: 9 }, task })
+  await until(() => hub.rt.state.replicas['joined:node010:e10'].tasks.t1.v === 2 && (hub.agents.get(hub.rt.state.replicas['joined:node010:e10'].tasks.t1.sessionId)?.session.log ?? []).length === 1, 'the copy started again')
+  const entry = hub.rt.state.replicas['joined:node010:e10'].tasks.t1
+  assert.notEqual(entry.sessionId, 'old-copy')
+  assert.deepEqual(entry.sessions, { 'w-1': { seq: 51, turns: { 9: 1 } } })
 })

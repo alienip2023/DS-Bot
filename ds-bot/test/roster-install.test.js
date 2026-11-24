@@ -23,6 +23,8 @@ describe('S23: auto-migration on first roster event', () => {
     let joinedChatPageCalls = 0
     const sessions = new Map()
     const rt = {
+      // Automatic rebuild is off since work model W4; these cover it behind its explicit switch.
+      autoMigrateJoined: true,
       ctx: {
         get: (key) => key === 'remote-agent:registry' ? registry : undefined,
         on: () => {}, off: () => {},
@@ -77,6 +79,8 @@ describe('S23: auto-migration on first roster event', () => {
     let joinedChatPageCalls = 0
     const sessions = new Map()
     const rt = {
+      // Automatic rebuild is off since work model W4; these cover it behind its explicit switch.
+      autoMigrateJoined: true,
       ctx: {
         get: (key) => key === 'remote-agent:registry' ? registry : undefined,
         on: () => {}, off: () => {},
@@ -135,6 +139,8 @@ describe('S23: auto-migration on first roster event', () => {
     const receivedBotIds = []
     const sessions = new Map()
     const rt = {
+      // Automatic rebuild is off since work model W4; these cover it behind its explicit switch.
+      autoMigrateJoined: true,
       ctx: {
         get: (key) => key === 'remote-agent:registry' ? registry : undefined,
         on: () => {}, off: () => {},
@@ -167,4 +173,30 @@ describe('S23: auto-migration on first roster event', () => {
     assert.equal(receivedBotIds[0], 'bot-j3', `botId must be bot.id='bot-j3', got '${receivedBotIds[0]}'`)
   })
 
+})
+describe('W4: a node Bot page is the copy of its chat', () => {
+  it('a roster report does not rebuild the page from the node history (no automatic migration)', async () => {
+    const emitter = new EventEmitter()
+    const registry = { on: (e, f) => emitter.on(e, f), off: (e, f) => emitter.off(e, f) }
+    const bot = { id: 'bot-j1', origin: 'joined', sessionId: 'page-1', worker: { home: 'remote', nodeId: 'n1', remoteBotId: 'r1', online: true } }
+    let fetched = 0
+    let created = 0
+    const rt = {
+      ctx: { get: key => (key === 'remote-agent:registry' ? registry : undefined), on: () => {}, off: () => {} },
+      state: { bots: { 'bot-j1': bot } },
+      warn: () => {},
+      save: async () => {},
+      botOf: id => rt.state.bots[id],
+      joinedChatPage: async () => { fetched++; return { items: [], cursor: null } },
+      createSession: async () => { created++; return 'new-page' },
+      resolveAgent: async sid => ({ session: { sessionId: sid, log: [], append: () => {} } }),
+    }
+    rosterJoin.install(rt)
+    emitter.emit('roster', { nodes: {} })
+    emitter.emit('roster', { nodes: {} })
+    await new Promise(r => setTimeout(r, 60))
+    assert.equal(fetched, 0)
+    assert.equal(created, 0)
+    assert.equal(bot.sessionId, 'page-1')
+  })
 })

@@ -25,6 +25,8 @@ function world(t, { items = pair('part-a'), page } = {}) {
   const created = []
   const disposers = []
   const rt = {
+    // Automatic rebuild is off since work model W4; these cover it behind its explicit switch.
+    autoMigrateJoined: true,
     state: { bots: { [bot.id]: bot } }, dshHome: home,
     botOf: id => rt.state.bots[id], save: async () => {}, warn() {},
     ctx: {

@@ -64,6 +64,8 @@ R1–R4 之后实机反复出现：回复进了用户排队区、node 间只有�
 - **运行中**：副本回合开着时页面显示运行中、有停止按钮。
 - **工作线程也抄一份**（fork.119）：节点 Bot 的工作线程与后台任务（群聊的除外）同样按 `team/conv` 发来，帧里带 `task { id, title, origin }`；主控为每个任务建一段只读副本 Session（`state.replicas[bot].tasks[taskId]`），不写进 Bot 的主页面。主控在该 Bot 的任务列表里列出它（工作线程两件 work 之间显示「待命」），点开读的就是副本。所以节点之间的请求在主控上看得到：收件 Bot 在「@发问方 · 工作」线程里，发问方页面上是「已给 X 发消息」，点开是两人的对话记录。
 - **surface 标记**：DSH 要求 `system/message`、`developer/message`、`user/message`、`assistant/message`、`tool/result` 写入时带 `surfaceOp`；副本写入者对这五种都带 `append`（fork.118 漏了 `tool/result`，页面上的 `message_bot` 因此显示成失败）。
+- **页面永远能打开**（fork.120）：DSH 要求一步里每个工具调用在 `step/end` 前都有结果，否则整段 Session 无法加载。副本写入者在写 `step/end` / `turn/end`（含新回合开始时补关上一回合）前，给本步还没有结果的调用补一条「结果没有抄到主控」的 `tool/result`（没有 `tool/call` 的先补 `tool/call`）；仍开着的步先关上。工作线程副本不写 `system/message` 开头（DSH 只在回合内存得下它，存不下时整段都不落盘）；fork.119 建的副本（`v` 不为 2）重建。
+- **不再自动重建页面**：roster 报告不再触发 `migrateLegacyJoined`（把节点历史导成新页面并换掉页面 Session，与"页面就是副本、已有内容保留"冲突，且节点历史里有未答回合时每 5 秒重试）；需要时显式调用（`rt.autoMigrateJoined` 打开旧行为）。
 - **不带过去的**：图片、文件块换成一行文字；超长文本截断并注明；`assistant/message` 的流式片段不带（页面按步更新，不逐字）。已经在主控上的旧页面内容保留，W4 之后只增加副本。
 
 ## W5 落地：清理（2026-11-25）

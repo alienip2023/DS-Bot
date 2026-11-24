@@ -1625,10 +1625,10 @@ export function install(rt) {
 // A joined Bot's tasks run on its node: shown read-only (no Session here) while the node is up.
 function remoteTasksOf(bot, nodeTasks, copies = {}) {
   const online = bot.worker?.online !== false
-  const listed = (online && Array.isArray(nodeTasks) ? nodeTasks : []).map(task => ({ ...task, remote: true, updatedAt: task.startedAt, ...(copies?.[task.id]?.sessionId ? { viewable: true } : {}) }))
+  const listed = (online && Array.isArray(nodeTasks) ? nodeTasks : []).map(task => ({ ...task, remote: true, updatedAt: task.startedAt, ...(copies?.[task.id]?.v === 2 && copies[task.id].sessionId ? { viewable: true } : {}) }))
   // The node's work threads and tasks the hub keeps a read-only copy of (conv-replica.js), also between works.
   for (const [id, copy] of Object.entries(copies ?? {})) {
-    if (typeof copy?.sessionId !== 'string' || listed.some(task => task.id === id)) continue
+    if (copy?.v !== 2 || typeof copy.sessionId !== 'string' || listed.some(task => task.id === id)) continue
     const status = copy.running === true && online ? 'running' : copy.origin === 'bot-work' ? 'standing' : 'completed'
     listed.push({ id, title: copy.title || id, status, origin: copy.origin, remote: true, viewable: true, startedAt: copy.startedAt, updatedAt: copy.at, ...(status === 'completed' ? { endedAt: copy.at } : {}) })
   }

@@ -541,10 +541,16 @@ export function install(rt) {
       void applySharedSkills(rt, `node:${report.nodeId}`, report.skills, { isActive: () => !stopped }).catch(error => rt.warn?.('ds-bot: skill roster not applied: %s', error?.message))
       void rt.save?.({ immediate: changed })?.catch(error => rt.warn?.('ds-bot: joined roster not saved: %s', error))
     }
-    for (const bot of Object.values(rt.state.bots ?? {})) {
-      if (bot?.origin === 'joined' && (!settled.has(bot.id) || bot.mirrorHistory)) pending.add(bot.id)
+    // No automatic history rebuild any more (work model W4): a node Bot's page is the copy of its chat, written only
+    // by conv-replica.js, and what is already on it stays. Rebuilding swapped the page for an import of the node's
+    // history and, with any unanswered turn there, retried every 5 seconds forever. `migrateLegacyJoined` stays for
+    // an explicit call.
+    if (rt.autoMigrateJoined === true) {
+      for (const bot of Object.values(rt.state.bots ?? {})) {
+        if (bot?.origin === 'joined' && (!settled.has(bot.id) || bot.mirrorHistory)) pending.add(bot.id)
+      }
+      schedule()
     }
-    schedule()
   }
   const onOffline = ({ nodeId } = {}) => {
     if (typeof nodeId !== 'string' || nodeId === '') return
