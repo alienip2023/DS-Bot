@@ -2385,7 +2385,51 @@ export function install(rt) {
     },
   }))
 
-  // ── bot_journal：查看 Bot 的步骤日志和崩溃续跑状态 ──────────────────────
+  // ── promote_node_to_hub：把一台节点提升为备用主控（灾难恢复，§7.3）────────────────
+  rt.teamTools.push(defineTool({
+    name: 'promote_node_to_hub',
+    description: 'Promote a connected node to act as a backup hub. The node gets role=both so it can accept new Bots and connections if the main hub goes offline. Requires the node to be online, running AC 0.4.33+, and you to be the Main Bot. This writes the new role into the node\'s configuration; a node restart is needed for it to take effect.',
+    parameters: {
+      node: { type: 'string', required: true, description: 'Name or nodeId of the node to promote.' },
+    },
+    output,
+    async execute(args, exec) {
+      await rt.load()
+      if (!rt.isMain(rt.selfOf(exec.agent?.id))) return 'Only the Main Bot can promote a node to hub.'
+      const nodeArg = typeof args.node === 'string' ? args.node.trim() : ''
+      if (!nodeArg) return 'Specify the node to promote with `node`.'
+
+      const registry = (() => { try { return ctx.get?.('remote-agent:registry') } catch { return undefined } })()
+      if (!registry) return 'Node registry not available.'
+      const nodes = typeof registry.onlineNodes === 'function' ? registry.onlineNodes() : []
+      const target = nodes.find(n => n.nodeId === nodeArg || n.hello?.hostname === nodeArg)
+      if (!target) return `No online node matching "${nodeArg}". Use list_machines to see what is available.`
+
+      // Send a node/config frame to set role=both via the registry.
+      const { randomUUID } = await import('node:crypto')
+      const requestId = randomUUID()
+      let sent = false
+      try {
+        sent = typeof registry.send === 'function'
+          ? registry.send(target.nodeId, 'node/config', { nodeId: target.nodeId, requestId, role: 'both', maxConcurrent: null })
+          : false
+      } catch (err) {
+        return `Failed to send config to ${nodeArg}: ${err?.message ?? err}`
+      }
+      if (!sent) return `Could not reach ${nodeArg}: it may have just gone offline.`
+
+      return [
+        `Promotion request sent to ${target.hello?.hostname ?? target.nodeId}.`,
+        '',
+        'The node will apply role=both on its next configuration cycle.',
+        'A node restart may be required for the new role to take effect.',
+        '',
+        'Once promoted, Bots and new connections can be directed to that node when this hub is unavailable.',
+      ].join('\n')
+    },
+  }))
+
+
   rt.teamTools.push(defineTool({
     name: 'bot_journal',
     description: 'Show the recent journal entries and crash-recovery state for a Bot. Useful for diagnosing why a turn failed or confirming that a resumed turn completed.',
