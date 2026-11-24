@@ -1391,7 +1391,7 @@ export function install(rt) {
             entry.pendingText = textOf(event.data.content).replace(/^\[(?:[^\r\n]*\]\r?\n|[^\]\r\n]*\])/, '')
           }
           else if (!opened) claimTrigger(id, entry, source)
-          else if (source.work !== undefined && source.work !== rt.workOf?.(entry.info) && !expectsReply(source)) {
+          else if (source.work !== undefined && source.work !== rt.workOf?.(entry.info) && source.work !== entry.rootWork && !expectsReply(source)) {
             // A result for other work than this turn's informs it, and comes back in a
             // turn of its own once this one ends, which goes on with that work.
             entry.later = [...(entry.later ?? []), { info: source, text: textOf(event.data.content).replace(/^\[(?:[^\r\n]*\]\r?\n|[^\]\r\n]*\])/, '') }]
@@ -1828,6 +1828,11 @@ export function install(rt) {
   }
   // A turn is doing work `id` right now: what comes back for it waits for that turn to end.
   const busyWithWork = id => [...live.values()].some(entry => entry.turn !== undefined && (entry.rootWork === id || rt.workOf?.(entry.info) === id))
+  // The Session whose running turn does work `id` (what came back for it is steered there), or undefined.
+  const workTurnSessionOf = (id) => {
+    for (const [sessionId, entry] of live) if (entry.turn !== undefined && (entry.rootWork === id || rt.workOf?.(entry.info) === id)) return sessionId
+    return undefined
+  }
 
   const markSteerCut = (id) => {
     const entry = live.get(id)
@@ -1836,7 +1841,7 @@ export function install(rt) {
 
   installPromptReasons(rt, placeOf)
 
-  Object.assign(rt, { live, liveOf, roomWaiters, roomProgress, roomInbox, activityView, workView, agentWorkView, roomWorkView, turnsView, steeredView, callDetail, doingOf, noteLocalAgentEvent, stopRoomTurn, stopChat, stopAgent, releaseBot, unblockBots, resumeBot, markSteerCut, clearActivity: id => setActivity(id, undefined), hasSubagents, stopSubagents, adoptLiveWork, rootWorkOf, busyWithWork, resumeTargetOf: laterTarget })
+  Object.assign(rt, { live, liveOf, roomWaiters, roomProgress, roomInbox, activityView, workView, agentWorkView, roomWorkView, turnsView, steeredView, callDetail, doingOf, noteLocalAgentEvent, stopRoomTurn, stopChat, stopAgent, releaseBot, unblockBots, resumeBot, markSteerCut, clearActivity: id => setActivity(id, undefined), hasSubagents, stopSubagents, adoptLiveWork, rootWorkOf, busyWithWork, workTurnSessionOf, resumeTargetOf: laterTarget })
 
   // ── Worker Bot 路由（Phase4 融合）────────────────────────────────────────
   // 拦截发往 remote-worker 类型 Bot 的 deliver 调用，转交 worker-bridge 处理。

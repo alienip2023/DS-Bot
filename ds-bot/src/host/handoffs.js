@@ -142,9 +142,12 @@ export function install(rt) {
   const outstandingOf = work => work.open.filter(id => !(work.results ?? []).some(result => result.id === id))
   const unreadOf = work => (work.results ?? []).filter(result => work.open.includes(result.id))
 
-  // All a work handed on is back: the Bot goes on with it in ONE turn, in the conversation the work is done in,
-  // with every result that came back (OpenMausBot's resume). Results never steer into a running turn and never
-  // queue as the user's input: the message waits for that conversation to be idle (the serial gate in deliver).
+  // All a work handed on is back: the Bot goes on with it in ONE message, in the conversation the work is done in,
+  // with every result that came back (OpenMausBot's resume). Never queued as the user's input. When the turn doing
+  // that work is still running (the Bot went on with other things after handing it on), the message is steered into
+  // that turn, so the Bot reads it at its next step instead of minutes later (maintainer, 2026-11-25); otherwise it
+  // waits for that conversation to be idle (the serial gate in deliver). Either way it is read once: `work.resume`
+  // holds until every result in it is taken.
   // Results a message of their own brings (a group's report, a background task, a subagent, another machine) are
   // not taken in: their message wakes the Bot, and the turn that reads it comes back here when it ends.
   function resumeWork(id) {
@@ -153,12 +156,13 @@ export function install(rt) {
     if (outstandingOf(work).length > 0) return false
     const unread = unreadOf(work)
     if (unread.length === 0 || unread.some(result => result.resume !== true)) return false
-    if (rt.busyWithWork?.(id) === true) return false
     const bot = rt.botOf(work.to)
     // Only a Bot that runs on this machine is resumed here; one on another machine (a peer row, a joined shadow, a
     // remote worker) has its work on its own machine (W3: work frames), and nothing is sent to it from here.
     if (bot === undefined || bot.origin === 'peer' || bot.origin === 'joined' || bot.type === 'remote-worker') return false
-    const sessionId = (work.part === undefined ? undefined : rt.resumeTargetOf?.(work.part)) ?? rt.chatOf(work.to)
+    const running = rt.busyWithWork?.(id) === true ? rt.workTurnSessionOf?.(id) : undefined
+    if (rt.busyWithWork?.(id) === true && running === undefined) return false
+    const sessionId = running ?? (work.part === undefined ? undefined : rt.resumeTargetOf?.(work.part)) ?? rt.chatOf(work.to)
     const parts = unread.map((result) => {
       const { text, whole } = resultText(result)
       const cut = whole ? '' : `\n[cut; ${result.length} characters in all, the rest was not kept]`
@@ -177,6 +181,14 @@ export function install(rt) {
     // next start. It is tried once more in this run too; `work.resume` stays set, so nothing resumes the work twice.
     const send = (args, attempt) => rt.deliver(args).catch((error) => {
       rt.warn('ds-bot: work handed back to %s did not reach it: %s', bot.name, error)
+      // A steer that found the turn over goes the ordinary way: once the conversation is idle.
+      if (args.steer === true) {
+        if (works()[id]?.resume === ids) {
+          delete works()[id].resume
+          resumeWork(id)
+        }
+        return
+      }
       if (attempt >= 2) return
       const retry = setTimeout(() => {
         if (works()[id]?.resume === ids) void send(args, attempt + 1)
@@ -185,7 +197,7 @@ export function install(rt) {
     })
     void (body.length <= MESSAGE_INLINE_MAX ? Promise.resolve({ text: body, files: [] }) : rt.attachLong(body, 'Work handed back.txt'))
       .then(long => send({
-        fromName: names.join(', '), toId: work.to, sessionId, role: 'results', exchangeId, work: id, results: ids,
+        fromName: names.join(', '), toId: work.to, sessionId, role: 'results', exchangeId, work: id, results: ids, ...(running !== undefined ? { steer: true } : {}),
         ...(from.length > 0 ? { resultFrom: from } : {}), note: names.join(', '),
         text: long?.text ?? body, ...(long?.length !== undefined ? { files: long.files, length: long.length } : {}),
       }, 1))

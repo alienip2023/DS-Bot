@@ -1712,21 +1712,47 @@ test('W1-2 what comes back while the Bot is in another turn never steers into it
   turns.end('a', 'noon')
 })
 
-test('W1-3 what comes back while the turn doing that work still runs waits for it to end, then resumes once', async (t) => {
+// Changed by the maintainer 2026-11-25: a Bot that goes on with other things after handing work on got what came
+// back minutes late (only once its turn ended); it is now steered into that running turn.
+test('W1-3 what comes back while the turn doing that work still runs is steered into that turn at once, read there, and not resumed again', async (t) => {
   const team = await start(threeBots())
   t.after(team.stop)
   const { agents, emit, tool } = team
   const turns = turnTaker(agents, emit)
   turns.userTurn('a', 'have Writer do it')
   await tool('message_bot', { to: 'Writer', message: 'write the plan' }, 'a')
-  // Writer answers before Chief's turn is over.
+  // Writer answers while Chief's turn is still running.
   turns.take('b')
   turns.end('b', 'the plan is written')
-  await delay(30)
-  assert.deepEqual(callsOf(agents, 'a'), [], 'the turn that handed it on is still running')
-  turns.end('a', 'asked Writer')
   await settled(() => callsOf(agents, 'a').length === 1)
-  assert.equal(callsOf(agents, 'a')[0][1].source.role, 'results')
+  const [kind, message] = callsOf(agents, 'a')[0]
+  assert.equal(kind, 'steer', 'into the running turn, not after it')
+  assert.equal(message.source.role, 'results')
+  assert.match(message.content[0].text, /Writer:\nthe plan is written/)
+  // The running turn reads it at its next step, and ends.
+  emit('a', 'user/message', { content: message.content, source: message.source })
+  turns.end('a', 'Writer wrote the plan')
+  await delay(30)
+  assert.equal(callsOf(agents, 'a').length, 1, 'read once: nothing resumes it after the turn')
+})
+
+test('W1-3b a steer that finds the turn already over goes the ordinary way: one resume once the conversation is idle', async (t) => {
+  const team = await start(threeBots())
+  t.after(team.stop)
+  const { agents, emit, tool } = team
+  const turns = turnTaker(agents, emit)
+  turns.userTurn('a', 'have Writer do it')
+  await tool('message_bot', { to: 'Writer', message: 'write the plan' }, 'a')
+  // The turn ends between "it is running" and the steer: the steer is refused.
+  const agent = agents.get('a')
+  const steer = agent.steer
+  agent.steer = () => { agent.steer = steer; turns.end('a', 'asked Writer'); throw new Error('no turn is running') }
+  turns.take('b')
+  turns.end('b', 'the plan is written')
+  await settled(() => callsOf(agents, 'a').some(([kind]) => kind === 'followup'))
+  const resumed = callsOf(agents, 'a').filter(([kind]) => kind === 'followup')
+  assert.equal(resumed.length, 1)
+  assert.equal(resumed[0][1].source.role, 'results')
 })
 
 test('W1-4 no clock runs on a work: an unanswered request stays open, and nobody is told it timed out', async (t) => {

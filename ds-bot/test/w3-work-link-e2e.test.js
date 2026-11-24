@@ -502,3 +502,24 @@ test('W4-7 a copied message names its Bots as the hub knows them: who sent it, a
   assert.deepEqual(results.data.source.resultFrom, ['joined:node011:e11', 'chief', 'joined:node010:e10', 'peer:hub:node099:gone'])
   assert.equal(request.data.source.senderSessionId, 'chief')
 })
+
+test('W3-E2E-10 the answer from another machine reaches a node Bot whose turn is still running: steered into that turn at once, read once', { skip }, async t => {
+  const { n10, n11 } = await cluster(t)
+  const asking = userTurn(n11.w, 'e11', 'ask Exec10, then keep checking things')
+  await messageBot(n11.w.rt, 'e11', 'Exec10', 'question')
+  // Exec11 goes on in the same turn (no end yet) while Exec10 answers on node010.
+  await until(() => workThread(n10.w.rt, 'e10') !== undefined && delivered(n10.w).some(d => textOf(d.message).endsWith('question')), 'reached node010')
+  const thread = workThread(n10.w.rt, 'e10')
+  runTurn(n10.w, thread.sessionId, delivered(n10.w).find(d => d.sessionId === thread.sessionId).message, 'answer')
+  await until(() => n11.w.steers.some(d => d.sessionId === 'e11'), 'steered into the running turn on node011')
+  const steered = n11.w.steers.find(d => d.sessionId === 'e11').message
+  assert.equal(steered.source.role, 'results')
+  assert.match(textOf(steered), /Exec10:\nanswer$/)
+  assert.equal(n11.w.followups.some(d => d.sessionId === 'e11'), false, 'not queued for after the turn')
+  // The turn reads it and ends: nothing comes again.
+  n11.w.sessionEvent('e11', { type: 'user/message', seq: 900, data: { content: steered.content, source: steered.source } })
+  asking.end('Exec10 answered')
+  await settle()
+  await settle()
+  assert.equal(delivered(n11.w).filter(d => d.sessionId === 'e11').length, 1)
+})
