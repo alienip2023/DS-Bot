@@ -99,8 +99,10 @@ describe('S24-asm: the takeover is installed in the running chain', () => {
     assert.equal(w.originalCalls.length, 0, 'no local model turn')
     assert.equal(w.frames.filter(f => f.type === 'bot/turn').length, 1)
     assert.equal(w.frames[0].payload.text, 'to the node')
-    const user = w.sessionOf('mirror-1').log.find(event => event.type === 'user/message')
-    assert.equal(user.data.source.rpcId, 'req-1')
+    // The page is a copy of the node Bot's chat (work model W4): nothing is written here; the node's copy of the
+    // message comes back under the page's request id.
+    assert.equal(w.sessionOf('mirror-1').log.some(event => event.type === 'user/message'), false)
+    assert.equal(w.rt.joinedRequestOf(w.frames[0].payload.exchangeId), 'req-1')
   })
 
   it('S24-asm-ordinary: on the real chain an ordinary Session reaches the original prompt once with the same arguments', async () => {
@@ -216,24 +218,17 @@ describe('S27-asm-timeout: config.joinedTurnTimeoutMs reaches the running page t
     assert.equal(world().rt.joinedTurnTimeoutMs, JOINED_TURN_TIMEOUT_MS)
   })
 
-  it('S27-asm-timeout-effect: the configured deadline only appends progress; the result closes the original turn', async () => {
+  it('S27-asm-timeout-effect: the configured deadline does not end the wait; the result does', async () => {
     const w = world({ config: { joinedTurnTimeoutMs: 1000 } })
     await w.mirror()
-    const started = Date.now()
     await w.prompt(textRequest('mirror-1', 'anyone?', 'req-t'))
-    const session = w.sessionOf('mirror-1')
-    const ended = () => session.log.some(event => event.type === 'turn/end')
-    await new Promise(resolve => setTimeout(resolve, 600))
-    assert.equal(ended(), false, 'not at 600ms')
-    const texts = () => session.log.filter(event => event.type === 'assistant/message').map(event => event.data.message.content[0].text)
-    while (texts().length < 2 && Date.now() - started < 3000) await new Promise(resolve => setTimeout(resolve, 50))
-    assert.equal(ended(), false)
-    assert.match(texts().at(-1), /节点仍在运行/)
-    assert.ok(Date.now() - started >= 950, 'and not earlier than the configured second')
+    await new Promise(resolve => setTimeout(resolve, 1300))
+    assert.equal(w.rt.joinedInFlight.has(w.bot.id), true, 'past the deadline it still waits for the node')
     w.emitter.emit('botTurnResult', { exchangeId: w.frames[0].payload.exchangeId, ok: true, text: 'done', seq: 1 })
     await Promise.all(w.rt.joinedPromptTasks)
-    assert.equal(session.log.at(-1).data.reason.kind, 'completed')
-    assert.equal(session.log.filter(event => event.type === 'turn/start').length, 1)
+    assert.equal(w.rt.joinedInFlight.has(w.bot.id), false)
+    // Nothing of it is made up on the page (work model W4): the node's own chat is copied there.
+    assert.equal(w.sessionOf('mirror-1').log.length, 0)
     await w.ctx.dispose()
   })
 })
@@ -246,9 +241,7 @@ describe('S30-asm: the page Stop is wired into the running chain', () => {
     const ack = await w.cancel('mirror-1')
     assert.deepEqual(ack, { accepted: true })
     assert.equal(w.cancelCalls.length, 0, 'never reaches the core')
-    const session = w.sessionOf('mirror-1')
-    assert.equal(session.log.at(-1).type, 'turn/end')
-    assert.equal(session.log.at(-1).data.reason.kind, 'aborted')
+    assert.equal(w.rt.joinedInFlight.has(w.bot.id), false, 'the Bot is free again')
     await w.prompt(textRequest('mirror-1', 'again', 'req-2'))   // not agent-busy
     assert.equal(w.frames.filter(f => f.type === 'bot/turn').length, 2)
 
@@ -297,7 +290,6 @@ describe('S33-asm: the running bit, the phone Stop and the sweep are wired into 
     assert.equal(await w.rt.stopChat(w.bot.id), false, 'nothing in flight: the original path, no local turn')
     await w.prompt(textRequest('mirror-1', 'x', 'req-1'))
     assert.equal(await w.rt.stopChat(w.bot.id), true)
-    assert.equal(w.sessionOf('mirror-1').log.at(-1).data.reason.kind, 'aborted')
     assert.equal(w.rt.joinedInFlight.has(w.bot.id), false)
     assert.equal(w.cancelCalls.length, 0)
     assert.equal(await w.rt.stopChat(w.bot.id), false, 'already stopped')

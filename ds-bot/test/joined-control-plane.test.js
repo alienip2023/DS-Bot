@@ -147,7 +147,8 @@ test('stop_bot leaves a sibling Bot on the same node running until its own reply
     assert.ok(w.rt.state.works[job.payload.exchangeId], 'Sibling still owes its real answer')
     w.registry.emit('botTurnResult', { exchangeId: job.payload.exchangeId, ok: true, text: 'second job completed', seq: 2 })
     await settle()
-    assert.equal(sibling.log.find(e => e.type === 'assistant/message').data.message.content[0].text, 'second job completed')
+    // The page is a copy of the node Bot's own chat (work model W4): the hub writes nothing into it.
+    assert.equal(sibling.log.some(e => e.type === 'assistant/message'), false)
     assert.equal(w.rt.state.works[job.payload.exchangeId], undefined)
   } finally {
     w.registry.emit('nodeOffline', { nodeId: 'n1' })
@@ -233,8 +234,8 @@ test('stop_bot settles the exchange still in flight, and a late nodeOffline writ
   const assistant = mirror.log.filter(event => event.type === 'assistant/message')
     .map(event => event.data.message?.content?.map(part => part.text ?? '').join('') ?? '')
   assert.equal(assistant.some(text => text.includes(BRIDGE_DOWN_TEXT)), false, 'the mirror never shows the bridge-down line')
-  assert.ok(assistant.some(text => text.includes('已停止等待节点')), 'the mirror shows the stop card')
-  assert.ok(mirror.log.some(event => event.type === 'turn/end' && event.data?.reason?.kind === 'aborted'), 'the mirror closes the stopped turn as aborted, not failed')
+  // The page is a copy of the node Bot's own chat (work model W4): the hub writes no stop card or turn of its own.
+  assert.equal(assistant.length, 0, 'nothing made up on the hub page')
 })
 
 // The stop only covers its own receipt. A turn opened afterwards that really loses the bridge is

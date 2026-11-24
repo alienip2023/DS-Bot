@@ -440,7 +440,9 @@ export async function ensureMirrorSession(rt, bot) {
   const job = createMirrorSession(rt, bot)
   pending.set(bot.id, job)
   try {
-    return await job
+    // The page of a node Bot is a copy of its chat (conv-replica.js, work model W4): only the copy writes it.
+    const session = await job
+    return rt.holdReplicaPage?.(session) ?? session
   } finally {
     if (pending.get(bot.id) === job) pending.delete(bot.id)
   }

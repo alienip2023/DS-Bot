@@ -54,3 +54,12 @@ R1–R4 之后实机反复出现：回复进了用户排队区、node 间只有�
 - **离线**：对方机器不在时帧留在可靠通道（主控存转），不计任何时钟；回来立刻送。
 - **删除**：`bot-assign.js`（`bot/assign` 发件箱、`assignInbound`、`assignRounds`、主控转发记录）、`bot/message`（`sendToPeer`、节点 `onMessage`、主控 `handleNodeMessage` 的 ask/reply）、`message_bot` 对 joined 影子走 `bot/turn` 的路。
 - **暂不动（后续阶段）**：主控页面对节点 Bot 说话（W4 改成 work）、群聊里有节点成员时的 `bot/turn`、`team/act` 管理 RPC、AC 里 `bot/assign` / `bot/message` 帧本身（ds-bot 不再用，W5 清理）。
+
+## W4 落地：主控上节点 Bot 的页面是它对话的副本
+
+- **维护者 2026-11-25 选定"副本 Session"**（取代上文"不在主控另写镜像 Session"的写法）：主控上节点 Bot 的页面仍是一段 DSH Session（客户端不用改），但只有一个写入者——节点把这个 Bot 自己对话里真实发生的事件（`turn/start`、`step/start`、用户消息、带思考与工具调用的回答、`tool/call`、`tool/result`、`step/end`、`turn/end`）按顺序经可靠通道发来（`team/conv`），主控原样抄进页面。主控不再自己编造回合。
+- **单一写入者**：节点 Bot 的页面 Session 的 `append` 被把住，只有副本写入者能写；以前的写入者（页面回合的开头与结果、插话回合、迟到回复、排队失败说明、`bot/trace` 步骤、`bot/stream` 预览、节点任务报告、打开页面时的历史导入）一律不再写进去（代码在 W5 删除）。
+- **回合编号**：节点每段会话的回合号各自从 1 起；主控按到达顺序给页面分配自己的回合号，并记下对应关系（`state.replicas`，随 state.json 落盘，重启后按 `(会话, seq)` 去重）。
+- **用户的消息**：主控页面上输入的消息仍经原来的路送到节点（排队 / 插话 / 附件 / 停止都不变），节点把它放进 Bot 自己的对话；页面上看到的是节点那条消息的副本（带上页面的 requestId，输入框的回显照常收起）。
+- **运行中**：副本回合开着时页面显示运行中、有停止按钮。
+- **不带过去的**：图片、文件块换成一行文字；超长文本截断并注明；`assistant/message` 的流式片段不带（页面按步更新，不逐字）。已经在主控上的旧页面内容保留，W4 之后只增加副本。

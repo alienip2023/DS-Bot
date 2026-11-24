@@ -50,6 +50,14 @@ async function cluster(t) {
   const hub = world('w3-hub-', team([bot('chief', 'Chief'), joined('node010', 'e10', 'Exec10'), joined('node011', 'e11', 'Exec11')]),
     { 'remote-agent:registry': registry, 'remote-agent:bot-network': hubNetwork })
   hubCtx = hub.ctx
+  // The hub's page Sessions keep what is appended, as DSH's do.
+  const resolveHub = hub.ctx.sessionController.resolveAgent
+  hub.ctx.sessionController.resolveAgent = async (sessionId) => {
+    const out = await resolveHub(sessionId)
+    const session = out.agent.session
+    if (typeof session.append !== 'function') session.append = (type, data) => { const event = { type, seq: ++session.seq, time: Date.now(), data }; session.log.push(event); return event }
+    return out
+  }
   const machines = {}
   const node = (nodeId, local) => {
     const transport = new EventEmitter()
@@ -299,4 +307,77 @@ test('W3-E2E-9 the asker\'s stand-in is gone when the answer is ready: it still 
   delete n10.w.rt.state.bots[peer(n10.w.rt, 'Exec11').id]
   runTurn(n10.w, thread.sessionId, delivered(n10.w).find(d => d.sessionId === thread.sessionId).message, 'answer')
   await until(() => delivered(n11.w).some(d => d.sessionId === 'e11' && textOf(d.message).endsWith('answer')), 'the answer reached node011 anyway')
+})
+
+// ── W4: the hub's page of a node Bot is a copy of the Bot's own chat ──
+
+// One turn of Exec10's own chat on node010, as DSH records it, with the events a page shows and some it does not.
+function nodeTurn(w, sessionId, turn, { seqFrom, said, rpcId }) {
+  let seq = seqFrom
+  const emit = (type, data) => w.sessionEvent(sessionId, { type, seq: ++seq, data })
+  emit('turn/start', { turn })
+  emit('request/context', { provider: 'p', model: 'm' })
+  emit('step/start', { turn, step: 1 })
+  emit('user/message', { role: 'user', content: [{ type: 'text', text: `question ${turn}` }, { type: 'image', attachment: { id: 'node-local-1', name: 'shot.png' } }], source: { kind: 'user', ...(rpcId ? { rpcId } : {}) } })
+  emit('assistant/message', { turn, step: 1, message: { role: 'assistant', content: [{ type: 'reasoning', text: 'let me look' }, { type: 'tool-call', id: 'c1', name: 'bash', arguments: '{"command":"ls"}' }] }, stream: [{ type: 'text-delta', text: 'x'.repeat(5000) }] })
+  emit('tool/result', { turn, step: 1, callId: 'c1', result: { isError: false, value: 'y'.repeat(40_000) } })
+  emit('step/end', { turn, step: 1 })
+  emit('step/start', { turn, step: 2 })
+  emit('assistant/message', { turn, step: 2, message: { role: 'assistant', content: [{ type: 'text', text: said }] }, stream: [] })
+  emit('step/end', { turn, step: 2 })
+  emit('turn/end', { turn, reason: { kind: 'completed' } })
+  return seq
+}
+const pageOf = (hub, botId) => hub.agents.get(hub.rt.botOf(botId).sessionId)?.session
+
+test('W4-1 a node Bot\'s own chat is copied to its hub page in order, with the page\'s turn numbers, and nothing else writes there', { skip }, async t => {
+  const { hub, n10 } = await cluster(t)
+  hub.rt.joinedRequests = new Map([['turn-x', 'page-request-1']])
+  hub.rt.joinedRequestOf = id => hub.rt.joinedRequests.get(id)
+  let seq = nodeTurn(n10.w, 'e10', 1, { seqFrom: 0, said: 'first answer', rpcId: 'turn-x' })
+  seq = nodeTurn(n10.w, 'e10', 2, { seqFrom: seq, said: 'second answer' })
+  await until(() => (pageOf(hub, 'joined:node010:e10')?.log ?? []).filter(e => e.type === 'turn/end').length === 2, 'both turns on the hub page')
+  const page = pageOf(hub, 'joined:node010:e10')
+  // What a page shows, in order; the request context stays on the node.
+  assert.deepEqual(page.log.filter(e => e.data?.turn === 1 || e.type === 'user/message').slice(0, 10).map(e => e.type),
+    ['turn/start', 'step/start', 'user/message', 'assistant/message', 'tool/result', 'step/end', 'step/start', 'assistant/message', 'step/end', 'turn/end'])
+  assert.equal(page.log.some(e => e.type === 'request/context'), false)
+  assert.deepEqual(page.log.filter(e => e.type === 'turn/start').map(e => e.data.turn), [1, 2])
+  // The page's own message comes back with the page's request id; a node attachment is a line of text.
+  const user = page.log.find(e => e.type === 'user/message')
+  assert.equal(user.data.source.rpcId, 'page-request-1')
+  assert.deepEqual(user.data.content.map(b => b.text ?? b.type), ['question 1', '[图片 shot.png]'])
+  // No stream chunks; a huge tool result is cut and says so.
+  assert.deepEqual(page.log.filter(e => e.type === 'assistant/message').map(e => e.data.stream.length), [0, 0, 0, 0])
+  const result = page.log.find(e => e.type === 'tool/result').data.result.value
+  assert.ok(result.length < 17_000 && /more characters on the node\]$/.test(result))
+  assert.deepEqual(page.log.filter(e => e.type === 'assistant/message').at(-1).data.message.content, [{ type: 'text', text: 'second answer' }])
+
+  // Only the copy writes the page: another writer of this plugin is held off.
+  const before = page.log.length
+  page.append('user/message', { role: 'user', content: [{ type: 'text', text: 'made up on the hub' }], source: { kind: 'user' } })
+  assert.equal(page.log.length, before)
+
+  // A part switch on the node starts its turns from 1 again; the page goes on counting.
+  nodeTurn(n10.w, 'e10-part2', 1, { seqFrom: 0, said: 'after the switch' })
+  n10.w.rt.chatOwners.set('e10-part2', 'e10')
+  nodeTurn(n10.w, 'e10-part2', 1, { seqFrom: 100, said: 'after the switch' })
+  await until(() => page.log.filter(e => e.type === 'turn/end').length === 3, 'the next part\'s turn is on the page')
+  assert.deepEqual(page.log.filter(e => e.type === 'turn/start').map(e => e.data.turn), [1, 2, 3])
+})
+
+test('W4-2 a copy sent twice is written once, and a turn whose start the copy missed still lands in a turn', { skip }, async t => {
+  const { hub, n10 } = await cluster(t)
+  const network = n10.network
+  const ref = { id: 'joined:node010:e10', name: 'Exec10', nodeId: 'node010' }
+  const post = (seq, type, data) => network.post('team/conv', { bot: ref, sid: 'e10', seq, type, data })
+  post(5, 'step/start', { turn: 7, step: 1 })
+  post(6, 'assistant/message', { turn: 7, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: 'mid-turn' }] }, stream: [] })
+  post(6, 'assistant/message', { turn: 7, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: 'mid-turn' }] }, stream: [] })
+  post(7, 'step/end', { turn: 7, step: 1 })
+  post(8, 'turn/end', { turn: 7, reason: { kind: 'completed' } })
+  await until(() => (pageOf(hub, 'joined:node010:e10')?.log ?? []).some(e => e.type === 'turn/end'), 'the turn ended on the page')
+  const page = pageOf(hub, 'joined:node010:e10')
+  assert.deepEqual(page.log.map(e => [e.type, e.data.turn]), [['turn/start', 1], ['step/start', 1], ['assistant/message', 1], ['step/end', 1], ['turn/end', 1]])
+  assert.deepEqual(hub.rt.ctx.get('remote-agent:bot-network').reliablePending(), [], 'nothing left to send again')
 })

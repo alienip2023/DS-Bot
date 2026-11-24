@@ -96,6 +96,14 @@ function prepareRemote({ bot, text, rt, tracker, timeoutOverride, lateWindowMs =
   }
 
   const turnId = randomUUID()
+  // The node puts the page's message into its Bot's chat under this id; the copy of that message on the page goes
+  // back to the page's own request id (conv-replica.js), so the composer retires its echo.
+  if (typeof requestId === 'string' && requestId !== '') {
+    const requests = (rt.joinedRequests ??= new Map())
+    requests.set(turnId, requestId)
+    if (requests.size > 500) requests.delete(requests.keys().next().value)
+    rt.joinedRequestOf ??= id => rt.joinedRequests?.get(id)
+  }
   const timeoutMs = Number.isFinite(timeoutOverride) ? timeoutOverride : (rt.joinedTurnTimeoutMs ?? JOINED_TURN_TIMEOUT_MS)
   const { pending, completion, cancel, received } = listenBotTurnResult(registry, turnId, nodeId, timeoutMs, remoteBotId, { lateWindowMs, onTimeout })
 
