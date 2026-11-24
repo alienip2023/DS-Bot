@@ -437,7 +437,7 @@ export function install(rt) {
         // one here fails with `session "…" not found` before delivery.js can route it. Hand
         // the request straight to deliver(), whose joined / remote-worker branches own the
         // wire; the read-only peer list keeps its refusal above and never reaches this path.
-        if (target.origin === 'joined' || target.type === 'remote-worker') {
+        if (target.origin === 'joined' || (target.type === 'remote-worker' && target.origin !== 'joined')) {
           const exchangeId = randomUUID()
           if (!toUser) rt.openWork(exchangeId, { from: sender.id, to: target.id, parent: work })
           try {
@@ -2052,8 +2052,8 @@ export function install(rt) {
       const self = rt.selfOf(exec.agent?.id)
       if (!rt.isMain(self)) return 'Only the Main Bot can run a full team health check.'
 
-      // Gather all remote-worker Bots.
-      const allBots = Object.values(rt.state.bots ?? {}).filter(b => b.type === 'remote-worker')
+      // Gather all remote-worker Bots (legacy) and joined Bots — both run on remote nodes.
+      const allBots = Object.values(rt.state.bots ?? {}).filter(b => b.origin === 'joined' || (b.type === 'remote-worker' && b.origin !== 'joined'))
       if (allBots.length === 0) return 'No Worker Bots on the team. Create one with create_from_template or hire_talent first.'
 
       // Resolve hub tools.

@@ -138,8 +138,18 @@ export const STEER_CUT = 'ds-bot/steer'
 // Bot type enum — type is absent on existing Bots, which behave as LOCAL.
 export const BOT_TYPE = {
   LOCAL: 'local',                  // default: turn runs in a local DSH Session
-  REMOTE_WORKER: 'remote-worker',  // turn is dispatched to a remote hub node
+  REMOTE_WORKER: 'remote-worker',  // legacy: turn was dispatched to a remote hub node (retired in Phase 1; kept for migration)
 }
+
+// Portable Bot identity: 16 hex chars, ed25519 public key fingerprint. The global primary key
+// for cross-machine references — messages, ledger, memory scope, locate, migration.
+export const IDENTITY_ID_RE = /^[0-9a-f]{16}$/
+
+// Execution lease: a Bot runs on exactly one machine at a time. The hub is the sole grantor.
+// { machineId, epoch, leaseUntil } — epoch increments on migration; station checks both
+// lease validity and epoch match before executing any turn.
+export const LEASE_RENEWAL_MS = 15_000   // station renews every 15 s
+export const LEASE_DURATION_MS = 60_000  // lease valid for 60 s
 
 // Timeout for Bot-to-Bot delegation (message_bot): if the recipient does not reply
 // within this window, the sender is unblocked with a timeout notice (#919).

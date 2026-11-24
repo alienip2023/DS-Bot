@@ -582,7 +582,9 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
     const steering = turn?.mode === 'steer'
     if (remoteBotId === '' || exchangeId === '') return { ok: false, error: 'bot-turn-missing', ...roomFields }
     const bot = findLocal(rt, remoteBotId)
-    if (!bot || bot.type === 'remote-worker' || bot.origin === 'joined') {
+    // Phase 1: joined shadow rows no longer use type:'remote-worker'; origin:'joined' is the discriminator.
+    // A legacy remote-worker Bot (type=remote-worker, origin≠joined) also cannot execute here.
+    if (!bot || bot.origin === 'joined' || (bot.type === 'remote-worker' && bot.origin !== 'joined')) {
       rt.discardAttachmentParts?.(turn)   // its chunks came ahead of it and will never be used
       return { ok: false, error: 'bot-not-on-roster', ...roomFields }
     }

@@ -113,7 +113,8 @@ test('shadow row after createBotOnNode has joined/remote fields and roster-repor
   assert.equal(row.worker.home, 'remote')
   assert.equal(row.worker.nodeId, 'node-a')
   assert.equal(row.worker.remoteBotId, 'bot-created')
-  assert.equal(row.type, 'remote-worker')
+  // Phase 1: joined rows no longer carry type:'remote-worker' — origin:'joined' is the discriminator.
+  assert.equal(row.type, undefined)
 
   // 模拟随后的 roster-report（用与 applyRosterReport 相同字段）
   const { applyRosterReport } = await import('../src/host/roster-join.js')

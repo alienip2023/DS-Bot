@@ -201,8 +201,9 @@ export function install(rt) {
     // falls through to a local Session.
     if (to.origin === 'peer') return sendToPeer(rt, { fromId, toId, text, exchangeId })
     // Worker Bot routing: dispatch to the remote hub instead of a local Session turn.
+    // Phase 1: remote-worker dispatch path is legacy; joined (origin:'joined') uses handleJoinedTurn.
     // Answers and lifecycle controls keep the local delivery path.
-    if (to.type === 'remote-worker'
+    if (to.type === 'remote-worker' && to.origin !== 'joined'
       && rt.handleRemoteTurn !== undefined
       && !ANSWER_ROLES.has(role) && classify(role) !== 'control') {
       return rt.handleRemoteTurn({ fromId, toId, text, role, exchangeId, replyTo, work })

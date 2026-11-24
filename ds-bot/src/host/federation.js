@@ -175,7 +175,7 @@ export function localBotsForPeer(rt) {
   for (const bot of Object.values(state.bots ?? {})) {
     if (bot === null || typeof bot !== 'object') continue
     if (bot.origin === 'joined' || bot.origin === 'peer') continue
-    if (bot.type === 'remote-worker') continue
+    if (bot.type === 'remote-worker' && bot.origin !== 'joined') continue
     if (bot.private === true) continue
     if (typeof bot.id !== 'string' || bot.id === '') continue
     const name = typeof bot.name === 'string' ? bot.name.slice(0, 40) : ''
