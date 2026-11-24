@@ -12,7 +12,7 @@ import { missingFileRefs } from './claims.js'
 import { absoluteLinks } from './links.js'
 import { NAME_MAX } from './requests.js'
 import { unquote } from './text.js'
-import { sendToPeer } from './bot-network.js'
+import { machinesOf, sendToPeer } from './bot-network.js'
 import { formatRemoteTask } from './remote-tasks.js'
 import { ownChatSessions } from './threads.js'
 import { mentionSpans } from '../shared/mentions.js'
@@ -130,9 +130,9 @@ export function install(rt) {
   const botLine = (bot, self) => {
     // A private Bot is only named to the others: not what it does, where, or what now.
     if (bot.private === true && bot.id !== self) return `- ${bot.name} (${[bot.role, 'private Bot, closed to other Bots'].filter(Boolean).join(', ')})`
-    const model = bot.appliedModel ?? bot.model
-    const section = sectionNameOf(bot.sectionId)
     const shadow = bot.origin === 'peer'
+    const model = bot.appliedModel ?? bot.model ?? (shadow ? bot.worker?.model : undefined)
+    const section = sectionNameOf(bot.sectionId)
     const isJoined = bot.origin === 'joined'
     // Phase 6: machine badge — show which machine a joined/node Bot runs on.
     const machineLabel = isJoined
@@ -140,11 +140,11 @@ export function install(rt) {
       : shadow ? (bot.worker?.hostname || 'another machine') : ''
     const machineBadge = isJoined ? `🖥 ${machineLabel}` : ''
     const onMachine = bot.worker?.hostname || 'another machine'
-    const tags = [bot.role, section ? `section "${section}"` : '', model ? `model ${model}` : '', bot.workDir ? `works in ${bot.workDir}` : '', rt.isMain(bot.id) ? 'Main Bot' : '', bot.private === true ? 'private' : '', shadow ? `read-only, on ${onMachine}` : '', isJoined && bot.worker?.online === false ? 'offline' : '', bot.id === self ? 'you' : ''].filter(Boolean).join(', ')
+    const tags = [bot.role, section ? `section "${section}"` : '', model ? `model ${model}` : '', bot.workDir ? `works in ${bot.workDir}` : '', rt.isMain(bot.id) ? 'Main Bot' : '', bot.private === true ? 'private' : '', shadow ? `on ${onMachine}` : '', (isJoined || shadow) && bot.worker?.online === false ? 'offline' : '', bot.id === self ? 'you' : ''].filter(Boolean).join(', ')
     const job = bot.instructions ? ` — ${bot.instructions.split('\n')[0].slice(0, 120)}` : ''
     const now = bot.id === self || shadow ? '' : `\n  now: ${rt.statusOf(bot.id)}`
     // For peer bots (read-only shadows of another machine), show working state if tracked.
-    const peerNow = shadow && rt.joinedInFlight?.has(bot.id) ? '\n  now: working on its node' : ''
+    const peerNow = shadow && bot.worker?.online !== false ? `\n  now: ${{ working: 'working', waiting: "waiting for the user" }[bot.worker?.state] ?? 'idle'}` : ''
     const badge = machineBadge ? `  ${machineBadge}` : ''
     return `- ${bot.name}${tags ? ` (${tags})` : ''}${job}${badge}${now}${peerNow}`
   }
@@ -2239,7 +2239,7 @@ export function install(rt) {
   // ── list_machines：列出团队所有机器（主控 + 节点），含能力、负载、链路状态——合并 node_network ──
   rt.teamTools.push(defineTool({
     name: 'list_machines',
-    description: 'List every machine in the team: this hub and all connected nodes with their OS, capabilities, AC version, RTT, online state, and resource usage. Use this to pick a machine for create_bot or burst_task.',
+    description: 'List every machine in the team (the hub and every node, online or not) with its OS, AC version, online state and the Bots on it. Works on the hub and on nodes. Use this to pick a machine for create_bot or burst_task.',
     isConcurrencySafe: true,
     parameters: {
       node: { type: 'string', description: 'Show details for one machine only (by name or nodeId). Omit for all.' },
@@ -2247,53 +2247,39 @@ export function install(rt) {
     output,
     async execute(args) {
       await rt.load()
-      const registry = (() => { try { return ctx.get?.('remote-agent:registry') } catch { return undefined } })()
-      const dir = rt.state?.directory
+      // The hub reads its registry; a node reads the machine list the hub sends with the team directory.
+      const onHub = machinesOf(rt)
+      const machines = onHub ?? (Array.isArray(rt.hubMachines) && rt.hubMachines.length > 0 ? rt.hubMachines : null)
+      if (machines === null) return 'The team directory has not come from the hub yet (the hub may be offline). Try again in a minute.'
+      const registry = onHub === null ? undefined : (() => { try { return ctx.get?.('remote-agent:registry') } catch { return undefined } })()
+      const all = Object.values(state.bots)
+      // Which machine each Bot runs on, as this machine sees it.
+      const machineOfBot = bot => {
+        if (bot.origin === 'peer') return bot.homeNodeId
+        if (bot.origin === 'joined') return bot.worker?.nodeId
+        return onHub !== null ? 'hub' : machines.find(machine => machine.self)?.nodeId
+      }
+      const want = typeof args.node === 'string' ? args.node.trim().toLowerCase() : ''
+      const target = want === '' ? machines : machines.filter(machine => machine.nodeId.toLowerCase() === want || String(machine.hostname ?? '').toLowerCase() === want)
+      if (target.length === 0) return `No machine matching "${args.node}". Machines: ${machines.map(machine => machine.hostname || machine.nodeId).join(', ')}.`
       const lines = []
-
-      // This hub always appears first.
-      const hubName = rt.state?.name ?? 'Hub'
-      lines.push(`📍 ${hubName} (this hub)`)
-      if (rt.state?.directory?.machines) {
-        const local = Object.values(dir.machines).find(m => m.machineId === 'hub' || m.role === 'hub')
-        if (local?.resources) lines.push(`  CPU ${local.resources.cpu ?? '?'}%  Mem ${local.resources.mem ?? '?'}%`)
-      }
-
-      // Connected nodes from the registry.
-      const nodes = registry ? (typeof registry.onlineNodes === 'function' ? registry.onlineNodes() : []) : []
-      const all = registry ? (typeof registry.getNodes === 'function' ? registry.getNodes() : nodes) : nodes
-      const target = args.node ? all.filter(n => n.nodeId === args.node || n.hello?.hostname === args.node) : all
-      if (target.length === 0 && !args.node) {
-        lines.push('', 'No nodes connected yet. Use pair_node to add a machine.')
-        return lines.join('\n')
-      }
-      if (target.length === 0) return `No machine matching "${args.node}".`
-
-      for (const n of target) {
-        const caps = Array.isArray(n.caps) ? n.caps : (n.hello?.caps ?? [])
-        const rtt = typeof registry?.rttOf === 'function' ? registry.rttOf(n.nodeId) : null
-        const online = n.online !== false
-        const icon = online ? '🟢' : '🔴'
-        const host = n.hello?.hostname ?? n.nodeId
-        const os = n.hello?.os ?? ''
-        lines.push('')
-        lines.push(`${icon} ${host}  (${n.nodeId})${os ? '  ' + os : ''}`)
-        if (n.hello?.acVersion) lines.push(`  AC ${n.hello.acVersion}`)
-        if (rtt !== null) lines.push(`  RTT ${rtt} ms`)
-        // Directory home info: how many Bots run here.
-        if (dir?.bots) {
-          const myBots = Object.values(dir.bots).filter(b => b.home?.machineId === n.nodeId)
-          if (myBots.length > 0) lines.push(`  Bots: ${myBots.map(b => b.name || b.identityId).join(', ')}`)
+      for (const machine of target) {
+        const here = onHub !== null ? machine.nodeId === 'hub' : machine.self === true
+        const tags = [machine.os, machine.role === 'hub' ? 'hub' : '', here ? 'this machine' : '', machine.acVersion ? `AC ${machine.acVersion}` : ''].filter(Boolean).join(' · ')
+        lines.push(`${machine.online ? '🟢' : '🔴'} ${machine.hostname || machine.nodeId} (${machine.nodeId})${tags ? `  ${tags}` : ''}`)
+        if (!machine.online && Number.isFinite(machine.lastSeen) && machine.lastSeen > 0) lines.push(`  offline since ${new Date(machine.lastSeen).toISOString()}`)
+        if (registry && machine.nodeId !== 'hub') {
+          const rtt = typeof registry.peerRouter?.rttOf === 'function' ? registry.peerRouter.rttOf(machine.nodeId) : null
+          if (Number.isFinite(rtt)) lines.push(`  RTT ${Math.round(rtt)} ms`)
+          const caps = registry.getNode?.(machine.nodeId)?.hello?.caps
+          if (Array.isArray(caps) && caps.length > 0) lines.push(`  Caps: ${caps.length} (${caps.filter(cap => /bot-(trace|stream|move|locate)/.test(cap)).join(', ') || 'base'})`)
         }
-        const capLabels = []
-        if (caps.includes('bot-locate/1')) capLabels.push('locate')
-        if (caps.includes('lan-discovery/1')) capLabels.push('LAN')
-        if (caps.includes('pairing/1')) capLabels.push('pairing')
-        if (caps.includes('machine-identity/1')) capLabels.push('identity')
-        if (caps.includes('bot-attach/1')) capLabels.push('attach')
-        if (capLabels.length > 0) lines.push(`  Caps: ${capLabels.join(' · ')}`)
+        const bots = all.filter(bot => bot.private !== true && machineOfBot(bot) === machine.nodeId)
+        lines.push(bots.length === 0 ? '  Bots: none' : `  Bots: ${bots.map(bot => `${bot.name} (${bot.origin === 'peer' ? bot.worker?.state ?? 'available' : bot.origin === 'joined' && bot.worker?.online === false ? 'offline' : 'here'})`).join(', ')}`)
+        lines.push('')
       }
-      return lines.join('\n')
+      if (want === '' && machines.length === 1) lines.push('No other machine has joined the team yet. Use pair_node to add one.')
+      return lines.join('\n').trimEnd()
     },
   }))
 

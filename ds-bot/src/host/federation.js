@@ -362,7 +362,13 @@ export async function applyPeerRoster(rt, payload) {
   const snapshot = JSON.parse(JSON.stringify(state.bots ?? {}))
   const next = {}
   const incoming = new Set()
+  // The team directory (bot/directory) already gives this node one row per hub Bot, with its machine
+  // and state; a second row for the same Bot from this roster would list it twice.
+  const inDirectory = new Set(Object.values(state.bots ?? {})
+    .filter(bot => bot?.origin === 'peer' && typeof bot.homeNodeId === 'string' && bot.homeNodeId === 'hub')
+    .map(bot => bot.remoteBotId))
   for (const item of payload.bots ?? []) {
+    if (inDirectory.has(item.id)) continue
     const id = peerId(hubId, item.id)
     incoming.add(id)
     const existing = state.bots[id]

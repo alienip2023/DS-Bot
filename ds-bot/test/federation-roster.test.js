@@ -153,7 +153,8 @@ test('a shadow is never treated as a local Bot by the team surfaces', async () =
   const listBots = w.rt.teamTools.find(tool => tool.name === 'list_bots')
   const text = await listBots.execute({}, { agent: { id: undefined } })
   assert.match(text, /Bravo/)
-  assert.match(text, /read-only, on mac-b/)
+  assert.match(text, /on mac-b/)
+  assert.doesNotMatch(text, /read-only/, 'directory rows can be messaged: no read-only label')
   // Nothing selected a model on a Session the shadow does not have.
   assert.equal(w.selections.some(selection => selection.sessionId === id), false)
 })

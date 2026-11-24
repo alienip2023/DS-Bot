@@ -8,7 +8,6 @@
 // or reorder only affects the live preview, never the settled answer.
 
 import { mirrorTurnStream } from './mirror.js'
-import { deferMirrorWrite } from './joined-mirror-writer.js'
 
 /**
  * Open a stream sink for one bot/turn exchange on the hub side.

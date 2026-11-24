@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { hostname as osHostname } from 'node:os'
 import { classify } from './msg-classes.js'
 import { joinedShadow } from './roster-join.js'
 import { ensureMirrorSession, mirrorStateOf } from './mirror.js'
@@ -46,12 +47,27 @@ export function applyDirectory(rt, payload, source) {
     if (!entry || typeof entry.id !== 'string' || typeof entry.nodeId !== 'string' || entry.nodeId === '') continue
     if (entry.nodeId === own) continue
     const id = peerRowId(HUB_ID, entry.nodeId, entry.id)
+    const online = entry.online !== false
     next[id] = {
       id, name: String(entry.name || entry.id).slice(0, 40), role: String(entry.role ?? '').slice(0, 24),
       type: 'remote-worker', origin: 'peer', readonly: true, homeNodeId: entry.nodeId, hubId: HUB_ID,
       remoteBotId: entry.id, capabilities: [], createdAt: rt.state.bots[id]?.createdAt ?? Date.now(),
-      worker: { home: 'hub', hubId: HUB_ID, botId: entry.id, nodeId: entry.nodeId, online: true },
+      ...(typeof entry.identityId === 'string' ? { identityId: entry.identityId } : {}),
+      worker: {
+        home: 'hub', hubId: HUB_ID, botId: entry.id, nodeId: entry.nodeId, online,
+        ...(typeof entry.hostname === 'string' ? { hostname: entry.hostname } : {}),
+        ...(typeof entry.state === 'string' ? { state: entry.state } : {}),
+        ...(typeof entry.model === 'string' ? { model: entry.model } : {}),
+        ...(typeof entry.identityId === 'string' ? { identityId: entry.identityId } : {}),
+      },
     }
+  }
+  // The team's machines, as the hub sees them (memory only, like the rows).
+  if (!Array.isArray(payload) && Array.isArray(payload?.machines)) {
+    rt.hubMachines = payload.machines
+      .filter(machine => machine && typeof machine.nodeId === 'string' && machine.nodeId !== '')
+      .slice(0, 64)
+      .map(machine => ({ ...machine, self: machine.nodeId === own }))
   }
   for (const [id, bot] of Object.entries(rt.state.bots)) if (isSessionPeer(bot)) delete rt.state.bots[id]
   Object.assign(rt.state.bots, next)
@@ -64,6 +80,7 @@ export function reapStalePeers(rt, now = Date.now()) {
   if (at !== undefined && now - at < STALE_MS) return false
   peerAt.delete(rt)
   rt.hubRooms = []
+  rt.hubMachines = []
   let removed = false
   for (const [id, bot] of Object.entries(rt.state.bots)) if (isSessionPeer(bot)) { delete rt.state.bots[id]; removed = true }
   return removed
@@ -91,13 +108,67 @@ function serviceOf(rt, name) {
   try { return rt.ctx?.get?.(name) } catch { return undefined }
 }
 
+const IDENTITY_ID = /^[0-9a-f]{16}$/
+
+// One word for what a Bot is doing, from the same status line the team tools show:
+// available · working · waiting (for the user) · offline (its machine is not connected).
+export function botStateOf(rt, bot) {
+  if (bot.origin === 'joined' && bot.worker?.online === false) return 'offline'
+  if (rt.joinedInFlight?.has?.(bot.id)) return 'working'
+  let line = ''
+  try { line = String(rt.statusOf?.(bot.id) ?? '') } catch { line = '' }
+  if (/waiting for the user|waited for the user's answer/.test(line)) return 'waiting'
+  if (/^(working|moving on|waiting for|about to go on)/.test(line)) return 'working'
+  return 'available'
+}
+
+// The Bot's portable id: a node Bot reports its own (roster), a hub Bot gets one from AC's
+// hub identity book. Undefined while neither is there (an old AC, a Bot never reported).
+function identityIdOf(rt, bot) {
+  if (bot.origin === 'joined') {
+    const reported = bot.identityId ?? bot.worker?.identityId
+    return IDENTITY_ID.test(reported ?? '') ? reported : undefined
+  }
+  if (IDENTITY_ID.test(bot.identityId ?? '')) return bot.identityId
+  let id
+  try { id = serviceOf(rt, 'remote-agent:bot-identity')?.identityOf?.(bot.id, { name: bot.name ?? '', role: bot.role ?? '' }) } catch { id = undefined }
+  return IDENTITY_ID.test(id ?? '') ? id : undefined
+}
+
 export function directoryOf(rt) {
-  return Object.values(rt.state.bots ?? {}).filter(bot => bot && bot.origin !== 'peer' && bot.private !== true).map(bot => ({
-    id: bot.id,
-    name: bot.name || bot.id,
-    role: bot.role ?? '',
-    nodeId: bot.origin === 'joined' ? bot.worker?.nodeId ?? HUB_NODE : HUB_NODE,
-  }))
+  const hosts = new Map((machinesOf(rt) ?? []).map(machine => [machine.nodeId, machine.hostname]))
+  return Object.values(rt.state.bots ?? {}).filter(bot => bot && bot.origin !== 'peer' && bot.private !== true).map(bot => {
+    const nodeId = bot.origin === 'joined' ? bot.worker?.nodeId ?? HUB_NODE : HUB_NODE
+    const entry = { id: bot.id, name: bot.name || bot.id, role: bot.role ?? '', nodeId }
+    const identityId = identityIdOf(rt, bot)
+    if (identityId !== undefined) entry.identityId = identityId
+    const host = bot.origin === 'joined' ? (bot.worker?.hostname || hosts.get(nodeId)) : hosts.get(HUB_NODE)
+    if (typeof host === 'string' && host !== '') entry.hostname = host
+    entry.online = !(bot.origin === 'joined' && bot.worker?.online === false)
+    entry.state = botStateOf(rt, bot)
+    const model = bot.appliedModel ?? bot.model ?? bot.worker?.model
+    if (typeof model === 'string' && model !== '') entry.model = model
+    return entry
+  })
+}
+
+// Every machine in the team: this hub first, then each node the registry knows (online or not).
+// Null when this is not a hub (no registry).
+export function machinesOf(rt) {
+  const registry = serviceOf(rt, 'remote-agent:registry')
+  if (typeof registry?.list !== 'function') return null
+  let nodes = []
+  try { nodes = registry.list() } catch { nodes = [] }
+  const hub = { nodeId: HUB_NODE, hostname: osHostname(), os: process.platform, online: true, role: 'hub' }
+  return [hub, ...nodes.filter(node => node && typeof node.nodeId === 'string' && node.nodeId !== HUB_NODE).map(node => ({
+    nodeId: node.nodeId,
+    hostname: node.hostname || node.nodeId,
+    os: node.os,
+    online: node.online === true,
+    role: 'worker',
+    ...(typeof node.acVersion === 'string' ? { acVersion: node.acVersion } : {}),
+    ...(Number.isFinite(node.lastSeen) ? { lastSeen: node.lastSeen } : {}),
+  }))]
 }
 
 export function roomsOf(rt) {
@@ -142,7 +213,7 @@ export async function publishDirectory(rt) {
   const registry = serviceOf(rt, 'remote-agent:registry')
   if (typeof registry?.send !== 'function' || typeof registry.onlineNodes !== 'function') return
   await rt.load?.()
-  const payload = { bots: directoryOf(rt), at: Date.now() }
+  const payload = { bots: directoryOf(rt), machines: machinesOf(rt) ?? [], at: Date.now() }
   const rooms = roomListsOf(rt, payload.bots)
   for (const { nodeId } of registry.onlineNodes()) {
     try { registry.send(nodeId, 'bot/directory', { ...payload, rooms: rooms.get(nodeId) ?? [] }) } catch (error) {
@@ -180,6 +251,18 @@ export async function handleNodeReport(rt, payload) {
   writeNodeReport({ rt, bot, session, state: mirrorStateOf(rt, bot.id, session), text: payload.text })
 }
 
+// The hub's joined shadow of a node Bot named in a bot/message: by its portable id first (the node's
+// identity book stamps it), else by node + the node's local Bot id.
+export function senderShadowOf(rt, from) {
+  if (!from || typeof from !== 'object') return undefined
+  const bots = Object.values(rt.state.bots ?? {}).filter(item => joinedShadow(item) && item.worker?.nodeId === from.nodeId)
+  if (typeof from.identityId === 'string' && IDENTITY_ID.test(from.identityId)) {
+    const byIdentity = bots.find(item => item.identityId === from.identityId || item.worker?.identityId === from.identityId)
+    if (byIdentity !== undefined) return byIdentity
+  }
+  return bots.find(item => item.worker?.remoteBotId === from.id)
+}
+
 export async function handleNodeMessage(rt, payload) {
   if (isNodeReport(payload)) return handleNodeReport(rt, payload)
   if (!payload || !['ask', 'reply'].includes(payload.kind) || payload.depth >= 3) return
@@ -196,8 +279,12 @@ export async function handleNodeMessage(rt, payload) {
     if (seen.has(payload.exchangeId)) return
     seen.set(payload.exchangeId, Date.now())
   }
+  // The sender as the hub knows it: a node names its Bot by the node's own id, the hub keys the same Bot
+  // as a joined shadow. A reply addressed to the node's id would find no Bot here and be lost.
+  const sender = senderShadowOf(rt, payload.from)
+  if (sender === undefined) rt.warn?.('ds-bot: Bot network sender %s on %s has no Bot here; its reply cannot come back', payload.from?.id, payload.from?.nodeId)
   const message = {
-    fromId: payload.from.id, toId: to.id, text: payload.text,
+    fromId: sender?.id ?? payload.from.id, toId: to.id, text: payload.text,
     role: 'default', exchangeId: payload.exchangeId,
   }
   if (to.origin === 'joined') return rt.handleJoinedTurn({

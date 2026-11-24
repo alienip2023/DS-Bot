@@ -44,7 +44,7 @@ test('node009 receives a room containing its roster bot and preserves the payloa
   assert.deepEqual(room.members, ['joined:node009:same', w.bot.id])
   await w.publish()
   const payload = w.payload('node009')
-  assert.deepEqual(Object.keys(payload).sort(), ['at', 'bots', 'rooms'])
+  assert.deepEqual(Object.keys(payload).sort(), ['at', 'bots', 'machines', 'rooms'])
   assert.deepEqual(payload.bots, directoryOf(w.rt))
   assert.equal(typeof payload.at, 'number')
   assert.deepEqual(payload.rooms, [summary(room)])

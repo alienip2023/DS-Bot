@@ -59,8 +59,8 @@ test('directory includes local and joined Bots, omits peers, and falls back to i
   const w = world(t)
   w.local.name = ''
   assert.deepEqual(directoryOf(w.rt), [
-    { id: 'local', name: 'local', role: 'Writer', nodeId: 'hub' },
-    { id: 'joined:n2:b', name: 'Remote', role: 'Research', nodeId: 'n2' },
+    { id: 'local', name: 'local', role: 'Writer', nodeId: 'hub', online: true, state: 'available' },
+    { id: 'joined:n2:b', name: 'Remote', role: 'Research', nodeId: 'n2', online: true, state: 'available' },
   ])
 })
 
