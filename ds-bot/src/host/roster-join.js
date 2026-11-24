@@ -160,6 +160,9 @@ export function applyRosterReport(state, report, now = Date.now(), onChange) {
     if (isColor(bot.color)) row.color = bot.color
     if (typeof bot.avatarShape === 'string' && /^[a-z][\w-]{0,31}$/.test(bot.avatarShape)) row.avatar = { ...(existing?.avatar ?? {}), shape: bot.avatarShape }
     if (typeof bot.effort === 'string' && /^[a-z][a-z0-9-]{0,15}$/.test(bot.effort)) row.effort = bot.effort
+    // The Bot's portable identity (AC 0.4.33): what locate_bot finds it by. An older node reports none; the
+    // last known id stays.
+    if (typeof bot.identityId === 'string' && /^[0-9a-f]{16}$/.test(bot.identityId)) row.worker.identityId = bot.identityId
     // The node's running background tasks (read-only on the hub). A report from an older node has
     // none: what was known stays; an empty list clears it. Equal lists keep the old array so an
     // unchanged report does not count as a change.

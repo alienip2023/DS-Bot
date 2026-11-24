@@ -1230,6 +1230,12 @@ export function install(rt) {
     const roomId = roomIdOf(agent.id)
     const bot = rt.botOf(rt.selfOf(agent.id))
     if (bot === undefined) return decision
+    // A federated Bot on a node, in a hub group chat: its group's memory comes from the hub snapshot
+    // (members only), as a message like the file-memory group snapshot below.
+    if (backendOf(bot) === 'federation') {
+      const shared = federatedGroupSnapshot(agent, bot, decision)
+      return shared === undefined ? decision : { ...decision, messages: [shared, ...decision.messages] }
+    }
     // 15a0fd1：群记忆快照、记忆更新、自动回忆都是 ds-bot 文件记忆的注入，只给用文件记忆的 Bot。
     if (backendOf(bot) !== 'file') return decision
     await noteWindow(bot)
@@ -1243,6 +1249,24 @@ export function install(rt) {
     if (recalled !== undefined) front.push(recalled)
     return front.length === 0 ? decision : { ...decision, messages: [...front, ...decision.messages] }
   })
+
+  // The hub group's memory for a node group Session, put in again only when it changed since the copy the
+  // conversation already holds (so the prompt prefix stays cached between snapshots).
+  function federatedGroupSnapshot(agent, bot, decision) {
+    const roomId = bot.remoteGroupRooms?.[agent.id]
+    if (typeof roomId !== 'string' || rt.memoryNode?.enabled?.() === false) return undefined
+    const group = rt.memoryNode?.groupCached?.(bot, roomId)
+    if (group === undefined || group.text.trim() === '') return undefined
+    const text = [GROUP_HEADING, 'Shared by the members of this group chat; synced from the hub.', '', group.text, ...(group.truncated ? [SNAPSHOT_TRUNCATED] : [])].join('\n')
+    let history = []
+    try { history = agent.session?.deriveMessages?.() ?? [] } catch { /* nothing to look in */ }
+    const last = [...history, ...decision.messages].findLast(isGroupMemory)
+    if (last?.source?.sections?.[0]?.text === text) return undefined
+    return createUserMessage({
+      content: [{ type: 'text', text }],
+      source: { kind: GROUP_MEMORY_SOURCE, form: 'snapshot', roomId, sections: [{ name: GROUP_MEMORY_SOURCE, text }] },
+    })
+  }
 
   // Topic entries that share enough with what was just said, once per conversation part.
   // MEMORY.md is in view already. Off when the user turns it off.

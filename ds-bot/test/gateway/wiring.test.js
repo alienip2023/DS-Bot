@@ -23,8 +23,11 @@ function canConnect(port, host = '127.0.0.1') {
 // Real Cordis effect semantics: fn() called sync; only typeof result === 'function' registered as disposer.
 // Async fns return Promise -> NOT registered -> stop() never called.
 function makeRt({ gatewayPort = 0, gatewayHost = '127.0.0.1', hasSyncService = true, providers = [], env: envOverride = {} } = {}) {
-  // When gatewayPort=0 (random), inject DS_BOT_GATEWAY_PORT=0 so readGatewaySettings uses it
-  const env = gatewayPort === 0 ? { DS_BOT_GATEWAY_PORT: '0', ...envOverride } : { ...envOverride }
+  // When gatewayPort=0 (random), inject DS_BOT_GATEWAY_PORT=0 so readGatewaySettings uses it.
+  // These tests run hub and node on one machine, so a loopback gateway is reachable: say so
+  // (without it a loopback gateway is never pushed to nodes, see gatewayReachableHost).
+  const base = { DS_BOT_GATEWAY_LOOPBACK: '1' }
+  const env = gatewayPort === 0 ? { ...base, DS_BOT_GATEWAY_PORT: '0', ...envOverride } : { ...base, ...envOverride }
   const warns = []
   let setSourceCb = null
   let providedPort = null
@@ -674,9 +677,9 @@ test('1A6-dsh-home-default: rt.dshHome empty and no DSH_HOME env, uses HOME/.dsh
     const port = getProvidedPort()
     assert.ok(typeof port === 'number' && port > 0, `gateway should have started using HOME/.dsh settings, got ${port}`)
     // Check that settingsDir warn shows the fake HOME/.dsh path
-    const settingsWarn = warns.find(w => typeof w[0] === 'string' && w[0].includes('settingsDir='))
+    const settingsWarn = warns.find(w => typeof w[0] === 'string' && w[0].includes('settings and credentials from'))
     assert.ok(settingsWarn, `should log settingsDir warn, got: ${JSON.stringify(warns.slice(0,3))}`)
-    assert.ok(String(settingsWarn[1] || '').includes(fakeDotDsh), `settingsDir should be HOME/.dsh, got: ${settingsWarn[1]}`)
+    assert.ok(String(settingsWarn[1] || '').includes(fakeDotDsh), `the home should be HOME/.dsh, got: ${settingsWarn[1]}`)
   } finally {
     await dispose()
     process.env.HOME = origHome
@@ -798,4 +801,41 @@ test('1A6-no-sync-get: credentials service get is never called in ensureToken', 
     // Point is: no getCalls
     assert.ok(alpha.apiKeyEnv.startsWith('GATEWAY_TOKEN_'), `apiKeyEnv should be GATEWAY_TOKEN_*, got ${alpha.apiKeyEnv}`)
   } finally { await dispose() }
+})
+
+// --- only this DSH's home: a second DSH on the machine never pushes the keys of ~/.dsh ---
+// Before fork.112 config-source merged ~/.dsh and DSH_HOME, so a DSH running with its own home (the desktop
+// app, a second node on one machine) pushed another DSH's provider keys to its nodes.
+test('config-source pushes keys only from rt.dshHome, never from ~/.dsh beside it', async () => {
+  const { writeFileSync, mkdtempSync, mkdirSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+  const fakeUser = mkdtempSync(join(tmpdir(), 'ds-bot-other-home-'))
+  mkdirSync(join(fakeUser, '.dsh'))
+  writeFileSync(join(fakeUser, '.dsh', '.credentials.yaml'), 'refs:\n  ALPHA_KEY: sk-from-the-other-dsh\n', { mode: 0o600 })
+  const ownHome = mkdtempSync(join(tmpdir(), 'ds-bot-own-home-'))
+  writeFileSync(join(ownHome, '.credentials.yaml'), 'refs:\n  BETA_KEY: sk-own\n', { mode: 0o600 })
+  const origHome = process.env.HOME
+  process.env.HOME = fakeUser
+  const { rt, getSetSource, dispose } = makeRt({ gatewayPort: 0, env: { DS_BOT_GATEWAY_LOOPBACK: '0' } })
+  rt.dshHome = ownHome
+  rt.ctx.llm.listConfigurableProviders = () => [
+    { provider: 'alpha', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'alpha'] },
+    { provider: 'beta', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'beta'] },
+  ]
+  rt.ctx.get('settings').describe = () => [{ ns: 'llm-pi-ai', value: { providers: {
+    alpha: { api: 'openai-completions', baseURL: 'https://a.example/v1', apiKeyEnv: 'ALPHA_KEY', models: [{ id: 'a1' }] },
+    beta: { api: 'openai-completions', baseURL: 'https://b.example/v1', apiKeyEnv: 'BETA_KEY', models: [{ id: 'b1' }] },
+  } } }]
+  try {
+    install(rt)
+    const payload = getSetSource()('node-1')
+    const ids = payload.providers.map(p => p.id)
+    assert.ok(ids.includes('beta'), `own key is pushed, got ${ids}`)
+    assert.ok(!ids.includes('alpha'), `a key only in ~/.dsh is not pushed, got ${ids}`)
+    assert.ok(!JSON.stringify(payload).includes('sk-from-the-other-dsh'))
+  } finally {
+    await dispose()
+    process.env.HOME = origHome
+  }
 })

@@ -487,10 +487,21 @@ export function createBotTurnReceiver(rt, { timeoutMs = JOINED_TURN_TIMEOUT_MS +
     const sessionId = remoteGroupSession(roomId, bot.id)
     const existing = creating.get(sessionId)
     if (existing) { await existing; return sessionId }
-    if (bot.remoteGroupSessions?.includes(sessionId)) return sessionId
+    // Which hub room a node group Session belongs to: the Session id is a hash, so the room is kept beside it
+    // (the federated group memory is looked up by room).
+    const noteRoom = () => {
+      if (bot.remoteGroupRooms?.[sessionId] === roomId) return false
+      bot.remoteGroupRooms = { ...(bot.remoteGroupRooms ?? {}), [sessionId]: roomId }
+      return true
+    }
+    if (bot.remoteGroupSessions?.includes(sessionId)) {
+      if (noteRoom()) await rt.save?.()
+      return sessionId
+    }
     const job = (async () => {
       bot.remoteGroupSessions ??= []
       bot.remoteGroupSessions.push(sessionId)
+      noteRoom()
       try {
         await rt.save?.()
         if (typeof rt.createSession === 'function') {
