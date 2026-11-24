@@ -14,6 +14,7 @@
 | 0.3.10-fork.111 | 0.4.31 | 持久机器身份（`machine-identity/1`）、LAN 自动发现（`lan-discovery/1`）、配对码（`pairing/1`）；节点 E2E 未就绪时 `bot/turn` 立即失败而不是等到超时 |
 | 0.3.10-fork.112 | 0.4.33 | `bot-locate/1`：节点为每个 Bot 配发可迁移的 ed25519 身份（名册带 `identityId`），主控用 `locate_bot` 定位 Bot 并以 Bot 自己的签名验证；AC 每回合写步骤日志（`bot_journal` 可读）；`dshbot1://` 配对串格式（统一三种配对码格式）；目录下发帧（`directory/snapshot`、`directory/delta`，E2E 加密），节点缓存团队机器与 Bot 目录；Phase 0–7 全部功能（Team Directory、执行租约 epoch、Sentinel 巡检、三平台自启说明、工作账本 away 状态与崩溃重跑规则） |
 | 0.3.10-fork.113 | 0.4.34 | 重写 R1–R4：全队目录带 `identityId`/机器/状态/模型与整张机器列表（`bot/directory` 扩充）；跨机 Bot 间投递 `bot/assign`（ack/重发/away/补发，主控转发或退回）；跨机请求在接收方后台任务里答、不进会话框；节点 Bot 的管理工具经 `team/act` 由主控执行；集群工具每机 ACL（有 `acl.json` 才拦）；修 `bot/stream` 预览写进已关闭 step 导致镜像会话损坏。**主控与全部节点须同时升级**，不兼容 fork.112/0.4.33 及更早 |
+| 0.3.10-fork.114 | 0.4.34 | 修：队友的回复在发问方正在跑回合时插进当前回合（不再进用户队列）；跨机回复回到发问的那个后台任务并接上它的工作（不再只到主对话、链条单向中断）。AC 不变；主控与节点的 ds-bot 都须升到 .114 |
 
 能力位与功能的对应（`src/host/node-compat.js` 的 `NODE_FEATURES`）：
 
