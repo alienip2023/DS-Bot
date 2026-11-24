@@ -20,7 +20,8 @@ import { plainToolSchema } from './tool-schema.js'
 import { viewCardText } from './parts.js'
 import { checkShownView, showViewDescription, showViewParameters } from 'deep-view/core'
 import { install as installBuiltinPacks } from './builtin-packs.js'
-import { SKILL_NAME, botsRoot, loadBotSkills, saveSkill } from './skill-loader.js'
+import { botsRoot } from './bots-root.js'
+import { AC_NEEDED } from './node-compat.js'
 
 export const output = { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: String(value) }] }
 export const GROUP_REF = { type: 'string', required: true, description: 'Exact group chat name from list_bots' }
@@ -2162,7 +2163,7 @@ export function install(rt) {
       if (!registry) return 'Node registry not available.'
       const nodes = typeof registry.onlineNodes === 'function' ? registry.onlineNodes() : []
       if (nodes.length === 0) return 'No nodes connected.'
-      const filtered = args.node ? nodes.filter(n => n.nodeId === args.node || n.hostname === args.node) : nodes
+      const filtered = args.node ? nodes.filter(n => n.nodeId === args.node || n.hello?.hostname === args.node) : nodes
       if (filtered.length === 0) return `No node matching "${args.node}".`
       const lines = ['Mesh Network', '─'.repeat(40)]
       for (const n of filtered) {
@@ -2172,11 +2173,48 @@ export function install(rt) {
         const hasIdentity = caps.includes('machine-identity/1')
         const rtt = typeof registry.rttOf === 'function' ? registry.rttOf(n.nodeId) : null
         lines.push('')
-        lines.push(`${n.online !== false ? '🟢' : '🔴'} ${n.nodeId}  ${n.hostname ?? ''}`)
+        lines.push(`${n.online !== false ? '🟢' : '🔴'} ${n.nodeId}  ${n.hello?.hostname ?? ''}`)
         if (rtt !== null) lines.push(`  RTT: ${rtt}ms`)
         lines.push(`  LAN 发现: ${hasLan ? '✓' : '✗'}  配对码: ${hasPairing ? '✓' : '✗'}  持久身份: ${hasIdentity ? '✓' : '✗'}`)
         if (n.hello?.acVersion) lines.push(`  AC: ${n.hello.acVersion}`)
       }
+      return lines.join('\n')
+    },
+  }))
+
+  // ── locate_bot：按 Bot 的可迁移身份查它现在在哪台节点上（AC 0.4.33，bot-locate/1）──
+  rt.teamTools.push(defineTool({
+    name: 'locate_bot',
+    description: 'Find which machine a Bot is running on right now. Every node that can answer is asked; a location is reported only when the Bot proves it with its own key. Use it before sending work to a Bot that may have moved between machines.',
+    isConcurrencySafe: true,
+    parameters: {
+      bot: { type: 'string', required: true, description: 'Bot name, or a 16-character Bot identity id.' },
+    },
+    output,
+    async execute(args) {
+      await rt.load()
+      const ref = String(args.bot ?? '').trim()
+      if (ref === '') return 'Name the Bot to locate.'
+      const bot = /^[0-9a-f]{16}$/.test(ref) ? undefined : rt.findBot(ref)
+      if (!bot && !/^[0-9a-f]{16}$/.test(ref)) return `No Bot named "${ref}".`
+      if (bot && bot.worker?.home !== 'remote') return `${bot.name} runs on this machine (the hub).`
+      const identityId = bot ? bot.worker?.identityId : ref
+      if (!identityId) return `${bot.name} has no portable identity yet: its node (${bot.worker?.nodeId ?? 'unknown'}) needs AC ${AC_NEEDED} or later and must report its roster once.`
+      const registry = (() => { try { return ctx.get?.('remote-agent:registry') } catch { return undefined } })()
+      if (typeof registry?.locateBot !== 'function') return `This hub's AC cannot locate Bots; it needs AC ${AC_NEEDED} or later.`
+      const found = await registry.locateBot(identityId)
+      const who = bot ? `${bot.name} (${identityId})` : identityId
+      if (found.error) return `Could not locate ${who}: ${found.error}.`
+      const lines = []
+      if (found.locations.length === 0) lines.push(`${who} was not found on any node that answered.`)
+      else lines.push(`${who} runs on ${found.locations.map(l => l.nodeId).join(', ')} (proven by the Bot's own key).`)
+      if (found.locations.length > 1) lines.push('It answered from more than one node: the same identity is running twice.')
+      if (bot && found.locations.length > 0 && !found.locations.some(l => l.nodeId === bot.worker?.nodeId)) lines.push(`The team still lists it on ${bot.worker?.nodeId}.`)
+      if (found.notHere.length > 0) lines.push(`Not on: ${found.notHere.join(', ')}.`)
+      if (found.silent.length > 0) lines.push(`No answer in time from: ${found.silent.join(', ')}.`)
+      if (found.unsupported.length > 0) lines.push(`Cannot answer (AC older than ${AC_NEEDED}): ${found.unsupported.join(', ')}.`)
+      if (found.unsent.length > 0) lines.push(`Not reachable now: ${found.unsent.join(', ')}.`)
+      for (const r of found.rejected) lines.push(`Rejected an answer from ${r.nodeId || 'an unknown node'}: ${r.reason}.`)
       return lines.join('\n')
     },
   }))
@@ -2200,54 +2238,6 @@ export function install(rt) {
         '在新机器上运行：',
         `  dsh-node-daemon pair --code ${pairingCode} --hub <this-machine-IP>`,
       ].join('\n')
-    },
-  }))
-
-  // ── list_skills：列出 Bot 的 Skill Markdown 文件 ─────────────────────────
-  rt.teamTools.push(defineTool({
-    name: 'list_skills',
-    description: 'List the skills available to a Bot: named procedures stored as Markdown files that the Bot can invoke by name. Skills encode reusable multi-step workflows.',
-    isConcurrencySafe: true,
-    parameters: {
-      bot: { type: 'string', description: 'Bot name. Omit for the caller\'s own skills.' },
-    },
-    output,
-    async execute(args, exec) {
-      await rt.load()
-      const caller = rt.botOf(rt.selfOf(exec.agent?.id))
-      const target = args.bot ? rt.findBot(args.bot) : caller
-      if (!target) return args.bot ? `No Bot named "${args.bot}".` : 'Could not identify caller.'
-      const skills = loadBotSkills(target.id)
-      if (skills.length === 0) return `${target.name} has no skills yet. Use create_skill to add one.`
-      return [`${target.name}'s skills:`, ...skills.map(s => {
-        const trig = s.triggers.length > 0 ? ` [triggers: ${s.triggers.join(', ')}]` : ''
-        return `  • ${s.name}${trig}${s.description ? ` — ${s.description}` : ''}`
-      })].join('\n')
-    },
-  }))
-
-  // ── create_skill：创建或更新 Bot 的 Skill ────────────────────────────────
-  rt.teamTools.push(defineTool({
-    name: 'create_skill',
-    description: 'Create or update a named skill for a Bot: a Markdown file that encodes a reusable procedure with steps and success criteria. The Bot can invoke it by name in future turns.',
-    parameters: {
-      name: { type: 'string', required: true, description: 'Short kebab-case skill name, e.g. "deploy-prod"' },
-      content: { type: 'string', required: true, description: 'Full Markdown content of the skill: description, steps, success criteria' },
-      bot: { type: 'string', description: 'Bot to assign the skill to. Omit for the caller.' },
-    },
-    output,
-    async execute(args, exec) {
-      await rt.load()
-      const caller = rt.botOf(rt.selfOf(exec.agent?.id))
-      const target = args.bot ? rt.findBot(args.bot) : caller
-      if (!target) return args.bot ? `No Bot named "${args.bot}".` : 'Could not identify caller.'
-      // A skill is pulled into its Bot's turns automatically, so writing one for another Bot is
-      // writing into that Bot's prompt: only a Main Bot may (same rule as capabilities).
-      if (caller && target.id !== caller.id && !rt.isMain(caller.id)) return 'Only a Main Bot can create skills for another Bot.'
-      if (!SKILL_NAME.test(args.name)) return 'Skill name must be kebab-case (lowercase letters, digits, hyphens; up to 64 characters).'
-      if (typeof args.content !== 'string' || args.content.trim() === '') return 'Skill content is empty.'
-      saveSkill(target.id, args.name, args.content)
-      return `Skill "${args.name}" saved for ${target.name}. It is pulled into a turn when a message names it or one of its triggers.`
     },
   }))
 
