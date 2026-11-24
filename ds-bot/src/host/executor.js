@@ -498,7 +498,7 @@ export function startPageTurn({ rt, bot, text, requestId, session, step = 1, sta
   // and says which step the closing message goes in (hub-trace.js). A node that cannot send them has no sink.
   const sink = openTraceSink(rt, { bot, exchangeId: prepared.turnId, nodeId: prepared.nodeId, binding: { session, turn, step, closedTurns } })
   // The node's streaming text (bot/stream) is written live into this turn while it runs; disposed when the turn ends.
-  const streamSink = openStreamSink(rt, { bot, exchangeId: prepared.turnId, nodeId: prepared.nodeId, binding: { session, turn, step } })
+  const streamSink = openStreamSink(rt, { bot, exchangeId: prepared.turnId, nodeId: prepared.nodeId, binding: { session, turn, step }, stepOf: () => sink?.step() ?? step })
   const closeTrace = () => sink?.close() ?? { step }
   // The step the page turn is in now: a steer's answer written into this turn goes there (the steps moved it on).
   claim.currentStep = () => sink?.step() ?? step
@@ -639,7 +639,7 @@ export function startSideTurn({ rt, bot, text, requestId, session, state = {}, t
   // A steer written as a turn of its own carries the node's thinking and tool steps inside that turn (hub-trace.js).
   // One that joins the page turn already open has none: that turn's own trace holds the node's events, the steer's too.
   const sink = hostTurn === undefined ? openTraceSink(rt, { bot, exchangeId: prepared.turnId, nodeId: prepared.nodeId }) : undefined
-  const streamSink2 = hostTurn === undefined ? openStreamSink(rt, { bot, exchangeId: prepared.turnId, nodeId: prepared.nodeId }) : undefined
+  const streamSink2 = hostTurn === undefined ? openStreamSink(rt, { bot, exchangeId: prepared.turnId, nodeId: prepared.nodeId, stepOf: () => sink?.step() ?? 1 }) : undefined
 
   const writeWhenFree = (write) => {
     if (rt.joinedLateClosed === true) return

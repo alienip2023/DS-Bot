@@ -20,9 +20,11 @@ import { deferMirrorWrite } from './joined-mirror-writer.js'
  * @param {string} opts.exchangeId
  * @param {string} opts.nodeId
  * @param {object} [opts.binding]  — { session, turn, step } to write into immediately; may be deferred
+ * @param {() => (number|undefined)} [opts.stepOf] — the turn's step open right now (hub-trace sink.step);
+ *   when it differs from the bound step, the sink stops writing and disposes. Omitted: old behavior.
  * @returns {object|undefined} sink, or undefined when streaming is unavailable/unsupported
  */
-export function openStreamSink(rt, { bot, exchangeId, nodeId, binding }) {
+export function openStreamSink(rt, { bot, exchangeId, nodeId, binding, stepOf }) {
   let registry
   try { registry = rt.ctx?.get?.('remote-agent:registry') } catch { registry = undefined }
   if (typeof registry?.on !== 'function' || typeof exchangeId !== 'string' || exchangeId === '') return undefined
@@ -41,6 +43,15 @@ export function openStreamSink(rt, { bot, exchangeId, nodeId, binding }) {
 
   const write = (text) => {
     if (!session || closed) return
+    // A preview may only go into the step that is open right now. Once the node's trace has moved the
+    // turn on to a later step, step `step` is closed: an assistant/message there makes the stored log
+    // fail validation ("does not match an open turn and step"). The rest of the turn's text arrives as
+    // its settled answer (mirrorTurnFinish), so the preview simply stops here.
+    if (typeof stepOf === 'function') {
+      let now
+      try { now = stepOf() } catch { now = undefined }
+      if (now !== undefined && now !== step) { dispose(); return }
+    }
     try {
       mirrorTurnStream(session, { turn, step: step ?? 1, text })
     } catch (err) {
