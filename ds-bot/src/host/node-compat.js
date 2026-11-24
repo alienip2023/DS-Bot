@@ -20,9 +20,9 @@ export const NODE_FEATURES = Object.freeze({
   machineIdentity: { cap: 'machine-identity/1', label: '持久机器身份' },
   locate: { cap: 'bot-locate/1', label: 'Bot 定位' },
 })
-// The AC release that carries every capability above: ds-bot 0.3.10-fork.112 pairs with AC 0.4.33 (hub and nodes).
+// The AC release that carries every capability above: ds-bot 0.3.10-fork.113 pairs with AC 0.4.34 (hub and nodes).
 // The full version table is in docs/ac-pairing.md and in AC's README.
-export const AC_NEEDED = '0.4.33'
+export const AC_NEEDED = '0.4.34'
 
 /** The capabilities of a node, or undefined when they are not known. */
 export function nodeCapsOf(rt, nodeId) {
