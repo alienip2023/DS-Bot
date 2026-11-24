@@ -390,7 +390,8 @@ export function install(rt) {
         const text = absoluteLinks(String(args.message), rt.sessionFolder?.(exec.agent?.session ?? exec.agent))
         const exchangeId = randomUUID()
         const toUser = args.reply_to === 'user'
-        if (!toUser) rt.openWork(exchangeId, { from: sender.id, to: target.id, parent: worksOf(exec)[0] })
+        const { fromPart } = callerPart(exec)
+        if (!toUser) rt.openWork(exchangeId, { from: sender.id, to: target.id, parent: worksOf(exec)[0], ...(fromPart ? { fromPart } : {}) })
         const result = await rt.deliver({ fromId: sender.id, toId: target.id, text, role: 'request', exchangeId, ...(toUser ? { audience: 'user' } : {}) })
         if (result?.ok !== true) {
           if (!toUser) rt.dropWork(exchangeId)
@@ -458,7 +459,8 @@ export function install(rt) {
         // wire; the read-only peer list keeps its refusal above and never reaches this path.
         if (target.origin === 'joined' || (target.type === 'remote-worker' && target.origin !== 'joined')) {
           const exchangeId = randomUUID()
-          if (!toUser) rt.openWork(exchangeId, { from: sender.id, to: target.id, parent: work })
+          const { fromPart } = callerPart(exec)
+          if (!toUser) rt.openWork(exchangeId, { from: sender.id, to: target.id, parent: work, ...(fromPart ? { fromPart } : {}) })
           let delivered
           try {
             delivered = await rt.deliver({

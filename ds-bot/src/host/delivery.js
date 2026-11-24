@@ -314,6 +314,11 @@ export function install(rt) {
       agent.session.append('user/message', { ...message, source: { ...source, kind: 'user' } }, { surfaceOp: 'append' })
       await ctx.sessions.flush(agent.session)
     }
+    // A teammate's answer to a Bot that is working right now goes into its current turn, at its next step:
+    // the Bot that asked is usually still busy with the work it asked about, and an answer left for its
+    // next turn waits in the user's queue as if the user had typed it (Grok Bot / OpenMausBot hand results
+    // straight to the Bot that waits). An idle Bot is woken by it once, as before. Group rounds keep theirs.
+    const answerNow = role === 'reply' && roomId === undefined && from !== undefined && rt.live?.get?.(targetSessionId)?.turn !== undefined
     const send = async () => {
       if (visible) {
         // The content is already in model history. An empty, deferred relay wakes the
@@ -332,7 +337,7 @@ export function install(rt) {
         void pending.catch(error => rt.warn('ds-bot: visible delivery turn failed: %s', error)).finally(() => {
           if (visibleTurns.get(agent) === pending) visibleTurns.delete(agent)
         })
-      } else if (steer) agent.steer(message)
+      } else if (steer || answerNow) agent.steer(message)
       else agent.followup(message)
       await ctx.sessions.flush(agent.session)
       if (book !== undefined) await markDelivered()

@@ -218,3 +218,101 @@ test('R4-E2E-3 a node Bot still changes itself locally (no hub round trip)', { s
   assert.equal(n11.w.rt.botOf('e11').role, '执行官')
   void hub
 })
+
+test('R4-E2E-4 a node Bot answer reaches a hub Bot that is still in its turn at its next step, not its queue', { skip }, async t => {
+  const { hub, n10 } = await cluster(t)
+  await messageBot(hub.rt, 'chief', 'node010执行', '跑一下验收 A1')
+  await until(() => taskTexts(n10.w, 'e10').some(text => text.includes('跑一下验收 A1')), 'the request reached node010')
+  hub.rt.liveOf(hub.rt.chatOf('chief')).turn = 9  // Chief is still working on the acceptance run
+  await answer(n10.w.rt, 'e10', '跑一下验收 A1', 'A1 PASS')
+  await until(() => hub.steers.some(item => item.sessionId === hub.rt.chatOf('chief') && JSON.stringify(item.message).includes('A1 PASS')), 'steered into Chief running turn')
+  assert.equal(hub.followups.some(item => JSON.stringify(item.message).includes('A1 PASS')), false, "not in Chief's queue")
+})
+
+// The answer must come back by itself when the recipient's background task ends its turn (turns.js), not
+// only when a test closes the work by hand: node ↔ node replies were seen to go one way only on the cluster.
+async function runTask(w, botId, needle, answerText) {
+  await until(() => (w.rt.botOf(botId)?.tasks ?? []).some(task => task.status === 'running'), 'a background task is running')
+  const task = w.rt.botOf(botId).tasks.find(item => item.status === 'running')
+  const sid = task.sessionId
+  const find = () => [...w.followups, ...w.steers].find(item => item.sessionId === sid && JSON.stringify(item.message).includes(needle))
+  await until(() => find() !== undefined, 'the request is in the task session')
+  const delivered = find()
+  const agent = w.agentOf(sid)
+  agent.session.seq = (agent.session.seq ?? 0)
+  const emit = async (type, data) => {
+    const event = { type, seq: ++agent.session.seq, data }
+    agent.session.log.push(event)
+    for (const listener of w.ctx.listeners.get('session/event') ?? []) await listener(agent.session, event)
+  }
+  await emit('turn/start', { turn: 1 })
+  await emit('user/message', delivered.message)
+  await emit('assistant/message', { turn: 1, message: { role: 'assistant', content: [{ type: 'text', text: answerText }] } })
+  await emit('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  return task
+}
+
+test('R4-E2E-5 node011 → node010: node010 background task ends its turn, the answer comes back to node011 by itself', { skip }, async t => {
+  const { n10, n11 } = await cluster(t)
+  await messageBot(n11.w.rt, 'e11', 'node010执行', '回包测试：请回 OK')
+  const task = await runTask(n10.w, 'e10', '回包测试', '回包 OK')
+  await until(() => task.status === 'completed', 'the task completed')
+  await until(() => textsIn(n11.w, 'e11').some(text => text.includes('回包 OK')), 'the answer reached node011 Bot')
+  assert.equal(Object.values(n11.w.rt.state.works ?? {}).filter(w => w.from === 'e11').length, 0, 'node011 work closed')
+})
+
+// The cluster run: the hub's Chief asks node011执行 to talk to node010执行. node011's background task forwards
+// the question and ends its turn ("round 1 sent"). The answer from node010 must bring node011 back to that
+// work, and Chief must not take "round 1 sent" as the final answer.
+function taskEmitter(w, sid) {
+  const agent = w.agentOf(sid)
+  agent.session.seq = agent.session.seq ?? 0
+  return async (type, data) => {
+    const event = { type, seq: ++agent.session.seq, data }
+    agent.session.log.push(event)
+    for (const listener of w.ctx.listeners.get('session/event') ?? []) await listener(agent.session, event)
+  }
+}
+const requestIn = (w, sid, needle) => [...w.followups, ...w.steers].find(item => item.sessionId === sid && JSON.stringify(item.message).includes(needle))
+
+test('R4-E2E-6 Chief → node011 task → node010 and back: node011 resumes on the answer, Chief gets no premature reply', { skip }, async t => {
+  const { hub, n10, n11 } = await cluster(t)
+  await messageBot(hub.rt, 'chief', 'node011执行', '和 node010执行 沟通一次')
+  await until(() => (n11.w.rt.botOf('e11').tasks ?? []).some(task => task.status === 'running'), 'node011 opened a task')
+  const task11 = n11.w.rt.botOf('e11').tasks.find(task => task.status === 'running')
+  const emit11 = taskEmitter(n11.w, task11.sessionId)
+  await emit11('turn/start', { turn: 1 })
+  await until(() => requestIn(n11.w, task11.sessionId, '和 node010执行 沟通一次') !== undefined, 'the request is in node011 task')
+  await emit11('user/message', requestIn(n11.w, task11.sessionId, '和 node010执行 沟通一次').message)
+  const sent = await n11.w.rt.teamTools.find(def => def.name === 'message_bot')
+    .execute({ to: 'node010执行', message: '第 1 回合：你好' }, { agent: { id: task11.sessionId }, callId: 'c1', signal: new AbortController().signal })
+  assert.match(String(sent), /Delivered to node010执行/)
+  await emit11('assistant/message', { turn: 1, message: { role: 'assistant', content: [{ type: 'text', text: '第 1 回合已发给 node010执行，等它回复' }] } })
+  await emit11('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  await new Promise(resolve => setTimeout(resolve, 100))
+  assert.equal(textsIn(hub, 'chief').some(text => text.includes('第 1 回合已发给')), false, 'Chief must not get "round 1 sent" as the answer while node011 still waits for node010')
+
+  // node010 answers in its own task.
+  await until(() => (n10.w.rt.botOf('e10').tasks ?? []).some(task => task.status === 'running'), 'node010 opened a task')
+  const task10 = n10.w.rt.botOf('e10').tasks.find(task => task.status === 'running')
+  const emit10 = taskEmitter(n10.w, task10.sessionId)
+  await emit10('turn/start', { turn: 1 })
+  await until(() => requestIn(n10.w, task10.sessionId, '第 1 回合') !== undefined, 'the request is in node010 task')
+  await emit10('user/message', requestIn(n10.w, task10.sessionId, '第 1 回合').message)
+  await emit10('assistant/message', { turn: 1, message: { role: 'assistant', content: [{ type: 'text', text: '第 1 回合收到' }] } })
+  await emit10('turn/end', { turn: 1, reason: { kind: 'completed' } })
+
+  // The answer goes back to node011's task part, not into node011's own chat (the user's window).
+  await until(() => [...n11.w.followups, ...n11.w.steers].some(item => item.sessionId !== n11.w.rt.chatOf('e11') && JSON.stringify(item.message).includes('第 1 回合收到')), 'the answer reached node011 task, not its Main chat')
+  assert.equal(textsIn(n11.w, 'e11').some(text => text.includes('第 1 回合收到')), false, "not in node011's own chat")
+
+  // node011's task takes the answer up and finishes the work Chief gave it: Chief gets that final answer.
+  const back = [...n11.w.followups, ...n11.w.steers].find(item => item.sessionId === task11.sessionId && JSON.stringify(item.message).includes('第 1 回合收到'))
+  assert.ok(back, 'the answer went to the very task that asked')
+  await emit11('turn/start', { turn: 2 })
+  await emit11('user/message', back.message)
+  await emit11('assistant/message', { turn: 2, message: { role: 'assistant', content: [{ type: 'text', text: 'node010 已回复：第 1 回合收到。沟通完成。' }] } })
+  await emit11('turn/end', { turn: 2, reason: { kind: 'completed' } })
+  await until(() => [...hub.followups, ...hub.steers].some(item => JSON.stringify(item.message).includes('沟通完成')), 'Chief got the final answer from node011')
+  assert.equal(Object.values(hub.rt.state.works ?? {}).filter(w => w.from === 'chief').length, 0, 'Chief work closed')
+})

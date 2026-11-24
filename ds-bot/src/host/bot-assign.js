@@ -16,6 +16,7 @@
 import { randomUUID } from 'node:crypto'
 import { joinedShadow, shadowId } from './roster-join.js'
 import { replyToSender } from './joined-turn.js'
+import { threadCurrentOfPart } from './threads.js'
 
 export const RETRY_MS = 30_000
 export const OUTBOX_TTL_MS = 30 * 24 * 60 * 60 * 1000
@@ -200,13 +201,27 @@ export async function receiveAssign(rt, frame) {
       await rt.deliver({ fromId: from.id, toId: to.id, text, role: 'request', exchangeId: frame.exchangeId })
     }
   } else {
-    // The answer to a request this machine's Bot sent: close its work and bring the answer to it.
-    await replyToSender(rt, { fromId: to.id, toId: from.id, exchangeId: frame.replyTo ?? frame.exchangeId, text: frame.text, answered: frame.role === 'reply' })
+    await answerHere(rt, { asker: to, remote: from, exchangeId: frame.replyTo ?? frame.exchangeId, text: frame.text })
   }
   seen(rt)[frame.frameId] = Date.now()
   await rt.save?.()
   ack(rt, frame)
   return 'applied'
+}
+
+// The answer to a request a Bot of this machine sent, brought to it the way a local teammate's answer is
+// (turns.js answerSender): to the part of its chat it asked from (a background task, say), going on with the
+// work it asked for. Without that, a Bot that asked from a task got the answer in its own chat, cut off from
+// the work, and a chain like Chief → node011 → node010 stopped after one way.
+async function answerHere(rt, { asker, remote, exchangeId, text }) {
+  const pending = rt.state.works?.[exchangeId]
+  const part = typeof pending?.fromPart === 'string' ? pending.fromPart : undefined
+  const sessionId = part === undefined ? undefined : (threadCurrentOfPart(asker, part) ?? undefined)
+  const work = rt.closeWork?.(exchangeId, remote.name, text)
+  await rt.deliver({
+    fromId: remote.id, toId: asker.id, text, role: 'reply', replyTo: exchangeId,
+    ...(sessionId ? { sessionId } : {}), ...(part ? { fromPart: part } : {}), ...(work ? { work } : {}),
+  })
 }
 
 /** Resend what is due; give up on what waited past OUTBOX_TTL_MS. `force`: resend the away entries now. */
