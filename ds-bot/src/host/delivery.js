@@ -29,6 +29,12 @@ export function install(rt) {
     return resolved.agent
   }
 
+  // Has DSH written the Session's system head? True when that cannot be told (a stand-in Session without a log).
+  const hasSystemHead = (session) => {
+    const log = session?.log
+    return !Array.isArray(log) || log.some(event => event?.type === 'system/message')
+  }
+
   const headerFor = (role, fromName, roomName, audience, note, deferred = false, { resumed = false, retried = false, resent = false, abandoned = false, abandonedReason, asker } = {}) => {
     const label = note ?? 'new message'
     const reportLabel = note ?? 'replies to your post'
@@ -629,7 +635,11 @@ export function install(rt) {
     // between Bots on one machine: it keeps `kind: 'bot'`, so it is not drawn as something the
     // user typed. Other visible roles (group, report, task) are still written as user text.
     // Background task roles (DS Bot 0.3.10) are drawn by the task bar from their `kind: 'bot'` source, not as text the user typed.
+    // Not while the Session has no system head yet: DSH writes it inside the Session's first turn and needs it first on the
+    // timeline, so a message written ahead of it leaves a Session that cannot be opened again. Such a message goes in
+    // with the first turn instead.
     const visible = classify(role) === 'visible' && !EXCHANGE_ROLES.has(role) && !TASK_ROLES.has(role) && !RESULT_ROLES.has(role) && typeof agent.session?.append === 'function'
+      && hasSystemHead(agent.session)
     if (visible) {
       // The chat projector renders user sources verbatim; relay sources show only an
       // exchange link. Keep the relay metadata on the wake that owns the next turn.

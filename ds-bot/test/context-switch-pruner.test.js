@@ -676,6 +676,30 @@ test('P1-4: an idle check past the hard line with an oversized tool result makes
   assert.doesNotThrow(() => assertStoredLogLoads(agent.session))
 })
 
+// The bug (2026-11-26, group chat tests): a group message for a Bot's Session that had not run a turn yet was written
+// onto its timeline at once, ahead of the turn that writes the Session's system head. DSH needs the head first, and
+// refuses to open such a Session again ("system/message requires a protected first surface head"). Until the Session
+// has its head the message goes the ordinary way, inside the first turn.
+test('a message for a Session that has not run its first turn is not written ahead of its system head, and the stored log loads', async (t) => {
+  const { agent, calls, rt } = await bootRealDshBot(t, {
+    onTurn: () => ({ text: 'ACK', usage: { inputTokens: 500, outputTokens: 20 } }),
+  })
+  assert.equal(agent.session.snapshotEvents().some(ev => ev.type === 'system/message'), false, 'the Session is fresh')
+  await rt.deliver({ toId: 'm1', role: 'room', text: 'The group says hello', exchangeId: 'fresh-1' })
+  assert.equal(await waitFor(() => calls.some(c => c.kind === 'turn') && agent.status === 'idle'), true, 'the message was answered')
+  const events = agent.session.snapshotEvents()
+  const firstTurn = events.findIndex(ev => ev.type === 'turn/start')
+  assert.ok(firstTurn >= 0)
+  assert.deepEqual(events.slice(0, firstTurn).filter(ev => ev.type === 'user/message').map(ev => ev.seq), [], 'nothing on the timeline ahead of the first turn')
+  assert.equal(events.some(ev => ev.type === 'system/message'), true, 'DSH wrote the head')
+  assert.doesNotThrow(() => assertStoredLogLoads(agent.session), 'the stored log opens')
+  assert.match(JSON.stringify(calls.find(c => c.kind === 'turn').messages), /The group says hello/, 'the model got the message')
+  // Once the Session has its head, a message is written to the timeline at once, as before.
+  await rt.deliver({ toId: 'm1', role: 'room', text: 'The group says more', exchangeId: 'fresh-2' })
+  assert.equal(await waitFor(() => calls.filter(c => c.kind === 'turn').length >= 2 && agent.status === 'idle'), true)
+  assert.doesNotThrow(() => assertStoredLogLoads(agent.session))
+})
+
 test('P1-4: real DSH ToolResultPruner reclaims oversized tool outputs mid-turn past hard line without triggering LLM compaction', async (t) => {
   const hugeToolOutput = 'BUILD_OUTPUT_LINE_9876543210 '.repeat(6_000) // ~174k chars (~43.5k tokens)
   const { agent, calls, runTurn, rt } = await bootRealDshBot(t, {
