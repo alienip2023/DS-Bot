@@ -318,6 +318,7 @@ const noticeStopReason = (source, content) => {
 
 const RETRY_TEXT = 'Your last reply wrote a tool call as plain text (<tool_call>…), so it did not run and nothing happened. Call the tool through the tool interface now, then reply as you meant to.'
 const RETRY_PROMISE_TEXT = 'Your last reply said you would start working, but you ended the turn without calling any tool, so nothing ran. Call the tools you need and do the work now. If your last reply already was your whole answer, reply [PASS]; it stays posted.'
+const MODEL_RETRY_TEXT = 'Your last turn stopped because the model call failed, not because of anything you did. Go on with what you were doing.'
 // The turn number a running turn gets when it started before this plugin was loaded and
 // dsh does not say which number it has. dsh numbers turns from 1, so this one is unused.
 const RECOVERED_TURN = -1
@@ -420,15 +421,19 @@ export function install(rt) {
 
   // The retry goes where the turn's trigger came from: a group round's waiter or a
   // Bot's request keeps its exchange; anything else is a nudge in the Bot's own chat.
-  const retryTurn = (id, info, note, text) => {
+  // `role` is what a nudge in the Bot's own chat goes as: 'retry' for a reply that did not run, 'continue' for a
+  // turn the model call failed (a control message: never drawn as text the user typed, fork.129).
+  const retryTurn = (id, info, note, text, { role = 'retry' } = {}) => {
     const keeps = info !== undefined && (info.role === 'room' || expectsReply(info))
-    return rt.deliver({
+    // A nudge has an id of its own, so a nudge that cannot be sent is not left unread (fork.129).
+    const exchangeId = keeps && info.exchangeId ? info.exchangeId : randomUUID()
+    const sent = rt.deliver({
       ...(keeps && info.senderSessionId ? { fromId: info.senderSessionId } : {}),
       toId: rt.selfOf(id),
       sessionId: id,
-      role: keeps ? info.role : 'retry',
+      role: keeps ? info.role : role,
       ...(keeps && info.roomId ? { roomId: info.roomId } : {}),
-      ...(keeps && info.exchangeId ? { exchangeId: info.exchangeId } : {}),
+      exchangeId,
       ...(info?.work ? { work: info.work } : {}),
       ...(keeps && info.audience ? { audience: info.audience } : {}),
       ...(keeps && info.askedBy ? { askedBy: info.askedBy } : {}),
@@ -438,9 +443,28 @@ export function install(rt) {
       retried: true,
       text,
     })
+    // A nudge in the Bot's own chat that its Session refused (it ended meanwhile) is done with: it is not sent again
+    // at the next start. What answers someone else (a group round, a Bot's request) keeps its note.
+    if (!keeps) {
+      return sent.catch(error => {
+        if (error?.code === 'E_SESSION_ENDED') rt.forgetDelivery?.(exchangeId)
+        throw error
+      })
+    }
+    return sent
   }
   const retryWrittenCall = (id, info) => retryTurn(id, info, 'your tool call did not run', RETRY_TEXT)
   const retryPromisedWork = (id, info) => retryTurn(id, info, 'you stopped before calling any tool', RETRY_PROMISE_TEXT)
+  // P3's retry after a failed model call. A background task does not get one: its failure is reported to the chat
+  // that started it, and the task's Session is done. Nor does a Session that has input waiting: the next turn runs
+  // anyway, and a retry on top would only add a turn (fork.129).
+  const retryFailedCall = (id, info, note) => {
+    if (rt.taskOwners?.has(id)) return Promise.resolve(undefined)
+    let inbox
+    try { inbox = ctx.get?.('agents')?.get?.(id)?.inbox } catch { inbox = undefined }
+    if ((inbox?.nextTurn?.length ?? 0) > 0 || (inbox?.nextStep?.length ?? 0) > 0 || (rt.unreadOf?.(id)?.length ?? 0) > 0) return Promise.resolve(undefined)
+    return retryTurn(id, info, note, MODEL_RETRY_TEXT, { role: 'continue' })
+  }
 
   // Per-session sliding-window failure counts for retryDecision (P3).
   // Keys are session ids (the `id` parameter, which is a sessionId in this file).
@@ -1760,10 +1784,10 @@ export function install(rt) {
             void rt.save().catch(() => {})
             rt.warn?.('ds-bot: %s falling back to %s (%s)', bot.name, decision.fallbackRef, decision.reason)
             // Trigger a retry turn on the fallback model.
-            void retryTurn(id, info, `the model call failed (${decision.reason}); retrying on ${decision.fallbackRef}`, 'model call failed').catch(error => rt.warn('ds-bot: fallback retry of %s failed: %s', id, error))
+            void retryFailedCall(id, info, `the model call failed (${decision.reason}); retrying on ${decision.fallbackRef}`).catch(error => rt.warn('ds-bot: fallback retry of %s failed: %s', id, error))
           } else if (!isJoinedRequest && decision.action === 'retry' && info?.retried !== true) {
             // Deterministic retry within the attempt budget.
-            void retryTurn(id, info, `the model call failed (${decision.reason}); please try again`, 'model call failed').catch(error => rt.warn('ds-bot: retry of %s failed: %s', id, error))
+            void retryFailedCall(id, info, `the model call failed (${decision.reason}); DS Bot is trying again`).catch(error => rt.warn('ds-bot: retry of %s failed: %s', id, error))
           }
           // decision.action === 'stop' → fall through to blockBot / normal failure handling
           if (blockBot(id, session, failure) && owner !== undefined && info?.role === 'kickoff') rt.holdKickoffAgain(owner)

@@ -176,12 +176,69 @@ test('a real DSH transport failure drains the pending inbox without another send
   assert.deepEqual(events.filter(event => event.type === 'turn/end').map(event => event.data.reason.kind), ['error', 'completed', 'completed', 'completed'])
   assert.equal(events.find(event => event.type === 'turn/end').data.reason.error.code, 'TRANSPORT')
   const messages = events.filter(event => event.type === 'user/message')
-  // Fork (P3 failure policy): a retryable failure also queues one 'retry' nudge (failure-policy.js); it joins the
-  // drained turn and is not another send of the user's input.
+  // Fork (P3 failure policy, fork.129): a retryable failure gets no retry turn while input waits (the drained turns
+  // answer it), and nothing is sent twice.
   assert.deepEqual(messages.filter(event => event.data.source.kind === 'user' && event.data.source.role !== 'retry').map(event => event.data.id), [opening.id, steer.id, followup.id])
   assert.deepEqual(messages.filter(event => event.data.source.role !== 'retry').flatMap(event => event.data.source.exchangeId ?? []), ['reply', 'report'])
   assert.deepEqual(plugin.rt.unreadOf('b'), [])
   await settle(() => queued()?.length === 0)
+})
+
+// fork.129 (live 2026-11-25): a failed model call with nothing waiting gets one retry turn. It says why, is a control
+// message (not drawn as text the user typed), and its note is gone once taken. A second failure gets none.
+test('a failed model call with nothing waiting gets one retry turn that says why', async (t) => {
+  const root = new Context()
+  const home = freshHome()
+  const dsh = dshSide()
+  let plugin
+  t.after(async () => {
+    await root.fiber.dispose()
+    await plugin?.ctx.dispose()
+    rmSync(home, { recursive: true, force: true, maxRetries: 5 })
+  })
+  await mountAgentLoopTestDependencies(root)
+  let calls = 0
+  class Adapter extends LlmAdapter {
+    async resolveModel(provider, id) { return { provider, id, name: id, inputModalities: ['text'], context: { contextWindow: 100000 } } }
+    async *stream() {
+      calls += 1
+      if (calls <= 2) yield { type: 'finish', reason: { kind: 'error', failure: { code: 'TRANSPORT', message: 'Connection error.' } } }
+      else yield { type: 'finish', reason: { kind: 'stop' } }
+    }
+  }
+  root.llm.registerAdapter(['queue-test'], new Adapter())
+  await mountAgentLoopTestHarness(root)
+  const agent = await root.agentLoop.create(SessionId('b'), { provider: 'queue-test', model: 'test' })
+  dsh.agentMap.set('b', agent)
+  dsh.services.agents = root.agents
+  plugin = await loadPlugin(dsh, home)
+  await plugin.rt.load()
+  root.on('session/event', (session, event) => {
+    for (const listener of plugin.ctx.listeners.get('session/event') ?? []) {
+      if (listener.length >= 2) listener(session, event)
+    }
+  })
+  for (const name of ['agent/status', 'agent/inbox/discarded']) {
+    root.on(name, payload => plugin.ctx.emit(name, payload))
+  }
+  agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'Start the work' }] }))
+  const ends = () => agent.session.snapshotEvents().filter(event => event.type === 'turn/end')
+  await waitFor(() => ends().length >= 2)
+  await agent.whenIdle()
+  await new Promise(resolve => setTimeout(resolve, 50))
+  await agent.whenIdle()
+  const events = agent.session.snapshotEvents()
+  // The user's turn fails, the one retry fails too, and nothing retries the retry.
+  assert.deepEqual(ends().map(event => event.data.reason.kind), ['error', 'error'])
+  const retries = events.filter(event => event.type === 'user/message' && event.data.source?.retried === true)
+  assert.equal(retries.length, 1, 'one retry message')
+  const [retry] = retries
+  assert.equal(retry.data.source.role, 'continue')
+  assert.notEqual(retry.data.source.kind, 'user', 'the retry is not drawn as text the user typed')
+  const text = retry.data.content.map(part => part.text ?? '').join('')
+  assert.match(text, /^\[Retry after a failed turn · the model call failed/)
+  assert.doesNotMatch(text, /tool call as text/)
+  assert.deepEqual(plugin.rt.unreadOf('b'), [])
 })
 
 test('a pending subagent settlement wakes the parent after a transport failure', async (t) => {
