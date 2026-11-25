@@ -1,9 +1,10 @@
-// The hub writes a node Bot's thinking and tool steps (bot/trace) into the Session of a group round with that Bot
-// in the events a local turn writes: while the turn runs, once per step, in order, never twice, and never leaving a
+// The hub writes a node Bot's thinking and tool steps (bot/trace) into the mirror page of that Bot, for an exchange with
+// it, in the events a local turn writes: while the turn runs, once per step, in order, never twice, and never leaving a
 // step or a thinking block open when the turn ends any way at all. These tests drive the hub side with `botTrace`
 // events shaped as AC's ingest emits them; test/node-trace-e2e.test.js runs the same through AC's real functions.
-// Traces now reach only group rounds (W4: the page is a copy of the node chat, written by conv-replica.js), so the
-// rounds below go through handleJoinedTurn with a roomId, as a group does.
+// A node's own page is a copy of its chat (conv-replica.js), so this is the path of a node without the copy. Group rounds
+// no longer write into the group's own Session (fork.130: its agent is the only writer of turns there), so no trace
+// reaches a group; the rounds below are Bot-to-Bot exchanges (handleJoinedTurn without a roomId).
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { makeWorld } from './joined-world.js'
@@ -24,24 +25,20 @@ const FULL = [A(1, 'plan', [call('c1')]), R(2, 'c1', 'a.txt'), A(3, 'read it', [
 const exchangeOf = (w, index = 0) => w.frames.filter(frame => frame.type === 'bot/turn')[index].payload.exchangeId
 const trace = (w, index, seq, items, extra = {}) => w.emitter.emit('botTrace', { nodeId: 'n1', remoteBotId: 'rb1', exchangeId: exchangeOf(w, index), seq, items, ...extra })
 
-// A group with the node Bot in it: its round is written into the group's own Session (joined-turn.js openMirrorTurn).
-const ROOM = { id: 'room-1', name: 'Team', sessionId: 'group-1' }
+// An exchange with the node Bot: its round is written into the Bot's mirror page (joined-turn.js openMirrorTurn).
 function groupWorld(options) {
   const w = makeWorld(options)
   w.rt.state.exchanges = []
-  w.rt.roomOf = id => (id === ROOM.id ? ROOM : undefined)
-  w.rt.sessionOfRoom = room => room.sessionId
   return w
 }
 async function groupRound(w, text = 'hi') {
-  const done = handleJoinedTurn(w.rt, { fromId: 'local', toId: w.bot.id, text, roomId: ROOM.id, roomName: ROOM.name })
+  const done = handleJoinedTurn(w.rt, { fromId: 'local', toId: w.bot.id, text, role: 'request' })
   await drain()
-  return { done, session: w.sessionOf(ROOM.sessionId) }
+  return { done, session: w.sessionOf(w.bot.sessionId) }
 }
 
 // ── the group round ──────────────────────────────────────────────────────────────────────────────
-test('a group round: the steps are written while the node works, then the answer closes the turn like a local turn', async () => {
-  // Traces now reach only group rounds (W4: the page is a copy of the node chat).
+test('a round: the steps are written while the node works, then the answer closes the turn like a local turn', async () => {
   const w = groupWorld()
   const { done, session } = await groupRound(w)
   trace(w, 0, 1, FULL.slice(0, 2))
@@ -65,8 +62,7 @@ test('a group round: the steps are written while the node works, then the answer
   assert.equal(w.warnings.length, 0)
 })
 
-test('the same steps in the Session of a local turn and of a group round give the same derived messages', async () => {
-  // Traces now reach only group rounds (W4: the page is a copy of the node chat).
+test('the same steps in the Session of a local turn and of a round give the same derived messages', async () => {
   const w = groupWorld()
   const { done, session } = await groupRound(w)
   trace(w, 0, 1, FULL, { final: true })
@@ -81,7 +77,6 @@ test('the same steps in the Session of a local turn and of a group round give th
 })
 
 test('a turn that no trace came for is exactly what it was: one step, one answer', async () => {
-  // Traces now reach only group rounds (W4: the page is a copy of the node chat).
   const w = groupWorld()
   const { done, session } = await groupRound(w)
   w.reply(0, { text: 'plain' })
@@ -90,7 +85,6 @@ test('a turn that no trace came for is exactly what it was: one step, one answer
 })
 
 test('a frame played twice, or the same steps under another seq, write nothing twice', async () => {
-  // Traces now reach only group rounds (W4: the page is a copy of the node chat).
   const w = groupWorld()
   const { done, session } = await groupRound(w)
   trace(w, 0, 1, FULL.slice(0, 2))
@@ -106,7 +100,6 @@ test('a frame played twice, or the same steps under another seq, write nothing t
 })
 
 test('batches that arrive out of order wait for the one before them, and are written in order', async () => {
-  // Traces now reach only group rounds (W4: the page is a copy of the node chat).
   const w = groupWorld()
   const { done, session } = await groupRound(w)
   trace(w, 0, 2, FULL.slice(2, 4))
@@ -119,7 +112,6 @@ test('batches that arrive out of order wait for the one before them, and are wri
 })
 
 test('a batch lost on the way is made good by the final list, written in order before the answer', async () => {
-  // Traces now reach only group rounds (W4: the page is a copy of the node chat).
   const w = groupWorld()
   const { done, session } = await groupRound(w)
   // batch 1 (steps 1-2) never arrives; batch 2 (3-4) does and waits
@@ -132,7 +124,6 @@ test('a batch lost on the way is made good by the final list, written in order b
 })
 
 test('a hole the final list cannot fill (the node cut its list) is skipped, and the turn says how many steps were left out', async () => {
-  // Traces now reach only group rounds (W4: the page is a copy of the node chat).
   const w = groupWorld()
   const { done, session } = await groupRound(w)
   trace(w, 0, 1, [FULL[0], FULL[1], FULL[3]], { final: true, omitted: 7 })
@@ -145,7 +136,6 @@ test('a hole the final list cannot fill (the node cut its list) is skipped, and 
 
 // ── every way a turn can end leaves nothing open ─────────────────────────────────────────────────
 test('the link is lost in the middle of a step: the turn is closed as lost, the unanswered tool call is answered with an error', async () => {
-  // Traces now reach only group rounds (W4: the page is a copy of the node chat).
   const w = groupWorld()
   const { done, session } = await groupRound(w)
   trace(w, 0, 1, FULL.slice(0, 3))   // step 2's tool is running when the link drops
@@ -179,7 +169,6 @@ test('a stop of the node turn in the middle of a step: closed as stopped, nothin
 })
 
 test('a failed node turn: the steps stay, the held thinking leads the failure line, the log is strict', async () => {
-  // Traces now reach only group rounds (W4: the page is a copy of the node chat).
   const w = groupWorld()
   const { done, session } = await groupRound(w)
   trace(w, 0, 1, FULL, { final: true })
@@ -194,7 +183,6 @@ test('a failed node turn: the steps stay, the held thinking leads the failure li
 })
 
 test('a thinking-only step that is followed by more steps (the turn went on) is written as its own message', async () => {
-  // Traces now reach only group rounds (W4: the page is a copy of the node chat).
   const w = groupWorld()
   const { done, session } = await groupRound(w)
   trace(w, 0, 1, [A(1, 'first answer?'), A(2, 'no, more work', [call('c1')]), R(3, 'c1', 'x'), A(4, 'final')], { final: true })
@@ -223,8 +211,8 @@ test('a Bot-to-Bot exchange gets its steps too, in its own turn', async () => {
   assertStrict(w.sessionOf('mirror-1'))
 })
 
-test('a group round that waits behind another round of the same group keeps its steps and writes them with its turn, once the first is over', async () => {
-  // Traces now reach only group rounds (W4: the page is a copy of the node chat); the round it waits behind is the group's own.
+test('a round that waits behind another round with the same Bot keeps its steps and writes them with its turn, once the first is over', async () => {
+  // The exchange it waits behind is the Bot's own earlier one.
   const w = groupWorld()
   const first = await groupRound(w, 'first round')
   const second = await groupRound(w, 'second round')
@@ -245,7 +233,6 @@ test('a group round that waits behind another round of the same group keeps its 
 
 // ── compatibility ────────────────────────────────────────────────────────────────────────────────
 test('a registry that cannot listen (older host) opens no sink and the turn runs as before', async () => {
-  // Traces now reach only group rounds (W4: the page is a copy of the node chat).
   const w = groupWorld()
   const registry = w.rt.ctx.get('remote-agent:registry')
   const bare = { send: registry.send, on: undefined, off: undefined }
@@ -257,7 +244,6 @@ test('a registry that cannot listen (older host) opens no sink and the turn runs
 })
 
 test('a trace for another exchange or another node is not written', async () => {
-  // Traces now reach only group rounds (W4: the page is a copy of the node chat).
   const w = groupWorld()
   const { done, session } = await groupRound(w)
   w.emitter.emit('botTrace', { nodeId: 'n1', remoteBotId: 'rb1', exchangeId: 'someone-else', seq: 1, items: FULL })
@@ -269,7 +255,6 @@ test('a trace for another exchange or another node is not written', async () => 
 })
 
 test('a failing Session append stops the steps but never the turn: the answer is still written and the turn closed', async () => {
-  // Traces now reach only group rounds (W4: the page is a copy of the node chat).
   const w = groupWorld({ failAppendOn: 'tool/call' })
   const { done, session } = await groupRound(w)
   trace(w, 0, 1, FULL, { final: true })

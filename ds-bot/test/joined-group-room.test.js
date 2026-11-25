@@ -95,6 +95,27 @@ for (const fromBot of [false, true]) {
   })
 }
 
+// fork.130: a group turn writes nothing into the group's Session, but the round's waiter is still told how it went:
+// a finished turn touches it, a failed or stopped one fails it.
+test('a node member\'s group turn still touches the round when it finishes and fails it when it cannot reach the node', async t => {
+  const w = hub(t)
+  const touched = []
+  const failed = []
+  w.rt.groupSessionsOf = () => [w.room.sessionId]
+  w.rt.touchRoomTurn = sessionId => touched.push(sessionId)
+  w.rt.failRoomTurn = (sessionId, info) => failed.push([sessionId, info.code?.code ?? info.code])
+  await handleJoinedTurn(w.rt, { fromId: w.sender.id, toId: w.shadow.id, roomId: w.room.id, text: 'work', exchangeId: 'g-ok', defer: true })
+  w.answer()
+  await drain()
+  assert.deepEqual(touched, [w.room.sessionId])
+  assert.deepEqual(failed, [])
+  // The node cannot be reached.
+  w.rt.ctx.get('remote-agent:registry').send = () => false
+  await handleJoinedTurn(w.rt, { fromId: w.sender.id, toId: w.shadow.id, roomId: w.room.id, text: 'work', exchangeId: 'g-down', defer: true })
+  assert.deepEqual(failed, [[w.room.sessionId, 'bridge-down']])
+  assert.equal(w.sessions.get('room-session').log.length, 0)
+})
+
 test('a missing room falls back to private reply and mirror with a warning', async t => {
   const w = hub(t)
   delete w.rt.state.rooms[w.room.id]

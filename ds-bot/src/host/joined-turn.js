@@ -40,6 +40,9 @@ const MIRROR_RPC_PREFIX = 'joined:'
 // or with the visible failure line. `duplicate` means this exchange is already on the page
 // (a retried delivery): the turn is not opened again. Any mirror failure is a warning only —
 // it must never block the dispatch itself.
+// What a group turn opens in place of a mirror turn: nothing is written, but the round's waiter is still told how it went.
+const ROOM_ONLY = Object.freeze({ roomOnly: true })
+
 async function openMirrorTurn(rt, bot, text, xid, senderName, roomId) {
   try {
     const room = roomId ? rt.roomOf?.(roomId) : undefined
@@ -53,7 +56,7 @@ async function openMirrorTurn(rt, bot, text, xid, senderName, roomId) {
       // This triggers the round's ROOM_WORK_GRACE_MS window so it doesn't time out
       // while waiting for the node's reply. Local Bots do this via tool/call session events.
       rt.workRoomTurn?.(rt.sessionOfRoom(room), 'joined-turn')
-      return undefined
+      return ROOM_ONLY
     }
     const session = await ensureMirrorSession(rt, bot)
     const rpcId = MIRROR_RPC_PREFIX + xid
@@ -68,7 +71,7 @@ async function openMirrorTurn(rt, bot, text, xid, senderName, roomId) {
 
 function closeMirrorTurn(rt, mirror, botId, { text, seq, error, stopped } = {}) {
   if (mirror === undefined) return
-  closeJoinedMirror(rt, mirror, { text, seq, error, stopped })
+  if (mirror.roomOnly !== true) closeJoinedMirror(rt, mirror, { text, seq, error, stopped })
   // The group round waiter for this joined Bot never sees session events (its
   // mirror Session has no local Agent), so notify it here: a finished turn
   // touches the waiter, a failed one fails it.
@@ -400,11 +403,11 @@ export async function handleJoinedTurn(rt, msg = {}) {
   const lateWindowMs = Number.isFinite(rt.joinedLateWindowMs) ? Math.max(1, rt.joinedLateWindowMs) : JOINED_LATE_WINDOW_MS
   const wait = listenBotTurnResult(registry, xid, nodeId, timeoutMs, remoteBotId, {
     lateWindowMs,
-    onTimeout: () => markJoinedMirrorPending(rt, mirror, PENDING_TURN_TEXT),
+    onTimeout: () => { if (mirror?.roomOnly !== true) markJoinedMirrorPending(rt, mirror, PENDING_TURN_TEXT) },
   })
   // The node's thinking and tool steps (bot/trace) go into this exchange's turn: now if it is open on the page, or
   // when it is written if the exchange waits behind another turn (the sink keeps the steps until then).
-  const sink = mirror === undefined ? undefined : openTraceSink(rt, {
+  const sink = mirror === undefined || mirror.roomOnly === true ? undefined : openTraceSink(rt, {
     bot: to, exchangeId: xid, nodeId,
     ...(mirror.queued ? {} : { binding: { session: mirror.session, turn: mirror.turn, step: 1, closedTurns: mirror.state?.closedTurns } }),
   })
@@ -444,7 +447,7 @@ export async function handleJoinedTurn(rt, msg = {}) {
       return { ok: false, error }
     }
     closeMirrorTurn(rt, mirror, to.id, { text: result.text, seq: result.seq })
-    if (mirror !== undefined) noteTraceGap(rt, to, sink, { session: mirror.session ?? mirror.item?.session, state: mirror.state ?? mirror.item?.state })
+    if (mirror !== undefined && mirror.roomOnly !== true) noteTraceGap(rt, to, sink, { session: mirror.session ?? mirror.item?.session, state: mirror.state ?? mirror.item?.state })
     await replyToSender(rt, { fromId, toId, exchangeId: xid, work, roomId, text: result.text ?? '' })
     return xid
   }

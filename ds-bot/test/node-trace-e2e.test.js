@@ -2,9 +2,10 @@
 // real receiver (joined-turn.js createBotTurnReceiver) on real Sessions; AC's real node dispatcher
 // (lib/node/dispatch.js + lib/bot-turn.js) validates and sends the frames; AC's real hub ingest
 // (lib/hub/registry-ingest.js) validates them again and emits `botTrace` / `botTurnResult`; ds-bot's hub side writes the
-// steps into the Session of the group round. The test then compares that Session with the node's own Session — the
-// log of the turn as a local Bot would have it. Traces now reach only group rounds (W4: the Bot's page is a copy of
-// the node chat, written by conv-replica.js), so the turns below are group rounds (handleJoinedTurn with a roomId).
+// steps into the Bot's mirror page. The test then compares that Session with the node's own Session — the log of the
+// turn as a local Bot would have it. A node's page is a copy of its chat (conv-replica.js), so this is the path of a
+// node without the copy; group rounds no longer write into the group's Session (fork.130), so the turns below are
+// Bot-to-Bot exchanges (handleJoinedTurn without a roomId).
 //
 // Needs the AC repo (REMOTE_AGENT_REPO, or a sibling `dsh-ai-cluster`); skipped with a message when it is not there.
 import assert from 'node:assert/strict'
@@ -13,7 +14,7 @@ import { existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { test } from 'node:test'
-import { handleJoinedTurn, install as installJoinedTurn, remoteGroupSession } from '../src/host/joined-turn.js'
+import { handleJoinedTurn, install as installJoinedTurn } from '../src/host/joined-turn.js'
 import { NODE_FEATURES } from '../src/host/node-compat.js'
 import { TRACE_LIMITS } from '../src/host/node-trace.js'
 import { turnEnd } from '../src/host/turn-end.js'
@@ -43,7 +44,7 @@ const SCRIPT = {
 /**
  * One hub and one node in a process. `nodeCaps` / `hubCaps` are what each side announces (AC's own lists unless
  * a test wants an older one); `drop(type, data, n)` loses a frame on the node→hub link; `link.up` cuts it.
- * `room`: the node's turn is a group round, run in the node's group Session (the hub writes it into the group's).
+ * `room`: kept by the tests that name it; the node's turn is run in its chat either way.
  */
 async function cluster({ nodeCaps, hubCaps, drop = () => false, script = SCRIPT, tick = 12, steerAfter, room = false } = {}) {
   const protocol = await load('protocol.js')
@@ -77,7 +78,7 @@ async function cluster({ nodeCaps, hubCaps, drop = () => false, script = SCRIPT,
   // The node: ds-bot's real receiver on a real Session, handed to AC's real dispatcher as ctx.get('remote-agent:bot-turn').
   const provided = new Map()
   const listeners = []
-  const nodeSession = new Session(room ? remoteGroupSession(ROOM.id, 'rb1') : 'node-chat')
+  const nodeSession = new Session('node-chat')
   const put = (type, data, options) => {
     const event = nodeSession.append(type, data, options)
     for (const fn of listeners) fn(nodeSession, event)
@@ -145,21 +146,18 @@ async function cluster({ nodeCaps, hubCaps, drop = () => false, script = SCRIPT,
   // The hub: ds-bot's real page path, on AC's real registry.
   const w = makeWorld({ tracker: true })
   w.rt.ctx.get = key => (key === 'remote-agent:registry' ? registry : undefined)
-  // The group: its round is written into the group's own Session; the replies to the round are kept as delivered.
+  // The replies to the exchange are kept as delivered.
   const delivered = []
   if (room) {
     w.rt.state.exchanges = []
-    w.rt.roomOf = id => (id === ROOM.id ? ROOM : undefined)
-    w.rt.sessionOfRoom = each => each.sessionId
     w.rt.deliver = async (msg) => { delivered.push(msg) }
   }
   return { w, registry, link, hubGets, nodeSent, nodeSession, nodeLog, events, protocol, delivered }
 }
 
-const ROOM = { id: 'room-1', name: 'Team', sessionId: 'group-1' }
-const groupRound = (c, text) => handleJoinedTurn(c.w.rt, { fromId: 'local', toId: c.w.bot.id, text, roomId: ROOM.id, roomName: ROOM.name })
-const groupOf = c => c.w.sessionOf(ROOM.sessionId)
-// The round's own turn (the first one in the group Session): a note the hub may add after it is a turn of its own.
+const groupRound = (c, text) => handleJoinedTurn(c.w.rt, { fromId: 'local', toId: c.w.bot.id, text, role: 'request' })
+const groupOf = c => c.w.sessionOf(c.w.bot.sessionId)
+// The round's own turn (the first one in the page): a note the hub may add after it is a turn of its own.
 const roundOf = (session) => {
   const end = session.log.findIndex(event => event.type === 'turn/end')
   return { log: session.log.slice(0, end + 1) }
@@ -168,7 +166,6 @@ const roundOf = (session) => {
 const finish = async (c) => { await c.w.idle(); await new Promise(resolve => setImmediate(resolve)) }
 
 test('a node turn with thinking and two tool calls: the hub Session has the events a local turn has, in the same order', { skip }, async () => {
-  // Traces now reach only group rounds (W4: the page is a copy of the node chat).
   const c = await cluster({ room: true })
   assert.equal(await groupRound(c, 'list the files'), c.hubGets[0].payload.exchangeId)
   await finish(c)
@@ -225,7 +222,6 @@ test('capability: the node\'s hello carries bot-trace/1 and ds-bot reads it as "
 })
 
 test('a lost live batch (and the node\'s second one with it) is repaired by the final list', { skip }, async () => {
-  // Traces now reach only group rounds (W4: the page is a copy of the node chat).
   const lost = new Set()
   const c = await cluster({ room: true, drop: (type, data) => { if (type === 'bot/trace' && data.final !== true && lost.size < 2) { lost.add(data.seq); return true } return false } })
   await groupRound(c, 'list the files')
@@ -236,8 +232,7 @@ test('a lost live batch (and the node\'s second one with it) is repaired by the 
   assertStrict(mirror)
 })
 
-test('every trace frame played twice by the link: the group Session is written once', { skip }, async () => {
-  // Traces now reach only group rounds (W4: the page is a copy of the node chat).
+test('every trace frame played twice by the link: the page is written once', { skip }, async () => {
   const c = await cluster({ room: true })
   const original = c.registry.handleFrameFor.bind(c.registry)
   c.registry.handleFrameFor = (id, frame) => { original(id, frame); if (frame.t === 'bot/trace') original(id, structuredClone(frame)) }
@@ -247,7 +242,7 @@ test('every trace frame played twice by the link: the group Session is written o
 })
 
 test('the link is lost while the node is in the middle of a tool: the round\'s turn is closed as lost, nothing dangles, and the node\'s late answer still reaches the group', { skip }, async () => {
-  // Traces now reach only group rounds (W4: the page is a copy of the node chat); the late answer goes to the group as a reply.
+  // The late answer is written into the page as a note of its own.
   const c = await cluster({ room: true, tick: 30 })
   const round = groupRound(c, 'list the files')
   await wait(45)   // step 1's call is out, its result is not
@@ -262,20 +257,20 @@ test('the link is lost while the node is in the middle of a tool: the round\'s t
   assert.ok(mirror.log.filter(event => event.type === 'tool/call').every(call => mirror.log.some(event => event.type === 'tool/result' && event.data.message.toolCallId === call.data.callId)))
   assert.ok(textOf(answers(mirror).at(-1)).includes('桥已断'))
   // the link comes back: AC re-sends the node's final steps and its result; the closed turn is not written into again,
-  // and the answer reaches the group as a reply of its own
+  // and the answer is written into the page as a note of its own
   await wait(250)
   const closedAt = mirror.log.length
   c.link.up = true
-  const late = () => c.delivered.find(msg => msg.role === 'reply' && msg.roomId === ROOM.id && String(msg.text).includes('a.txt says hello'))
+  const late = () => mirror.log.slice(closedAt).find(event => event.type === 'assistant/message' && textOf(event).includes('a.txt says hello'))
   const started = Date.now()
   while (late() === undefined && Date.now() - started < 4000) await wait(50)
-  assert.ok(late()?.text.startsWith('↩ 连接恢复后'), 'the node\'s answer reaches the group after the link is back')
+  assert.ok(late() !== undefined, 'the node\'s answer reaches the page after the link is back')
   assert.equal(mirror.log.slice(closedAt).filter(event => event.type === 'tool/call').length, 0, 'no step is written into the closed turn, and none twice')
   assertStrict(mirror)
 })
 
 test('a node with an older AC (no bot-trace/1): the round is answered as always, no trace frame is sent, nothing crashes', { skip }, async () => {
-  // Traces now reach only group rounds (W4: the page is a copy of the node chat); the page's "too old" note is gone with it.
+  // The page's "too old" note is gone with it.
   const protocol = await load('protocol.js')
   const caps = protocol.nodeCaps(['fs', 'exec', 'artifact', 'agent'], 'linux').filter(cap => cap !== 'bot-trace/1')
   // an old node's AC would not even offer a trace channel to the receiver; its hub list is the old one too
@@ -303,7 +298,6 @@ test('a new node under a hub whose AC predates bot-trace/1: no frame is sent, th
 })
 
 test('a hub whose AC emits no botTrace at all (an older AC under a newer ds-bot): the answer is complete and nothing throws', { skip }, async () => {
-  // Traces now reach only group rounds (W4: the page is a copy of the node chat).
   const c = await cluster({ room: true })
   const original = c.registry.emit.bind(c.registry)
   c.registry.emit = (name, payload) => { if (name !== 'botTrace') original(name, payload) }
@@ -318,7 +312,6 @@ test('a hub whose AC emits no botTrace at all (an older AC under a newer ds-bot)
 })
 
 test('a secret the node Bot\'s user keeps never reaches the hub: it is replaced on the node, before AC sends it', { skip }, async () => {
-  // Traces now reach only group rounds (W4: the page is a copy of the node chat).
   const script = { steps: [{ think: 'the password is hunter2', call: { id: 'c1', name: 'bash', args: { command: 'echo hunter2' }, out: 'hunter2' } }], final: { think: 'done', text: 'ok' } }
   const c = await cluster({ room: true, script })
   await groupRound(c, 'go')
