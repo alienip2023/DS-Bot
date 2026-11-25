@@ -6,6 +6,7 @@ import * as diagnostics from './src/host/diagnostics.js'
 import * as store from './src/host/store.js'
 import * as models from './src/host/models.js'
 import * as providers from './src/host/providers.js'
+import * as chatgpt from './src/host/chatgpt.js'
 import * as permissions from './src/host/permissions.js'
 import * as turns from './src/host/turns.js'
 import * as steer from './src/host/steer.js'
@@ -27,6 +28,7 @@ import * as goals from './src/host/goals.js'
 import * as agentCommands from './src/host/agent-commands.js'
 import * as tasks from './src/host/tasks.js'
 import * as approvals from './src/host/approvals.js'
+import * as extraFolders from './src/host/extra-folders.js'
 import * as resume from './src/host/resume.js'
 import * as memory from './src/host/memory.js'
 import * as memoryFederation from './src/host/memory-federation.js'
@@ -41,6 +43,7 @@ import * as computer from './src/host/computer/index.js'
 import * as secrets from './src/host/secrets.js'
 import * as connectors from './src/host/connectors/index.js'
 import * as capabilities from './src/host/capabilities.js'
+import * as plugins from './src/host/plugins/index.js'
 import * as learning from './src/host/learning.js'
 import * as schedules from './src/host/schedules.js'
 import * as usage from './src/host/usage.js'
@@ -48,7 +51,6 @@ import * as update from './src/host/update.js'
 import * as dshUpdate from './src/host/dsh-update.js'
 import * as thinking from './src/host/thinking.js'
 import * as threadQueue from './src/host/thread-queue.js'
-import * as mcpServer from './src/host/mcp-server.js'
 import * as channel from './src/host/channel.js'
 import * as joinedTurn from './src/host/joined-turn.js'
 import * as nodeCards from './src/host/node-cards.js'
@@ -70,11 +72,13 @@ import * as mobile from './src/host/mobile.js'
 import * as federation from './src/host/federation.js'
 import * as feed from './src/host/feed.js'
 import * as im from './src/host/im/index.js'
+import * as externalApi from './src/host/api/index.js'
 import * as officeSkills from './src/host/office-skills.js'
 import * as workerBridge from './src/host/worker-bridge.js'
 import * as remoteTasks from './src/host/remote-tasks.js'
 import * as rosterJoin from './src/host/roster-join.js'
 import * as goalSkills from './src/host/goal-skills.js'
+import * as maintenanceSkills from './src/host/maintenance-skills.js'
 import * as issueReport from './src/host/issue-report.js'
 import * as manualSkills from './src/host/manual-skills.js'
 import * as localAgents from './src/host/local-agents/index.js'
@@ -87,6 +91,7 @@ import { loadTalentCatalog, filterTalents, talentToCreateBot } from './src/host/
 import * as deepseekServices from './src/host/deepseek-services.js'
 
 export { COLORS } from './src/host/constants.js'
+export { defineBotPlugin, defineBrowserProvider } from './src/host/plugins/sdk.js'
 
 export { name, inject } from './src/host/entry.js'
 
@@ -95,7 +100,8 @@ export { name, inject } from './src/host/entry.js'
 // install. Listeners run and tools are listed in registration order, so this order holds:
 // usage meters model requests after every listener that rewrites them. privacy checks a
 // call before the hooks of tools do, so a closed call never reaches a card they show.
-export const MODULES = [diagnostics, store, ledger, models, providers, permissions, turns, steer, steerLatency, handoffs, requests, delivery, remoteTasks, workerBridge, rosterJoin, roster, federation, folders, privacy, agents, prompt, timeContext, hostContext, tools, issueReport, deepseekServices, chatIndex, groups, goals, agentCommands, tasks, approvals, resume, memory, memoryFederation, parts, botTasks, changes, images, avatarLibrary, secrets, connectors, capabilities, learning, schedules, browser, browserPlugins, computer, usage, update, dshUpdate, thinking, threadQueue, mobile, feed, phone, mcpServer, im, channel, remote, joinedTurn, nodeCards, joinedAttachments, nodeTeam, steerAsk, joinedPrompt, threadPrompt, mirrorGuard, joinedCreate, configSource, nodeConfig, joinedPage, officeSkills, goalSkills, manualSkills, localAgents, botNetwork, botLink, convReplica, teamAct, waker]
+// extraFolders answers an approval ahead of approvals, which would show it to the user.
+export const MODULES = [diagnostics, store, ledger, models, providers, permissions, turns, steer, steerLatency, handoffs, requests, delivery, remoteTasks, workerBridge, rosterJoin, roster, federation, folders, privacy, agents, prompt, timeContext, hostContext, tools, issueReport, deepseekServices, chatIndex, groups, goals, agentCommands, tasks, approvals, extraFolders, resume, memory, memoryFederation, parts, botTasks, changes, images, avatarLibrary, secrets, connectors, capabilities, plugins, learning, schedules, browser, browserPlugins, computer, usage, update, dshUpdate, thinking, threadQueue, mobile, feed, phone, im, externalApi, channel, remote, joinedTurn, nodeCards, joinedAttachments, nodeTeam, steerAsk, joinedPrompt, threadPrompt, mirrorGuard, joinedCreate, configSource, nodeConfig, joinedPage, officeSkills, goalSkills, maintenanceSkills, manualSkills, localAgents, botNetwork, botLink, convReplica, teamAct, waker]
 
 export function apply(ctx, config = {}) {
   createRuntime(ctx, config)
@@ -125,7 +131,7 @@ export function createRuntime(ctx, config = {}) {
   rt.botHomeEnabled = config.features?.botHome !== false
   // How long a joined Bot's turn waits for the node (config.joinedTurnTimeoutMs, default 10 minutes).
   rt.joinedTurnTimeoutMs = joinedTimeoutFrom(config.joinedTurnTimeoutMs)
-  for (const module of MODULES) module.install(rt)
+  for (const module of [...MODULES, chatgpt]) module.install(rt)
   rt.installed = true
   // A live Agent can be scoped before the last module has added its tools (the memory
   // module starts a load during install): complete the scope now that every tool is in.
@@ -142,7 +148,12 @@ export function createRuntime(ctx, config = {}) {
   }
   try {
     if (typeof ctx.provide === 'function' && typeof rt.answerApproval === 'function') {
-      ctx.provide('ds-bot:answer-approval', (approvalId, choice) => rt.answerApproval(approvalId, choice))
+      // An answer names the request it is for (approvals.js refuses a bare one): the AC node
+      // forwards only the id, so bind it to the open entry with that id.
+      ctx.provide('ds-bot:answer-approval', (approvalId, choice) => {
+        const entry = rt.approvalsView?.().find(item => item.id === String(approvalId ?? ''))
+        return rt.answerApproval(approvalId, choice, entry === undefined ? undefined : { sessionId: entry.sessionId, fingerprint: entry.fingerprint })
+      })
     }
   } catch {
     // 注册失败不阻断启动；AC 节点无法转发审批答复时会回退。

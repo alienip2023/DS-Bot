@@ -79,6 +79,14 @@ test('A3 mismatched rows never send', () => {
   assert.equal(planAnswer(ROW, { botId: 'b1' }, 'allow').state, 'unbound')
 })
 
+test('A3c an own-chat row is answered, with its binding, only on the Bot\'s own card', () => {
+  const own = { ...ROW, roomId: undefined }
+  assert.deepEqual(planAnswer(own, { botId: ROW.botId }, 'allow'), { kind: 'send', id: ROW.id, choice: 'allow', binding: { sessionId: ROW.sessionId, fingerprint: ROW.fingerprint } })
+  assert.equal(planAnswer(own, CTX, 'allow').state, 'unbound')
+  assert.equal(planAnswer({ ...own, fingerprint: '' }, { botId: ROW.botId }, 'allow').state, 'unbound')
+  assert.equal(planAnswer({ ...own, botId: 'other' }, { botId: ROW.botId }, 'allow').state, 'unbound')
+})
+
 test('A4 a row that is not answerable is unavailable', () => {
   assert.deepEqual(planAnswer({ ...ROW, answerable: false }, CTX, 'allow'), { kind: 'block', state: 'unavailable' })
 })

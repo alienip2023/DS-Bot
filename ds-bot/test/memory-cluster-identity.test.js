@@ -52,6 +52,8 @@ async function start(t, { bots, seed } = {}) {
     readOnly: () => undefined, catalog: async () => [], defaultBotModel: async () => undefined,
     resolveAgent: async id => ctx.scopeAgent(id),
     teamFolder: () => workspace.path,
+    // roster.js cleans a copied Bot's extra folders through extra-folders.js, not installed here.
+    cleanExtraDirs: async dirs => [...(dirs ?? [])],
     save: async () => put(join(home, 'state.json'), JSON.stringify(state)),
     load: () => loading ??= Promise.resolve().then(() => {
       if (existsSync(join(home, 'state.json'))) Object.assign(state, JSON.parse(readFileSync(join(home, 'state.json'), 'utf8')))

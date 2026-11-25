@@ -138,7 +138,6 @@ const textOf = content => content.map(block => block.text ?? '').join('\n')
 // Work model W2 (docs/plans/2026-11-24-work-model.md): a request goes to the work thread of the pair — one standing
 // background task of the recipient for this sender's conversation — never into the user's chat with the recipient.
 const threadOf = (rt, botId, senderId) => (rt.botOf(botId).tasks ?? []).find(task => task.origin === 'bot-work' && task.workFor?.botId === senderId)
-
 test('message_bot opens the pair\'s work thread; a request goes there, never into the user\'s chat with the Bot', async (t) => {
   const { rt, agents, emit, tool, stop } = await start(team())
   t.after(stop)
@@ -155,12 +154,25 @@ test('message_bot opens the pair\'s work thread; a request goes there, never int
 
   // While the thread works on it, Chief's next message is added to that work at its next step (the one steer).
   emit(thread.sessionId, 'turn/start', { turn: 1 })
+  // The turn takes the request up (upstream #2144: a task with delivered input still unread is not settled).
+  emit(thread.sessionId, 'user/message', { content: callsOf(agents, 'b')[0][1].content, source: callsOf(agents, 'b')[0][1].source })
   const busy = await tool('message_bot', { to: 'Writer', message: 'watch out' }, 'a')
   assert.match(busy, /^Delivered to Writer while it is working: it reads your message at its next step and answers once that work is done\./)
   assert.deepEqual(callsOf(agents, 'b').map(call => [call[0], call.sessionId]), [['followup', thread.sessionId], ['steer', thread.sessionId]])
+  // The turn reads the steer at its next step (a steer still unread when a turn ends starts another turn, so the
+  // thread is not standing by until that one ends too).
+  emit(thread.sessionId, 'user/message', { content: callsOf(agents, 'b')[1][1].content, source: callsOf(agents, 'b')[1][1].source })
 
-  // Its turn ends: the thread stands by for the next work of the pair, and the next request goes to the same thread.
+  // Its turn ends: the steer that joined it is handed back for a turn of its own, which then runs (upstream #2144:
+  // the thread is not idle while that delivery is unread). Then the thread stands by for the next work of the pair,
+  // and the next request goes to the same thread.
   emit(thread.sessionId, 'turn/end', { turn: 1, reason: { kind: 'completed' } })
+  await settled(() => callsOf(agents, 'b').length === 3)
+  const deferred = callsOf(agents, 'b')[2][1]
+  assert.equal(deferred.source.deferred, true)
+  emit(thread.sessionId, 'turn/start', { turn: 2 })
+  emit(thread.sessionId, 'user/message', { content: deferred.content, source: deferred.source })
+  emit(thread.sessionId, 'turn/end', { turn: 2, reason: { kind: 'completed' } })
   await settled(() => thread.status === 'standing')
   assert.equal(thread.status, 'standing')
   assert.match(await tool('message_bot', { to: 'Writer', message: 'one more' }, 'a'), /^Delivered to Writer\./)
@@ -245,6 +257,7 @@ test('a request steered into a running turn is recorded once and answered in a t
 
 // Issue #580: a queued message the user steers into the running turn restarts
 // the activity row's clock from when it landed, not from the turn's start.
+
 test('a user message steered into the running steps marks when it landed', async (t) => {
   const { emit, call, stop } = await start(team())
   t.after(stop)
@@ -939,6 +952,7 @@ test('a queued or user-facing message to a Bot that waits for the result is not 
 
 // Changed by the maintainer 2026-11-25 (fork.125, OpenMausBot's stopRequester): Stop also stops what the stopped
 // work handed on, and nothing of it comes back to anyone.
+
 test('a stopped turn answers its asker at once, and what it handed on stops too: Tester\'s turn is stopped and its answer goes nowhere', async (t) => {
   const team = await start(threeBots())
   t.after(team.stop)
@@ -1131,6 +1145,7 @@ test('an earlier part keeps the request its Bot answered', async () => {
 
 // #537: an archived earlier part may have no live agent to resolve; the page
 // still loads from the stored events.
+
 test('an earlier part loads when its agent is gone', async () => {
   const rt = earlierParts([
     { type: 'user/message', seq: 1, time: 10, data: { content: [{ type: 'text', text: 'still here' }], source: { kind: 'user' } } },
@@ -1142,6 +1157,7 @@ test('an earlier part loads when its agent is gone', async () => {
 
 // #537: a turn that spans a page boundary keeps its number on the newer page
 // even when the part's agent is gone (no live projection to seed it).
+
 test('an agentless part keeps the turn that opened on an older page', async () => {
   const events = [{ seq: 1, type: 'turn/start', time: 1, data: { turn: 6 } }]
   for (let seq = 2; seq <= 430; seq += 1) {
@@ -1206,6 +1222,7 @@ test('earlier-part rows carry seq and the turn that turn/start opened', () => {
 // parts.js: an earlier group page stacks the replies of one turn. The change line must
 // come from the stacked row (the wrapper carries the last reply's `changes`), not from
 // the first reply of the turn.
+
 test('an earlier group page takes the change line of the last stacked reply', () => {
   const rt = earlierParts([])
   rt.roomOf = id => (id === 'g1' ? { id: 'g1', name: 'Launch' } : undefined)
@@ -1226,6 +1243,7 @@ test('an earlier group page takes the change line of the last stacked reply', ()
 
 // One turn opened on the older page and still running on the newer one.
 // The page holds 60 events, so the newer page starts after that turn/start.
+
 test('one turn keeps its identity across two earlier pages', async (t) => {
   const log = [{ seq: 1, type: 'turn/start', time: 1, data: { turn: 6 } }]
   for (let seq = 2; seq <= 70; seq += 1) {
@@ -1607,6 +1625,7 @@ for (const id of ['b', 'gb']) {
 
 // #206: a message between Bots used to go whole into state.json, which is written whole
 // on every save; an empty one started a turn on nothing.
+
 test('message_bot turns down an empty message', async (t) => {
   const { agentOf, tool, exchanges, stop } = await start(team())
   t.after(stop)
@@ -1616,6 +1635,7 @@ test('message_bot turns down an empty message', async (t) => {
 })
 
 // A message between Bots is in the book of the pair, whole; state.json does not hold it.
+
 test('a long message between Bots is kept whole in the book of the pair, not in state.json', async (t) => {
   const { botCalls, tool, call, exchanges, home, stop } = await start(team())
   t.after(stop)
@@ -1651,6 +1671,7 @@ test('a team saved with long messages whole keeps only their start after it load
 
 // #206: a message past 20,000 characters went whole into every Session it reached and
 // into the model's context at once. It now goes as a DSH file the recipient reads.
+
 test('a message past 20,000 characters goes as a file, which the exchange dialog reads back', async (t) => {
   const { ctx, botCalls, tool, call, exchanges, stop } = await start(team())
   t.after(stop)
@@ -1700,6 +1721,7 @@ test('without file storage a message past 20,000 characters is not sent', async 
 
 // A request merged with another the recipient had not read goes out under the same id. If
 // the merged text never reaches the recipient, the dialog keeps the text that did.
+
 test('a merged request that does not go out leaves the delivered text in the dialog', async (t) => {
   const { ctx, exchanges, stop } = await start(team())
   t.after(stop)
@@ -1712,6 +1734,7 @@ test('a merged request that does not go out leaves the delivered text in the dia
 })
 
 // The book is written before the message goes out: one it cannot keep is not sent.
+
 test('a message between Bots that the book cannot keep is not sent', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async (t) => {
   const { botCalls, tool, exchanges, home, stop } = await start(team())
   t.after(stop)
@@ -1783,6 +1806,7 @@ test('W1-2 what comes back while the Bot is in another turn never steers into it
 
 // Changed by the maintainer 2026-11-25: a Bot that goes on with other things after handing work on got what came
 // back minutes late (only once its turn ended); it is now steered into that running turn.
+
 test('W1-3 what comes back while the turn doing that work still runs is steered into that turn at once, read there, and not resumed again', async (t) => {
   const team = await start(threeBots())
   t.after(team.stop)
@@ -1947,6 +1971,7 @@ test('W2-5 the user stopping a work thread in the middle of a work tells the ask
 
 // fork.126: what comes back for a work and could not be delivered once (DSH refused the write) goes again, instead of
 // leaving the work waiting forever.
+
 test('a results message that could not go out when its turn came is sent again, and the Bot is resumed', async (t) => {
   const team = await start(threeBots())
   t.after(team.stop)
@@ -1993,3 +2018,35 @@ test('Stop in a conversation also stops work an earlier turn there handed on and
   await delay(30)
   assert.equal(callsOf(agents, 'a').length, 0, 'nothing comes back to Chief')
 })
+
+test('earlierPage skips an empty intermediate part so two divider lines never stack', async () => {
+  const writer = {
+    id: 'b', name: 'Writer', createdAt: 1, sessionId: 'b3',
+    segments: [{ sessionId: 'b1', endedAt: 100 }, { sessionId: 'b2', endedAt: 200 }],
+  }
+  const byPart = {
+    b1: [{ type: 'user/message', seq: 1, time: 50, data: { content: [{ type: 'text', text: 'switch model' }], source: { kind: 'user' } } }],
+    // b2 only had a handoff message (no visible rows) before switching on to b3.
+    b2: [{ type: 'user/message', seq: 1, time: 150, data: { content: [{ type: 'text', text: '[Handoff · part 2]' }], source: { kind: 'bot', handoff: true } } }],
+  }
+  const rt = {
+    ctx: { on() {}, effect() {}, get() {}, sessionController: { page: async ({ address }) => ({ records: (byPart[address.sessionId] ?? []).map(event => ({ event })), hasMore: false }) } },
+    config: {},
+    state: { exchangeTurns: {} },
+    chatOwners: new Map([['b3', 'b']]),
+    pastOwners: new Map([['b1', { botId: 'b' }], ['b2', { botId: 'b' }]]),
+    botOf: id => (id === 'b' ? writer : undefined),
+    roomOf: () => undefined,
+    chatOf: () => 'b3',
+    resolveAgent: async id => ({ session: { id, seq: 3 } }),
+  }
+  installParts(rt)
+  const page = await rt.earlierPage('b3')
+  assert.equal(page.partIndex, 0)
+  assert.equal(page.startedAt, 200)
+  assert.equal(page.cursor, null)
+  assert.deepEqual(page.items.map(item => [item.kind, item.text]), [['user', 'switch model']])
+})
+
+// #537: an archived earlier part may have no live agent to resolve; the page
+// still loads from the stored events.

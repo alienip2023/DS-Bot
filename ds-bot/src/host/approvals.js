@@ -2,9 +2,14 @@
 // there and the turn would wait forever: DS Bot answers those requests itself, from
 // the group chat. A Bot's own chat keeps DSH's card, but DS Bot can answer those too
 // (IM chats, the phone app): the request is raced — whichever side answers first wins,
-// and the other card withdraws.
+// and the other card withdraws. A Bot or group set to `review` has a model look at the
+// request first (approval-review.js) and falls back to the card.
 import { createHash, randomUUID } from 'node:crypto'
-import { join } from 'node:path'
+import { isAbsolute, join, sep } from 'node:path'
+import { AsyncLocalStorage } from 'node:async_hooks'
+import { cleanText } from './diagnostics.js'
+import { REFERENCE_KIND, REPLY_KIND } from './constants.js'
+import { reviewApproval, reviewContext, reviewSessionIds, REVIEW_TIMEOUT_MS } from './approval-review.js'
 import { AUDIT_DIR, createAuditWriter } from './approval-audit.js'
 
 const OUTCOMES = Object.freeze({ allow: 'allowed-once', reject: 'rejected' })
@@ -23,6 +28,30 @@ const stale = (message) => Object.assign(new Error(message), { code: 'bot/stale'
 // Persisted approval results kept in state.json, by fingerprint; the oldest go first.
 export const APPROVAL_RESULTS_MAX = 200
 const table = value => (value !== null && typeof value === 'object' && !Array.isArray(value) ? value : {})
+const sessionOf = agent => agent?.session?.id ?? agent?.id
+const keyOf = (agent, callId) => JSON.stringify([sessionOf(agent), callId])
+
+async function nativeEvidence(ctx, exec) {
+  const evidence = { kind: 'tool', tool: exec.name, arguments: JSON.parse(JSON.stringify(exec.arguments ?? {})) }
+  if (!['bash', 'pwsh'].includes(exec.name) || !exec.agent?.session) return evidence
+  const directories = ctx.get?.('workingDirectory')
+  const shell = ctx.get?.('shell')
+  const fs = ctx.get?.('fs')
+  if (!directories?.ensure || !shell?.resolve || !fs?.resolve || !fs?.processPath || !fs?.stat) return evidence
+  const sessionCwd = await directories.ensure(exec.agent, exec.signal)
+  if (typeof sessionCwd !== 'string' || !isAbsolute(sessionCwd)) return evidence
+  const args = evidence.arguments
+  if (args.workdir !== undefined && typeof args.workdir !== 'string') return evidence
+  // Match the native tools' relative override, then let the execution backend resolve it.
+  const workdir = args.workdir === undefined ? sessionCwd : isAbsolute(args.workdir) ? args.workdir : `${sessionCwd}${sep}${args.workdir}`
+  const spec = shell.resolve({ command: args.command, workdir })
+  if (typeof spec.workdir !== 'string' || !isAbsolute(spec.workdir)) return evidence
+  const target = await fs.resolve(spec.workdir, { signal: exec.signal })
+  if ((await fs.stat(target, exec.signal))?.type !== 'directory') return evidence
+  const cwd = fs.processPath(target)
+  if (typeof cwd !== 'string' || !isAbsolute(cwd)) return evidence
+  return { ...evidence, sessionCwd, workdir: spec.workdir, cwd }
+}
 
 export function install(rt) {
   const { ctx } = rt
@@ -54,139 +83,288 @@ export function install(rt) {
     recordResult(entry, result)
     return rt.save({ required: true })
   }
-  /** @type {Map<string, {id:string, sessionId:string, botId:string, roomId?:string, tool:string, reason:string, detail:{text?:string, code?:string}, at:number, fingerprint:string, answer?:(outcome:string)=>void}>} */
+  /** @type {Map<string, {id:string, sessionId:string, botId:string, roomId?:string, tool:string, reason:string, detail:{text?:string, code?:string}, at:number, fingerprint:string, answer?:(outcome:string, marker?:string, actor?:string)=>void}>} */
   const pending = new Map()
+  const executions = new Map()
+  const actionScope = new AsyncLocalStorage()
   const approvalListeners = new Set()
-  const onApproval = (listener) => {
-    approvalListeners.add(listener)
-    return () => approvalListeners.delete(listener)
-  }
+  const clean = text => cleanText(text, { redact: rt.redactSecrets }).slice(0, 1000)
   const emit = (kind, data) => {
     for (const listener of approvalListeners) {
       try { listener(kind, data) } catch (error) { rt.warn('ds-bot: approval listener failed: %s', error) }
     }
   }
-
-  // Ahead of DSH's own answerer, which would hold a hidden Session's request unseen.
-  ctx.on('approval/request', (request, next) => {
-    const sessionId = request.agent?.session?.id ?? request.agent?.id
-    const owner = sessionId === undefined ? undefined : rt.groupOwners.get(sessionId)
-    const taskOwner = sessionId === undefined ? undefined : rt.taskOwners?.get(sessionId)
-    const botId = owner?.botId ?? taskOwner?.botId ?? (sessionId === undefined ? undefined : rt.chatOwners.get(sessionId))
-    if (botId === undefined) return next()
-    const taskTitle = taskOwner === undefined ? undefined : rt.taskBySession?.(sessionId)?.task?.title
-    const id = randomUUID()
-    const at = Date.now()
-    const toolName = String(request.toolName ?? '')
-    const roomId = owner?.roomId ?? taskOwner?.roomId
-    const entry = {
-      id,
-      sessionId,
-      botId,
-      ...(roomId ? { roomId } : {}),
-      ...(taskOwner ? { taskId: taskOwner.taskId, ...(taskTitle ? { taskTitle } : {}) } : {}),
-      tool: toolName,
-      reason: String(request.reason ?? '').slice(0, 500),
-      detail: rt.callDetail?.(sessionId, request.callId) ?? {},
-      at,
-      fingerprint: approvalFingerprint(sessionId, toolName, request.callId, at),
-    }
-    // The audit note is part of the approval path: if it cannot be written the request
-    // is not shown or answerable, and the caller gets a denial, never an allow.
-    try {
-      rt.noteApproval?.(sessionId, { tool: entry.tool, reason: entry.reason.slice(0, 200) })
-    } catch (error) {
-      rt.warn('ds-bot: approval audit write failed, denying: %s', error)
-      return 'cancelled'
-    }
-    pending.set(id, entry)
-    void audit.append({ ts: at, actor: botId, entry, phase: 'open' })
-    // The open position stays in inflight.json (noteApproval above); state.json takes the
-    // settled one, so opening an approval does not change the team's revision.
-    rt.approvalWaiting?.(entry)
-    emit('open', { ...entry, answerable: true })
-    // Returns the outcome actually given, or undefined when the entry was already
-    // settled. If the audit record cannot be cleared the outcome can only be a denial.
-    // `marker` is set by the answer path, which has already persisted the result and
-    // written the audit line; any other settlement (abort, DSH's card, cancel) publishes
-    // first and appends its audit line right after.
-    const settle = (outcome, marker, actor = 'host') => {
-      if (!pending.has(id)) return undefined
-      pending.delete(id)
-      let given = outcome
-      try {
-        rt.noteApproval?.(sessionId, undefined)
-      } catch (error) {
-        rt.warn('ds-bot: approval audit clear failed, denying: %s', error)
-        given = outcome === OUTCOMES.allow ? 'cancelled' : outcome
-      }
-      if (marker === undefined && !audit.enabled()) marker = 'unaudited'
-      entry.given = given
-      const settledTaskId = entry.taskId ?? rt.taskOwners?.get(sessionId)?.taskId
-      emit('settled', { id, outcome: given, ...(settledTaskId ? { taskId: settledTaskId } : {}), ...(marker !== undefined ? { audit: marker } : {}) })
-      if (entry.audited === undefined) void audit.append({ ts: Date.now(), actor, entry, result: given, phase: 'settled' })
-      return given
-    }
-    if (owner === undefined && taskOwner === undefined) {
-      // An own-chat approval races DSH's card. The card sees `linked`, our own
-      // AbortSignal: answering here resolves the request, then withdraws the card;
-      // an answer there settles `next()` first and is adopted. An abort of the
-      // original signal cancels either way.
-      const original = request.signal
-      const linked = new AbortController()
-      request.signal = linked.signal
-      return new Promise((resolve, reject) => {
-        const complete = (outcome, marker, actor) => {
-          const given = settle(outcome, marker, actor)
-          if (given === undefined) return
-          resolve(given)
-          linked.abort()
-          if (request.signal === linked.signal) request.signal = original
-        }
-        entry.answer = complete
-        if (original?.aborted) entry.answer('cancelled')
-        else original?.addEventListener('abort', () => entry.answer('cancelled'), { once: true })
-        Promise.resolve(next()).then(
-          (outcome) => {
-            if (!pending.has(id)) return
-            complete(outcome, undefined, 'card')
-          },
-          // DSH's answerer threw: close the entry and give the caller the error
-          // the way the pre-race code did, instead of hanging forever.
-          (error) => {
-            if (settle('cancelled') === undefined) return
-            reject(error)
-            linked.abort()
-            if (request.signal === linked.signal) request.signal = original
-          },
-        )
-      })
-    }
-    if (owner !== undefined) rt.yieldRoomTurn?.(sessionId)
-    else if (taskOwner?.roomId !== undefined) {
-      const groupSid = rt.roomOf(taskOwner.roomId)?.sessions?.[botId]
-      if (groupSid !== undefined) rt.yieldRoomTurn?.(groupSid)
-    }
-    return new Promise((resolve) => {
-      entry.answer = (outcome, marker, actor) => {
-        const given = settle(outcome, marker, actor)
-        if (given === undefined) return
-        resolve(given)
-      }
-      if (request.signal?.aborted) entry.answer('cancelled')
-      request.signal?.addEventListener('abort', () => entry.answer('cancelled'), { once: true })
-    })
-  }, { prepend: true })
-
-  const approvalsView = () => [...pending.values()].map(({ answer, ...entry }) => {
-    const liveTask = entry.taskId === undefined ? rt.taskOwners?.get(entry.sessionId) : undefined
-    const liveTitle = entry.taskTitle ?? (liveTask === undefined ? undefined : rt.taskBySession?.(entry.sessionId)?.task?.title)
+  const view = ({ answer, cancelReview, ownerSessionId, lineageSessionIds, privacy: _, ...entry }) => {
+    const taskSessionId = rt.taskOwners?.has(entry.sessionId) ? entry.sessionId : ownerSessionId ?? entry.sessionId
+    const liveTask = entry.taskId === undefined ? rt.taskOwners?.get(taskSessionId) : undefined
+    const liveEntry = liveTask === undefined ? undefined : rt.taskBySession?.(taskSessionId)?.task
+    const liveTitle = entry.taskTitle ?? liveEntry?.title
+    const liveRoomId = entry.roomId === undefined ? (liveTask?.roomId ?? liveEntry?.roomId) : undefined
     return {
       ...entry,
+      ...(liveRoomId !== undefined ? { roomId: liveRoomId } : {}),
       ...(liveTask ? { taskId: liveTask.taskId, ...(liveTitle ? { taskTitle: liveTitle } : {}) } : {}),
       answerable: answer !== undefined,
     }
+  }
+  const changed = entry => emit('updated', view(entry))
+
+  // Queued user input is not a user/message until the pending tool yields.
+  ctx.on('session/event', (session, event) => {
+    const input = event.type === 'agent/inbox/spliced' && event.data?.inserted?.some(message => ['user', REFERENCE_KIND, REPLY_KIND].includes(message.source?.kind))
+    if (!input && event.type !== 'working-directory/change') return
+    for (const entry of pending.values()) {
+      if (reviewSessionIds(rt, entry).includes(session.id)) entry.cancelReview()
+    }
   })
+
+  // Capture immutable tool arguments before any pre-execute policy asks. Result
+  // events release both successful and rejected calls, including PTC sub-calls.
+  ctx.on('tools/pre-execute', async (exec, next) => {
+    const owner = await ownerOf(exec.agent)
+    if (!owner || !enabled(owner)) return next()
+    if (exec.callId !== undefined) {
+      const key = keyOf(exec.agent, exec.callId)
+      const readEvidence = () => nativeEvidence(ctx, exec)
+      const evidence = await readEvidence().catch(() => ({ kind: 'tool', tool: exec.name }))
+      executions.set(key, { evidence, readEvidence })
+      if (executions.size > 1000) executions.delete(executions.keys().next().value)
+    }
+    return next()
+  }, { prepend: true })
+  ctx.on('tools/result', exec => {
+    executions.delete(keyOf(exec.agent, exec.callId))
+    if (exec.name === 'ask_user_question') {
+      for (const entry of pending.values()) if (reviewSessionIds(rt, entry).includes(sessionOf(exec.agent))) entry.cancelReview()
+    }
+  })
+
+  // Async-local evidence belongs to one request, even when a script makes several
+  // concurrent requests with the same outer call id. The host API stays unchanged.
+  const requestActionApproval = (request, evidence) => actionScope.run(evidence,
+    () => ctx.get('approval').request(request))
+
+  const ownerAt = (sessionId, id, seen) => {
+    const group = rt.groupOwners.get(id)
+    const taskOwner = rt.taskOwners?.get(id)
+    const botId = group?.botId ?? taskOwner?.botId ?? rt.chatOwners.get(id)
+    if (botId === undefined) return undefined
+    const task = taskOwner === undefined ? undefined : rt.taskBySession?.(id)?.task
+    const taskTitle = task?.title
+    const roomId = group ? group.roomId : (taskOwner?.roomId ?? task?.roomId)
+    return {
+      sessionId, ownerSessionId: id, lineageSessionIds: [...seen], botId,
+      ...(roomId !== undefined ? { roomId } : {}),
+      ...(taskOwner ? { taskId: taskOwner.taskId, ...(taskTitle ? { taskTitle } : {}) } : {}),
+    }
+  }
+
+  async function ownerOf(agent) {
+    const sessionId = sessionOf(agent)
+    let current = agent
+    const seen = new Set()
+    while (current && seen.size < 16) {
+      const id = sessionOf(current)
+      if (id === undefined || seen.has(id)) break
+      seen.add(id)
+      const owner = ownerAt(sessionId, id, seen)
+      if (owner) return owner
+      const parent = current.session?.header?.parentSession
+      if (!parent || current.session.header.origin !== 'subagent') break
+      current = await rt.resolveAgent(parent).catch(() => undefined)
+      if (sessionOf(current) !== parent) break
+    }
+    return undefined
+  }
+
+  // ownerOf only awaits while it walks a subagent's parent chain; a directly owned
+  // Session resolves here, so the request's card exists before the listener returns.
+  const followParent = {}
+  const ownerNow = (agent) => {
+    const id = sessionOf(agent)
+    if (id === undefined) return undefined
+    const owner = ownerAt(id, id, new Set([id]))
+    if (owner) return owner
+    const parent = agent.session?.header?.parentSession
+    if (parent && agent.session.header.origin === 'subagent') return followParent
+    return undefined
+  }
+  const enabled = owner => (rt.roomOf(owner.roomId)?.permission ?? rt.botOf(owner.botId)?.permission) === 'review'
+
+  async function record(entry, decision) {
+    const item = {
+      id: entry.id, botId: entry.botId, ...(entry.roomId ? { roomId: entry.roomId } : {}),
+      tool: entry.tool, at: Date.now(), outcome: decision.decision, reason: clean(decision.reason),
+      ...(entry.review?.model ? { model: entry.review.model } : {}),
+    }
+    rt.state.approvalReviews = [...(rt.state.approvalReviews ?? []).filter(previous => previous.id !== item.id), item].slice(-100)
+    await rt.save()
+  }
+
+  // Ahead of DSH's own answerer, which would hold a hidden Session's request unseen.
+  ctx.on('approval/request', (request, next) => {
+    const explicit = actionScope.getStore()
+    const owner = ownerNow(request.agent)
+    if (owner === followParent) return ownerOf(request.agent).then(resolved => handleRequest(request, next, resolved, explicit))
+    return handleRequest(request, next, owner, explicit)
+  }, { prepend: true })
+
+  function handleRequest(request, next, owner, explicit) {
+    if (!owner) return next()
+    if (request.signal?.aborted) return 'cancelled'
+    const captured = executions.get(keyOf(request.agent, request.callId))
+    const execution = captured?.evidence.tool === request.toolName ? captured.evidence : undefined
+    const nativeShell = ['bash', 'pwsh'].includes(request.toolName)
+    // Privacy guards can ask before the shell itself; their payload still needs its execution scope.
+    const evidence = explicit && nativeShell ? { ...explicit, execution } : explicit ?? execution
+    const validateEvidence = execution && nativeShell ? async () => {
+      if (JSON.stringify(await captured.readEvidence()) !== JSON.stringify(execution)) throw new Error('The native execution directory or arguments changed')
+    } : undefined
+    const id = randomUUID()
+    const original = request.signal
+    const linked = new AbortController()
+    const reviewer = new AbortController()
+    const at = Date.now()
+    const toolName = String(request.toolName ?? '')
+    const entry = {
+      id, sessionId: owner.sessionId, ownerSessionId: owner.ownerSessionId, lineageSessionIds: owner.lineageSessionIds, botId: owner.botId,
+      ...(owner.roomId ? { roomId: owner.roomId } : {}),
+      ...(owner.taskId ? { taskId: owner.taskId, ...(owner.taskTitle ? { taskTitle: owner.taskTitle } : {}) } : {}),
+      tool: toolName, reason: String(request.reason ?? '').slice(0, 500),
+      ...(request.privacy === true ? { privacy: true } : {}),
+      detail: rt.callDetail?.(owner.sessionId, request.callId) ?? {}, at,
+      fingerprint: approvalFingerprint(owner.sessionId, toolName, request.callId, at),
+    }
+    const automatic = enabled(owner)
+    if (automatic) entry.review = { status: 'reviewing' }
+    return new Promise((resolve, reject) => {
+      let manualStarted = false
+      let timer
+      const abort = () => complete('cancelled')
+      // Returns the outcome actually given, or undefined when the entry was already
+      // settled. If the audit record cannot be cleared the outcome can only be a denial.
+      // `marker` is set by the answer path, which has already persisted the result and
+      // written the audit line; any other settlement (abort, DSH's card, the review
+      // model, cancel) publishes first and appends its audit line right after.
+      const settle = (outcome, { reviewed = false, marker, actor = 'host' } = {}) => {
+        if (!pending.has(id)) return undefined
+        pending.delete(id)
+        const logged = rt.state?.approvalReviews?.find(item => item.id === id)
+        if (!reviewed && logged && ['allow', 'reject'].includes(logged.outcome)) {
+          logged.outcome = 'cancelled'
+          logged.reason = 'The model decision was withdrawn before it took effect.'
+          void rt.save().catch(() => {})
+        }
+        clearTimeout(timer)
+        original?.removeEventListener('abort', abort)
+        reviewer.abort()
+        linked.abort()
+        if (request.signal === linked.signal) request.signal = original
+        let given = outcome
+        try {
+          rt.noteApproval?.(owner.ownerSessionId, undefined)
+        } catch (error) {
+          rt.warn('ds-bot: approval audit clear failed, denying: %s', error)
+          given = outcome === OUTCOMES.allow ? 'cancelled' : outcome
+        }
+        if (marker === undefined && !audit.enabled()) marker = 'unaudited'
+        entry.given = given
+        const settledTaskId = entry.taskId ?? rt.taskOwners?.get(owner.sessionId)?.taskId ?? rt.taskOwners?.get(owner.ownerSessionId)?.taskId
+        emit('settled', { id, outcome: given, ...(settledTaskId ? { taskId: settledTaskId } : {}), ...(marker !== undefined ? { audit: marker } : {}) })
+        if (entry.audited === undefined) void audit.append({ ts: Date.now(), actor, entry, result: given, phase: 'settled' })
+        return given
+      }
+      const complete = (outcome, options) => {
+        const given = settle(outcome, options)
+        if (given !== undefined) resolve(given)
+      }
+      const manual = reason => {
+        // An answer being persisted (answerApproval) is the user's: nothing opens over it.
+        if (!pending.has(id) || manualStarted || entry.settling) return
+        manualStarted = true
+        clearTimeout(timer)
+        if (automatic) entry.review = { ...entry.review, status: 'manual', reason: clean(reason) }
+        changed(entry)
+        // Group sessions have DS Bot's member card; a background task's card sits
+        // on the member's group Session. Own-chat children still need the host
+        // path, since their Bot may have no group approval controls.
+        const yieldSession = owner.taskId === undefined || owner.roomId === undefined
+          ? owner.ownerSessionId
+          : rt.roomOf(owner.roomId)?.sessions?.[owner.botId] ?? owner.ownerSessionId
+        rt.yieldRoomTurn?.(yieldSession)
+        if (owner.roomId !== undefined) return
+        request.signal = linked.signal
+        // DSH's card is asked a microtask later. An answer that got there first is being
+        // saved before it takes effect (answerApproval): it has won, so the card is not
+        // asked, and a card that answers meanwhile does not override it (an abort still does).
+        const SKIPPED = Symbol('answered first')
+        Promise.resolve().then(() => (entry.settling ? SKIPPED : next())).then(outcome => {
+          if (outcome === SKIPPED || entry.settling) return
+          if (outcome !== 'unavailable' || owner.ownerSessionId !== owner.sessionId) complete(outcome, { actor: 'card' })
+        }, error => {
+          if (entry.settling) return
+          if (settle('cancelled') !== undefined) reject(error)
+        })
+      }
+      entry.answer = (outcome, marker, actor) => complete(outcome, { marker, actor })
+      entry.cancelReview = () => reviewer.abort()
+      // The audit note is part of the approval path: if it cannot be written the request
+      // is not shown or answerable, and the caller gets a denial, never an allow.
+      try {
+        rt.noteApproval?.(owner.ownerSessionId, { tool: entry.tool, reason: entry.reason.slice(0, 200), ...(entry.privacy ? { privacy: true } : {}) })
+      } catch (error) {
+        rt.warn('ds-bot: approval audit write failed, denying: %s', error)
+        return resolve('cancelled')
+      }
+      pending.set(id, entry)
+      void audit.append({ ts: at, actor: owner.botId, entry, phase: 'open' })
+      // The open position stays in inflight.json (noteApproval above); state.json takes the
+      // settled one, so opening an approval does not change the team's revision.
+      rt.approvalWaiting?.(entry)
+      original?.addEventListener('abort', abort, { once: true })
+      emit('open', view(entry))
+      if (original?.aborted) return complete('cancelled')
+      if (!automatic) return manual()
+      const timeout = new Promise((_, fail) => {
+        const interrupted = () => fail(new Error('Automatic review stopped; review this action manually'))
+        reviewer.signal.addEventListener('abort', interrupted, { once: true })
+        // Once the model wins the race, a stalled save no longer rejects it.
+        // Open the card from the timer itself so persistence cannot block it.
+        timer = setTimeout(() => {
+          reviewer.abort()
+          if (pending.has(id)) manual('Automatic review could not decide. Review this action manually.')
+        }, REVIEW_TIMEOUT_MS)
+      })
+      void Promise.race([reviewApproval(rt, {
+        request, owner, evidence, validateEvidence, signal: reviewer.signal,
+        onModel: model => { if (pending.has(id)) { entry.review.model = model; changed(entry) } },
+      }), timeout]).then(async decision => {
+        if (!pending.has(id) || entry.settling) return
+        if (reviewer.signal.aborted || !enabled(owner)) throw new Error('Automatic review was invalidated')
+        if (decision.decision === 'manual') {
+          manual(decision.reason)
+          await record(entry, decision)
+          return
+        }
+        await record(entry, decision)
+        if (JSON.stringify(await reviewContext(rt, owner, reviewer.signal)) !== JSON.stringify(decision.context)) {
+          throw new Error('The conversation changed while saving the review')
+        }
+        await validateEvidence?.()
+        if (!pending.has(id) || entry.settling) return
+        if (reviewer.signal.aborted || !enabled(owner)) throw new Error('Automatic review was invalidated')
+        complete(OUTCOMES[decision.decision], { reviewed: true, actor: 'review' })
+      }).catch(async () => {
+        if (!pending.has(id) || entry.settling) return
+        const reason = 'Automatic review could not decide. Review this action manually.'
+        manual(reason)
+        try { await record(entry, { decision: 'manual', reason }) } catch { /* the manual card remains available */ }
+      }).finally(() => clearTimeout(timer))
+    })
+  }
+
+  const approvalsView = () => [...pending.values()].map(view)
+  const approvalReviewsView = () => rt.state.approvalReviews ?? []
   const waitsForApproval = sessionId => [...pending.values()].some(entry => entry.sessionId === sessionId)
 
   // A supplied binding must still match the original card. The caller must also name
@@ -211,13 +389,15 @@ export function install(rt) {
     if (sessionId !== entry.sessionId) {
       throw Object.assign(new Error('Only the owning session can answer this approval'), { code: 'bot/forbidden' })
     }
+    if (typeof choice !== 'string' || !Object.hasOwn(OUTCOMES, choice)) throw Object.assign(new Error('Choose allow or reject'), { code: 'bot/invalid' })
     const outcome = OUTCOMES[choice]
-    if (outcome === undefined) throw Object.assign(new Error('Choose allow or reject'), { code: 'bot/invalid' })
     if (!canPersist()) {
       entry.answer(outcome, 'unaudited', 'unknown')
       return undefined
     }
     entry.settling = true
+    // The user's answer stands over the model's: stop a review still under way.
+    entry.cancelReview?.()
     const run = (async () => {
       try {
         await persistResult(entry, outcome)
@@ -250,18 +430,31 @@ export function install(rt) {
     run.catch(() => {})
     return run
   }
-
-  // A group Session that leaves its group has no card left to answer from.
-  const cancelApprovals = (sessionId) => {
+  // A Session that leaves its group (or a task that ends) has no card left to answer from.
+  const cancelApprovals = sessionId => {
     for (const entry of pending.values()) {
-      if (entry.sessionId === sessionId) entry.answer?.('cancelled')
+      if (entry.lineageSessionIds.includes(sessionId)) entry.answer('cancelled')
     }
   }
+  const cancelApprovalReviews = ({ botId, roomId } = {}) => {
+    for (const entry of pending.values()) {
+      if (roomId !== undefined ? entry.roomId === roomId && (botId === undefined || entry.botId === botId) : botId === undefined || (entry.botId === botId && entry.roomId === undefined)) entry.cancelReview()
+    }
+  }
+  ctx.effect?.(() => () => {
+    for (const entry of Array.from(pending.values())) entry.answer?.('cancelled')
+    pending.clear()
+    approvalListeners.clear()
+    executions.clear()
+    actionScope.disable()
+  }, 'ds-bot: approval review')
+  const onApproval = listener => { approvalListeners.add(listener); return () => approvalListeners.delete(listener) }
+  const isPrivacyApproval = id => pending.get(id)?.privacy === true
 
   // On a node, an approval reaches the hub as a card in the roster report (node-cards.js) and is answered
   // there with bot/action card-answer. The roster goes out every few seconds; publish at once when a card
   // opens or settles so the hub shows it (and drops it) without that wait.
   onApproval(() => { void Promise.resolve(rt.publishSkillRoster?.()).catch(() => {}) })
 
-  Object.assign(rt, { approvalsView, waitsForApproval, answerApproval, cancelApprovals, onApproval })
+  Object.assign(rt, { approvalsView, approvalReviewsView, waitsForApproval, answerApproval, cancelApprovals, cancelApprovalReviews, onApproval, requestActionApproval, isPrivacyApproval })
 }

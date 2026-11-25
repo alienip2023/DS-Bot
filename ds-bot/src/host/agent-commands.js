@@ -44,8 +44,6 @@ export function install(rt) {
     : 'Not available in a Bot chat — use the Bot’s own controls'
   // Session id → the shield mounted under that Session's agent.
   const shields = new Map()
-  const coverage = () => [...shields.keys()].filter(covered).sort().join('\n')
-  let savedCoverage = ''
   // Our own registrations notify `commands/change` too; skip the echo while applying.
   let applying = false
 
@@ -57,10 +55,10 @@ export function install(rt) {
     // The agent can arrive before its Bot or group is in the state (a Bot created a
     // moment ago); the shield mounts for every agent and waits for that Session to
     // become known, then registers its shadows on the next sync.
-    if (!covered(shield.sessionId)) {
-      savedCoverage = coverage()
-      return
-    }
+    const isCovered = covered(shield.sessionId)
+    shield.wasCovered = isCovered
+    shield.wasGroup = isCovered && isGroup(shield.sessionId)
+    if (!isCovered) return
     // Lift first: `list(agent)` is the merged view, so only after our shadows are gone
     // does it answer what the host currently serves this agent.
     const definitions = commands.list(shield.agent)
@@ -82,12 +80,22 @@ export function install(rt) {
         rt.warn?.('ds-bot: the DSH /%s command could not be shadowed for %s: %s', definition.name, shield.sessionId, error?.message ?? error)
       }
     }
-    savedCoverage = coverage()
   }
   const resync = () => {
     if (applying) return
     applying = true
     try { for (const shield of shields.values()) sync(shield) } finally { applying = false }
+  }
+  const resyncSaved = () => {
+    if (applying) return
+    applying = true
+    try {
+      for (const shield of shields.values()) {
+        const isCovered = covered(shield.sessionId)
+        const group = isCovered && isGroup(shield.sessionId)
+        if (isCovered !== shield.wasCovered || group !== shield.wasGroup) sync(shield)
+      }
+    } finally { applying = false }
   }
 
   const mount = (agent) => {
@@ -96,7 +104,7 @@ export function install(rt) {
     // Test doubles and non-interactive hosts have no plugin seam; a Bot without it simply
     // keeps the DSH commands.
     if (typeof agent.ctx?.plugin !== 'function') return undefined
-    const shield = { sessionId, agent, child: undefined, lifts: [] }
+    const shield = { sessionId, agent, child: undefined, lifts: [], wasCovered: false, wasGroup: false }
     shield.ready = new Promise((resolve) => { shield.resolveReady = resolve })
     shields.set(sessionId, shield)
     try {
@@ -120,7 +128,6 @@ export function install(rt) {
           }
         },
       })
-      savedCoverage = coverage()
     } catch (error) {
       shields.delete(sessionId)
       shield.resolveReady?.()
@@ -153,13 +160,7 @@ export function install(rt) {
   ctx.on('agent/created', ({ agent }) => mountReady(agent))
   ctx.on('agent/disposed', ({ agent }) => { unmount(agent?.session?.id) })
   ctx.on('commands/change', resync)
-  const offSaved = rt.onSaved?.(() => {
-    // Ordinary state writes must not emit another round of commands/change events.
-    const signature = coverage()
-    if (signature === savedCoverage) return
-    resync()
-    savedCoverage = signature
-  })
+  const offSaved = rt.onSaved?.(() => resyncSaved())
   ctx.effect(() => () => {
     applying = true
     offSaved?.()

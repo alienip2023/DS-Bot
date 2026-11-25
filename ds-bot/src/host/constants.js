@@ -101,6 +101,44 @@ export const TEAM_TOOLS = [
   // Mesh / portable-Bot tools (tools.js, fork.111+): LAN peers, pairing, step journal.
   'node_network', 'pair_node', 'bot_journal', 'locate_bot', 'list_machines', 'move_bot', 'promote_node_to_hub',
 ]
+// Team-meta, memory, and status-inspection tools do not count as external work progress
+// when checking Bot-to-Bot or group ping-pong loops.
+export const NON_WORK_TOOLS = new Set([
+  'message_bot', 'stop_bot',
+  'list_bots', 'list_bot_models', 'post_to_group', 'group_relay',
+  'bot_remember', 'bot_forget', 'bot_recall', 'remember', 'forget', 'recall',
+  'read_own_chat', 'read_group_chat', 'task_list', 'task_read',
+  'list_secrets', 'list_capabilities', 'list_connectors',
+])
+export const isWorkTool = name => typeof name === 'string' && name !== '' && !NON_WORK_TOOLS.has(name)
+
+// Team-meta mutations that count as substantive work (clearing idle streaks and
+// waking batch callers) but finish instantaneously so they skip the 15s grace timer.
+// Slow team work tools such as read_browser, read_document, and task_start stay out
+// of this set so they still yield to the 15s grace timer like any other work tool.
+export const INSTANT_WORK_TOOLS = new Set([
+  'create_bot', 'update_bot', 'create_group', 'update_group', 'delete_group',
+  'group_todo', 'group_goal', 'group_task', 'ask_user', 'show_view',
+  'prepare_ds_bot_issue', 'request_secret', 'request_connector',
+  'save_capability', 'delete_capability', 'attach_capability', 'detach_capability',
+  'use_pack', 'drop_pack', 'task_send', 'task_stop',
+])
+
+// Pure silent/pass/stage-direction text produced on a Bot-triggered own-chat turn when
+// the Bot has nothing to tell the user (e.g. "[PASS]", "（静默。）", "（收工。）", "（完。）").
+const SILENT_TURN_TEXT = /^\s*(?:[[【(（]\s*(?:pass|silent|silence|no\s*reply|nothing\s+to\s+report|done|noop|静默|收工|完|完毕|无回复|无需回复|略|跳过|待命)\s*[.。!！]*\s*[\]】)）]|pass\s*[.。!！]?)\s*$/i
+export const isSilentTurnText = text => {
+  const trimmed = String(text ?? '').trim()
+  return trimmed === '' || SILENT_TURN_TEXT.test(trimmed)
+}
+
+// Tools that render visible user-facing UI cards, interactive views, handoffs, or files.
+// A turn that invokes any of these must never be auto-hidden as a silent turn.
+export const USER_UI_TOOLS = new Set([
+  'show_view', 'ask_user', 'request_secret', 'request_connector',
+  'mail_send', 'browser_handoff', 'computer_handoff', 'present_file',
+])
+
 // Consecutive automatic admin wakes with no goal progress before the goal waits
 // for the user instead of waking the admin again.
 export const GOAL_IDLE_NUDGES = 2
@@ -108,12 +146,36 @@ export const GOAL_IDLE_NUDGES = 2
 // job and the step moves on (settings can change it; 0 hands every call over).
 export const BACKGROUND_WAIT_MS = 5_000
 export const BACKGROUND_AFTER_MAX_SEC = 600
+// Above this many parent-session events, task_start skips DSH session fork (which
+// copies the whole event log) and opens a fresh lightweight Session seeded with a
+// structured context summary and read_own_chat access to the parent part.
+export const TASK_FORK_MAX_EVENTS = 600
+
+// Tools that only operate on group chats: hidden from non-Main Bots in zero groups,
+// and from Main Bots when the team has no groups yet (create_group stays available).
+export const GROUP_ONLY_TOOLS = [
+  'read_group_chat', 'post_to_group', 'group_todo', 'group_goal', 'group_task', 'update_group',
+]
+
+// Catalog feature-pack tools: hidden when a Bot has no catalog packs attached and no
+// packs currently loaded in the session.
+export const CATALOG_PACK_TOOLS = ['use_pack', 'drop_pack']
+
+// Team tools unconditionally refused inside background task sessions.
+export const TASK_HIDDEN_TEAM_TOOLS = [
+  'browser_handoff',
+  'task_start', 'task_send', 'task_stop', 'task_list', 'task_read',
+  'ask_user', 'show_view', 'request_secret', 'prepare_ds_bot_issue',
+]
 // A member still at work this long after its first tool call lets the round go on; it
 // posts its reply when the work is done.
 export const ROOM_WORK_GRACE_MS = 15_000
-// Consecutive Bot-to-Bot relays with no tool call and only repetitive or ack text
+// Consecutive Bot-to-Bot relays with no work tool and only repetitive or ack text
 // before the round parks the remaining calls and asks the user before continuing.
-export const ROOM_IDLE_RELAY_LIMIT = 6
+export const ROOM_IDLE_RELAY_LIMIT = 2
+// Consecutive Bot-to-Bot relays with no work tool at all before pausing even when
+// each turn rephrases its chatter.
+export const ROOM_ZERO_WORK_RELAY_LIMIT = 4
 
 export const OWN_CHAT_LINE_MAX = 400
 // The message an anchor points at is shown whole (up to this), so a long draft takes

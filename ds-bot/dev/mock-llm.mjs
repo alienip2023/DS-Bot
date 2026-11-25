@@ -404,8 +404,8 @@ function decide(body) {
     if (steps?.[1] === me && mentioner && lookup) return [text('收到，我先看看目录。'), tool(lookup, { pattern: `${STEPPED_WORK}-1-${steps[2]}-*` })]
     if (/分步干完了/.test(block) && leads) return [text('收到，辛苦了。')]
     if (/^\S+: 干完了/.test(userLine) && leads) return [text('收到，辛苦了。')]
-    // Ping-pong: whoever is mentioned mentions back, to exercise the per-member cap.
-    if (/来回/.test(userLine)) return [text(mentioner ? `@${mentioner} 回你` : leads && peer ? `@${peer} 来回` : '[PASS]')]
+    // Ping-pong: whoever is mentioned mentions back, to exercise the loop guard.
+    if (/来回|回你/.test(block)) return [text(mentioner ? `@${mentioner} 回你` : leads && peer ? `@${peer} 来回` : '[PASS]')]
     if (mentioner) return [text('进度正常，今天能交。')]
     if (/安排/.test(userLine)) return [text(leads && peer ? `@${peer} 你先说说进度。` : '[PASS]')]
     // 调用 <tool> <json> in a group: the same generic trigger as in a Bot's own chat,

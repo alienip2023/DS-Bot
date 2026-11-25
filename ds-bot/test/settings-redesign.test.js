@@ -248,7 +248,7 @@ test('SettingsDialog opens on Overview, lists 10 nav groups, and scrolls domain 
     const nav = findAll(home, n => n.type === 'nav' && n.props?.className === 'bt-settings-nav')[0]
     const labels = findAll(nav, n => n.props?.className === 'bt-settings-label').map(textOf)
     // This fork adds a Bot Market group after Team.
-    assert.deepEqual(labels, ['Overview', 'General', 'Appearance', 'Models', 'Team', 'Bot Market', 'Connect', 'Tools', 'Usage', 'About DS Bot'])
+    assert.deepEqual(labels, ['Overview', 'General', 'Appearance', 'Models', 'Team', 'Bot Market', 'Connect', 'Tools', 'Plugins', 'Usage', 'About DS Bot'])
     // Team shows its count; About shows an update when one is out.
     assert.equal(textOf(findAll(nav, n => n.props?.className === 'bt-settings-count')[0]), '2')
     assert.equal(textOf(findAll(nav, n => n.props?.className === 'bt-settings-chip')[0]), 'Update')
@@ -274,7 +274,7 @@ test('SettingsDialog opens on Overview, lists 10 nav groups, and scrolls domain 
       ['connectors', 'Connect', 'Connectors'],
       ['im', 'Connect', 'IM'],
       ['phone', 'Connect', 'Phone'],
-      ['mcp', 'Connect', 'MCP access'],
+      ['api', 'Connect', 'API'],
       ['bot-connect', 'Connect', 'Connected Apps'],
       ['nodes', 'Connect', 'Remote nodes'],
       ['computer', 'Tools', 'Computer use'],
@@ -534,7 +534,7 @@ test('SettingsTour auto-runs once on first open, catches Escape before Settings,
     // Every data-tour target referenced by settings-tour.js exists in client source.
     const clientDir = join(repoRoot, 'ds-bot/src/client')
     const allClientSource = readdirSync(clientDir).filter(f => f.endsWith('.js') && f !== 'settings-tour.js').map(f => readFileSync(join(clientDir, f), 'utf8')).join('\n')
-    const modes = ['full', 'general', 'appearance', 'models', 'bot-models', 'local-agents', 'deepseek-services', 'bots', 'groups', 'schedules', 'connectors', 'im', 'phone', 'mcp', 'computer', 'browser', 'capabilities', 'secrets', 'usage']
+    const modes = ['full', 'general', 'appearance', 'models', 'bot-models', 'local-agents', 'deepseek-services', 'bots', 'groups', 'schedules', 'connectors', 'im', 'phone', 'api', 'computer', 'browser', 'capabilities', 'secrets', 'usage']
     for (const mode of modes) {
       for (const step of stepsForTour(mode, { hasProviders: true, hasAdvancedModels: true })) {
         const present = allClientSource.includes(`'${step.target}'`) || allClientSource.includes(`"${step.target}"`)
@@ -866,7 +866,7 @@ test('PhonePage offers one-click Turn on & pair and collapses custom relay serve
     assert.match(textOf(pairTree), /Only use a Server you trust/)
     const download = findAll(pairTree, n => n.type === 'a' && textOf(n) === 'Download')
     assert.equal(download.length, 1)
-    assert.equal(download[0].props.href, 'https://github.com/Fei2411/DS-Bot/releases/latest')
+    assert.equal(download[0].props.href, 'https://github.com/Fei-Craft/DS-Bot/releases/latest')
     assert.equal(findAll(pairTree, n => n.props?.['aria-label'] === 'Pairing QR code').length, 1)
     harness.unmount()
   })

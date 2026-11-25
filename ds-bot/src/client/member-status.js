@@ -206,10 +206,13 @@ export function ApprovalCard({ approval, bot, room, actions, showBot = false }) 
     showBot ? cardHead(bot, approval.at, label) : h('div', { className: 'bt-mw-tool' }, label),
     approval.detail?.text ? h('div', { className: 'bt-mw-text' }, approval.detail.text) : null,
     approval.reason ? h('div', { className: 'bt-mw-reason' }, approval.reason) : null,
+    approval.review ? h('div', { className: 'bt-mw-reason', role: 'status' }, approval.review.status === 'reviewing' ? t('Reviewing this action…') : approval.review.reason) : null,
     approval.detail?.code ? h('code', { className: 'bt-mw-code', title: approval.detail.code }, approval.detail.code) : null,
-    // Group and background-task approvals are answered directly through DS Bot;
-    // foreground own-chat approvals still use DSH's own inline card.
-    approval.answerable && (approval.roomId !== undefined || approval.taskId !== undefined)
+    // Answering here resolves the request and withdraws the Bot's own DSH card. Group and
+    // background-task approvals get buttons; a foreground own-chat approval gets them only on
+    // the Bot's own card (no room: its chat's header bar), never on a group's. Every answer
+    // carries the row's own binding (planAnswer / rowBinding), as the host requires.
+    approval.answerable && (approval.roomId !== undefined || approval.taskId !== undefined || room === undefined)
       ? h('div', { className: 'bt-mw-actions' },
         h('button', { type: 'button', className: 'bt-q-btn', disabled: busy, onClick: () => answer('reject') }, t('Reject')),
         h('button', { type: 'button', className: 'bt-q-submit', disabled: busy, onClick: () => answer('allow') }, t('Allow once')))

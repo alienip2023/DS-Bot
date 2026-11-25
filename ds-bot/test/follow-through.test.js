@@ -141,7 +141,6 @@ async function openRoomTurn(t, host) {
   run(host, 'gb', 1, host.agentOf('gb').calls[0])
   return () => result
 }
-
 test('a group turn cut off by a restart is picked up once, and the group is told', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const home = freshHome(t)

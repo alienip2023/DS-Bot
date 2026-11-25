@@ -65,7 +65,9 @@ async function approvalCard(t, { call, reason }) {
   const abort = new AbortController()
   const pending = Promise.all((ctx.listeners.get('approval/request') ?? []).map(listener => listener({
     agent: { id: 'a' }, toolName: call.name, callId: call.id, reason, signal: abort.signal,
-  }, () => new Promise(() => {}))))
+  // The DSH card behind DS Bot's handlers: it waits until the test ends. Upstream's extra-folders.js handler passes
+  // an unrelated approval on to it, so it must settle once aborted.
+  }, () => new Promise(resolve => abort.signal.addEventListener('abort', () => resolve('cancelled'), { once: true })))))
   t.after(async () => { abort.abort(); await pending })
   const entry = rt.approvalsView()[0]
   for (let i = 0; i < 100; i++) {

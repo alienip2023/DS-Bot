@@ -7,8 +7,10 @@
  * @property {() => Promise<void>} [close] Close the engine.
  * @property {(session: Object) => Promise<void>} [closeSession] Close one engine session.
  * @property {(session: Object) => boolean} [compact] Request context compaction.
+ * @property {(session: Object) => Object[] | undefined} [discoveredModels] Models the CLI reported while opening a session.
  * @property {(sessionId: string) => void} [forget] Drop the engine's mapping for a DSH session.
  * @property {(session: Object, text: string) => Promise<void>} [instruct] Update a live session's instructions.
+ * @property {() => void} [invalidateListed] Forget the model list cached by the engine.
  * @property {(options: Object) => Promise<Object[]>} listModels List CLI models.
  * @property {(sessionId: string, options: Object) => Promise<Object>} open Open or resume a session.
  * @property {(session: Object, blocks: Object[], options: Object) => Promise<unknown>} prompt Start a turn.
@@ -25,8 +27,10 @@ const supportedMethods = [
   'close',
   'closeSession',
   'compact',
+  'discoveredModels',
   'forget',
   'instruct',
+  'invalidateListed',
   'listModels',
   'open',
   'prompt',

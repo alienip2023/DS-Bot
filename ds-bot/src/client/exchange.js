@@ -57,18 +57,25 @@ export function ExchangeDialog({ pair, paneLeft, roster, actions }) {
       } },
         entries === null ? h('div', { className: 'bt-hint' }, t('Loading…'))
           : entries.length === 0 ? h('div', { className: 'bt-hint' }, t('No messages yet'))
-            : entries.map((entry) => {
-              const bot = roster.byId[entry.from] ?? { id: entry.from, name: t('You'), color: 'gray' }
-              const showDay = entry.time - lastDay > 30 * 60 * 1000
-              lastDay = entry.time
-              // A long message comes with its start only; the rest is read on request.
-              const whole = entry.length === undefined ? undefined : { length: entry.length, load: () => actions.exchangeText(entry.id, entry.from, entry.to) }
-              const lead = h('span', { className: 'bt-lead' }, h(BotMark, { bot: bot, size: 22 }))
-              return h(Fragment, { key: entry.id },
-                showDay ? h('time', { className: 'bt-time' }, dayLabel(entry.time)) : null,
-                h('div', { className: 'bt-group-msg' },
-                  h('span', { className: 'bt-group-name', style: flat ? undefined : { color: inkText(colorOf(bot)) } }, flat ? lead : null, bot.name),
-                  h(Bubbles, { texts: [stripLongNote(entry.text)], roster, selfId: bot.id, actions, whole, lead: flat ? null : lead })))
-            })),
+            : h(Fragment, null,
+              entries.map((entry) => {
+                const bot = roster.byId[entry.from] ?? { id: entry.from, name: t('You'), color: 'gray' }
+                const showDay = entry.time - lastDay > 30 * 60 * 1000
+                lastDay = entry.time
+                if (entry.role === 'stopped') {
+                  const label = t('{name} stopped the turn: {reason}', { name: bot.name, reason: stripLongNote(entry.text) })
+                  return h(Fragment, { key: entry.id },
+                    showDay ? h('time', { className: 'bt-time' }, dayLabel(entry.time)) : null,
+                    h('div', { className: 'bt-event' }, label))
+                }
+                // A long message comes with its start only; the rest is read on request.
+                const whole = entry.length === undefined ? undefined : { length: entry.length, load: () => actions.exchangeText(entry.id, entry.from, entry.to) }
+                const lead = h('span', { className: 'bt-lead' }, h(BotMark, { bot: bot, size: 22 }))
+                return h(Fragment, { key: entry.id },
+                  showDay ? h('time', { className: 'bt-time' }, dayLabel(entry.time)) : null,
+                  h('div', { className: 'bt-group-msg' },
+                    h('span', { className: 'bt-group-name', style: flat ? undefined : { color: inkText(colorOf(bot)) } }, flat ? lead : null, bot.name),
+                    h(Bubbles, { texts: [stripLongNote(entry.text)], roster, selfId: bot.id, actions, whole, lead: flat ? null : lead })))
+              }))),
       h('div', { className: 'bt-dialog-foot' }, h('button', { type: 'button', className: 'bt-soft', onClick: close }, t('Close Chat')))))
 }

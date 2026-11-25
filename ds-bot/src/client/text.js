@@ -314,7 +314,7 @@ export const contentText = content => (content ?? [])
   .join('\n')
 // A name can contain brackets. Generated headers end at the newline; without a
 // newline, a legacy inline header still stops at its first closing bracket.
-export const HEADER = /^\[(Message from|Reply from|Group chat|Group post from|Bot team setup|Handoff · part|Secret card)(?:[^\r\n]*\]\r?\n|[^\]\r\n]*\])/
+export const HEADER = /^\[(Message from|Reply from|Stopped by|Waiting given up|Group chat|Group post from|Bot team setup|Handoff · part|Secret card)(?:[^\r\n]*\]\r?\n|[^\]\r\n]*\])/
 export const currentPart = bot => bot.sessionId ?? bot.id
 // The prompts in a due scheduled task's message. DSH frames it for the model: one
 // task as `reminder_prompt_json: "…"`, several as `reminders_json: [{reminder_prompt}]`.
@@ -465,9 +465,13 @@ export function commRunOf(order, peers, turn, hiddenTurns = []) {
   return { count, peerIds }
 }
 
+export function turnOutlineOf(list, id) {
+  return list.projectionsBySession?.[id]?.values?.turnOutline ?? list.byId[id]?.projectionValues?.turnOutline
+}
+
 // Latest visible line for a sidebar row; Bot-to-Bot exchange turns stay out of it.
 export function previewOf(list, id, hiddenTurns = []) {
-  const outline = list.projectionsBySession?.[id]?.values?.turnOutline ?? list.byId[id]?.projectionValues?.turnOutline
+  const outline = turnOutlineOf(list, id)
   if (!Array.isArray(outline)) return ''
   for (let index = outline.length - 1; index >= 0; index -= 1) {
     const entry = outline[index]

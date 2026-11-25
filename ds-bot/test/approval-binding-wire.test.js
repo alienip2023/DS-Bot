@@ -152,12 +152,15 @@ test('11 IM answers with the held card binding', async (t) => {
   const calls = []
   const original = rt.answerApproval
   rt.answerApproval = function (...args) { calls.push(args); return original.apply(this, args) }
-  const racing = Promise.all((ctx.listeners.get('approval/request') ?? []).map(listener => listener(
-    { agent: { id: 'a' }, toolName: 'bash', reason: 'run it', signal: new AbortController().signal }, () => new Promise(() => {}))))
+  // Every approval/request listener registers with prepend, so the last registered runs first
+  // (extra-folders ahead of approvals); each passes the request on through next().
+  const request = { agent: { id: 'a' }, toolName: 'bash', reason: 'run it', signal: new AbortController().signal }
+  const chain = [...(ctx.listeners.get('approval/request') ?? [])].reverse()
+  const racing = chain.reduceRight((next, listener) => () => listener(request, next), () => new Promise(() => {}))()
   await delay(30)
   const id = sent.at(-1).buttons[0].data.split(':')[1]
   const { sessionId, fingerprint } = rt.approvalsView().find(row => row.id === id)
   await fake.handlers.onAction({ chat, sender: { id: 'u1', name: 'User u1' }, data: `a:${id}:allow`, messageId: 1 })
-  assert.equal((await racing)[0], 'allowed-once')
+  assert.equal(await racing, 'allowed-once')
   assert.deepEqual(calls, [[id, 'allow', { sessionId, fingerprint }]])
 })

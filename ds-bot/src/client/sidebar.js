@@ -1,5 +1,6 @@
-import { createElement as h, Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { createElement as h, Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
+import { memo } from './memo.js'
 import { FishLogo } from './dsh-primitives.js'
 import { inkFill } from './inks.js'
 import { homeOf, isMainOf } from './sources.js'
@@ -23,6 +24,10 @@ import { botRowClick, remoteHomeOf } from './row-actions.js'
 import { threadsStore } from './threads.js'
 import { sortThreads, canCreateThread } from './thread-target.js'
 import { useEscape } from './overlay-hooks.js'
+
+// Maximum retries to collapse DSH's own sidebar before stopping, so a shell that
+// stays uncollapsed never spins data-bt-collapsing and re-renders forever (#2050).
+export const MAX_COLLAPSE_RETRIES = 3
 
 // -------------------------------------------------------------------------
 // Sidebar
@@ -218,13 +223,39 @@ export function ThreadList({ bot, threads, status, actions, useSessionRetainInfo
       : null)
 }
 
-function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessionRetainInfo, useActivity, useWork, useComputer, wide, marked, onDragStart }) {
+const sameBotRow = (a, b) => a.bot === b.bot
+  && a.wide === b.wide
+  && a.marked === b.marked
+  && a.actions === b.actions
+  && a.onDragStart === b.onDragStart
+  && a.useSessions === b.useSessions
+  && a.useBotCompletions === b.useBotCompletions
+  && a.useSessionStatus === b.useSessionStatus
+  && a.useSessionRetainInfo === b.useSessionRetainInfo
+  && a.useActivity === b.useActivity
+  && a.useWork === b.useWork
+  && a.useComputer === b.useComputer
+  && a.roster.mainBotId === b.roster.mainBotId
+  && a.roster.mainBotIds === b.roster.mainBotIds
+  && a.roster.byId === b.roster.byId
+  && a.roster.roomsById === b.roster.roomsById
+  && a.roster.exchangeTurns === b.roster.exchangeTurns
+  && a.roster.learning === b.roster.learning
+  && a.roster.secretRequests === b.roster.secretRequests
+  && a.roster.connectorRequests === b.roster.connectorRequests
+  && a.roster.mailRequests === b.roster.mailRequests
+  && a.roster.questions === b.roster.questions
+  && a.roster.views === b.roster.views
+
+const BotRow = memo(function BotRow({ bot, roster, actions, useSessions, useBotCompletions, useSessionStatus, useSessionRetainInfo, useActivity, useWork, useComputer, wide, marked, onDragStart }) {
   const id = bot.id
   const part = currentPart(bot)
   const preview = useSessions(list => previewOf(list, part, roster.exchangeTurns[part]))
+  const completionUnread = useBotCompletions(unread => unread[part] === true)
   const running = useSessionStatus(map => map.get(part)?.running === true)
   const active = useSessionRetainInfo(part, info => (info?.retainedBy?.mainView ?? 0) > 0)
-  const unread = useSessionStatus(map => map.get(part)?.completionUnread === true || map.get(part)?.pendingInteraction !== undefined) || (marked && !active)
+  const pendingInteraction = useSessionStatus(map => map.get(part)?.pendingInteraction !== undefined)
+  const unread = pendingInteraction || completionUnread || (marked && !active)
   useMarkedUnread(id, active, marked, actions)
   const main = isMainOf(roster, id)
   const tile = roster.mainBotId === id
@@ -363,9 +394,21 @@ function BotRow({ bot, roster, actions, useSessions, useSessionStatus, useSessio
           bot, threads: threadSlot.threads, status: threadSlot.status, actions, useSessionRetainInfo,
           botActive: active, onRetry: () => actions.loadThreads?.(id, true), part,
         }))))
-}
+}, sameBotRow, 'BotRow')
 
-function RoomRow({ room, roster, actions, useSessions, useSessionStatus, useSessionRetainInfo, useWork, useComputer, wide, marked, onDragStart }) {
+const sameRoomRow = (a, b) => a.room === b.room
+  && a.wide === b.wide
+  && a.marked === b.marked
+  && a.actions === b.actions
+  && a.onDragStart === b.onDragStart
+  && a.useSessions === b.useSessions
+  && a.useSessionStatus === b.useSessionStatus
+  && a.useSessionRetainInfo === b.useSessionRetainInfo
+  && a.useWork === b.useWork
+  && a.useComputer === b.useComputer
+  && a.roster.byId === b.roster.byId
+
+const RoomRow = memo(function RoomRow({ room, roster, actions, useSessions, useSessionStatus, useSessionRetainInfo, useWork, useComputer, wide, marked, onDragStart }) {
   const id = room.id
   // The group's own Session is a chain of parts; the row shows the current one.
   const sessionId = room.sessionId ?? id
@@ -401,7 +444,7 @@ function RoomRow({ room, roster, actions, useSessions, useSessionStatus, useSess
   wide && approval && !active ? h('span', { className: 'bt-unread bt-unread-wait', 'aria-hidden': true })
     : wide && unread && !active ? h('span', { className: 'bt-unread', 'aria-hidden': true })
       : !wide && !active && (approval || unread) ? h('span', { className: `bt-dot${approval ? ' bt-dot-wait' : ''}`, 'aria-hidden': true }) : null)
-}
+}, sameRoomRow, 'RoomRow')
 
 const agentSessionTitle = session => (session.title === '' ? t('New session') : session.title)
 
@@ -521,7 +564,7 @@ function renderSidebarEntry(entry, rowProps, markedUnread, onDragStart) {
 }
 
 function SectionBlock({ section, entries, rowProps, markedUnread, renaming, dropTarget, onDragStart, onDragOverSec, onDropSec }) {
-  const { roster, actions, useSessions, useSessionStatus, useWork, useComputer, wide } = rowProps
+  const { roster, actions, useSessions, useBotCompletions, useSessionStatus, useWork, useComputer, wide } = rowProps
   const input = useRef(null)
   useLayoutEffect(() => {
     if (!renaming) return
@@ -549,6 +592,7 @@ function SectionBlock({ section, entries, rowProps, markedUnread, renaming, drop
       : entry.kind === 'room' ? [entry.item.sessionId ?? entry.item.id]
         : entry.item.sessions ?? []
   )), [entries])
+  const botParts = useMemo(() => new Set(entries.filter(entry => entry.kind === 'bot').map(entry => currentPart(entry.item))), [entries])
   const activeSession = useSessions(list => sessionIds.find(id => (list.byId[id]?.retainedBy?.mainView ?? 0) > 0) ?? '')
   const activeEntry = useMemo(() => {
     if (activeSession === '') return undefined
@@ -561,7 +605,7 @@ function SectionBlock({ section, entries, rowProps, markedUnread, renaming, drop
   const statusBits = useSessionStatus(map => JSON.stringify(sessionIds.map(id => [
     id,
     map.get(id)?.running === true ? 1 : 0,
-    map.get(id)?.completionUnread === true || map.get(id)?.pendingInteraction !== undefined ? 1 : 0,
+    (!botParts.has(id) && map.get(id)?.completionUnread === true) || map.get(id)?.pendingInteraction !== undefined ? 1 : 0,
   ])))
   const shownEntries = useMemo(() => entries.filter(entry => (
     !entry.item.hidden || entry === activeEntry || (entry.kind === 'bot' && isMainOf(roster, entry.item.id))
@@ -591,7 +635,8 @@ function SectionBlock({ section, entries, rowProps, markedUnread, renaming, drop
   })
   const hasAlert = hasPendingCard || hasApproval || hasComputerAsk
   const hasWorking = hasRoomWork || parsedStatuses.some(([, run]) => run === 1)
-  const hasUnread = parsedStatuses.some(([id, , unread]) => unread === 1 && id !== activeSession)
+  const hasBotUnread = useBotCompletions(unread => [...botParts].some(id => id !== activeSession && unread[id] === true))
+  const hasUnread = hasBotUnread || parsedStatuses.some(([id, , unread]) => unread === 1 && id !== activeSession)
     || entries.some(entry => markedUnread[entry.item.id] === true && entry !== activeEntry)
   const statusKind = hasAlert ? 'alert' : hasWorking ? 'working' : hasUnread ? 'unread' : null
   const toggle = () => {
@@ -826,11 +871,11 @@ export function TeamSidebar(props) {
   useReportReady(roster.ready, roster)
   const [dragId, setDragId] = useState(null)
   const [dropTarget, setDropTarget] = useState(null)
-  const onDragStart = (event, id) => {
+  const onDragStart = useCallback((event, id) => {
     setDragId(id)
     event.dataTransfer?.setData?.('text/plain', id)
     if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
-  }
+  }, [])
   const onDragOverSec = (event, secId) => {
     if (!dragId) return
     event.preventDefault()
@@ -874,6 +919,10 @@ export function TeamSidebar(props) {
   // keeps going afterwards follows the cursor frame by frame again.
   const settleTimer = useRef(0)
   const springTimer = useRef(0)
+  useEffect(() => () => {
+    clearTimeout(settleTimer.current)
+    clearTimeout(springTimer.current)
+  }, [])
   const startDrag = (event) => {
     if (event.button !== 0) return
     event.preventDefault()
@@ -970,6 +1019,8 @@ export function TeamSidebar(props) {
   // shell's auto-collapse line, which re-applies the shell's own rule.
   const dsh = useRef(null)
   const requested = useRef(false)
+  const collapseRetries = useRef(0)
+  const retryScope = useRef({ wide, collapsed: frameSnap.collapsed })
   // The request mark always lapses on its own: a re-render before the shell's
   // flip must not leave it set, or the user's next switch would read as ours.
   // A lapse checks the shell again, since our flip and another one landing in
@@ -994,6 +1045,11 @@ export function TeamSidebar(props) {
   useEffect(() => () => quiet(false), [])
   useLayoutEffect(() => {
     if (typeof document === 'undefined' || typeof actions.toggleSidebar !== 'function') return undefined
+    const scope = retryScope.current
+    if (scope.wide !== wide || scope.collapsed !== frameSnap.collapsed) {
+      retryScope.current = { wide, collapsed: frameSnap.collapsed }
+      collapseRetries.current = 0
+    }
     const collapsed = dshCollapsed() ?? !wide
     const prev = dsh.current
     const viewport = window.innerWidth
@@ -1004,8 +1060,15 @@ export function TeamSidebar(props) {
         toggleRef.current()
       }
     }
-    if (collapsed) { clearTimeout(requestLapse.current); requested.current = false; quiet(false); return undefined }
-    if (requested.current) return undefined
+    if (collapsed) {
+      clearTimeout(requestLapse.current)
+      requested.current = false
+      collapseRetries.current = 0
+      quiet(false)
+      return undefined
+    }
+    if (requested.current || collapseRetries.current >= MAX_COLLAPSE_RETRIES) return undefined
+    collapseRetries.current += 1
     requested.current = true
     quiet(true)
     actions.toggleSidebar()
@@ -1026,20 +1089,24 @@ export function TeamSidebar(props) {
     return () => { window.removeEventListener('mousedown', onDown) }
   }, [mode])
 
-  const navigate = (open, id) => {
-    const result = open(id)
-    if (leftDrawer) actions.setLeftDrawer?.(false)
-    return result
-  }
-  const rowActions = {
-    ...actions,
-    openSession: id => navigate(actions.openSession, id),
-    openJoinedHome: id => navigate(actions.openJoinedHome, id),
-    openAgent: id => navigate(actions.openAgent, id),
-    openAgentSession: id => navigate(actions.openAgentSession, id),
-    newAgentSession: id => navigate(actions.newAgentSession, id),
-  }
-  const rowProps = { roster, actions: rowActions, useSessions, useUi, useSessionStatus: props.useSessionStatus, useSessionRetainInfo: props.useSessionRetainInfo, useActivity: props.useActivity, useWork: props.useWork, useComputer: props.useComputer, wide: wideContent }
+  const leftDrawerRef = useRef(leftDrawer)
+  leftDrawerRef.current = leftDrawer
+  const rowActions = useMemo(() => {
+    const navigate = (open, id) => {
+      const result = open(id)
+      if (leftDrawerRef.current) actions.setLeftDrawer?.(false)
+      return result
+    }
+    return {
+      ...actions,
+      openSession: id => navigate(actions.openSession, id),
+      openJoinedHome: id => navigate(actions.openJoinedHome, id),
+      openAgent: id => navigate(actions.openAgent, id),
+      openAgentSession: id => navigate(actions.openAgentSession, id),
+      newAgentSession: id => navigate(actions.newAgentSession, id),
+    }
+  }, [actions])
+  const rowProps = { roster, actions: rowActions, useSessions, useUi, useBotCompletions: props.useBotCompletions ?? useFalse, useSessionStatus: props.useSessionStatus, useSessionRetainInfo: props.useSessionRetainInfo, useActivity: props.useActivity, useWork: props.useWork, useComputer: props.useComputer, wide: wideContent }
   // Typing while the sidebar has focus starts a search.
   const typeToSearch = (event) => {
     if (event.defaultPrevented || event.key.length !== 1 || event.key === ' ' || event.metaKey || event.ctrlKey || event.altKey || event.nativeEvent.isComposing) return
@@ -1160,7 +1227,7 @@ function UpdateButton({ useUpdate, actions }) {
   const dshRow = showsDshRow(dsh, update?.app)
   // Hooks first: an update that turns visible after the sidebar mounted would
   // otherwise add hooks on a later render and crash the slot.
-  const tick = useViewport()
+  const tick = useViewport(open)
   useLayoutEffect(() => {
     if (!open) return
     const rect = button.current?.getBoundingClientRect()
@@ -1315,7 +1382,7 @@ export function AccountLauncher({ seat = true, settingsOpen, actions }) {
       setBusy(false)
     }
   }
-  const tick = useViewport()
+  const tick = useViewport(open)
   const anchor = () => {
     const rect = button.current?.getBoundingClientRect()
     if (rect) setBox({ left: rect.left, bottom: viewBottom() - rect.top + 5 })
@@ -1460,6 +1527,55 @@ function glideOnto(mark, from) {
   setTimeout(land, timing.delay + GLIDE_MS + 500)
 }
 
+// Decides how the main view follows part switches and recovers from an empty/blank
+// view. Returning a primitive key lets `useLandOnMainBot` depend on the actual landing
+// target instead of re-firing on every unrelated roster poll.
+// The view goes home to `homeOf(roster)`: the hub's Main Bot, or on a node the Bot its
+// hub names as home (homeBotId), not the node's first Bot.
+export function landingPlan({ mainView, roster, isAgentSession, threadBotOfSession, last }) {
+  const homeBot = homeOf(roster)
+  if (!roster.ready || !homeBot) return { kind: 'wait', key: 'wait', nextLast: last }
+  const [id, blank] = mainView.split('|')
+  const bot = id === '' ? undefined : roster.byId[id]
+  if (bot !== undefined) {
+    const target = currentPart(bot)
+    const nextLast = { kind: 'bot', id: bot.id, botId: bot.id, sessionId: id }
+    return target !== id
+      ? { kind: 'follow-bot', id: bot.id, key: `follow-bot:${bot.id}:${id}:${target}`, nextLast }
+      : { kind: 'stay', key: `stay-bot:${bot.id}:${id}`, nextLast }
+  }
+  const room = id === '' ? undefined : roster.roomsById[id]
+  if (room !== undefined) {
+    const target = room.sessionId ?? room.id
+    const nextLast = { kind: 'room', id: room.id, roomId: room.id, sessionId: id }
+    return target !== id
+      ? { kind: 'follow-room', id: room.id, key: `follow-room:${room.id}:${id}:${target}`, nextLast }
+      : { kind: 'stay', key: `stay-room:${room.id}:${id}`, nextLast }
+  }
+  // A Thread Session is one of a Bot's team conversations: it is a destination of
+  // its own, blank until its first turn included. Without this a new Thread opened
+  // from its row landed straight back on the Main Bot page.
+  if (id !== '' && threadBotOfSession?.(id) !== undefined) {
+    return { kind: 'stay', key: `stay-thread:${id}`, nextLast: null }
+  }
+  // A DSH Agent Session, blank or not, is a real destination: it stays.
+  if (id !== '' && ((isAgentSession?.(id) ?? roster.agentOf[id] !== undefined) || blank !== '1')) {
+    return { kind: 'stay', key: `stay-other:${id}`, nextLast: null }
+  }
+  const lastOwner = last?.kind === 'room' ? roster.roomsById[last.id] : last ? roster.byId[last.botId ?? last.id] : undefined
+  const lastTarget = lastOwner === undefined ? '' : (last.kind === 'room' ? (lastOwner.sessionId ?? lastOwner.id) : currentPart(lastOwner))
+  // `sessionId`: the blank Session in view, which the Host may still know as a Thread page.
+  return {
+    kind: 'home',
+    id: homeBot,
+    sessionId: id,
+    last,
+    delay: last ? 0 : 400,
+    key: `home:${homeBot}:${id}:${last?.id ?? ''}:${last?.sessionId ?? ''}:${lastTarget}`,
+    nextLast: last,
+  }
+}
+
 // Opens the Main Bot whenever the main view holds no Bot conversation, the way
 // The view always lands on a Bot rather than an empty New Session page.
 // When a Bot's chat moves on to a fresh part, the shell clears the view of the part
@@ -1469,35 +1585,26 @@ export function useLandOnMainBot(roster, useSessions, actions) {
     const row = Object.values(list.byId).find(session => (session?.retainedBy?.mainView ?? 0) > 0)
     return row ? `${row.id}|${row.blank ? 1 : 0}` : ''
   })
-  const lastBot = useRef(null)
+  const lastChat = useRef(null)
+  const plan = landingPlan({ mainView, roster, isAgentSession: actions.isAgentSession, threadBotOfSession: actions.threadBotOfSession, last: lastChat.current })
+  const planRef = useRef(plan)
+  planRef.current = plan
   useEffect(() => {
-    const homeBot = homeOf(roster)
-    if (!roster.ready || !homeBot) return undefined
-    const [id, blank] = mainView.split('|')
-    const bot = id === '' ? undefined : roster.byId[id]
-    if (bot !== undefined) {
-      lastBot.current = { botId: bot.id, sessionId: id }
-      if (currentPart(bot) !== id) actions.landOn(bot.id)
+    const current = planRef.current
+    lastChat.current = current.nextLast
+    if (current.kind === 'follow-bot') {
+      actions.landOn(current.id)
       return undefined
     }
-    // The group's own Session moves on like a Bot's chat does: the part it archived
-    // is cleared, and the view goes on in the fresh one.
-    const room = id === '' ? undefined : roster.roomsById[id]
-    if (room !== undefined) {
-      lastBot.current = null
-      if ((room.sessionId ?? room.id) !== id) actions.openSession(room.id)
+    if (current.kind === 'follow-room') {
+      actions.openSession(current.id)
       return undefined
     }
-    // A Thread Session is one of a Bot's team conversations: it is a destination of
-    // its own, blank until its first turn included. Without this a new Thread opened
-    // from its row landed straight back on the Main Bot page.
-    if (id !== '' && actions.threadBotOfSession?.(id) !== undefined) {
-      lastBot.current = null
-      return undefined
-    }
-    // A DSH Agent Session, blank or not, is a real destination: it stays.
-    if (id !== '' && ((actions.isAgentSession?.(id) ?? roster.agentOf[id] !== undefined) || blank !== '1')) {
-      lastBot.current = null
+    if (current.kind !== 'home') return undefined
+    // The plan is drawn at render; the Thread cache can learn the Session between then and
+    // this effect (the boot home check asks the Host first), so it is asked again here.
+    if (current.sessionId !== '' && actions.threadBotOfSession?.(current.sessionId) !== undefined) {
+      lastChat.current = null
       return undefined
     }
     // A Thread page this plugin saved is still waiting to be restored: the restore
@@ -1508,21 +1615,21 @@ export function useLandOnMainBot(roster, useSessions, actions) {
     // Nothing here knows the Session: after a reload or a restart the Thread cache is
     // empty, so the Host is asked before the view goes home. A question that could not
     // be asked is not an answer — the view stays rather than bouncing on a guess.
-    const last = lastBot.current
-    const home = () => actions.landOn(homeBot, last)
-    const ask = id === '' ? undefined : actions.threadOwnerOf
+    const armedSeq = actions.navSeq?.()
+    const home = () => actions.landOn(current.id, current.last, armedSeq)
+    const ask = current.sessionId === '' ? undefined : actions.threadOwnerOf
     let live = true
     const timer = setTimeout(() => {
       if (actions.hasThreadPage?.() === true) return
       if (typeof ask !== 'function') { home(); return }
-      Promise.resolve(ask(id)).then((owner) => {
+      Promise.resolve(ask(current.sessionId)).then((owner) => {
         if (!live || owner === undefined) return
         if (owner !== null) return
         home()
       }, () => {})
-    }, last ? 0 : 400)
+    }, current.delay)
     return () => { live = false; clearTimeout(timer) }
-  }, [mainView, roster])
+  }, [plan.key])
 }
 
 // The Plugins icon beside the foot's account gear: it opens the shell's plugin

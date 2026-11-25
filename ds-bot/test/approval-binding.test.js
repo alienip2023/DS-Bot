@@ -9,8 +9,9 @@ function harness({ noteApproval } = {}) {
   const handlers = []
   const warnings = []
   const rt = {
-    ctx: { on: (_name, handler) => handlers.push(handler) },
+    ctx: { on: (name, handler) => { if (name === 'approval/request') handlers.push(handler) } },
     groupOwners: new Map(), chatOwners: new Map([['sess', 'bot1']]),
+    roomOf: () => undefined, botOf: () => undefined,
     warn: (...args) => warnings.push(args),
     ...(noteApproval ? { noteApproval } : {}),
   }

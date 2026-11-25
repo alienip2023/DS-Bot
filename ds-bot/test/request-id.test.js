@@ -10,7 +10,6 @@ import { fakeContext } from './fake-ctx.js'
 import { install as installRequests } from '../src/host/requests.js'
 
 let rt
-
 test('old identities survive age and receipt volume without permitting another delivery', async () => {
   const rt = { state: {}, own: (object, key) => Object.hasOwn(object, key) ? object[key] : undefined, readOnly: () => undefined, save: async () => {}, warn() {} }
   installRequests(rt)

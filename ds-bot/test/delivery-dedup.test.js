@@ -217,7 +217,6 @@ async function createRestartHost(t, home, logs, services, inspectOverride) {
   const host = { ctx, rt, agentOf, emit, stop: () => ctx.dispose() }
   return host
 }
-
 test('a failed turn with steered follow-ups pushes only one failure notice per request_id and settles open works', async (t) => {
   const { home, rt, agents, tool, stepGate, modes, deliveries } = await createLoopRig(t)
   // Chief's requests go to Writer's work thread for Chief (work model W2).
@@ -716,6 +715,7 @@ test('reconcileEnded settles distinct parent works that steered into the same fa
 // A turn that completed successfully but crashed before the deferred delivery of a
 // request it read as steering leaves that request open: its caller or parent waits
 // forever. The durable log still holds it, so the next start hands it back.
+
 test('a completed turn hands a steered request back after a restart', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const home = mkdtempSync(join(tmpdir(), 'ds-bot-dedup-reconcile-completed-'))
@@ -775,6 +775,7 @@ test('a completed turn hands a steered request back after a restart', async (t) 
 
 // The deferred delivery may already be in the durable log when the crash happens; it
 // must not be handed back a second time.
+
 test('a request already deferred before the crash is not handed back twice', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const home = mkdtempSync(join(tmpdir(), 'ds-bot-dedup-reconcile-deferred-'))
@@ -898,7 +899,6 @@ test('recovery does not hand a request back again when the normal path delivered
   await host.stop()
 })
 
-
 test('a deferred delivery that failed is sent again on retry in the same run', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const home = mkdtempSync(join(tmpdir(), 'ds-bot-dedup-retry-'))
@@ -965,6 +965,7 @@ test('recovery does not hand a request back after its work closed while it check
 // A turn that carried a steered request across a part switch holds it under
 // source.joined on the handoff message rather than as a separate user/message.
 // A crash between turn/end in the new part and deferred delivery must still recover it.
+
 test('a steered request carried across a part switch via source.joined is recovered after a crash', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const home = mkdtempSync(join(tmpdir(), 'ds-bot-dedup-reconcile-handoff-'))
@@ -1029,6 +1030,7 @@ test('a steered request carried across a part switch via source.joined is recove
 // While recoverJoinedRequests awaits alreadyAnswered / resolveAgent, a live turn can
 // already pick up the deferred exchangeId — clearing queued notes and inbox while the
 // work is still open. Recovery must check rt.live before delivering a second copy.
+
 test('recovery does not duplicate a request a newly started live turn already owns', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const { seed, logs, req2 } = completedSteerFixture()
@@ -1053,4 +1055,49 @@ test('recovery does not duplicate a request a newly started live turn already ow
   await realDelay(30)
   assert.equal(host.agentOf('b').calls.length, 0, 'a request already owned by a live turn must not be delivered again')
   await host.stop()
+})
+
+test('restart finds an unread task follow-up in the task’s successor inbox', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const home = mkdtempSync(join(tmpdir(), 'ds-bot-dedup-moved-task-'))
+  const seed = baseSeed()
+  seed.bots.b.tasks = [{ id: 'task-1', sessionId: 'b-task-new', segments: [{ sessionId: 'b-task-old' }], title: 'Background task', status: 'running' }]
+  writeFileSync(join(home, 'state.json'), JSON.stringify(seed))
+  const args = { toId: 'b', sessionId: 'b-task-old', role: 'task-followup', taskId: 'task-1', exchangeId: 'followup', text: 'Only for the task' }
+  writeFileSync(join(home, 'inflight.json'), JSON.stringify({ turns: {}, queued: { 'b-task-old': [{ at: 1, args }] } }))
+  const host = await createRestartHost(t, home, new Map())
+  t.after(async () => {
+    await host.stop()
+    rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
+  })
+  host.agentOf('b-task-new').inbox.nextTurn.push({ source: { kind: 'bot', exchangeId: args.exchangeId } })
+  const reconciliation = t.mock.method(host.rt, 'reconcileTasksAfterRestart')
+  t.mock.timers.tick(3000)
+  await settle(() => reconciliation.mock.callCount() > 0)
+  await reconciliation.mock.calls[0].result
+  assert.deepEqual(host.agentOf('b').calls, [], 'the foreground must not receive the task follow-up')
+  assert.deepEqual(host.agentOf('b-task-new').calls, [], 'the successor inbox already has the follow-up')
+  assert.equal(host.rt.state.bots.b.tasks[0].status, 'running')
+})
+
+test('restart replays an unread Bot reply to the foreground when its task failed', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const home = mkdtempSync(join(tmpdir(), 'ds-bot-dedup-failed-task-'))
+  const seed = baseSeed()
+  seed.bots.b.tasks = [{ id: 'task-1', sessionId: 'b-task', title: 'Background task', status: 'failed' }]
+  writeFileSync(join(home, 'state.json'), JSON.stringify(seed))
+  const args = { fromId: 'a', toId: 'b', sessionId: 'b-task', role: 'reply', exchangeId: 'reply', text: 'Result for the failed task' }
+  // Fork: a queued note older than 30 minutes is dropped at restart (QUEUED_TTL_MS), so this one is recent.
+  writeFileSync(join(home, 'inflight.json'), JSON.stringify({ turns: {}, queued: { 'b-task': [{ at: Date.now(), args }] } }))
+  const host = await createRestartHost(t, home, new Map())
+  t.after(async () => {
+    await host.stop()
+    rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
+  })
+  const reconciliation = t.mock.method(host.rt, 'reconcileTasksAfterRestart')
+  t.mock.timers.tick(3000)
+  await settle(() => reconciliation.mock.callCount() > 0)
+  await reconciliation.mock.calls[0].result
+  assert.deepEqual(host.agentOf('b').calls.map(({ source }) => source.exchangeId), ['reply'])
+  assert.deepEqual(host.agentOf('b-task').calls, [])
 })

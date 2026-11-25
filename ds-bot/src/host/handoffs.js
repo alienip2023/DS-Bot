@@ -7,10 +7,15 @@
 // hand-off refused. The open works are kept in state.json so a restart waits on.
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { readdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { LATE_ANSWER, MESSAGE_INLINE_MAX, TEXT_KEPT } from './constants.js'
+import { normalizeImOrigin, sameImOrigin } from './im/origin.js'
 import { headOf } from './text.js'
 import { ownChatSessions } from './threads.js'
+
+const own = (obj, key) => (obj != null && typeof key === 'string' && Object.hasOwn(obj, key) ? obj[key] : undefined)
+const safeKey = key => typeof key === 'string' && key !== '' && key !== '__proto__' && key !== 'constructor' && key !== 'prototype'
 
 const minutes = since => {
   const count = Math.floor((Date.now() - since) / 60_000)
@@ -53,6 +58,9 @@ export function install(rt) {
   }
   const keptName = file => (typeof file === 'string' && /^[A-Za-z0-9_-]+\.txt$/.test(file) ? file : undefined)
   const writes = () => rt.readOnly?.() === undefined
+  let savedWrites = 0
+  const tracksSaved = typeof rt.onSaved === 'function'
+  if (tracksSaved) rt.onSaved(() => { savedWrites += 1 })
 
   // The result of a work, whole, in a file of its own. The file is written before the
   // team file names it, so a result that is claimed to exist is there.
@@ -75,17 +83,59 @@ export function install(rt) {
     }
   }
 
-  // The copy of a result that is not needed any more: the answer it went into has it.
-  const dropResult = file => {
-    const name = keptName(file)
-    if (name === undefined || !writes()) return
+  const referencedInWorks = (table) => {
+    const used = new Set()
+    for (const work of Object.values(table ?? {})) {
+      for (const result of work?.results ?? []) {
+        const name = keptName(result?.file)
+        if (name !== undefined) used.add(name)
+      }
+    }
+    return used
+  }
+
+  // The copies of results that are not needed any more (the answer they went into has them), dropped once the
+  // replacement state actually reached disk. When `store.js` tracks real writes via `rt.onSaved`, this avoids a
+  // synchronous `readFileSync` + `JSON.parse(state.json)` per file.
+  const dropResults = (results, savedBefore) => {
+    const names = [...new Set((results ?? []).map(result => keptName(result?.file)).filter(Boolean))]
+    if (names.length === 0 || !writes()) return
+    if (tracksSaved) {
+      // save() resolved without writing to disk (shutdown / read-only): keep durable files.
+      if (savedWrites === savedBefore) return
+      const live = referencedInWorks(works())
+      for (const name of names) {
+        if (live.has(name)) continue
+        void rm(resultPath(name), { force: true }).catch(() => {})
+      }
+      return
+    }
     try {
-      // save() can resolve without writing during shutdown. Check the durable
-      // references too, so an old state can still recover its result after restart.
+      // Standalone unit-test fallback (without store.js onSaved): read state.json once per batch.
       const saved = JSON.parse(readFileSync(join(rt.home, 'state.json'), 'utf8'))
-      if (Object.values(saved.works ?? {}).some(work => (work.results ?? []).some(result => result.file === name))) return
-      rmSync(resultPath(name), { force: true })
+      const durable = referencedInWorks(saved.works)
+      for (const name of names) {
+        if (durable.has(name)) continue
+        rmSync(resultPath(name), { force: true })
+      }
     } catch {}
+  }
+
+  // Startup async sweep for orphan `handoff-results/*.txt` files left behind by a crash.
+  async function pruneOrphanResultFiles() {
+    if (!writes()) return
+    let entries
+    try {
+      entries = await readdir(resultsDir)
+    } catch {
+      return
+    }
+    const referenced = referencedInWorks(works())
+    for (const file of entries) {
+      const name = keptName(file)
+      if (name === undefined || referenced.has(name)) continue
+      await rm(resultPath(name), { force: true }).catch(() => {})
+    }
   }
 
   // What came back for a work: the whole result if it is still to be found, else the
@@ -115,15 +165,83 @@ export function install(rt) {
   // session id of the subagent a run of this work belongs to — the run, not the
   // child, is the sub-work, so a child that is continued hands up a result per run.
   // `fromPart`: the part of the sender's own chat it wrote from, which its answer goes
-  // back to when that is a background part.
+  // back to when that is a background part. `imOrigin`: the IM chat that asked the
+  // sender for this work, kept out of public views and Session logs.
   // No clock runs on a work (docs/plans/2026-11-24-work-model.md): a Bot that waits for the user's approval, or
   // a machine that is away, keeps the work open, and the status line says whom it waits for.
-  function openWork(id, { from, to, parent, fromRoom, room, name, child, fromPart }) {
-    const above = parent === undefined ? undefined : works()[parent]
-    works()[id] = { ...(from ? { from } : {}), ...(to ? { to } : {}), ...(room ? { room } : {}), ...(above ? { parent } : {}), ...(fromRoom ? { fromRoom } : {}), ...(fromPart ? { fromPart } : {}), ...(name ? { name } : {}), ...(child ? { child } : {}), open: [], results: [], at: Date.now() }
+  function openWork(id, { from, to, parent, fromRoom, room, name, child, fromPart, imOrigin }) {
+    if (!safeKey(id)) return undefined
+    const above = parent === undefined ? undefined : own(works(), parent)
+    const cleanOrigin = normalizeImOrigin(imOrigin)
+    works()[id] = { ...(from ? { from } : {}), ...(to ? { to } : {}), ...(room ? { room } : {}), ...(above ? { parent } : {}), ...(fromRoom ? { fromRoom } : {}), ...(fromPart ? { fromPart } : {}), ...(name ? { name } : {}), ...(child ? { child } : {}), ...(cleanOrigin ? { imOrigin: cleanOrigin } : {}), open: [], results: [], at: Date.now() }
     if (above !== undefined) above.open.push(id)
     log('open', id, { ...(from ? { from } : {}), ...(to ? { to } : {}), ...(room ? { room } : {}), ...(above ? { parent } : {}) })
     save()
+    return works()[id]
+  }
+
+  const workImOrigin = (id) => {
+    const work = own(works(), id)
+    if (work === undefined) return undefined
+    if (work.imOriginMixed === true) return { mixed: true }
+    return work.imOrigin
+  }
+
+  // Merging a second unread request into an open work keeps the IM origin only when both
+  // requests come from the same IM chat; mixing Web and IM or two IM chats clears it.
+  function mergeWorkImOrigin(id, nextImOrigin) {
+    const work = own(works(), id)
+    if (work === undefined) return
+    if (work.imOriginMixed === true) {
+      if (work.imOrigin !== undefined) {
+        delete work.imOrigin
+        save()
+      }
+      return
+    }
+    const cleanNext = normalizeImOrigin(nextImOrigin)
+    if (work.imOrigin === undefined && cleanNext === undefined) return
+    if (!sameImOrigin(work.imOrigin, cleanNext)) {
+      delete work.imOrigin
+      work.imOriginMixed = true
+      save()
+    }
+  }
+
+  // Bounded store of IM origins for returning replies/reports, kept in state.json
+  // (never in public views or Session logs) so deferred redelivery and post-restart
+  // resends can still reclaim the originating IM chat.
+  const IM_REPLY_ORIGINS_KEPT = 200
+  const IM_REPLY_ORIGIN_TTL_MS = 24 * 60 * 60_000
+  const imReplyOrigins = () => (state.imReplyOrigins ??= {})
+  function rememberImReplyOrigin(id, imOrigin) {
+    const isMixed = imOrigin?.mixed === true
+    const cleanOrigin = isMixed ? undefined : normalizeImOrigin(imOrigin)
+    if (typeof id !== 'string' || id === '' || (!isMixed && cleanOrigin === undefined)) return
+    const map = imReplyOrigins()
+    const now = Date.now()
+    for (const [key, entry] of Object.entries(map)) {
+      if (now - (entry?.at ?? 0) > IM_REPLY_ORIGIN_TTL_MS) delete map[key]
+    }
+    map[id] = isMixed ? { mixed: true, at: now } : { ...cleanOrigin, at: now }
+    const keys = Object.keys(map)
+    if (keys.length > IM_REPLY_ORIGINS_KEPT) {
+      for (const old of keys.sort((a, b) => (map[a].at ?? 0) - (map[b].at ?? 0)).slice(0, keys.length - IM_REPLY_ORIGINS_KEPT)) delete map[old]
+    }
+    save()
+  }
+  function imReplyOrigin(id) {
+    if (typeof id !== 'string' || id === '') return undefined
+    const map = state.imReplyOrigins
+    if (map === undefined || !Object.hasOwn(map, id)) return undefined
+    const entry = map[id]
+    if (entry === undefined) return undefined
+    if (Date.now() - (entry.at ?? 0) > IM_REPLY_ORIGIN_TTL_MS) {
+      delete map[id]
+      save()
+      return undefined
+    }
+    return entry
   }
 
   // The work a turn the user (or a routine) started does, once that turn hands something on: the root of what it
@@ -238,19 +356,21 @@ export function install(rt) {
     log(extra.abandoned === true ? 'abandoned' : 'done', id, above === undefined ? {} : { parent: work.parent })
     // Old state can still name these files until the replacement state lands.
     // A failed save must leave them available to the next host.
+    const savedBefore = savedWrites
     void rt.save().then(() => {
-      for (const result of work.results ?? []) dropResult(result.file)
+      dropResults(work.results, savedBefore)
     }).catch(() => {})
     return above === undefined ? undefined : work.parent
   }
   // The subagent run a settlement notice names. The notice carries only the
   // child's id, and a child's runs end one after another, so it is the earliest
   // settled run of that child not read yet, else a run of it still out.
-  const subWorkRun = (id) => {
+  const subWorkRun = (id, exclude) => {
     let settled
     let live
     for (const [workId, work] of Object.entries(works())) {
       for (const openId of work.open) {
+        if (exclude?.has(openId)) continue
         const result = work.results?.find(result => result.id === openId)
         if ((result?.child ?? works()[openId]?.child ?? openId) !== id) continue
         if (result === undefined) live ??= { id: openId, parent: workId }
@@ -306,8 +426,9 @@ export function install(rt) {
     if (above !== undefined) above.open = above.open.filter(other => other !== id)
     for (const result of work.results ?? []) whole.delete(result.id)
     log('dropped', id)
+    const savedBefore = savedWrites
     void rt.save().then(() => {
-      for (const result of work.results ?? []) dropResult(result.file)
+      dropResults(work.results, savedBefore)
     }).catch(() => {})
   }
 
@@ -488,6 +609,7 @@ export function install(rt) {
   const ABANDONED_KEPT = 100
   const abandonedWorks = () => (state.abandonedWorks ??= {})
   function rememberAbandoned(id, entry) {
+    if (!safeKey(id)) return
     const map = abandonedWorks()
     map[id] = entry
     const ids = Object.keys(map)
@@ -499,7 +621,7 @@ export function install(rt) {
   // The abandoned wait a late reply is for, if any. One reply only: the note is used up.
   function takeAbandoned(id) {
     const map = abandonedWorks()
-    const entry = map[id]
+    const entry = own(map, id)
     if (entry === undefined) return undefined
     delete map[id]
     save()
@@ -512,16 +634,22 @@ export function install(rt) {
 
   // Giving up one wait: the sub-work closes with an explicit result that says no reply
   // came back, so the work above it goes on. Only this branch settles; the parent's
-  // other open works stay. `gone` is the startup sweep, whose target no longer exists.
+  // other open works stay. `gone` is the startup sweep, whose target no longer exists;
+  // `restart` is startup reconciliation of an orphaned work with no active turn left (resume.js).
   function abandonWork(id, reason = 'user') {
-    const work = works()[id]
-    const parent = work?.parent === undefined ? undefined : works()[work.parent]
+    const work = own(works(), id)
+    const parent = work?.parent === undefined ? undefined : own(works(), work.parent)
     if (work === undefined || parent === undefined || !parent.open.includes(id)) return false
     const target = labelOfWork(work)
     const name = rt.botOf(work.to)?.name ?? work.name ?? (work.room !== undefined ? rt.roomOf(work.room)?.name : undefined) ?? 'the other Bot'
     const text = reason === 'gone'
       ? cap(target) + ' is no longer on the team, so no reply can come back for the work handed to it. The user gave up waiting for that answer: this counts as its result. Go on with the work you were given, and say plainly that this answer is missing.'
-      : 'No reply came back from ' + target + ', and the user gave up waiting for it. This counts as its result: go on with the work you were given, and say plainly that this answer is missing.'
+      : reason === 'restart'
+        ? `The work handed to ${target} did not complete before DeepSeek Harness restarted and has no active turn remaining. This counts as its result: go on with the work you were given, and say plainly that this answer is missing.`
+        : 'No reply came back from ' + target + ', and the user gave up waiting for it. This counts as its result: go on with the work you were given, and say plainly that this answer is missing.'
+    const origin = workImOrigin(id)
+    if (origin !== undefined) rememberImReplyOrigin(id, origin)
+    if (reason === 'gone') rt.dropRoomReport?.(id)
     rememberAbandoned(id, { at: Date.now(), from: work.from, to: work.to, room: work.room, parent: work.parent, name, reason, ...(parent.to !== undefined ? { waiting: parent.to } : {}) })
     // Work handed to another machine stops there too (W3), and answers no more.
     if (work.remote !== undefined) rt.link?.cancel?.(id)
@@ -571,15 +699,26 @@ export function install(rt) {
       resumeWork(id)
     }
   }
+  const offAdopted = rt.onAdopted?.(() => whole.clear())
   // A host without a context (the narrow tests) has no startup to reconcile. The sweep
   // waits a tick: the team file loads through every module's own setup, and this module
   // is installed before the ones that load it.
   ctx?.effect?.(() => {
     const timer = setTimeout(() => {
-      void rt.load().then(() => reconcileLostWorks()).catch(error => rt.warn('ds-bot: lost waits not settled: %s', error))
+      void rt.load()
+        .then(() => {
+          reconcileLostWorks()
+          rt.pruneOrphanRequests?.()
+          return pruneOrphanResultFiles()
+        })
+        .catch(error => rt.warn('ds-bot: lost waits not settled: %s', error))
       void rt.load().then(() => reconcileLostResumes()).catch(error => rt.warn('ds-bot: lost resumes not sent again: %s', error))
     }, 0)
-    return () => clearTimeout(timer)
+    return () => {
+      clearTimeout(timer)
+      offAdopted?.()
+      whole.clear()
+    }
   }, 'ds-bot: lost hand-offs')
 
   // A deleted Bot answers no more work and waits for none.
@@ -613,7 +752,7 @@ export function install(rt) {
     }
     const forWhom = (sessionId, info) => {
       if (rt.groupOwners.has(sessionId)) return info?.askedBy && nameOf(info.askedBy) ? `, for ${nameOf(info.askedBy)}` : ''
-      const asker = info?.role === 'request' || info?.role === 'stopped' ? info.senderSessionId : works()[workOf(info)]?.from
+      const asker = info?.role === 'request' || info?.role === 'stopped' ? info.senderSessionId : Object.hasOwn(works(), String(workOf(info) ?? '')) ? works()[workOf(info)]?.from : undefined
       if (asker !== undefined) return nameOf(asker) ? `, for ${nameOf(asker)}` : ''
       return info === undefined ? ', for the user' : ''
     }
@@ -663,5 +802,12 @@ export function install(rt) {
     }
   }
 
-  Object.assign(rt, { workOf, openWork, openRootWork, isRootWork, resumeWork, workTurnEnded, noteWorkPart: notePart, closeWork, dropWork, stopHandedOn, stopWaitingIn, isStoppedWork, chainOf, depthAfter, takenWork: taken, lateWork, answerMissed, ownsWork: owns, waitsWork: waits, holdWork: hold, workAsker: askedBy, answerText, upstreamOf, sameWork, forgetBotWork: forgetBot, statusOf, waitingView, settleSubWork, subWorkRun, nameSubWork, abandonWork, abandonedWork: takeAbandoned, notifyBlockedDelegators })
+  Object.assign(rt, {
+    workOf, openWork, openRootWork, isRootWork, resumeWork, workTurnEnded, noteWorkPart: notePart, closeWork, dropWork,
+    stopHandedOn, stopWaitingIn, isStoppedWork, chainOf, depthAfter, takenWork: taken, lateWork, answerMissed,
+    ownsWork: owns, waitsWork: waits, holdWork: hold, workAsker: askedBy,
+    workImOrigin, mergeWorkImOrigin, rememberImReplyOrigin, imReplyOrigin,
+    answerText, upstreamOf, sameWork, forgetBotWork: forgetBot, statusOf, waitingView,
+    settleSubWork, subWorkRun, nameSubWork, abandonWork, abandonedWork: takeAbandoned, notifyBlockedDelegators,
+  })
 }

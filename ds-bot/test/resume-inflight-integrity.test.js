@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import fsp from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+import { syncBuiltinESMExports } from 'node:module'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import './harness-resolve.mjs'
@@ -86,10 +87,15 @@ for (const point of ['temp-write', 'rename', 'between']) {
       // The temp file is complete; the process is gone before the rename happens.
       t.mock.method(fsp, 'rename', async () => { throw Object.assign(new Error('killed'), { code: 'EIO' }) })
       t.mock.method(fsp, 'rm', async () => {})
+      t.mock.method(fsp, 'unlink', async () => {})
     }
+    // resume.js and files.js import these by name: push the mocks into the named bindings.
+    syncBuiltinESMExports()
+    t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports() })
     h.rt.deliver({ toId: 'a', sessionId: 'chat-a', text: 'x', exchangeId: 'e3' })
     await h.ctx.dispose()
     t.mock.restoreAll()
+    syncBuiltinESMExports()
     const bytes = readFileSync(file, 'utf8')
     assert.equal(bytes, oldBytes, 'old bytes intact after a failed write')
     assert.ok(h.warnings.length >= 1)

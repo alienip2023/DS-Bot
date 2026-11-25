@@ -1,6 +1,6 @@
 {
   "name": "ds-bot",
-  "version": "0.3.10-fork.127",
+  "version": "0.3.10-fork.128",
   "description": "DS Bot: a team of long-lived Bots for DeepSeek Harness, with Main Bots, Bot-to-Bot messages and group chats",
   "keywords": [
     "dsh-plugin",
@@ -26,15 +26,20 @@
   "exports": {
     ".": "./plugin.js",
     "./client": "./client.js",
+    "./plugin-sdk": "./src/host/plugins/sdk.js",
+    "./browser-provider": "./src/host/plugins/sdk.js",
     "./web-search": "./web-search.js",
     "./package.json": "./package.json"
   },
   "files": [
     "bin/",
     "plugin.js",
-    "index.js",
+    "/index.js",
     "src/host/",
     "src/gateway/",
+    "src/client/agent-logos.js",
+    "src/client/agent-routes.js",
+    "src/client/inks.js",
     "src/shared/",
     "src/office/",
     "client.js",
@@ -55,11 +60,16 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-fs-patch": "*",
     "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-sandbox-policy": "*",
     "@deepseek-ai/dsh-scope": "*",
     "@deepseek-ai/dsh-tools": "*",
     "@deepseek-ai/dsh-typert-protocol": "*",
     "@deepseek-ai/dsh-web": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-fs-patch": { "optional": true }
   },
   "dsh": {
     "client": {
@@ -90,7 +100,7 @@
     "ws": "8.18.3"
   },
   "bin": {
-    "ds-bot": "./bin/ds-bot-doctor.mjs",
+    "ds-bot": "./bin/ds-bot-cli.mjs",
     "ds-bot-mcp": "./bin/ds-bot-mcp.mjs"
   }
 }
