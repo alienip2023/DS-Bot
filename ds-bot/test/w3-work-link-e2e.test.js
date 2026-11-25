@@ -581,6 +581,29 @@ test('W3-E2E-12 a Bot may not hand work back to a Bot waiting above it on anothe
   assert.equal(delivered(n11.w).some(d => textOf(d.message).endsWith('again')), false)
 })
 
+// fork.129 (AC 0.4.40 direct links): a stop and its work can take different ways, so the stop may come first.
+test('W3-E2E-14 a stop that arrives before its work: the work is not taken when it comes, and the asker hears it stopped', { skip }, async t => {
+  const { hub, n10, goDown, comeBack } = await cluster(t)
+  goDown('node010')
+  const chief = userTurn(hub, 'chief', 'have Exec10 check the build')
+  await messageBot(hub.rt, 'chief', 'Exec10', 'check the build')
+  chief.end('Exec10 is on it.')
+  const id = Object.keys(hub.rt.state.works).find(key => hub.rt.state.works[key].remote?.nodeId === 'node010')
+  assert.ok(id, 'the work is open on the hub')
+  // its work/cancel reaches node010 first (the other way); the handoff is still held at the hub
+  n10.network.receiveReliable('rel/frame', { rid: `cancel-${id}`, type: 'work/cancel', data: { id } })
+  await settle()
+  assert.equal(n10.w.rt.state.cancelledAhead?.[id]?.nodeId, 'hub')
+  comeBack('node010')
+  await until(() => hub.rt.state.works?.[id] === undefined || (hub.rt.state.works[id].results ?? []).length > 0 || delivered(hub).some(d => d.sessionId === 'chief' && d.message.source?.role === 'results'), 'the hub heard back')
+  await settle()
+  assert.equal(n10.w.rt.state.works?.[id], undefined, 'node010 did not take it')
+  assert.equal(workThread(n10.w.rt, 'e10') === undefined || !delivered(n10.w).some(d => d.sessionId === workThread(n10.w.rt, 'e10').sessionId), true, 'Exec10 never got the request')
+  assert.equal(n10.w.rt.state.cancelledAhead?.[id], undefined, 'the mark is used up')
+  const back = delivered(hub).find(d => d.sessionId === 'chief' && d.message.source?.role === 'results')
+  if (back) assert.match(textOf(back.message), /Stopped before it started/)
+})
+
 test('W3-E2E-13 depth: work that passed through too many hands is not taken, and one at the limit cannot be handed on further', { skip }, async t => {
   const { n10, n11 } = await cluster(t)
   const refs = n => ['a', 'b', 'c', 'd', 'e'].slice(0, n).map(id => ({ id: `x-${id}`, nodeId: 'hub' }))

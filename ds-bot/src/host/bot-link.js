@@ -6,7 +6,8 @@
 // is resumed once everything it handed on is back (W1). Results are never delivered as messages, never steered.
 //
 // The frames go over AC's reliable link (dsh-ai-cluster docs/reliable-link.md): each is handled exactly once, kept
-// while the other machine is away (no clock runs), and node-to-node frames are stored and forwarded by the hub.
+// while the other machine is away (no clock runs). Node-to-node frames go over a direct link between the two nodes when
+// there is one (AC 0.4.40), else the hub stores and forwards them; the two ways keep no common order.
 // Who sent a frame is the link's fact (`msg.from`), never what the frame says.
 import { randomUUID } from 'node:crypto'
 import { LATE_ANSWER, WORK_DEPTH_MAX } from './constants.js'
@@ -181,6 +182,12 @@ async function onHandoff(rt, msg) {
   }
   await rt.load?.()
   if (rt.state.works?.[data.id] !== undefined) return
+  // Its stop came first (the two took different ways, AC 0.4.40 direct links): it is not taken, and the asker hears so.
+  if (takeCancelAhead(rt, data.id, msg.from)) {
+    post(rt, msg.from, 'work/result', { id: data.id, outcome: 'stopped', text: 'Stopped before it started.' })
+    await rt.save?.()
+    return
+  }
   const to = botOfRef(rt, data.to)
   if (to === undefined || isRemoteBot(to)) {
     post(rt, msg.from, 'work/result', { id: data.id, outcome: 'failed', text: `${data.to?.name ?? 'That Bot'} is not on ${ownNodeId(rt) ?? 'this machine'} any more.` })
@@ -257,9 +264,31 @@ async function onResult(rt, msg) {
   await rt.deliver({ fromId: work.to, toId: asker.id, ...(sessionId ? { sessionId } : {}), text, role: 'reply', replyTo: data.id, exchangeId: replyId, recordExchange: false })
 }
 
+// A stop for work that has not arrived yet, kept a day by the machine that sent it: its work/handoff may still be on the
+// other way (direct links and the hub's store-and-forward do not keep one order between them).
+const CANCEL_AHEAD_MS = 24 * 60 * 60 * 1000
+function noteCancelAhead(rt, id, nodeId) {
+  const now = Date.now()
+  const ahead = Object.fromEntries(Object.entries(rt.state.cancelledAhead ?? {}).filter(([, mark]) => now - (mark?.at ?? 0) < CANCEL_AHEAD_MS))
+  ahead[id] = { nodeId, at: now }
+  rt.state.cancelledAhead = ahead
+}
+function takeCancelAhead(rt, id, nodeId) {
+  const mark = rt.state.cancelledAhead?.[id]
+  if (mark?.nodeId !== nodeId || Date.now() - (mark.at ?? 0) >= CANCEL_AHEAD_MS) return false
+  delete rt.state.cancelledAhead[id]
+  return true
+}
+
 async function onCancel(rt, msg) {
   const id = msg.data?.id
+  await rt.load?.()
   const work = rt.state.works?.[id]
+  if (work === undefined && typeof id === 'string' && id !== '' && !rt.isStoppedWork?.(id)) {
+    noteCancelAhead(rt, id, msg.from)
+    await rt.save?.()
+    return
+  }
   if (work?.link?.nodeId !== msg.from) return
   // Answers nothing any more; what it handed on stops too (fork.125), and a turn doing it right now is stopped.
   rt.stopHandedOn?.(id)
