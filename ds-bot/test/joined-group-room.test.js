@@ -89,7 +89,9 @@ for (const fromBot of [false, true]) {
     assert.equal(w.replies[0].roomId, w.room.id)
     assert.equal(w.replies[0].text, 'done')
     assert.equal(w.sessions.get('private-mirror').log.length, 0)
-    assert.ok(w.sessions.get('room-session').log.some(event => event.type === 'assistant/message'))
+    // fork.130: a node member's turn is not written into the group's own Session (it has an agent of its own); the answer
+    // is in the group's book, which the group's chat shows (see group-session-single-writer.test.js).
+    assert.equal(w.sessions.get('room-session').log.length, 0)
   })
 }
 
@@ -167,7 +169,7 @@ test('node group sessions are created and remain owned by their Bot after reinde
   assert.equal(calls[0].sessionId, calls[1].sessionId)
 })
 
-test('two joined members mirror concurrent group turns without interrupting each other', async t => {
+test('two joined members\' concurrent group turns both settle, and neither writes into the group\'s own Session', async t => {
   const w = hub(t)
   const other = { ...w.shadow, id: 'joined:n1:rb2', worker: { ...w.shadow.worker, remoteBotId: 'rb2' } }
   w.rt.state.bots[other.id] = other
@@ -178,10 +180,8 @@ test('two joined members mirror concurrent group turns without interrupting each
   await drain()
   w.rt.ctx.get('remote-agent:registry').emit('botTurnResult', { nodeId: 'n1', exchangeId: 'parallel-0', ok: true, text: 'first done' })
   await drain()
-  const session = w.sessions.get('room-session')
-  assert.equal(session.log.filter(event => event.type === 'turn/end').length, 2)
-  assert.ok(session.log.filter(event => event.type === 'turn/end').every(event => event.data.reason.kind === 'completed'))
-  assert.equal(session.log.filter(event => event.type === 'assistant/message').length, 2)
+  assert.equal(w.sessions.get('room-session').log.length, 0)
+  assert.deepEqual(w.replies.map(reply => [reply.roomId, reply.text]).sort(), [[w.room.id, 'done'], [w.room.id, 'first done']].sort())
 })
 
 test('concurrent node turns wait for their shared group session to be created', async () => {

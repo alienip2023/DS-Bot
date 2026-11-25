@@ -8,9 +8,6 @@ import { mountAgentLoopTestDependencies, mountAgentLoopTestHarness } from '@deep
 import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic'
 import { ToolResultPruner } from '@deepseek-ai/dsh-compaction-tool-result-pruner'
 import { createUserMessage, LlmAdapter } from '@deepseek-ai/dsh-llm'
-import { KNOWN_SESSION_EVENT_TYPES } from '@deepseek-ai/dsh-session'
-import { sessionFormatCatalog } from '@deepseek-ai/dsh-session-format-catalog'
-import { assertReleasedV4Relationships, assertV4RowAdmission } from '@deepseek-ai/dsh-session-format-v3-to-v4'
 import { TokenMeter } from '@deepseek-ai/dsh-token-meter'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { createRuntime } from '../index.js'
@@ -18,6 +15,7 @@ import { HANDOFF_ACK, REPLY_KIND, SOURCE_KIND } from '../src/host/constants.js'
 import { install as installParts } from '../src/host/parts.js'
 import { output } from '../src/host/tools.js'
 import { fakeContext } from './fake-ctx.js'
+import { assertStoredLogLoads } from './stored-log.js'
 
 const NOTE_SECTIONS = ['Goals', 'Constraints and preferences', 'Progress', 'Decisions', 'Facts to keep', 'Open threads', 'Next step', 'Where to look']
 const validNote = marker => NOTE_SECTIONS.map(name => `## ${name}\n- ${marker}`).join('\n\n')
@@ -29,18 +27,6 @@ async function waitFor(predicate, timeoutMs = 5_000) {
     await new Promise(resolve => setTimeout(resolve, 15))
   }
   return predicate()
-}
-
-// What DSH does when it opens a stored session (the check `SessionFormatError: stored log is corrupt` comes from): the
-// log is replayed row by row and its turn/step relationships are checked. Writing never checks them, so a session
-// can be written that cannot be opened again. Throws the loader's own error.
-function assertStoredLogLoads(session) {
-  const restore = sessionFormatCatalog.createRestore({ type: 'session', delegationDepth: 0, agentPreset: 'standard', ...session.header }, { recovery: 'strict', validation: 'transformed' })
-  for (const row of session.snapshotEvents()) {
-    assertV4RowAdmission(row, KNOWN_SESSION_EVENT_TYPES)
-    restore.decodeRow(row)
-  }
-  assertReleasedV4Relationships(restore.finish(), KNOWN_SESSION_EVENT_TYPES)
 }
 
 async function bootRealDshBot(t, {

@@ -43,16 +43,23 @@ const MIRROR_RPC_PREFIX = 'joined:'
 async function openMirrorTurn(rt, bot, text, xid, senderName, roomId) {
   try {
     const room = roomId ? rt.roomOf?.(roomId) : undefined
-    const session = room ? (await rt.resolveAgent(rt.sessionOfRoom(room))).session : await ensureMirrorSession(rt, bot)
+    if (room) {
+      // Nothing is written into the group's own Session for a node member's turn (fork.130). That Session has an agent
+      // of its own, the group's relay, which numbers its turns from a counter that only its own turns advance: a turn
+      // written there by another writer makes the agent's next turn repeat a number, or start inside the open one,
+      // and the stored Session then cannot be opened again. What the member said is in the group's book, which is
+      // what the group's chat shows.
+      // Notify group round waiters that the node Bot has started working.
+      // This triggers the round's ROOM_WORK_GRACE_MS window so it doesn't time out
+      // while waiting for the node's reply. Local Bots do this via tool/call session events.
+      rt.workRoomTurn?.(rt.sessionOfRoom(room), 'joined-turn')
+      return undefined
+    }
+    const session = await ensureMirrorSession(rt, bot)
     const rpcId = MIRROR_RPC_PREFIX + xid
     if (hasPromptRequest(session, rpcId)) return { duplicate: true }
-    const state = mirrorStateOf(rt, room ? session.id : bot.id, session)
-    const mirror = beginJoinedMirror(rt, bot, session, { text: text ?? '', rpcId, state, ...(room ? { writerId: session.id } : {}) })
-    // Notify group round waiters that the node Bot has started working.
-    // This triggers the round's ROOM_WORK_GRACE_MS window so it doesn't time out
-    // while waiting for the node's reply. Local Bots do this via tool/call session events.
-    if (room) rt.workRoomTurn?.(session.id, 'joined-turn')
-    return mirror
+    const state = mirrorStateOf(rt, bot.id, session)
+    return beginJoinedMirror(rt, bot, session, { text: text ?? '', rpcId, state })
   } catch (error) {
     rt.warn?.('ds-bot: a Bot-to-Bot message for %s was not mirrored: %s', bot.id, error?.message ?? error)
     return undefined
