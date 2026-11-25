@@ -240,6 +240,26 @@ async function onConv(rt, msg) {
         return
       }
       let turn = Number.isInteger(nodeTurn) ? from.turns[nodeTurn] : openTurnOf(session)
+      // The page closed that turn itself: DSH ends a turn it finds open when it loads the Session again ("interrupted",
+      // with a result for a call that had none). What the node sends next of that turn cannot go in it, and a step
+      // that was half written is not completed: the page goes on in a turn of its own from the node's next step, and
+      // numbers its steps from 1 there. The step the page lost stays lost.
+      if (turn !== undefined && Number.isInteger(nodeTurn) && openTurnOf(session) !== turn) {
+        if (data.type === 'turn/end') {
+          delete from.turns[nodeTurn]
+          if (from.stepBase !== undefined) delete from.stepBase[nodeTurn]
+          running(false)
+          return
+        }
+        if (data.type !== 'step/start' || !Number.isInteger(event.step) || event.step < 1) return
+        const open = openTurnOf(session)
+        if (open !== undefined) closeTurn(session, open)
+        turn = lastTurnOf(session) + 1
+        from.turns[nodeTurn] = turn
+        ;(from.stepBase ??= {})[nodeTurn] = event.step - 1
+        session.append('turn/start', { turn })
+        running(true)
+      }
       if (turn === undefined && Number.isInteger(nodeTurn)) {
         // A step of a turn whose start was before the copy began: open it here, so the step has a turn to be in.
         turn = lastTurnOf(session) + 1
@@ -250,6 +270,8 @@ async function onConv(rt, msg) {
         running(true)
       }
       const written = turn === undefined ? event : { ...event, turn }
+      const stepBase = Number.isInteger(nodeTurn) ? from.stepBase?.[nodeTurn] : undefined
+      if (stepBase !== undefined && Number.isInteger(written.step)) written.step -= stepBase
       if (data.type === 'user/message') written.source = hubSource(rt, msg.from, written.source)
       if (data.type === 'user/message' && copy === undefined) {
         // The page's own message comes back with the id of the page's request, so the composer retires its echo.
@@ -261,7 +283,10 @@ async function onConv(rt, msg) {
       else if (data.type === 'turn/end') settleStep(session, true)
       session.append(data.type, written, SURFACED.has(data.type) ? { surfaceOp: 'append' } : undefined)
       if (data.type === 'turn/end') {
-        if (Number.isInteger(nodeTurn)) delete from.turns[nodeTurn]
+        if (Number.isInteger(nodeTurn)) {
+          delete from.turns[nodeTurn]
+          if (from.stepBase !== undefined) delete from.stepBase[nodeTurn]
+        }
         running(false)
       }
     })

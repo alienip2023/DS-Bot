@@ -604,6 +604,54 @@ test('W3-E2E-14 a stop that arrives before its work: the work is not taken when 
   if (back) assert.match(textOf(back.message), /Stopped before it started/)
 })
 
+// fork.129 follow-up (stored page of a node task, 2026-11-26): DSH closes a turn it finds open when it loads a Session
+// again ("interrupted", with a result for the call that had none). The copy kept its own record of the open turn, so
+// the node's steps that came next were written under a turn that was no longer open, and the page could not be opened.
+test('W4-8 the page closed a copied turn itself: the node\'s later steps go in a turn of their own, and nothing is written outside a turn', { skip }, async t => {
+  const { hub, n10 } = await cluster(t)
+  const ref = { id: 'joined:node010:e10', name: 'Exec10', nodeId: 'node010' }
+  const post = (seq, type, data) => n10.network.post('team/conv', { bot: ref, sid: 'e10', seq, type, data })
+  post(1, 'turn/start', { turn: 1 })
+  post(2, 'step/start', { turn: 1, step: 1 })
+  post(3, 'assistant/message', { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'tool-call', id: 'k1', name: 'bash', arguments: '{}' }] }, stream: [] })
+  post(4, 'tool/call', { turn: 1, step: 1, callId: 'k1', name: 'bash', arguments: '{}' })
+  await until(() => (pageOf(hub, 'joined:node010:e10')?.log ?? []).some(e => e.type === 'tool/call'), 'the first steps are on the page')
+  const page = pageOf(hub, 'joined:node010:e10')
+  // DSH loads the page again and closes what it finds open, as it does after a restart. It writes through the Session's
+  // own append: the page refuses any other writer than the copy.
+  const held = Object.getOwnPropertySymbols(page).find(symbol => String(symbol).includes('replica page'))
+  const dsh = (type, data, options) => page[held].call(page, type, data, options)
+  dsh('tool/result', { turn: 1, step: 1, message: { role: 'tool', source: { kind: 'tool', callId: 'k1' }, toolCallId: 'k1', content: [{ type: 'text', text: 'The tool call was interrupted after it was recorded, but no result.' }], isError: true, id: 'interrupted-k1' } }, { surfaceOp: 'append' })
+  dsh('step/end', { turn: 1, step: 1 })
+  dsh('turn/end', { turn: 1, reason: { kind: 'interrupted' } })
+  const before = page.log.length
+  // The node goes on: the result the page lost, the step's end, then a new step, and the turn's end.
+  post(5, 'tool/result', { turn: 1, step: 1, message: { role: 'tool', source: { kind: 'tool', callId: 'k1' }, toolCallId: 'k1', content: [{ type: 'text', text: 'late result' }], isError: false } })
+  post(6, 'step/end', { turn: 1, step: 1 })
+  post(7, 'step/start', { turn: 1, step: 2 })
+  post(8, 'assistant/message', { turn: 1, step: 2, message: { role: 'assistant', content: [{ type: 'text', text: 'all done' }] }, stream: [] })
+  post(9, 'step/end', { turn: 1, step: 2 })
+  post(10, 'turn/end', { turn: 1, reason: { kind: 'completed' } })
+  await until(() => page.log.length > before && page.log.at(-1).type === 'turn/end' && page.log.at(-1).data.reason.kind === 'completed', 'the node\'s turn is closed on the page')
+  // Replay the page the way DSH's loader does: every turn/step event inside an open turn (and step) of its own number.
+  let turn
+  let step
+  let lastStep = 0
+  let lastTurn = 0
+  for (const event of page.log) {
+    const d = event.data ?? {}
+    if (event.type === 'turn/start') { assert.equal(turn, undefined, `turn/start ${d.turn} while turn ${turn} is open`); assert.equal(d.turn, lastTurn + 1, 'turns count up'); turn = d.turn; lastTurn = d.turn; step = undefined; lastStep = 0; continue }
+    if (event.type === 'turn/end') { assert.equal(d.turn, turn, `turn/end ${d.turn} outside turn ${turn}`); turn = undefined; step = undefined; continue }
+    if (event.type === 'step/start') { assert.notEqual(turn, undefined, 'step/start outside a turn'); assert.equal(d.turn, turn); assert.equal(step, undefined, 'a step is open'); assert.equal(d.step, lastStep + 1, 'steps count up from 1'); step = d.step; lastStep = d.step; continue }
+    if (event.type === 'step/end') { assert.equal([d.turn, d.step].join(), [turn, step].join(), `step/end ${d.turn}/${d.step} outside the open step ${turn}/${step}`); step = undefined; continue }
+    if (['assistant/message', 'tool/call', 'tool/result'].includes(event.type) && d.turn !== undefined) assert.equal(turn, d.turn, `${event.type} of turn ${d.turn} outside it (open: ${turn})`)
+  }
+  assert.equal(turn, undefined, 'no turn is left open')
+  assert.equal(page.log.filter(e => e.type === 'turn/start').length, 2, 'the rest of the node turn has a turn of its own')
+  assert.equal(JSON.stringify(page.log).includes('late result'), false, 'what belonged to the step the page had closed is not written again')
+  assert.equal(JSON.stringify(page.log).includes('all done'), true)
+})
+
 test('W3-E2E-13 depth: work that passed through too many hands is not taken, and one at the limit cannot be handed on further', { skip }, async t => {
   const { n10, n11 } = await cluster(t)
   const refs = n => ['a', 'b', 'c', 'd', 'e'].slice(0, n).map(id => ({ id: `x-${id}`, nodeId: 'hub' }))
