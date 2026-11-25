@@ -102,7 +102,7 @@ async function applySnapshot(rt, source, snapshot, isActive) {
   const attachments = new Map(Object.values(rt.state.bots).map(bot => [bot.id, [...(bot.capabilities ?? [])]]))
   let changed = false
   for (const [name, item] of Object.entries(library)) {
-    if (item.sharedFrom !== source || incoming.has(item.sharedId)) continue
+    if (item.kind !== 'skill' || item.sharedFrom !== source || incoming.has(item.sharedId)) continue
     delete library[name]
     for (const bot of Object.values(rt.state.bots)) bot.capabilities = (bot.capabilities ?? []).filter(value => value !== name)
     for (const pack of Object.values(library)) if (pack.kind === 'pack') pack.items = (pack.items ?? []).filter(value => value !== name)

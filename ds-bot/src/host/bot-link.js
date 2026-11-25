@@ -103,6 +103,10 @@ function post(rt, nodeId, type, data) {
   else network.post(type, data, nodeId === HUB ? {} : { to: nodeId })
   return true
 }
+/** One frame to the machine `nodeId` over the reliable link; false when it could not be handed to AC. */
+export function postFrame(rt, nodeId, type, data) {
+  try { return post(rt, nodeId, type, data) } catch { return false }
+}
 // What two Bots of two nodes say to each other is also kept on the hub, where the user sees the whole team.
 function copyToHub(rt, nodeId, pair) {
   const own = ownNodeId(rt)

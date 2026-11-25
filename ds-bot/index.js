@@ -86,6 +86,7 @@ import * as botNetwork from './src/host/bot-network.js'
 import * as botLink from './src/host/bot-link.js'
 import * as convReplica from './src/host/conv-replica.js'
 import * as teamAct from './src/host/team-act.js'
+import * as capabilityShare from './src/host/capability-share.js'
 import * as waker from './src/host/waker.js'
 import { loadTalentCatalog, filterTalents, talentToCreateBot } from './src/host/talent-catalog.js'
 import * as deepseekServices from './src/host/deepseek-services.js'
@@ -101,7 +102,7 @@ export { name, inject } from './src/host/entry.js'
 // usage meters model requests after every listener that rewrites them. privacy checks a
 // call before the hooks of tools do, so a closed call never reaches a card they show.
 // extraFolders answers an approval ahead of approvals, which would show it to the user.
-export const MODULES = [diagnostics, store, ledger, models, providers, permissions, turns, steer, steerLatency, handoffs, requests, delivery, remoteTasks, workerBridge, rosterJoin, roster, federation, folders, privacy, agents, prompt, timeContext, hostContext, tools, issueReport, deepseekServices, chatIndex, groups, goals, agentCommands, tasks, approvals, extraFolders, resume, memory, memoryFederation, parts, botTasks, changes, images, avatarLibrary, secrets, connectors, capabilities, plugins, learning, schedules, browser, browserPlugins, computer, usage, update, dshUpdate, thinking, threadQueue, mobile, feed, phone, im, externalApi, channel, remote, joinedTurn, nodeCards, joinedAttachments, nodeTeam, steerAsk, joinedPrompt, threadPrompt, mirrorGuard, joinedCreate, configSource, nodeConfig, joinedPage, officeSkills, goalSkills, maintenanceSkills, manualSkills, localAgents, botNetwork, botLink, convReplica, teamAct, waker]
+export const MODULES = [diagnostics, store, ledger, models, providers, permissions, turns, steer, steerLatency, handoffs, requests, delivery, remoteTasks, workerBridge, rosterJoin, roster, federation, folders, privacy, agents, prompt, timeContext, hostContext, tools, issueReport, deepseekServices, chatIndex, groups, goals, agentCommands, tasks, approvals, extraFolders, resume, memory, memoryFederation, parts, botTasks, changes, images, avatarLibrary, secrets, connectors, capabilities, plugins, learning, schedules, browser, browserPlugins, computer, usage, update, dshUpdate, thinking, threadQueue, mobile, feed, phone, im, externalApi, channel, remote, joinedTurn, nodeCards, joinedAttachments, nodeTeam, steerAsk, joinedPrompt, threadPrompt, mirrorGuard, joinedCreate, configSource, nodeConfig, joinedPage, officeSkills, goalSkills, maintenanceSkills, manualSkills, localAgents, botNetwork, botLink, convReplica, teamAct, capabilityShare, waker]
 
 export function apply(ctx, config = {}) {
   createRuntime(ctx, config)

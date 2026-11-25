@@ -286,6 +286,8 @@ export async function pushPeerRoster(rt, nodeId) {
   fed.lastError = null
   fed.peersAt = Date.now()
   fed.seq += 1
+  // What the hub shares with this node (MCP interfaces): when it is not what the node was last told.
+  void rt.pushSharedCatalog?.(nodeId)?.catch?.(error => rt.warn?.('ds-bot: the shared capabilities were not sent to %s: %s', nodeId, error?.message ?? error))
   return true
 }
 

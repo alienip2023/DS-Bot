@@ -140,6 +140,8 @@ export function install(rt) {
         } catch { throw new Error('Enter a valid HTTP or HTTPS URL.') }
         Object.assign(item, { transport, url, headers: stringMap(body.headers, 'Headers'), approved: true })
       }
+      // Shared with the nodes unless turned off (kept when an edit does not mention it).
+      if ((body.share === undefined ? previous?.share === false : body.share === false || body.share === 'false')) item.share = false
     } else if (kind === 'skill') {
       item.content = String(body.content ?? '').trim()
       const changed = previous?.content !== item.content || previous?.description !== item.description
@@ -366,9 +368,16 @@ export function install(rt) {
       statusSet(bot.id, name, sessionId, { state: 'needs-approval' })
       return
     }
+    // An MCP the hub shares: its tools are registered here and each call goes to the hub (capability-share.js).
+    const proxied = item.kind === 'mcp' && item.transport === 'hub-proxy'
+    if (proxied && item.ok !== true) {
+      await drop()
+      statusSet(bot.id, name, sessionId, { state: 'error', error: String(item.reason ?? 'The hub cannot reach it right now.').slice(0, 300) })
+      return
+    }
     let config
     try {
-      config = configFor(item, bot.id)
+      config = proxied ? { transport: 'hub-proxy', serverName: item.name, tools: item.tools } : configFor(item, bot.id)
     } catch (error) {
       await drop()
       statusSet(bot.id, name, sessionId, { state: 'error', error: rt.redactSecrets(error.message).slice(0, 300) })
@@ -392,7 +401,15 @@ export function install(rt) {
         mounted.registrations.add(remove)
         return remove
       }
-      const plugin = item.kind === 'skill'
+      const plugin = proxied
+        ? {
+          name: `ds-bot-capability-proxy-${name}`,
+          inject: ['tools'],
+          apply(c) {
+            for (const definition of rt.capabilityProxy?.definitionsFor?.(item) ?? []) c.effect(() => register(() => c.tools.register(definition)))
+          },
+        }
+        : item.kind === 'skill'
         ? {
           name: `ds-bot-capability-skill-${name}`,
           inject: ['skills'],
@@ -501,6 +518,7 @@ export function install(rt) {
     await loadInputs()
     if (stopped) return
     lastReconcileFingerprint = capabilityFingerprint()
+    void syncHosts().catch(error => rt.warn('ds-bot: the hub mounts of shared MCP servers could not be brought up to date: %s', rt.redactSecrets(String(error?.message ?? error))))
     // A Bot with nothing attached still has what the hub shares: its Agents are looked after too.
     for (const bot of Object.values(state.bots)) {
       if ((bot.capabilities ?? []).length === 0 && impliedFor(bot, library()).length > 0) await trackBotAgents(bot)
@@ -766,8 +784,115 @@ export function install(rt) {
       frozenCatalogs.clear()
       statusesCache = undefined
       await Promise.all(live.flatMap(agentMounts => [...agentMounts.values()].map(disposeMount)))
+      await Promise.all([...hosts.keys()].map(dropHost))
     }
   }, 'ds-bot: capabilities')
+
+  // ── What the hub shares with its nodes (capability sharing, fork.131) ──
+  // The hub mounts each shared MCP once, for the nodes, apart from the mounts of its own Bots. Nodes get its interface
+  // (tool names, descriptions, schemas) and call it through the hub; the command, URL, headers and secrets stay here.
+  const hosts = new Map()   // name → { key, tools: Map<name, definition>, fiber?, error? }
+  const hostListeners = new Set()
+  const onHub = () => {
+    try { return typeof rt.ctx?.get?.('remote-agent:registry')?.send === 'function' } catch { return false }
+  }
+  const shareable = item => item.kind === 'mcp' && !item.sharedFrom && item.share !== false
+    && (item.transport !== 'stdio' || item.approved === true) && !(item.createdBy && rt.isPrivate?.(item.createdBy))
+  // Whose grants resolve a shared MCP's secrets: the Bot that made it, else a Main Bot.
+  const hostOwnerOf = item => (item.createdBy && rt.botOf?.(item.createdBy) ? item.createdBy : state.mainBotIds?.[0])
+  const dropHost = async name => {
+    const host = hosts.get(name)
+    hosts.delete(name)
+    if (host?.fiber) await Promise.resolve().then(() => host.fiber.dispose()).catch(() => {})
+  }
+  const mountHost = async item => {
+    const existing = hosts.get(item.name)
+    let config
+    try {
+      config = configFor(item, hostOwnerOf(item))
+    } catch (error) {
+      const message = rt.redactSecrets(String(error?.message ?? error)).slice(0, 300)
+      if (existing?.error === message) return false
+      await dropHost(item.name)
+      hosts.set(item.name, { key: undefined, tools: new Map(), error: message })
+      return true
+    }
+    const key = createHash('sha256').update(JSON.stringify(config)).digest('hex')
+    if (existing?.key === key && existing.error === undefined) return false
+    await dropHost(item.name)
+    const host = { key, tools: new Map(), error: undefined, fiber: undefined }
+    hosts.set(item.name, host)
+    try {
+      const plugin = await loadMcpPlugin()
+      const tools = { register: definition => { host.tools.set(definition.name, definition); return () => { host.tools.delete(definition.name) } } }
+      const base = typeof ctx.extend === 'function' ? ctx.extend({ tools }) : Object.assign(Object.create(ctx), { tools })
+      host.fiber = base.plugin(plugin, config)
+      await host.fiber.await()
+    } catch (error) {
+      host.error = rt.redactSecrets([error, error?.cause].filter(Boolean).map(part => String(part?.message ?? part)).join(': ') || 'Connection failed').slice(0, 300)
+    }
+    return true
+  }
+  let syncing
+  // Brings the hub's mounts in line with what is shared now. True when what the nodes see changed.
+  const syncHosts = async () => {
+    if (!onHub() || stopped) return false
+    if (syncing) return syncing
+    syncing = (async () => {
+      let changed = false
+      const wanted = new Map(Object.values(library()).filter(shareable).map(item => [item.name, item]))
+      for (const name of [...hosts.keys()]) if (!wanted.has(name)) { await dropHost(name); changed = true }
+      for (const item of wanted.values()) if (await mountHost(item)) changed = true
+      return changed
+    })().finally(() => { syncing = undefined })
+    const changed = await syncing
+    if (changed) for (const listener of hostListeners) { try { listener() } catch { /* a listener must not stop the others */ } }
+    return changed
+  }
+  const MAX_SHARED_TOOLS = 100
+  const MAX_SCHEMA_BYTES = 8 * 1024
+  // What a node is told about each shared MCP: its interface only.
+  const sharedCatalog = async () => {
+    await syncHosts()
+    const out = []
+    for (const [name, host] of hosts) {
+      const item = own(library(), name)
+      if (!item) continue
+      const tools = []
+      for (const definition of host.tools.values()) {
+        if (tools.length >= MAX_SHARED_TOOLS) break
+        let schema = definition.parameters
+        if (schema !== undefined && Buffer.byteLength(JSON.stringify(schema), 'utf8') > MAX_SCHEMA_BYTES) schema = { type: 'object', additionalProperties: true }
+        tools.push({ name: definition.name, description: String(definition.description ?? '').slice(0, 1000), ...(schema === undefined ? {} : { inputSchema: schema }) })
+      }
+      out.push({ name, kind: 'mcp', description: String(item.description ?? '').slice(0, 500), ok: host.error === undefined && tools.length > 0, ...(host.error === undefined ? {} : { reason: host.error }), tools })
+    }
+    return out
+  }
+  const SHARED_RESULT_MAX = 60 * 1024
+  // One call from a node Bot, run here as that Bot's shadow. Returns the result as text.
+  const callShared = async (name, toolName, args, { callId = randomUUID(), signal } = {}) => {
+    await syncHosts()
+    const host = hosts.get(name)
+    if (!host || !shareable(own(library(), name) ?? {})) throw new Error(`${name} is not shared with the nodes.`)
+    if (host.error !== undefined) throw new Error(`${name} is not available on the hub: ${host.error}`)
+    const definition = host.tools.get(toolName)
+    if (!definition) throw new Error(`${name} has no tool ${toolName}.`)
+    const exec = { signal: signal ?? new AbortController().signal, callId }
+    const value = await definition.execute(args ?? {}, exec)
+    const blocks = typeof definition.output?.render === 'function' ? definition.output.render(args ?? {}, value) : [{ type: 'text', text: JSON.stringify(value) }]
+    let text = rt.redactSecrets(blocks.map(block => (block?.type === 'text' ? block.text : '[non-text content left out]')).join('\n'))
+    if (Buffer.byteLength(text, 'utf8') > SHARED_RESULT_MAX) text = `${Buffer.from(text, 'utf8').subarray(0, SHARED_RESULT_MAX).toString('utf8')}\n[result cut: it was longer than ${SHARED_RESULT_MAX / 1024} KiB]`
+    return text
+  }
+  rt.sharedMcp = {
+    catalog: sharedCatalog,
+    call: callShared,
+    sync: syncHosts,
+    onChange: listener => { hostListeners.add(listener); return () => hostListeners.delete(listener) },
+    has: name => hosts.has(name),
+  }
+
   Object.assign(rt, {
     capabilitySave,
     capabilityDelete,

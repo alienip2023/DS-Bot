@@ -11,6 +11,7 @@
 import { randomUUID } from 'node:crypto'
 import { joinedShadow } from './roster-join.js'
 import { botOfRef, ownNodeId, refOf } from './bot-link.js'
+import { CAP_CALL, runCapabilityCall } from './capability-share.js'
 
 export const FORWARDED_TOOLS = Object.freeze(['create_bot', 'update_bot', 'delete_bot', 'stop_bot', 'create_group', 'update_group', 'delete_group'])
 
@@ -57,6 +58,8 @@ export async function runTeamAct(rt, act) {
   await rt.load?.()
   const shadow = botOfRef(rt, act.actor)
   if (!joinedShadow(shadow) || shadow.worker?.nodeId !== act.nodeId) return { ok: false, text: `${act.actor?.name ?? 'That Bot'} is not known on the hub yet; try again once its machine has reported it.` }
+  // A shared tool (fork.131): any node Bot may call one the hub shares; it is not team management.
+  if (act.tool === CAP_CALL) return runCapabilityCall(rt, shadow, act)
   if (!FORWARDED_TOOLS.includes(act.tool)) return { ok: false, text: `${act.tool} cannot be run from another machine.` }
   if (!canManage(rt, shadow.id)) return { ok: false, text: `${shadow.name} may not manage the team: the hub's settings do not make it a node manager.` }
   const tool = rt.teamTools?.find(def => def.name === act.tool)
