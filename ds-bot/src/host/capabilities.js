@@ -792,6 +792,8 @@ export function install(rt) {
   // The hub mounts each shared MCP once, for the nodes, apart from the mounts of its own Bots. Nodes get its interface
   // (tool names, descriptions, schemas) and call it through the hub; the command, URL, headers and secrets stay here.
   const hosts = new Map()   // name → { key, tools: Map<name, definition>, fiber?, error? }
+  let sharedConnectors = new Set()
+  const connectorDescriptions = new Map()
   const hostListeners = new Set()
   const onHub = () => {
     try { return typeof rt.ctx?.get?.('remote-agent:registry')?.send === 'function' } catch { return false }
@@ -809,7 +811,8 @@ export function install(rt) {
     const existing = hosts.get(item.name)
     let config
     try {
-      config = configFor(item, hostOwnerOf(item))
+      // A connector brings its own mount config (the hub's local gateway adds the credentials).
+      config = item.connectorConfig ?? configFor(item, hostOwnerOf(item))
     } catch (error) {
       const message = rt.redactSecrets(String(error?.message ?? error)).slice(0, 300)
       if (existing?.error === message) return false
@@ -833,19 +836,35 @@ export function install(rt) {
     }
     return true
   }
-  let syncing
+  let hostPass
+  let hostPassNext
+  // One pass at a time. A caller that comes while a pass runs gets a pass that starts after it (the state may have
+  // changed since the running one read it), shared by every caller that comes meanwhile.
+  const syncHosts = () => {
+    if (!onHub() || stopped) return Promise.resolve(false)
+    const start = () => {
+      hostPass = pass().finally(() => { hostPass = undefined })
+      return hostPass
+    }
+    if (hostPass === undefined) return start()
+    hostPassNext ??= hostPass.catch(() => {}).then(() => { hostPassNext = undefined; return start() })
+    return hostPassNext
+  }
   // Brings the hub's mounts in line with what is shared now. True when what the nodes see changed.
-  const syncHosts = async () => {
-    if (!onHub() || stopped) return false
-    if (syncing) return syncing
-    syncing = (async () => {
-      let changed = false
-      const wanted = new Map(Object.values(library()).filter(shareable).map(item => [item.name, item]))
-      for (const name of [...hosts.keys()]) if (!wanted.has(name)) { await dropHost(name); changed = true }
-      for (const item of wanted.values()) if (await mountHost(item)) changed = true
-      return changed
-    })().finally(() => { syncing = undefined })
-    const changed = await syncing
+  const pass = async () => {
+    let changed = false
+    const wanted = new Map(Object.values(library()).filter(shareable).map(item => [item.name, item]))
+    // Connected connectors (GitHub, Notion, a custom one ...) are shared the same way; a library item never has a
+    // connector's name, those are reserved.
+    let connectors = []
+    try { connectors = await rt.connectorHosts?.() ?? [] } catch { connectors = [] }
+    sharedConnectors = new Set(connectors.map(entry => entry.name))
+    for (const entry of connectors) {
+      connectorDescriptions.set(entry.name, entry.description)
+      wanted.set(entry.name, { name: entry.name, kind: 'mcp', description: entry.description, connectorConfig: entry.config })
+    }
+    for (const name of [...hosts.keys()]) if (!wanted.has(name)) { await dropHost(name); changed = true }
+    for (const item of wanted.values()) if (await mountHost(item)) changed = true
     if (changed) for (const listener of hostListeners) { try { listener() } catch { /* a listener must not stop the others */ } }
     return changed
   }
@@ -856,7 +875,7 @@ export function install(rt) {
     await syncHosts()
     const out = []
     for (const [name, host] of hosts) {
-      const item = own(library(), name)
+      const item = own(library(), name) ?? (sharedConnectors.has(name) ? { name, description: '' } : undefined)
       if (!item) continue
       const tools = []
       for (const definition of host.tools.values()) {
@@ -865,7 +884,7 @@ export function install(rt) {
         if (schema !== undefined && Buffer.byteLength(JSON.stringify(schema), 'utf8') > MAX_SCHEMA_BYTES) schema = { type: 'object', additionalProperties: true }
         tools.push({ name: definition.name, description: String(definition.description ?? '').slice(0, 1000), ...(schema === undefined ? {} : { inputSchema: schema }) })
       }
-      out.push({ name, kind: 'mcp', description: String(item.description ?? '').slice(0, 500), ok: host.error === undefined && tools.length > 0, ...(host.error === undefined ? {} : { reason: host.error }), tools })
+      out.push({ name, kind: 'mcp', description: String(item.description || connectorDescriptions.get(name) || '').slice(0, 500), ok: host.error === undefined && tools.length > 0, ...(host.error === undefined ? {} : { reason: host.error }), tools })
     }
     return out
   }
@@ -874,7 +893,7 @@ export function install(rt) {
   const callShared = async (name, toolName, args, { callId = randomUUID(), signal } = {}) => {
     await syncHosts()
     const host = hosts.get(name)
-    if (!host || !shareable(own(library(), name) ?? {})) throw new Error(`${name} is not shared with the nodes.`)
+    if (!host || !(shareable(own(library(), name) ?? {}) || sharedConnectors.has(name))) throw new Error(`${name} is not shared with the nodes.`)
     if (host.error !== undefined) throw new Error(`${name} is not available on the hub: ${host.error}`)
     const definition = host.tools.get(toolName)
     if (!definition) throw new Error(`${name} has no tool ${toolName}.`)

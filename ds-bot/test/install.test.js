@@ -265,6 +265,7 @@ test('apply registers listeners and effects in a fixed order', (t) => {
     'on session/event',
     'effect ds-bot: node Bot pages as copies',
     'effect ds-bot: team act',
+    'effect ds-bot: shared capabilities',
     'provide ds-bot:apply-model-sync',
     'provide ds-bot:answer-approval',
   ])

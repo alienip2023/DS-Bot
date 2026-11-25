@@ -71,6 +71,7 @@ export async function applyCatalog(rt, hubId, items) {
   for (const entry of incoming.values()) {
     const existing = library[entry.name]
     if (existing && !(existing.kind === 'mcp' && existing.sharedFrom?.startsWith('hub:'))) continue   // the node's own wins
+    if (rt.connectorConnected?.(entry.name) === true) continue   // so does a connector this node is signed in to itself
     const next = {
       name: entry.name, kind: 'mcp', transport: 'hub-proxy', description: entry.description, tools: entry.tools,
       ok: entry.ok, ...(entry.reason === undefined ? {} : { reason: entry.reason }),
@@ -165,6 +166,8 @@ export async function runCapabilityCall(rt, shadow, act) {
     return { ok: false, text: 'The call must name a capability and a tool, with an object of arguments.' }
   }
   if (typeof rt.sharedMcp?.call !== 'function') return { ok: false, text: 'This hub cannot run shared tools.' }
+  // A connector the user turned off for this Bot (its shadow here) is off for it on the node too.
+  if ((rt.connectorOffFor?.(shadow.id) ?? []).some(prefix => tool.startsWith(prefix))) return { ok: false, text: `${capability} is turned off for ${shadow.name}.` }
   const slot = admit(rt, shadow.id)
   if (slot.refused !== undefined) return { ok: false, text: slot.refused }
   const started = Date.now()

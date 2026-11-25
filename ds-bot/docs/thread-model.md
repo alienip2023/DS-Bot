@@ -10,9 +10,9 @@ or **IMPLEMENTED** (code enforces it).
 
 - Thread rows and the Main thread id: the Main id is derived from the Bot id (`src/host/constants.js:13-18`,
   `MAIN_THREAD_ID`); `src/host/bot-store.js:155` documents the Main row field set.
-- Session to Thread map `bySessionIdFullMap` (`src/host/store.js:644`), filled at `src/host/store.js:698`
+- Session to Thread map `bySessionIdFullMap` (`src/host/store.js:645`), filled at `src/host/store.js:699`
   and `:724`.
-- Session owners: `chatOwners` (`src/host/store.js:632`) and `groupOwners` (`src/host/store.js:634`).
+- Session owners: `chatOwners` (`src/host/store.js:633`) and `groupOwners` (`src/host/store.js:635`).
 - Pending approval entries, each keyed by id and carrying the `sessionId` that owns it
   (`src/host/approvals.js:45-`, stored at `:64`). The owner is resolved from `groupOwners` / `chatOwners`
   (`src/host/approvals.js:38-41`); a request from an unowned Session is passed on with `next()`.
@@ -22,7 +22,7 @@ or **IMPLEMENTED** (code enforces it).
 
 ### 1.2 Thread-scoped
 
-- Which saved conversation a Session runs in: `bySessionIdFullMap` (`src/host/store.js:644`).
+- Which saved conversation a Session runs in: `bySessionIdFullMap` (`src/host/store.js:645`).
 - At most `MAX_THREADS_PER_BOT = 10` Threads per Bot, Main included (`src/host/constants.js:22-23`). **IMPLEMENTED**:
   `createThread` refuses the eleventh Thread with `bot/refused` (`src/host/roster.js:377-379`), reached by the
   `thread-create` route (`src/host/channel.js:940-942`) and tested by `test/thread-t2-api.test.js:55-65`.
@@ -105,13 +105,13 @@ Checked by `test/thread-model-anchors.test.js`: each row's line must contain its
 |---|---|
 | `src/host/bot-store.js:155` | `thread-model.md §1.1` |
 | `src/host/executor.js:218` | `thread-model §4.5` |
-| `src/host/store.js:745` | `chatOwners` |
-| `src/host/store.js:745` | `groupOwners` |
-| `src/host/store.js:1095` | `thread-model.md §1.2` |
-| `src/host/store.js:1096` | `bySessionIdFullMap` |
-| `src/host/store.js:1151` | `bySessionIdFullMap.set` |
-| `src/host/store.js:1151` | `bySessionIdFullMap.set` |
-| `src/host/store.js:1364` | `thread-model.md §1.3` |
+| `src/host/store.js:746` | `chatOwners` |
+| `src/host/store.js:746` | `groupOwners` |
+| `src/host/store.js:1096` | `thread-model.md §1.2` |
+| `src/host/store.js:1097` | `bySessionIdFullMap` |
+| `src/host/store.js:1152` | `bySessionIdFullMap.set` |
+| `src/host/store.js:1152` | `bySessionIdFullMap.set` |
+| `src/host/store.js:1365` | `thread-model.md §1.3` |
 | `src/host/channel.js:511` | `READS` |
 | `src/host/channel.js:940` | `thread-create` |
 | `src/host/channel.js:1093` | `approval-answer` |

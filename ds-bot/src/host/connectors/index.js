@@ -234,6 +234,8 @@ export function install(rt) {
     queue = queue.then(async () => {
       if (force) { for (const id of mounts.keys()) await unmount(id) }
       await reconcile()
+      // A connector came or went: what the nodes are told follows.
+      void rt.sharedMcp?.sync?.().catch(() => {})
     }).catch(error => rt.warn('ds-bot: connectors: %s', reason(error)))
     return queue
   }
@@ -947,6 +949,17 @@ export function install(rt) {
   }, 'ds-bot: connectors')
 
   Object.assign(rt, {
+    // What the hub shares with its nodes (capability-share): each connected connector's mount config, for a second
+    // mount of its own. Mail has tools of its own and stays on the hub.
+    connectorHosts: async () => {
+      const out = []
+      for (const entry of entries()) {
+        if (entry.id === 'mail' || !hasCredential(entry.id)) continue
+        try { out.push({ name: entry.id, description: `${entry.name}: ${entry.about ?? ''}`.slice(0, 500), config: { ...(await configFor(entry.id)), failOnStartupError: true } }) } catch { /* not connected right now */ }
+      }
+      return out
+    },
+    connectorConnected: id => id !== 'mail' && hasCredential(id),
     connectorsView,
     connectorEndpoint,
     publishDsBotIssue,

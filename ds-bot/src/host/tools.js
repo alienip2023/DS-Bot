@@ -2172,10 +2172,13 @@ export function install(rt) {
         const itemStatus = statuses[item.name]
         const state = itemStatus ? ` (${itemStatus.state}${itemStatus.error ? `: ${itemStatus.error}` : ''})` : ''
         const shared = item.sharedFrom?.startsWith('hub:') ? '; shared by the hub' : ''
+        const mcpToNodes = item.kind === 'mcp' && !item.sharedFrom && typeof rt.sharedMcp?.sync === 'function'
+          ? (item.share === false ? '; not shared with the nodes (turned off)' : item.transport === 'stdio' && !item.approved ? '; not shared with the nodes (not approved yet)' : '; shared with every node, called through the hub')
+          : ''
         const toNodes = sharing.has(item.name) ? (sharing.get(item.name).shared ? '; goes to every node' : `; not shared with the nodes: ${sharing.get(item.name).reason}`) : ''
         const on = shared !== '' && !(bot.capabilityOff ?? []).includes(item.name) ? '; on for you' : ''
         const status = bot.capabilities?.includes(item.name) ? `; attached to you${state}` : ''
-        return `- ${item.name} (${item.kind})${item.description ? ` — ${item.description}` : ''}${extra}${shared}${toNodes}${on}${status}`
+        return `- ${item.name} (${item.kind})${item.description ? ` — ${item.description}` : ''}${extra}${shared}${toNodes}${mcpToNodes}${on}${status}`
       })
       return ['Shared capabilities:', ...lines].join('\n')
     },
@@ -2195,12 +2198,14 @@ export function install(rt) {
       headers: { type: 'object', additionalProperties: true, description: 'HTTP headers; write $DSH_SECRET_<NAME> to insert a saved secret instead of the value' },
       content: { type: 'string', description: 'Skill instructions' },
       items: { type: 'array', items: { type: 'string' }, description: 'MCP server and skill names in the pack' },
+      share_with_nodes: { type: 'boolean', description: 'MCP server only: false keeps it to the hub. By default every Bot on every node can use it, called through the hub (its command, address and secrets stay here); an edit that leaves this out keeps what it was' },
     },
     output,
     async execute(args, exec) {
       await rt.load()
       const self = rt.selfOf(exec.agent?.id)
       if (!rt.botOf(self)) return 'Only Bots on the team can use save_capability.'
+      if (args.share_with_nodes !== undefined) args = { ...args, share: args.share_with_nodes }
       try {
         const item = await rt.capabilitySave(args, { botId: self })
         const approval = item.kind === 'mcp' && item.transport === 'stdio' && !item.approved

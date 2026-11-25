@@ -10,6 +10,9 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { test } from 'node:test'
+import { Context } from '@deepseek-ai/cordis'
+import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
+import * as realMcp from '@deepseek-ai/dsh-mcp-client'
 import { threadWorld } from './thread-t2-world.js'
 import { applyCatalog } from '../src/host/capability-share.js'
 import { refOf } from '../src/host/bot-link.js'
@@ -59,7 +62,7 @@ const withPlugin = ctx => {
   }
 }
 
-async function cluster(t, { secrets = [{ name: 'ERP_KEY', value: SECRET, purpose: '', scope: 'all', requestedBy: null, createdAt: 1, updatedAt: 1 }] } = {}) {
+async function cluster(t, { secrets = [{ name: 'ERP_KEY', value: SECRET, purpose: '', scope: 'all', requestedBy: null, createdAt: 1, updatedAt: 1 }], real = false } = {}) {
   const { NodeRegistry } = await load('hub/node-registry.js')
   const { createHubBotNetwork } = await load('hub/bot-network.js')
   const { createBotNetwork } = await load('node/bot-network.js')
@@ -71,7 +74,7 @@ async function cluster(t, { secrets = [{ name: 'ERP_KEY', value: SECRET, purpose
   const hubNetwork = createHubBotNetwork({ registry, ctx: { get: (name, d) => hubCtx?.get(name, d) } })
   const detachHub = attachHubReliable({ registry, network: hubNetwork })
   const hold = Promise.withResolvers()
-  const loader = { import: async () => ({ default: standIn(hold) }), unwrapExports: exports => exports.default }
+  const loader = real ? { import: async () => realMcp, unwrapExports: exports => exports } : { import: async () => ({ default: standIn(hold) }), unwrapExports: exports => exports.default }
   const world = (prefix, state, services, files = {}) => {
     const home = mkdtempSync(join(tmpdir(), prefix))
     writeFileSync(join(home, 'state.json'), JSON.stringify(state))
@@ -82,6 +85,13 @@ async function cluster(t, { secrets = [{ name: 'ERP_KEY', value: SECRET, purpose
     { 'remote-agent:registry': registry, 'remote-agent:bot-network': hubNetwork, loader }, { 'secrets.json': JSON.stringify({ secrets }) })
   hubCtx = hub.ctx
   withPlugin(hub.ctx)
+  let root
+  if (real) {
+    // The hub's context that mounts the real MCP client: a real cordis context with DSH's test services.
+    root = new Context()
+    await mountAgentLoopTestDependencies(root)
+    hub.ctx.extend = meta => root.extend(meta)
+  }
   // The node
   const transport = new EventEmitter()
   transport.online = true
@@ -124,6 +134,7 @@ async function cluster(t, { secrets = [{ name: 'ERP_KEY', value: SECRET, purpose
   hub.rt.state.federation.hubId ??= 'hub-test'
   t.after(async () => {
     hold.resolve()
+    await root?.fiber.dispose()
     detachHub(); detachNode()
     for (const w of [hub, node]) await w.ctx.dispose?.()
   })
@@ -306,4 +317,85 @@ test('CAPS-11 a node Bot that may not manage the team can still call what the hu
   const actor = refOf(c.node.rt, c.node.rt.botOf('e10'))
   const managed = await c.network.teamAct({ requestId: 'm-1', actor, tool: 'delete_bot', args: '{}' })
   assert.equal(managed.ok, false, 'team management is still refused')
+})
+
+const notion = () => [{ name: 'notion', description: 'Notion: pages and databases', config: { transport: 'streamable-http', serverName: 'notion', url: 'http://127.0.0.1:9/mcp?key=gateway-secret', headers: { Authorization: 'Bearer gateway-secret' } } }]
+
+test('CAPS-12 a connector the hub is signed in to is shared too: its tools reach the node, its address and credentials do not', { skip }, async t => {
+  const c = await cluster(t)
+  c.hub.rt.connectorHosts = async () => notion()
+  const catalog = await c.hub.rt.sharedMcp.catalog()
+  assert.deepEqual(catalog.map(entry => entry.name), ['notion'])
+  assert.equal(JSON.stringify(catalog).includes('gateway-secret'), false)
+  assert.equal(JSON.stringify(catalog).includes('127.0.0.1'), false)
+  await pushToNode(c)
+  await settleNode(c)
+  const lookup = toolOf(c, 'e10', 'mcp__notion__lookup')
+  assert.ok(lookup, 'the node Bot has the connector\'s tools')
+  assert.match(await lookup.execute({ id: '5' }, { agent: { id: 'e10' } }), /^order 5/)
+  // the hub signs out of it: the node loses it
+  c.hub.rt.connectorHosts = async () => []
+  await c.hub.rt.sharedMcp.sync()
+  await pushToNode(c)
+  await settleNode(c)
+  assert.equal(c.node.rt.state.capabilities.items.notion, undefined)
+  assert.equal(toolOf(c, 'e10', 'mcp__notion__lookup'), undefined)
+})
+
+test('CAPS-13 a connector turned off for a node Bot on the hub is off for it on the node', { skip }, async t => {
+  const c = await cluster(t)
+  c.hub.rt.connectorHosts = async () => notion()
+  c.hub.rt.connectorOffFor = id => (id === 'joined:node010:e10' ? ['mcp__notion__'] : [])
+  await pushToNode(c)
+  await settleNode(c)
+  await assert.rejects(toolOf(c, 'e10', 'mcp__notion__lookup').execute({ id: '5' }, { agent: { id: 'e10' } }), /turned off for Exec10/)
+})
+
+test('CAPS-14 a connector the node is signed in to itself is not replaced by the hub\'s', { skip }, async t => {
+  const c = await cluster(t)
+  c.node.rt.connectorConnected = id => id === 'notion'
+  c.hub.rt.connectorHosts = async () => notion()
+  await pushToNode(c)
+  assert.equal(c.node.rt.state.capabilities.items.notion, undefined)
+})
+
+test('CAPS-15 a catalog asked for while a sync is running is built from what is shared now, not from what the running sync read', { skip }, async t => {
+  const c = await cluster(t)
+  c.hub.rt.connectorHosts = async () => { await settle(10); return [] }
+  const running = c.hub.rt.sharedMcp.sync()
+  c.hub.rt.connectorHosts = async () => notion()
+  const catalog = await c.hub.rt.sharedMcp.catalog()
+  assert.deepEqual(catalog.map(entry => entry.name), ['notion'])
+  await running
+})
+
+test('CAPS-16 save_capability can keep an MCP to the hub, and list_capabilities says what goes to the nodes', { skip }, async t => {
+  const c = await cluster(t)
+  const tool = name => c.hub.rt.teamTools.find(def => def.name === name)
+  const exec = { agent: { id: 'chief' } }
+  await tool('save_capability').execute({ name: 'erp', kind: 'mcp', transport: 'streamable-http', url: 'https://erp.example/mcp', description: 'ERP' }, exec)
+  await tool('save_capability').execute({ name: 'hub-only', kind: 'mcp', transport: 'streamable-http', url: 'https://hub.example/mcp', share_with_nodes: false }, exec)
+  assert.equal(c.hub.rt.state.capabilities.items['hub-only'].share, false)
+  assert.equal(c.hub.rt.state.capabilities.items.erp.share, undefined)
+  const listed = String(await tool('list_capabilities').execute({}, exec))
+  assert.match(listed, /- erp \(mcp\).*shared with every node, called through the hub/)
+  assert.match(listed, /- hub-only \(mcp\).*not shared with the nodes \(turned off\)/)
+})
+
+const ECHO_SERVER = fileURLToPath(new URL('./fixtures/echo-mcp-server.mjs', import.meta.url))
+test('CAPS-17 with the real MCP client and a real stdio server: a node Bot calls it through the hub, the server gets the secret and the node never sees it', { skip }, async t => {
+  const c = await cluster(t, { real: true })
+  await c.hub.rt.capabilitySave({ name: 'echo', kind: 'mcp', description: 'Echo', transport: 'stdio', command: process.execPath, args: [ECHO_SERVER], env: { ECHO_KEY: '$DSH_SECRET_ERP_KEY' } }, { ui: true })
+  const catalog = await c.hub.rt.sharedMcp.catalog()
+  assert.equal(catalog[0].ok, true, JSON.stringify(catalog))
+  assert.deepEqual(catalog[0].tools.map(tool => tool.name), ['mcp__echo__echo'])
+  assert.deepEqual(catalog[0].tools[0].inputSchema.required, ['text'])
+  await pushToNode(c)
+  await settleNode(c)
+  const echo = toolOf(c, 'e10', 'mcp__echo__echo')
+  assert.ok(echo)
+  const result = await echo.execute({ text: 'hi' }, { agent: { id: 'e10' } })
+  assert.match(result, /^echo: hi \(key /)
+  assert.equal(result.includes(SECRET), false, 'the server had the key; the node was not given it')
+  assert.equal(JSON.stringify(c.node.rt.state).includes(SECRET), false, 'the key is nowhere on the node')
 })
