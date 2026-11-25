@@ -329,24 +329,25 @@ export function install(rt) {
     }
     return pluginPromise
   }
-  function secretFor(name, botId) {
-    const value = rt.canUseSecret(name, botId) ? rt.secretValue(name) : undefined
+  // `forNodes`: the hub's own mount of a shared MCP, which a key the user shared with the nodes may be used by.
+  function secretFor(name, botId, forNodes = false) {
+    const value = rt.canUseSecret(name, botId, { forNodes }) ? rt.secretValue(name) : undefined
     if (value === undefined) throw new Error(`Secret ${name} is missing or unavailable for this Bot.`)
     return value
   }
-  function resolveValues(values, botId) {
+  function resolveValues(values, botId, forNodes = false) {
     const resolved = {}
     for (const [key, raw] of Object.entries(values ?? {})) {
-      resolved[key] = String(raw).replace(SECRET_REFERENCE, (_match, name) => secretFor(name, botId))
+      resolved[key] = String(raw).replace(SECRET_REFERENCE, (_match, name) => secretFor(name, botId, forNodes))
     }
     return resolved
   }
-  const resolveUrl = (url, botId) => String(url).replace(SECRET_REFERENCE, (_match, name) => encodeUrlComponent(secretFor(name, botId)))
-  const resolveList = (list, botId) => (list ?? []).map(raw => String(raw).replace(SECRET_REFERENCE, (_match, name) => secretFor(name, botId)))
-  const configFor = (item, botId) => {
+  const resolveUrl = (url, botId, forNodes = false) => String(url).replace(SECRET_REFERENCE, (_match, name) => encodeUrlComponent(secretFor(name, botId, forNodes)))
+  const resolveList = (list, botId, forNodes = false) => (list ?? []).map(raw => String(raw).replace(SECRET_REFERENCE, (_match, name) => secretFor(name, botId, forNodes)))
+  const configFor = (item, botId, forNodes = false) => {
     if (item.kind === 'skill') return { name: item.name, description: item.description, content: item.content }
-    if (item.transport === 'stdio') return { transport: 'stdio', serverName: item.name, command: item.command, args: resolveList(item.args, botId), env: resolveValues(item.env, botId), failOnStartupError: true }
-    return { transport: 'streamable-http', serverName: item.name, url: resolveUrl(item.url, botId), headers: resolveValues(item.headers, botId), failOnStartupError: true }
+    if (item.transport === 'stdio') return { transport: 'stdio', serverName: item.name, command: item.command, args: resolveList(item.args, botId, forNodes), env: resolveValues(item.env, botId, forNodes), failOnStartupError: true }
+    return { transport: 'streamable-http', serverName: item.name, url: resolveUrl(item.url, botId, forNodes), headers: resolveValues(item.headers, botId, forNodes), failOnStartupError: true }
   }
   const disposeMount = async mount => {
     if (mount) {
@@ -812,7 +813,7 @@ export function install(rt) {
     let config
     try {
       // A connector brings its own mount config (the hub's local gateway adds the credentials).
-      config = item.connectorConfig ?? configFor(item, hostOwnerOf(item))
+      config = item.connectorConfig ?? configFor(item, hostOwnerOf(item), true)
     } catch (error) {
       const message = rt.redactSecrets(String(error?.message ?? error)).slice(0, 300)
       if (existing?.error === message) return false

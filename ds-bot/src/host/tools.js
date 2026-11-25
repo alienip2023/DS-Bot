@@ -2162,7 +2162,14 @@ export function install(rt) {
       const bot = rt.botOf(self)
       if (!bot) return 'Only Bots on the team can use list_capabilities.'
       const items = Object.values(state.capabilities?.items ?? {})
-      if (items.length === 0) return 'No shared capabilities are saved yet.'
+      // Keys the user shared with the nodes (fork.132): names for a Main Bot, a count for anyone else; never a value.
+      const keysOut = rt.sharedSecretNames?.() ?? []
+      const keysIn = rt.hubSecretNames?.() ?? []
+      const keyLines = [
+        keysOut.length > 0 ? (rt.isMain(bot.id) ? `Keys shared with the nodes (the user's choice): ${keysOut.join(', ')}.` : `${keysOut.length} key(s) are shared with the nodes by the user.`) : '',
+        keysIn.length > 0 ? (rt.isMain(bot.id) ? `Keys the hub shares with this node: ${keysIn.join(', ')}; use them as $DSH_SECRET_<NAME>.` : `${keysIn.length} key(s) from the hub are available on this node.`) : '',
+      ].filter(Boolean)
+      if (items.length === 0) return ['No shared capabilities are saved yet.', ...keyLines].join('\n')
       const statuses = rt.capabilityStatusesView()[bot.id] ?? {}
       // Which skills go to the nodes, and why one does not (fork.131).
       const sharing = new Map(skillShareStatus(rt).map(entry => [entry.name, entry]))
@@ -2180,7 +2187,7 @@ export function install(rt) {
         const status = bot.capabilities?.includes(item.name) ? `; attached to you${state}` : ''
         return `- ${item.name} (${item.kind})${item.description ? ` — ${item.description}` : ''}${extra}${shared}${toNodes}${mcpToNodes}${on}${status}`
       })
-      return ['Shared capabilities:', ...lines].join('\n')
+      return ['Shared capabilities:', ...lines, ...keyLines].join('\n')
     },
   }))
   rt.teamTools.push(defineTool({

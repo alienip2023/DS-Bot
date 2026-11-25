@@ -1336,6 +1336,14 @@ var JA = {
   "Replace the value": "値を変更",
   "New value of {name}": "{name} の新しい値",
   "Replaced. Bots get the new value from their next command.": "変更しました。次のコマンド実行から新しい値が使われます。",
+  "Share with node Bots": "ノードの Bot と共有",
+  "Share {name} with node Bots": "{name} をノードの Bot と共有",
+  "Shared: every Bot on the joined nodes can use it": "共有中：参加しているノードのすべての Bot が使えます",
+  "Not shared: it stays on this machine": "共有していません：このマシンにだけ残ります",
+  "A copy is kept on each node, encrypted there like its own keys. Turn this off or delete the key and the nodes drop it within seconds.": "各ノードに、そのノード自身のキーと同じく暗号化したコピーを保存します。オフにするかキーを削除すると、ノードは数秒以内にそれを破棄します。",
+  "This key comes from the hub. Change or delete it there; every Bot of this node can use it.": "このキーはハブから届いたものです。変更や削除はハブで行ってください。このノードのすべての Bot が使えます。",
+  "From the hub": "ハブから",
+  "Shared with nodes": "ノードと共有中",
   "a deleted Bot": "削除された Bot",
   "Asked by {name}": "{name} がリクエスト",
   "added {time}": "{time} に追加",
@@ -4394,6 +4402,14 @@ var KO = {
   "Replace the value": "값 교체",
   "New value of {name}": "{name}의 새 값",
   "Replaced. Bots get the new value from their next command.": "교체되었습니다. 다음 명령부터 새 값이 적용됩니다.",
+  "Share with node Bots": "노드 Bot과 공유",
+  "Share {name} with node Bots": "{name}을(를) 노드 Bot과 공유",
+  "Shared: every Bot on the joined nodes can use it": "공유 중: 참여한 노드의 모든 Bot이 사용할 수 있습니다",
+  "Not shared: it stays on this machine": "공유 안 함: 이 컴퓨터에만 남습니다",
+  "A copy is kept on each node, encrypted there like its own keys. Turn this off or delete the key and the nodes drop it within seconds.": "각 노드에 해당 노드 자체 키와 같은 방식으로 암호화된 사본이 저장됩니다. 끄거나 키를 삭제하면 노드가 몇 초 안에 삭제합니다.",
+  "This key comes from the hub. Change or delete it there; every Bot of this node can use it.": "이 키는 허브에서 온 것입니다. 변경하거나 삭제하려면 허브에서 하세요. 이 노드의 모든 Bot이 사용할 수 있습니다.",
+  "From the hub": "허브에서 옴",
+  "Shared with nodes": "노드와 공유됨",
   "a deleted Bot": "삭제된 Bot",
   "Asked by {name}": "{name} 요청",
   "added {time}": "{time} 추가됨",
@@ -7464,6 +7480,14 @@ var ES = {
   "Replace the value": "Reemplazar el valor",
   "New value of {name}": "Nuevo valor de {name}",
   "Replaced. Bots get the new value from their next command.": "Reemplazado. Los Bots recibirán el nuevo valor a partir de su siguiente comando.",
+  "Share with node Bots": "Compartir con los Bots de los nodos",
+  "Share {name} with node Bots": "Compartir {name} con los Bots de los nodos",
+  "Shared: every Bot on the joined nodes can use it": "Compartida: todos los Bots de los nodos unidos pueden usarla",
+  "Not shared: it stays on this machine": "No compartida: se queda en esta máquina",
+  "A copy is kept on each node, encrypted there like its own keys. Turn this off or delete the key and the nodes drop it within seconds.": "Cada nodo guarda una copia, cifrada como sus propias claves. Si lo desactivas o borras la clave, los nodos la descartan en unos segundos.",
+  "This key comes from the hub. Change or delete it there; every Bot of this node can use it.": "Esta clave viene del hub. Cámbiala o bórrala allí; todos los Bots de este nodo pueden usarla.",
+  "From the hub": "Del hub",
+  "Shared with nodes": "Compartida con nodos",
   "a deleted Bot": "un Bot eliminado",
   "Asked by {name}": "Solicitado por {name}",
   "added {time}": "añadido {time}",
@@ -10501,6 +10525,14 @@ var FR = {
   "Replace the value": "Remplacer la valeur",
   "New value of {name}": "Nouvelle valeur de {name}",
   "Replaced. Bots get the new value from their next command.": "Remplacée. Les Bots recevront la nouvelle valeur dès leur prochaine commande.",
+  "Share with node Bots": "Partager avec les Bots des nœuds",
+  "Share {name} with node Bots": "Partager {name} avec les Bots des nœuds",
+  "Shared: every Bot on the joined nodes can use it": "Partagée : tous les Bots des nœuds rattachés peuvent l'utiliser",
+  "Not shared: it stays on this machine": "Non partagée : elle reste sur cette machine",
+  "A copy is kept on each node, encrypted there like its own keys. Turn this off or delete the key and the nodes drop it within seconds.": "Chaque nœud en garde une copie, chiffrée comme ses propres clés. Si vous désactivez l'option ou supprimez la clé, les nœuds l'abandonnent en quelques secondes.",
+  "This key comes from the hub. Change or delete it there; every Bot of this node can use it.": "Cette clé vient du hub. Modifiez-la ou supprimez-la là-bas ; tous les Bots de ce nœud peuvent l'utiliser.",
+  "From the hub": "Du hub",
+  "Shared with nodes": "Partagée avec les nœuds",
   "a deleted Bot": "un Bot supprimé",
   "Asked by {name}": "Demandé par {name}",
   "added {time}": "ajouté {time}",
@@ -13559,6 +13591,14 @@ var DE = {
   "Replace the value": "Wert ersetzen",
   "New value of {name}": "Neuer Wert für {name}",
   "Replaced. Bots get the new value from their next command.": "Ersetzt. Bots erhalten den neuen Wert ab ihrem nächsten Befehl.",
+  "Share with node Bots": "Mit Bots der Knoten teilen",
+  "Share {name} with node Bots": "{name} mit Bots der Knoten teilen",
+  "Shared: every Bot on the joined nodes can use it": "Geteilt: alle Bots der verbundenen Knoten können ihn nutzen",
+  "Not shared: it stays on this machine": "Nicht geteilt: bleibt auf diesem Rechner",
+  "A copy is kept on each node, encrypted there like its own keys. Turn this off or delete the key and the nodes drop it within seconds.": "Jeder Knoten speichert eine Kopie, verschlüsselt wie seine eigenen Schlüssel. Schaltest du dies aus oder löschst den Schlüssel, verwerfen die Knoten ihn innerhalb weniger Sekunden.",
+  "This key comes from the hub. Change or delete it there; every Bot of this node can use it.": "Dieser Schlüssel stammt vom Hub. Ändere oder lösche ihn dort; alle Bots dieses Knotens können ihn nutzen.",
+  "From the hub": "Vom Hub",
+  "Shared with nodes": "Mit Knoten geteilt",
   "a deleted Bot": "ein gelöschter Bot",
   "Asked by {name}": "Angefordert von {name}",
   "added {time}": "hinzugefügt {time}",
@@ -16750,6 +16790,14 @@ var ZH = {
   "Replace the value": "替换值",
   "New value of {name}": "{name} 的新值",
   "Replaced. Bots get the new value from their next command.": "已替换。Bot 从下一条命令开始拿到新值。",
+  "Share with node Bots": "共享给节点 Bot",
+  "Share {name} with node Bots": "把 {name} 共享给节点 Bot",
+  "Shared: every Bot on the joined nodes can use it": "已共享：已加入的节点上的所有 Bot 都能用",
+  "Not shared: it stays on this machine": "未共享：只留在这台机器上",
+  "A copy is kept on each node, encrypted there like its own keys. Turn this off or delete the key and the nodes drop it within seconds.": "每个节点上会保存一份，和它自己的密钥一样加密保存。关掉开关或删除密钥后，节点会在几秒内丢掉它。",
+  "This key comes from the hub. Change or delete it there; every Bot of this node can use it.": "这个密钥来自 hub。请在 hub 上修改或删除；本节点的所有 Bot 都能用它。",
+  "From the hub": "来自 hub",
+  "Shared with nodes": "已共享给节点",
   "a deleted Bot": "一个已删除的 Bot",
   "Asked by {name}": "由 {name} 请求",
   "added {time}": "添加于 {time}",
@@ -19822,7 +19870,7 @@ function teamActions({ call: call2, after, partFor, roster, ui, live, cards, hel
     secretSet: (payload) => after(call2("secret-set", payload)),
     secretAllow: (requestId) => after(call2("secret-allow", { requestId })),
     secretCancel: (requestId) => after(call2("secret-cancel", { requestId })),
-    secretUpdate: (name, { scope, purpose } = {}) => after(call2("secret-update", { name, scope, purpose })),
+    secretUpdate: (name, { scope, purpose, nodes } = {}) => after(call2("secret-update", { name, scope, purpose, nodes })),
     secretDelete: (name) => after(call2("secret-delete", { name })),
     secretUnlock: (passphrase) => after(call2("secret-unlock", { passphrase })),
     secretEncrypt: (passphrase) => after(call2("secret-encrypt", { passphrase })),
@@ -28553,6 +28601,21 @@ function ScopeEditor({ secret, roster, onSave }) {
     )
   );
 }
+function NodesEditor({ secret, onSave }) {
+  const on = secret.nodes === true;
+  return (0, import_react19.createElement)(
+    "div",
+    { className: "bt-secret-edit-block" },
+    (0, import_react19.createElement)("div", { className: "bt-secret-edit-label" }, t("Share with node Bots")),
+    (0, import_react19.createElement)(
+      "label",
+      { className: "bt-secret-radio" },
+      (0, import_react19.createElement)("input", { type: "checkbox", checked: on, "aria-label": t("Share {name} with node Bots", { name: secret.name }), onChange: (event) => onSave(event.target.checked) }),
+      on ? t("Shared: every Bot on the joined nodes can use it") : t("Not shared: it stays on this machine")
+    ),
+    on ? (0, import_react19.createElement)("div", { className: "bt-set-hint" }, t("A copy is kept on each node, encrypted there like its own keys. Turn this off or delete the key and the nodes drop it within seconds.")) : null
+  );
+}
 function PurposeEditor({ secret, onSave }) {
   const [purpose, setPurpose] = (0, import_react19.useState)(secret.purpose ?? "");
   const same = purpose.trim() === (secret.purpose ?? "");
@@ -28621,13 +28684,19 @@ function SecretRow({ secret, roster, actions, run: run2, open, onToggle }) {
       (0, import_react19.createElement)(
         "span",
         { className: "bt-set-control" },
-        secret.scope === "all" ? (0, import_react19.createElement)("span", { className: "bt-tag" }, t("All Bots")) : allowed2.length === 0 ? (0, import_react19.createElement)("span", { className: "bt-tag" }, t("No Bot")) : (0, import_react19.createElement)("span", { className: "bt-secret-faces", title: allowed2.map((bot) => bot.name).join(", ") }, allowed2.slice(0, 5).map((bot) => (0, import_react19.createElement)(BotAvatar, { key: bot.id, bot, size: 20, badge: false, live: false })))
+        secret.sharedFrom === "hub" ? (0, import_react19.createElement)("span", { className: "bt-tag" }, t("From the hub")) : secret.nodes === true ? (0, import_react19.createElement)("span", { className: "bt-tag" }, t("Shared with nodes")) : secret.scope === "all" ? (0, import_react19.createElement)("span", { className: "bt-tag" }, t("All Bots")) : allowed2.length === 0 ? (0, import_react19.createElement)("span", { className: "bt-tag" }, t("No Bot")) : (0, import_react19.createElement)("span", { className: "bt-secret-faces", title: allowed2.map((bot) => bot.name).join(", ") }, allowed2.slice(0, 5).map((bot) => (0, import_react19.createElement)(BotAvatar, { key: bot.id, bot, size: 20, badge: false, live: false })))
       )
     ),
-    open ? (0, import_react19.createElement)(
+    open && secret.sharedFrom === "hub" ? (0, import_react19.createElement)(
+      "div",
+      { className: "bt-secret-edit" },
+      (0, import_react19.createElement)("div", { className: "bt-set-hint" }, t("This key comes from the hub. Change or delete it there; every Bot of this node can use it."))
+    ) : null,
+    open && secret.sharedFrom !== "hub" ? (0, import_react19.createElement)(
       "div",
       { className: "bt-secret-edit" },
       (0, import_react19.createElement)(ScopeEditor, { key: JSON.stringify(secret.scope), secret, roster, onSave: (scope) => run2(actions.secretUpdate(secret.name, { scope })) }),
+      (0, import_react19.createElement)(NodesEditor, { secret, onSave: (nodes) => run2(actions.secretUpdate(secret.name, { nodes })) }),
       (0, import_react19.createElement)(PurposeEditor, { key: secret.purpose ?? "", secret, onSave: (purpose) => run2(actions.secretUpdate(secret.name, { purpose })) }),
       (0, import_react19.createElement)(ValueEditor, { secret, onSave: (value) => run2(actions.secretSet({ name: secret.name, value })) }),
       (0, import_react19.createElement)(

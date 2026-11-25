@@ -389,7 +389,7 @@ export function teamActions({ call, after, partFor, roster, ui, live, cards, hel
     secretSet: payload => after(call('secret-set', payload)),
     secretAllow: requestId => after(call('secret-allow', { requestId })),
     secretCancel: requestId => after(call('secret-cancel', { requestId })),
-    secretUpdate: (name, { scope, purpose } = {}) => after(call('secret-update', { name, scope, purpose })),
+    secretUpdate: (name, { scope, purpose, nodes } = {}) => after(call('secret-update', { name, scope, purpose, nodes })),
     secretDelete: name => after(call('secret-delete', { name })),
     secretUnlock: passphrase => after(call('secret-unlock', { passphrase })),
     secretEncrypt: passphrase => after(call('secret-encrypt', { passphrase })),

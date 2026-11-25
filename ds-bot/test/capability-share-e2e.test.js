@@ -81,7 +81,7 @@ async function cluster(t, { secrets = [{ name: 'ERP_KEY', value: SECRET, purpose
     for (const [name, text] of Object.entries(files)) writeFileSync(join(home, name), text)
     return threadWorld({ home, services })
   }
-  const hub = world('cap-hub-', team([bot('chief', 'Chief'), joined('node010', 'e10', 'Exec10')], ['chief']),
+  const hub = world('cap-hub-', team([bot('chief', 'Chief'), bot('h2', 'Helper'), joined('node010', 'e10', 'Exec10')], ['chief']),
     { 'remote-agent:registry': registry, 'remote-agent:bot-network': hubNetwork, loader }, { 'secrets.json': JSON.stringify({ secrets }) })
   hubCtx = hub.ctx
   withPlugin(hub.ctx)
@@ -130,6 +130,7 @@ async function cluster(t, { secrets = [{ name: 'ERP_KEY', value: SECRET, purpose
   }
   await Promise.all([hub.rt.load(), node.rt.load()])
   await hub.rt.loadSecrets()
+  await node.rt.loadSecrets()
   hub.rt.state.federation ??= {}
   hub.rt.state.federation.hubId ??= 'hub-test'
   t.after(async () => {
@@ -138,7 +139,7 @@ async function cluster(t, { secrets = [{ name: 'ERP_KEY', value: SECRET, purpose
     detachHub(); detachNode()
     for (const w of [hub, node]) await w.ctx.dispose?.()
   })
-  return { hub, node, registry, transport, registered, hold, network }
+  return { hub, node, registry, transport, registered, hold, network, hubNetwork }
 }
 const toolOf = (c, botId, name) => c.registered.get(botId)?.get(name)
 const pushToNode = async c => { await c.hub.rt.pushSharedCatalog('node010'); await settle() }
@@ -178,7 +179,8 @@ test('CAPS-2 a Bot of the node that attached nothing has the hub\'s tools under 
   // the hub logged who called what, and not what was said
   const line = JSON.parse(readFileSync(join(c.hub.home, 'logs/capability-calls.jsonl'), 'utf8').trim().split('\n').at(-1))
   assert.deepEqual([line.nodeId, line.bot, line.capability, line.tool, line.ok], ['node010', 'Exec10', 'erp', 'mcp__erp__lookup', true])
-  assert.equal(JSON.stringify(line).includes('42'), false)
+  assert.deepEqual(Object.keys(line).sort(), ['bot', 'bytes', 'capability', 'ms', 'nodeId', 'ok', 'time', 'tool'], 'no arguments and no result in the line')
+  assert.equal(JSON.stringify(line).includes('order'), false)
 })
 
 test('CAPS-3 a Bot turns the shared MCP off for itself and on again; the other Bot of the node keeps it', { skip }, async t => {
@@ -398,4 +400,184 @@ test('CAPS-17 with the real MCP client and a real stdio server: a node Bot calls
   assert.match(result, /^echo: hi \(key /)
   assert.equal(result.includes(SECRET), false, 'the server had the key; the node was not given it')
   assert.equal(JSON.stringify(c.node.rt.state).includes(SECRET), false, 'the key is nowhere on the node')
+})
+
+// ── keys shared with the nodes (fork.132): the user's per-key switch, taken by the node on request ──
+const share = (c, name, on = true) => c.hub.rt.secretEndpoint('secret-update', { name, nodes: on })
+const atNode = (c, name) => c.node.rt.secretsView().find(secret => secret.name === name)
+const warnings = c => { const out = []; for (const w of [c.hub, c.node]) { const warn = w.rt.warn; w.rt.warn = (...args) => { out.push(args.map(String).join(' ')); return warn?.(...args) } } return out }
+
+test('KEYS-1 a key the user shared reaches the node and works there; one that was not shared does not', { skip }, async t => {
+  const c = await cluster(t, { secrets: [
+    { name: 'ERP_KEY', value: SECRET, purpose: 'ERP', scope: 'all', requestedBy: null, createdAt: 1, updatedAt: 1 },
+    { name: 'PRIVATE_KEY', value: 'private-key-1a2b3c4d5e', purpose: '', scope: 'all', requestedBy: null, createdAt: 1, updatedAt: 1 },
+  ] })
+  await share(c, 'ERP_KEY')
+  await pushToNode(c)
+  await until(() => c.node.rt.secretValue('ERP_KEY') === SECRET, 'the key reached the node')
+  assert.equal(c.node.rt.secretValue('PRIVATE_KEY'), undefined, 'an unshared key stays on the hub')
+  const key = atNode(c, 'ERP_KEY')
+  assert.deepEqual([key.scope, key.sharedFrom, key.purpose], ['all', 'hub', 'ERP'])
+  assert.equal(c.node.rt.canUseSecret('ERP_KEY', 'e10'), true, 'every Bot of the node may use it')
+  assert.equal(c.node.rt.redactSecrets(`token ${SECRET} here`).includes(SECRET), false, 'the node redacts it like its own')
+  await until(() => c.node.rt.state.hubSecrets?.names?.join() === 'ERP_KEY', 'the node recorded what it took')
+})
+
+test('KEYS-2 the key is taken off the node when the user stops sharing it, or deletes it on the hub', { skip }, async t => {
+  const c = await cluster(t)
+  await share(c, 'ERP_KEY')
+  await pushToNode(c)
+  await until(() => c.node.rt.secretValue('ERP_KEY') === SECRET && c.node.rt.state.hubSecrets?.names?.length === 1, 'shared')
+  // the hub answers a second pull within 3 s with "too soon": the node asks again after a few seconds, and the key goes
+  await share(c, 'ERP_KEY', false)
+  await pushToNode(c)
+  await until(() => c.node.rt.secretValue('ERP_KEY') === undefined, 'unshared, gone from the node', 9000)
+  await until(() => c.node.rt.state.hubSecrets?.names?.length === 0, 'the node recorded that nothing is shared')
+  await share(c, 'ERP_KEY')
+  await pushToNode(c)
+  await until(() => c.node.rt.secretValue('ERP_KEY') === SECRET, 'shared again', 9000)
+  await c.hub.rt.secretEndpoint('secret-delete', { name: 'ERP_KEY' })
+  await pushToNode(c)
+  await until(() => c.node.rt.secretValue('ERP_KEY') === undefined, 'deleted on the hub, gone from the node', 9000)
+})
+
+test('KEYS-3 a key of the node\'s own with the same name is never replaced, and the node says so without the value', { skip }, async t => {
+  const c = await cluster(t)
+  const said = warnings(c)
+  await c.node.rt.secretEndpoint('secret-set', { name: 'ERP_KEY', value: 'node-own-value-7777', scope: 'all' })
+  await share(c, 'ERP_KEY')
+  await pushToNode(c)
+  await until(() => c.node.rt.state.hubSecrets?.rev !== undefined, 'the node took the answer')
+  await until(() => said.some(line => /not taken: this node has its own/.test(line)), 'the node said it kept its own')
+  assert.equal(c.node.rt.secretValue('ERP_KEY'), 'node-own-value-7777')
+  assert.equal(atNode(c, 'ERP_KEY').sharedFrom, undefined)
+  assert.ok(said.some(line => /not taken: this node has its own/.test(line)))
+  assert.equal(said.some(line => line.includes(SECRET) || line.includes('node-own-value-7777')), false)
+})
+
+test('KEYS-4 only a Bot of a node the hub knows may ask; the answer carries no value for anyone else', { skip }, async t => {
+  const c = await cluster(t)
+  await share(c, 'ERP_KEY')
+  const ask = actor => c.network.teamAct({ requestId: `s-${Math.random()}`, actor, tool: 'secret_sync', args: '{}' })
+  const ghost = await ask({ id: 'ghost', name: 'Ghost', nodeId: 'node010' })
+  assert.equal(ghost.ok, false)
+  assert.match(ghost.text, /not known on the hub/)
+  assert.equal(JSON.stringify(ghost).includes(SECRET), false)
+  const real = await ask(refOf(c.node.rt, c.node.rt.botOf('e10')))
+  assert.equal(real.ok, true)
+  assert.deepEqual(JSON.parse(real.text).map(item => item.name), ['ERP_KEY'])
+  // asked again at once: refused
+  const again = await ask(refOf(c.node.rt, c.node.rt.botOf('e10')))
+  assert.equal(again.ok, false)
+  assert.match(again.text, /too soon/)
+})
+
+test('KEYS-5 nothing carries a value but the answer to the node: not the catalog frame, the logs, the audit line or the node\'s state', { skip }, async t => {
+  const c = await cluster(t)
+  const said = warnings(c)
+  const frames = []
+  const post = c.hubNetwork.post
+  c.hubNetwork.post = (nodeId, type, data) => { frames.push({ type, data: structuredClone(data) }); return post(nodeId, type, data) }
+  await share(c, 'ERP_KEY')
+  await pushToNode(c)
+  await until(() => c.node.rt.secretValue('ERP_KEY') === SECRET, 'taken')
+  const caps = frames.filter(frame => frame.type === 'team/caps')
+  assert.ok(caps.length > 0)
+  assert.match(caps.at(-1).data.secretsRev, /^[0-9a-f]{16}$/)
+  assert.equal(JSON.stringify(frames).includes(SECRET), false, 'no frame the hub posts holds the value')
+  assert.equal(said.some(line => line.includes(SECRET)), false, 'no warning holds it')
+  const audit = readFileSync(join(c.hub.home, 'logs/capability-calls.jsonl'), 'utf8')
+  assert.match(audit, /"event":"secret_sync"/)
+  assert.equal(audit.includes(SECRET), false)
+  assert.equal(JSON.stringify(c.node.rt.state).includes(SECRET), false, 'not in the node\'s state either (only in its key store)')
+  assert.equal(JSON.stringify(c.hub.rt.secretsView()).includes(SECRET), false, 'a key list never has values')
+})
+
+test('KEYS-6 the fingerprint moves only for what is shared: not for a key that is not, and again when a shared one changes', { skip }, async t => {
+  const c = await cluster(t, { secrets: [
+    { name: 'ERP_KEY', value: SECRET, purpose: '', scope: 'all', requestedBy: null, createdAt: 1, updatedAt: 1 },
+    { name: 'OTHER_KEY', value: 'other-key-aabbccdd', purpose: '', scope: 'all', requestedBy: null, createdAt: 1, updatedAt: 1 },
+  ] })
+  const rev0 = c.hub.rt.secretsRev()
+  await c.hub.rt.secretEndpoint('secret-set', { name: 'OTHER_KEY', value: 'other-key-eeffgghh' })
+  assert.equal(c.hub.rt.secretsRev(), rev0, 'a key that is not shared does not move it')
+  await share(c, 'ERP_KEY')
+  const rev1 = c.hub.rt.secretsRev()
+  assert.notEqual(rev1, rev0)
+  await new Promise(resolve => setTimeout(resolve, 5))
+  await c.hub.rt.secretEndpoint('secret-set', { name: 'ERP_KEY', value: 'erp-key-changed-1122' })
+  assert.notEqual(c.hub.rt.secretsRev(), rev1, 'a shared key that changed does')
+  assert.equal(c.hub.rt.state.secrets, undefined)
+})
+
+test('KEYS-7 only the user turns the switch: a Bot cannot, a card cannot, and the node cannot change a key the hub gave it', { skip }, async t => {
+  const c = await cluster(t)
+  // the key request card and the Bot tools have no way to set it
+  const tools = c.hub.rt.teamTools.map(def => def.name)
+  for (const name of tools) assert.equal(/share.*secret|secret.*share/.test(name), false, name)
+  const set = await c.hub.rt.secretEndpoint('secret-set', { name: 'NEW_KEY', value: 'new-key-12345678', scope: 'all' })
+  assert.equal(set.nodes, undefined, 'a key is not shared unless the user says so')
+  await share(c, 'ERP_KEY')
+  await pushToNode(c)
+  await until(() => c.node.rt.secretValue('ERP_KEY') === SECRET, 'taken')
+  for (const [endpoint, body] of [['secret-update', { name: 'ERP_KEY', purpose: 'x' }], ['secret-set', { name: 'ERP_KEY', value: 'changed-on-node-99' }], ['secret-delete', { name: 'ERP_KEY' }]]) {
+    await assert.rejects(c.node.rt.secretEndpoint(endpoint, body), /comes from the hub/)
+  }
+  assert.equal(c.node.rt.secretValue('ERP_KEY'), SECRET)
+})
+
+test('KEYS-8 a shared MCP works with a key shared with the nodes even when the Bot that made it may not use the key', { skip }, async t => {
+  const c = await cluster(t, { secrets: [{ name: 'ERP_KEY', value: SECRET, purpose: '', scope: ['somebody-else'], requestedBy: null, createdAt: 1, updatedAt: 1 }] })
+  await c.hub.rt.capabilitySave(erp(), { ui: true })
+  let catalog = await c.hub.rt.sharedMcp.catalog()
+  assert.equal(catalog[0].ok, false, 'the creator has no grant: not available')
+  assert.match(catalog[0].reason, /missing or unavailable/)
+  await share(c, 'ERP_KEY')
+  await c.hub.rt.reconcileCapabilities()
+  catalog = await c.hub.rt.sharedMcp.catalog()
+  assert.equal(catalog[0].ok, true, JSON.stringify(catalog))
+  await pushToNode(c)
+  await settleNode(c)
+  assert.match(await toolOf(c, 'e10', 'mcp__erp__lookup').execute({ id: '1' }, { agent: { id: 'e10' } }), /^order 1/)
+  // and a hub Bot that lacks the grant still cannot use that key itself
+  assert.equal(c.hub.rt.canUseSecret('ERP_KEY', 'chief'), false)
+  // unshared again: the shared MCP stops working
+  await share(c, 'ERP_KEY', false)
+  await c.hub.rt.reconcileCapabilities()
+  catalog = await c.hub.rt.sharedMcp.catalog()
+  assert.equal(catalog[0].ok, false)
+})
+
+test('KEYS-9 more keys than one answer can carry: none are sent, the node keeps what it had, and the reason is said', { skip }, async t => {
+  const big = Array.from({ length: 6 }, (_v, i) => ({ name: `BIG_KEY_${i}`, value: `${i}`.repeat(15000), purpose: '', scope: 'all', requestedBy: null, createdAt: 1, updatedAt: 1 }))
+  const c = await cluster(t, { secrets: [{ name: 'ERP_KEY', value: SECRET, purpose: '', scope: 'all', requestedBy: null, createdAt: 1, updatedAt: 1 }, ...big] })
+  await share(c, 'ERP_KEY')
+  await pushToNode(c)
+  await until(() => c.node.rt.secretValue('ERP_KEY') === SECRET, 'the first key arrived')
+  await new Promise(resolve => setTimeout(resolve, 3100))
+  for (const key of big) await share(c, key.name)
+  const ask = await c.network.teamAct({ requestId: 'big-1', actor: refOf(c.node.rt, c.node.rt.botOf('e10')), tool: 'secret_sync', args: '{}' })
+  assert.equal(ask.ok, false)
+  assert.match(ask.text, /more than one answer can carry/)
+  assert.equal(c.node.rt.secretValue('ERP_KEY'), SECRET, 'what the node had stays')
+})
+
+test('KEYS-10 list_capabilities says which keys are shared with the nodes: names to a Main Bot, a count to others, no value', { skip }, async t => {
+  const c = await cluster(t)
+  await share(c, 'ERP_KEY')
+  await c.hub.rt.capabilitySave(erp(), { ui: true })
+  const hubTool = c.hub.rt.teamTools.find(def => def.name === 'list_capabilities')
+  const main = await hubTool.execute({}, { agent: { id: 'chief' } })
+  assert.match(main, /Keys shared with the nodes \(the user's choice\): ERP_KEY\./)
+  const helper = await hubTool.execute({}, { agent: { id: 'h2' } })
+  assert.match(helper, /1 key\(s\) are shared with the nodes by the user/)
+  assert.equal(helper.includes('ERP_KEY'), false, 'only a Main Bot is told the names')
+  await pushToNode(c)
+  await until(() => c.node.rt.secretValue('ERP_KEY') === SECRET, 'taken')
+  await settleNode(c)
+  const nodeTool = c.node.rt.teamTools.find(def => def.name === 'list_capabilities')
+  const other = await nodeTool.execute({}, { agent: { id: 'e10' } })
+  assert.match(other, /1 key\(s\) from the hub are available on this node/)
+  assert.equal(other.includes('ERP_KEY'), false, 'a Bot that is not a Main Bot gets a count, not names')
+  assert.equal(`${main}${other}`.includes(SECRET), false)
 })

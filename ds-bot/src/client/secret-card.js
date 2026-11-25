@@ -240,6 +240,18 @@ function ScopeEditor({ secret, roster, onSave }) {
       h('button', { type: 'button', className: 'bt-soft bt-soft-sm', disabled: same, onClick: () => onSave(mode === 'all' ? 'all' : picked) }, t('Save access'))))
 }
 
+// The user's own switch: a key shared with the nodes is handed to every Bot of every node that joined this hub (the node
+// asks for it; no Bot can turn this on). Off by default.
+function NodesEditor({ secret, onSave }) {
+  const on = secret.nodes === true
+  return h('div', { className: 'bt-secret-edit-block' },
+    h('div', { className: 'bt-secret-edit-label' }, t('Share with node Bots')),
+    h('label', { className: 'bt-secret-radio' },
+      h('input', { type: 'checkbox', checked: on, 'aria-label': t('Share {name} with node Bots', { name: secret.name }), onChange: event => onSave(event.target.checked) }),
+      on ? t('Shared: every Bot on the joined nodes can use it') : t('Not shared: it stays on this machine')),
+    on ? h('div', { className: 'bt-set-hint' }, t('A copy is kept on each node, encrypted there like its own keys. Turn this off or delete the key and the nodes drop it within seconds.')) : null)
+}
+
 function PurposeEditor({ secret, onSave }) {
   const [purpose, setPurpose] = useState(secret.purpose ?? '')
   const same = purpose.trim() === (secret.purpose ?? '')
@@ -280,11 +292,16 @@ function SecretRow({ secret, roster, actions, run, open, onToggle }) {
         h('span', { className: 'bt-secret-title' }, h(KeyIcon), h('code', { className: 'bt-secret-name' }, secret.name), secret.purpose ? h('span', { className: 'bt-secret-purpose' }, secret.purpose) : null),
         h('span', { className: 'bt-set-hint' }, meta)),
       h('span', { className: 'bt-set-control' },
-        secret.scope === 'all' ? h('span', { className: 'bt-tag' }, t('All Bots'))
+        secret.sharedFrom === 'hub' ? h('span', { className: 'bt-tag' }, t('From the hub'))
+        : secret.nodes === true ? h('span', { className: 'bt-tag' }, t('Shared with nodes'))
+        : secret.scope === 'all' ? h('span', { className: 'bt-tag' }, t('All Bots'))
           : allowed.length === 0 ? h('span', { className: 'bt-tag' }, t('No Bot'))
             : h('span', { className: 'bt-secret-faces', title: allowed.map(bot => bot.name).join(', ') }, allowed.slice(0, 5).map(bot => h(BotAvatar, { key: bot.id, bot, size: 20, badge: false, live: false }))))),
-    open ? h('div', { className: 'bt-secret-edit' },
+    open && secret.sharedFrom === 'hub' ? h('div', { className: 'bt-secret-edit' },
+      h('div', { className: 'bt-set-hint' }, t('This key comes from the hub. Change or delete it there; every Bot of this node can use it.'))) : null,
+    open && secret.sharedFrom !== 'hub' ? h('div', { className: 'bt-secret-edit' },
       h(ScopeEditor, { key: JSON.stringify(secret.scope), secret, roster, onSave: scope => run(actions.secretUpdate(secret.name, { scope })) }),
+      h(NodesEditor, { secret, onSave: nodes => run(actions.secretUpdate(secret.name, { nodes })) }),
       h(PurposeEditor, { key: secret.purpose ?? '', secret, onSave: purpose => run(actions.secretUpdate(secret.name, { purpose })) }),
       h(ValueEditor, { secret, onSave: value => run(actions.secretSet({ name: secret.name, value })) }),
       h('div', { className: 'bt-secret-row-actions' },

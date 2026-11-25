@@ -11,9 +11,10 @@
 import { appendFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { postFrame, refOf } from './bot-link.js'
+import { isRemoteBot, postFrame, refOf } from './bot-link.js'
 
 export const CAP_CALL = 'cap_call'
+export const SECRET_SYNC = 'secret_sync'
 const NAME = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
 const HUB_ID = /^[A-Za-z0-9._-]{1,64}$/
 const MAX_ITEMS = 64
@@ -21,6 +22,11 @@ const MAX_TOOLS = 100
 const ARGS_MAX = 30 * 1024        // AC's team/act carries 32 KiB of arguments
 const PER_BOT_CONCURRENT = 4
 const PER_BOT_PER_MINUTE = 120
+const SECRET_SYNC_MAX = 60 * 1024    // AC's team/act answer carries 64 KiB
+const SECRET_PULL_MIN_MS = 3_000
+// A hub that said "too soon" (or could not answer) is asked again soon at first, so a key taken back is gone within seconds.
+const SECRET_PULL_RETRY_MS = [4_000, 10_000, 30_000, 30_000, 60_000, 60_000]
+const REV = /^[0-9a-f]{16}$/
 const proxyOutput = { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: String(value) }] }
 
 const serviceOf = (rt, name) => { try { return rt.ctx?.get?.(name) } catch { return undefined } }
@@ -124,11 +130,14 @@ export async function pushCatalog(rt, nodeId) {
   if (!onHubSide(rt) || typeof rt.sharedMcp?.catalog !== 'function') return false
   const items = await rt.sharedMcp.catalog()
   const sent = (rt.capsSent ??= new Map())
-  const hash = JSON.stringify(items)
+  // Which keys the user shared with the nodes, as a fingerprint of their names and times: no value is in it. The node
+  // asks the hub for the keys (`secret_sync`) when it is not the one it last took.
+  const secretsRev = rt.secretsRev?.()
+  const hash = JSON.stringify([items, secretsRev])
   if (sent.get(nodeId) === hash) return false
   const hubId = rt.state.federation?.hubId
   if (!HUB_ID.test(hubId ?? '')) return false
-  if (!postFrame(rt, nodeId, 'team/caps', { hubId, items })) return false
+  if (!postFrame(rt, nodeId, 'team/caps', { hubId, items, ...(REV.test(secretsRev ?? '') ? { secretsRev } : {}) })) return false
   sent.set(nodeId, hash)
   return true
 }
@@ -185,6 +194,24 @@ export async function runCapabilityCall(rt, shadow, act) {
   }
 }
 
+const pullTimes = new WeakMap()
+/** On the hub: answer a node's `secret_sync`: the keys the user shared with the nodes. Returns { ok, text }. */
+export async function runSecretSync(rt, shadow, act) {
+  const nodeId = shadow.worker?.nodeId
+  const times = pullTimes.get(rt) ?? new Map()
+  pullTimes.set(rt, times)
+  const now = Date.now()
+  if (now - (times.get(nodeId) ?? 0) < SECRET_PULL_MIN_MS) return { ok: false, text: 'Asked again too soon; wait a few seconds.' }
+  times.set(nodeId, now)
+  let list
+  try { list = await rt.sharedSecretsForNodes() } catch (error) { return { ok: false, text: String(error?.message ?? error).slice(0, 300) } }
+  const body = JSON.stringify(list)
+  if (Buffer.byteLength(body, 'utf8') > SECRET_SYNC_MAX) return { ok: false, text: `${list.length} keys are shared with the nodes, more than one answer can carry (60 KiB). Share fewer or shorter keys.` }
+  // Names and a count only: never a value.
+  audit(rt, { event: 'secret_sync', nodeId, bot: shadow.name, count: list.length })
+  return { ok: true, text: body }
+}
+
 export function install(rt) {
   const { ctx } = rt
   let stopped = false
@@ -202,8 +229,58 @@ export function install(rt) {
         // Only the hub says what is shared with this node: the link names who sent it.
         if (msg.from !== 'hub') return
         await applyCatalog(rt, msg.data?.hubId, msg.data?.items)
+        void takeSecrets(msg.data?.secretsRev)
       })
       : undefined
+  }
+  // On a node: take the keys the hub shares when the hub's fingerprint is not the one this node last took. The keys come
+  // as the answer to a request (`team/act`), never on a frame that is kept on disk; a hub that cannot answer now is
+  // asked again a few times.
+  let pulling = false
+  let retryTimer
+  let tries = 0
+  let wanted
+  async function takeSecrets(rev) {
+    if (stopped || !REV.test(rev ?? '')) return
+    wanted = rev   // the newest fingerprint heard of: a frame that comes while a pull runs is taken right after it
+    if (pulling || rt.state.hubSecrets?.rev === rev) return
+    pulling = true
+    clearTimeout(retryTimer)
+    let done = false
+    try {
+      const network = networkOf(rt)
+      const caller = Object.values(rt.state.bots ?? {}).find(bot => !isRemoteBot(bot) && refOf(rt, bot) !== undefined)
+      if (typeof network?.teamAct !== 'function' || caller === undefined) return
+      const out = await network.teamAct({ requestId: randomUUID(), actor: refOf(rt, caller), tool: SECRET_SYNC, args: '{}' })
+      if (out?.ok !== true) { rt.warn?.('ds-bot: the keys the hub shares were not taken: %s', String(out?.text ?? 'no answer').slice(0, 200)); return }
+      let list
+      try { list = JSON.parse(out.text) } catch { rt.warn?.('ds-bot: the hub answered with keys this node could not read'); return }
+      const counts = await rt.applyHubSecrets(list)
+      rt.state.hubSecrets = { rev, names: list.map(item => item?.name).filter(name => typeof name === 'string').sort(), at: Date.now() }
+      await rt.save?.()
+      if (counts.kept > 0) rt.warn?.('ds-bot: %d key(s) the hub shares were not taken: this node has its own of the same name', counts.kept)
+      done = true
+    } catch (error) {
+      rt.warn?.('ds-bot: the keys the hub shares were not taken: %s', String(error?.message ?? error).slice(0, 200))
+    } finally {
+      pulling = false
+      if (done) {
+        tries = 0
+        if (wanted !== rev && !stopped) void takeSecrets(wanted)
+      } else if (!stopped && (tries += 1) <= SECRET_PULL_RETRY_MS.length) {
+        retryTimer = setTimeout(() => void takeSecrets(wanted), SECRET_PULL_RETRY_MS[tries - 1])
+        retryTimer.unref?.()
+      }
+    }
+  }
+  // On the hub: a key was shared or unshared, or changed: every node hears of it (the catalog frame carries the new
+  // fingerprint).
+  const secretsChanged = rt.secretsChanged
+  let lastRev = rt.secretsRev?.()
+  rt.secretsChanged = (...args) => {
+    secretsChanged?.(...args)
+    const rev = rt.secretsRev?.()
+    if (rev !== lastRev) { lastRev = rev; if (onHubSide(rt)) rt.markPeerRosterDirty?.() }
   }
   attach()
   const timer = setInterval(attach, 5_000)
@@ -215,8 +292,10 @@ export function install(rt) {
   ctx?.effect?.(() => () => {
     stopped = true
     clearInterval(timer)
+    clearTimeout(retryTimer)
     off?.()
     unlisten?.()
+    rt.secretsChanged = secretsChanged
     rt.capabilityProxy = undefined
     rt.pushSharedCatalog = undefined
   }, 'ds-bot: shared capabilities')

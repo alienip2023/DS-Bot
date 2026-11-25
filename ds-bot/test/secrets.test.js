@@ -853,3 +853,22 @@ test('redactor handles large multiline secrets past V8 RegExp size limits withou
   assert.equal(manyRedact(clean), clean)
   assert.equal(manyRedact(`hit ${many[17].value.replace(/\n/g, '\r\n')} ok`), 'hit [secret:KEY_17] ok')
 })
+
+// ── keys shared with the nodes (fork.132) ──
+test('a key the hub shares is in the shell of every Bot on the node as $DSH_SECRET_X, redacted like its own, and goes with the hub\'s switch', async (t) => {
+  const bench = start()
+  t.after(bench.stop)
+  const value = fresh()
+  const counts = await rt.applyHubSecrets([{ name: 'ERP_KEY', value, purpose: 'ERP' }])
+  assert.deepEqual(counts, { added: 1, removed: 0, kept: 0 })
+  for (const id of ['m1', 'b2', 'c3']) assert.equal(bench.env(id).DSH_SECRET_ERP_KEY, value, id)
+  const team = await bench.view()
+  const view = team.secrets.find(secret => secret.name === 'ERP_KEY')
+  assert.equal(view.sharedFrom, 'hub')
+  assert.equal(JSON.stringify(team).includes(value), false)
+  assert.equal(rt.redactSecrets(`x ${value} y`).includes(value), false)
+  // the hub took it back
+  assert.deepEqual(await rt.applyHubSecrets([]), { added: 0, removed: 1, kept: 0 })
+  for (const id of ['m1', 'b2', 'c3']) assert.equal(bench.env(id).DSH_SECRET_ERP_KEY, undefined, id)
+  assert.equal(rt.redactSecrets(`x ${value} y`).includes(value), true, 'a key that is gone is no longer something to hide')
+})

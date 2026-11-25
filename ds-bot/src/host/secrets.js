@@ -2,7 +2,7 @@
 // secrets.json (mode 600) and in this process; Bots use it as $DSH_SECRET_<NAME> in
 // their shell, tool results lose it before they are saved, and every model request
 // has it replaced by [secret:<NAME>] before it leaves.
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { chmodSync, copyFileSync, readFileSync, statSync } from 'node:fs'
 import { chmod, mkdir, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -206,6 +206,7 @@ export function install(rt) {
     source: store.locked ? null : store.source,
     ...(store.locked && store.reason ? { reason: store.reason } : {}),
   })
+  const HUB_OWNED = 'This key comes from the hub: change or remove it there (turn off "share with nodes" for it).'
   const LOCKED = 'The secrets store is locked. Unlock it in Settings → Secrets, or start DS Bot with DS_BOT_SECRETS_PASSPHRASE_FILE set to a file that holds the passphrase.'
 
   /** @type {Map<string, {name:string, value:string, purpose:string, scope:'all'|string[], requestedBy:string|null, createdAt:number, updatedAt:number, lastUsedAt?:number}>} */
@@ -285,6 +286,9 @@ export function install(rt) {
         createdAt: Number(entry.createdAt) || Date.now(),
         updatedAt: Number(entry.updatedAt) || Date.now(),
         ...(Number.isFinite(entry.lastUsedAt) ? { lastUsedAt: entry.lastUsedAt } : {}),
+        // Shared with the nodes (hub, set by the user) / given by the hub (node): see capability-share.js.
+        ...(entry.nodes === true && entry.sharedFrom !== 'hub' ? { nodes: true } : {}),
+        ...(entry.sharedFrom === 'hub' ? { sharedFrom: 'hub' } : {}),
       })
     }
   }
@@ -562,6 +566,8 @@ export function install(rt) {
     createdAt: secret.createdAt,
     updatedAt: secret.updatedAt,
     ...(secret.lastUsedAt !== undefined ? { lastUsedAt: secret.lastUsedAt } : {}),
+    ...(secret.nodes === true ? { nodes: true } : {}),
+    ...(secret.sharedFrom !== undefined ? { sharedFrom: secret.sharedFrom } : {}),
   })
   const secretsView = () => [...secrets.values()].sort((a, b) => a.name.localeCompare(b.name)).map(secretView)
 
@@ -679,6 +685,8 @@ export function install(rt) {
       const name = normalizeName(body.name)
       if (!SECRET_NAME.test(name)) throw new Error('A name uses capitals, digits, and underscores, and starts with a letter')
       const existing = secrets.get(name)
+      if (existing?.sharedFrom === 'hub') throw new Error(HUB_OWNED)
+      const nodes = body.nodes === undefined ? existing?.nodes === true : body.nodes === true
       secrets.set(name, {
         name,
         value,
@@ -688,6 +696,7 @@ export function install(rt) {
         createdAt: existing?.createdAt ?? now,
         updatedAt: now,
         ...(existing?.lastUsedAt !== undefined ? { lastUsedAt: existing.lastUsedAt } : {}),
+        ...(nodes ? { nodes: true } : {}),
       })
       reconcile(name, notes)
       await commit(notes)
@@ -715,6 +724,11 @@ export function install(rt) {
     async 'secret-update'(body) {
       const secret = secrets.get(normalizeName(body.name))
       if (secret === undefined) throw new Error('No such key')
+      if (secret.sharedFrom === 'hub') throw new Error(HUB_OWNED)
+      if (body.nodes !== undefined) {
+        if (body.nodes === true) secret.nodes = true
+        else delete secret.nodes
+      }
       if (body.scope !== undefined) secret.scope = cleanScope(body.scope)
       if (typeof body.purpose === 'string') secret.purpose = body.purpose.trim().slice(0, 300)
       secret.updatedAt = Date.now()
@@ -725,6 +739,7 @@ export function install(rt) {
     },
     async 'secret-delete'(body) {
       const name = normalizeName(body.name)
+      if (secrets.get(name)?.sharedFrom === 'hub') throw new Error(HUB_OWNED)
       if (!secrets.delete(name)) throw new Error('No such key')
       const notes = []
       reconcile(name, notes)
@@ -736,6 +751,54 @@ export function install(rt) {
   // A locked store has no values to change; a write would also replace the encrypted
   // file with an empty one. Unlocking and rolling back are the exceptions.
   const LOCKED_ENDPOINTS = new Set(['secret-set', 'secret-allow', 'secret-update', 'secret-delete'])
+  // The keys the user shared with the nodes, as a node takes them: name, value, purpose. Only for the hub's answer to
+  // a node that asked (capability-share.js); nothing here is logged.
+  async function sharedSecretsForNodes() {
+    await loadSecrets()
+    if (store.locked) throw new Error(LOCKED)
+    return [...secrets.values()].filter(secret => secret.nodes === true && secret.sharedFrom === undefined)
+      .map(secret => ({ name: secret.name, value: secret.value, purpose: secret.purpose }))
+  }
+
+  // On a node: take what the hub shares. A key the hub no longer shares goes; a key of the node's own with the same
+  // name is never replaced. Kept like any key (encrypted when the store is), usable by every Bot of the node.
+  // Returns counts only.
+  function applyHubSecrets(list) {
+    return mutate(async () => {
+      await loadSecrets()
+      if (store.locked) throw new Error(LOCKED)
+      if (!Array.isArray(list) || list.length > 200) throw new Error('The hub sent a list of keys this node cannot take.')
+      const incoming = new Map()
+      for (const item of list) {
+        if (!item || !SECRET_NAME.test(item.name ?? '') || typeof item.value !== 'string' || item.value.length < MIN_VALUE || item.value.length > MAX_VALUE || item.value.includes('\0')) continue
+        incoming.set(item.name, item)
+      }
+      const now = Date.now()
+      let added = 0
+      let removed = 0
+      let kept = 0
+      for (const [name, secret] of [...secrets]) {
+        if (secret.sharedFrom === 'hub' && !incoming.has(name)) { secrets.delete(name); removed += 1 }
+      }
+      for (const item of incoming.values()) {
+        const existing = secrets.get(item.name)
+        if (existing !== undefined && existing.sharedFrom !== 'hub') { kept += 1; continue }
+        if (existing !== undefined && existing.value === item.value && existing.purpose === String(item.purpose ?? '').slice(0, 300)) continue
+        secrets.set(item.name, {
+          name: item.name, value: item.value, purpose: typeof item.purpose === 'string' ? item.purpose.slice(0, 300) : '', scope: 'all',
+          requestedBy: null, createdAt: existing?.createdAt ?? now, updatedAt: now, sharedFrom: 'hub',
+        })
+        added += 1
+      }
+      if (added > 0 || removed > 0) {
+        changed()
+        await persist()
+        await rt.save({ force: true })
+      }
+      return { added, removed, kept }
+    })
+  }
+
   function secretEndpoint(endpoint, body) {
     return mutate(async () => {
       await loadSecrets()
@@ -995,7 +1058,15 @@ export function install(rt) {
     secretsView,
     secretStoreStatus,
     secretValue: name => secrets.get(name)?.value,
-    canUseSecret: (name, botId) => canUse(secrets.get(name), botId),
+    // `forNodes`: the hub runs something for a node Bot (a shared MCP): a key the user shared with the nodes is usable.
+    canUseSecret: (name, botId, { forNodes = false } = {}) => canUse(secrets.get(name), botId) || (forNodes && secrets.get(name)?.nodes === true),
+    sharedSecretNames: () => [...secrets.values()].filter(secret => secret.nodes === true).map(secret => secret.name).sort(),
+    hubSecretNames: () => [...secrets.values()].filter(secret => secret.sharedFrom === 'hub').map(secret => secret.name).sort(),
+    // A short fingerprint of which keys are shared with the nodes and when each last changed: no value in it. A node
+    // asks for the keys again when it differs from the one it last took.
+    secretsRev: () => createHash('sha256').update(JSON.stringify([...secrets.values()].filter(secret => secret.nodes === true).map(secret => [secret.name, secret.updatedAt]).sort())).digest('hex').slice(0, 16),
+    sharedSecretsForNodes,
+    applyHubSecrets,
     secretEndpoint,
     forgetBotSecrets,
     loadSecrets,
