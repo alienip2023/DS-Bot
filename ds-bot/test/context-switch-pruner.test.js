@@ -8,6 +8,9 @@ import { mountAgentLoopTestDependencies, mountAgentLoopTestHarness } from '@deep
 import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic'
 import { ToolResultPruner } from '@deepseek-ai/dsh-compaction-tool-result-pruner'
 import { createUserMessage, LlmAdapter } from '@deepseek-ai/dsh-llm'
+import { KNOWN_SESSION_EVENT_TYPES } from '@deepseek-ai/dsh-session'
+import { sessionFormatCatalog } from '@deepseek-ai/dsh-session-format-catalog'
+import { assertReleasedV4Relationships, assertV4RowAdmission } from '@deepseek-ai/dsh-session-format-v3-to-v4'
 import { TokenMeter } from '@deepseek-ai/dsh-token-meter'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { createRuntime } from '../index.js'
@@ -26,6 +29,18 @@ async function waitFor(predicate, timeoutMs = 5_000) {
     await new Promise(resolve => setTimeout(resolve, 15))
   }
   return predicate()
+}
+
+// What DSH does when it opens a stored session (the check `SessionFormatError: stored log is corrupt` comes from): the
+// log is replayed row by row and its turn/step relationships are checked. Writing never checks them, so a session
+// can be written that cannot be opened again. Throws the loader's own error.
+function assertStoredLogLoads(session) {
+  const restore = sessionFormatCatalog.createRestore({ type: 'session', delegationDepth: 0, agentPreset: 'standard', ...session.header }, { recovery: 'strict', validation: 'transformed' })
+  for (const row of session.snapshotEvents()) {
+    assertV4RowAdmission(row, KNOWN_SESSION_EVENT_TYPES)
+    restore.decodeRow(row)
+  }
+  assertReleasedV4Relationships(restore.finish(), KNOWN_SESSION_EVENT_TYPES)
 }
 
 async function bootRealDshBot(t, {
@@ -576,7 +591,10 @@ test('P1-1: mid-turn condense recovers via trimmed transcript on size error, and
 // P1-4: Model-free toolResultPruner reclaims oversized tool outputs past lines.check
 //       and lines.hard with ZERO LLM compaction/steward calls
 // -----------------------------------------------------------------------------
-test('P1-4: real DSH ToolResultPruner reclaims oversized tool outputs past check line with zero LLM calls and intact dialogue', async (t) => {
+// The bug (2026-11-26): the idle check after a turn trimmed oversized tool results while no turn was open. DSH writes
+// that without complaint and refuses to open the session the next time ("tool/result is outside an open turn"), so a
+// Bot's chat could not be loaded after a restart. The trim is done in the next turn, where DSH accepts it.
+test('P1-4: an idle check past the check line writes no trim outside a turn; the next turn trims, and the stored log loads', async (t) => {
   const hugeToolOutput = 'LOG_LINE_0123456789 '.repeat(5_000) // ~100,000 chars (~25k tokens)
   const { agent, calls, runTurn, rt } = await bootRealDshBot(t, {
     contextWindow: 50_000,
@@ -586,27 +604,76 @@ test('P1-4: real DSH ToolResultPruner reclaims oversized tool outputs past check
     toolExecute: async () => hugeToolOutput,
     onTurn: (step) => {
       if (step === 1) return { toolCall: { id: 'tc-huge-1', name: 'inspect_file', args: { path: 'huge.log' } }, usage: { inputTokens: 1_500, outputTokens: 100 } }
-      return { text: 'DIALOGUE_INTACT: Analyzed huge.log successfully.', usage: { inputTokens: 27_000, outputTokens: 100 } }
+      if (step === 2) return { text: 'DIALOGUE_INTACT: Analyzed huge.log successfully.', usage: { inputTokens: 27_000, outputTokens: 100 } }
+      return { text: 'SECOND_TURN_DONE', usage: { inputTokens: 4_000, outputTokens: 100 } }
     },
   })
+  const events = () => agent.session.snapshotEvents()
+  const pruneEvents = () => events().filter(ev => ev.type === 'compaction/prune')
 
   await runTurn('Check huge.log')
-  // Wait for idle checkContext to run toolResultPruner.
-  assert.equal(await waitFor(() => agent.session.snapshotEvents().some(ev => ev.type === 'compaction/prune')), true, 'real ToolResultPruner must append compaction/prune event')
-  await new Promise(resolve => setTimeout(resolve, 100))
-
-  // Zero steward LLM calls, zero checkpoint LLM calls, zero part switches!
-  assert.equal(calls.filter(c => c.kind === 'steward').length, 0, 'pruning below check line must skip steward LLM call')
-  assert.equal(calls.filter(c => c.kind === 'checkpoint').length, 0, 'pruning below check line must skip checkpoint LLM call')
-  assert.equal(calls.filter(c => c.kind === 'note').length, 0, 'pruning below check line must skip part switch')
+  await new Promise(resolve => setTimeout(resolve, 300)) // the idle check runs after the turn ends
+  assert.equal(pruneEvents().length, 0, 'nothing is trimmed while the Session is idle')
+  assert.doesNotThrow(() => assertStoredLogLoads(agent.session), 'the log written so far opens')
+  // The trim is not lost, and it costs no model call.
+  assert.equal(calls.filter(c => c.kind === 'steward' || c.kind === 'checkpoint' || c.kind === 'note').length, 0, 'the idle check makes no compaction call for what a trim can relieve')
   assert.equal(rt.chatOf('m1'), 'm1')
 
-  // Verify surface still has full user/assistant dialogue AND pruned tool output marker.
+  await runTurn('And now?')
+  const trims = pruneEvents()
+  assert.ok(trims.length > 0, 'the next turn trims the oversized result')
+  // Each trim sits inside an open turn: after that turn's turn/start and before its turn/end.
+  let open = false
+  for (const ev of events()) {
+    if (ev.type === 'turn/start') open = true
+    else if (ev.type === 'turn/end') open = false
+    else if (ev.type === 'compaction/prune' || (ev.type === 'tool/result' && ev.surfaceOp?.op === 'replace')) assert.equal(open, true, `${ev.type} at seq ${ev.seq} is inside a turn`)
+  }
+  assert.doesNotThrow(() => assertStoredLogLoads(agent.session), 'the log after the trim opens')
   const derived = agent.session.deriveMessages()
   const allText = derived.map(m => (m.content ?? []).map(b => b.text ?? '').join('\n')).join('\n')
   assert.match(allText, /\[\.\.\. tool result middle pruned \.\.\.\]/)
   assert.match(allText, /DIALOGUE_INTACT: Analyzed huge\.log successfully\./)
-  assert.match(allText, /Check huge\.log/)
+  await new Promise(resolve => setTimeout(resolve, 200))
+  assert.equal(calls.filter(c => c.kind === 'steward' || c.kind === 'checkpoint' || c.kind === 'note').length, 0)
+})
+
+// What cannot be trimmed is handled as before: nothing waits for a trim that is not there.
+test('P1-4: an idle check past the check line with no oversized tool result still condenses, and trims nothing', async (t) => {
+  const big = 'Background specification block. '.repeat(3_500) // ~27k tokens, no tool output at all
+  const { agent, calls, runTurn } = await bootRealDshBot(t, {
+    contextWindow: 100_000,
+    defaultMaxTokens: 4_000,
+    checkRatio: 0.25, // usable=96k, check=24k
+    withPruner: true,
+    onTurn: () => ({ text: 'ACK', usage: { inputTokens: 27_500, outputTokens: 50 } }),
+  })
+  await runTurn(`Remember this: ${big}`)
+  assert.equal(await waitFor(() => calls.some(c => c.kind === 'steward' || c.kind === 'checkpoint' || c.kind === 'note')), true, 'the idle check goes on to condense')
+  assert.equal(agent.session.snapshotEvents().some(ev => ev.type === 'compaction/prune'), false)
+  assert.doesNotThrow(() => assertStoredLogLoads(agent.session))
+})
+
+// Past the hard line the room is made at once; a trim left for the next turn would not do.
+test('P1-4: an idle check past the hard line with an oversized tool result makes room now, and still trims nothing while idle', async (t) => {
+  const hugeToolOutput = 'BUILD_OUTPUT_LINE_9876543210 '.repeat(3_450) // ~100k chars (~25k tokens): below the hard line while the turn runs, so nothing is trimmed in it
+  const { agent, calls, runTurn } = await bootRealDshBot(t, {
+    contextWindow: 50_000,
+    defaultMaxTokens: 4_000,
+    checkRatio: 0.4, // usable=46,000, check=18,400, hard=43,700
+    withPruner: true,
+    toolExecute: async () => hugeToolOutput,
+    onTurn: (step) => {
+      if (step === 1) return { toolCall: { id: 'tc-hard-1', name: 'inspect_file', args: { path: 'build.log' } }, usage: { inputTokens: 1_500, outputTokens: 100 } }
+      return { text: 'DONE_HARD', usage: { inputTokens: 46_000, outputTokens: 100 } }
+    },
+  })
+  await runTurn('Inspect build.log')
+  const idleTrims = () => agent.session.snapshotEvents().filter(ev => ev.type === 'compaction/prune').length
+  const beforeIdle = idleTrims()
+  assert.equal(await waitFor(() => calls.some(c => c.kind === 'steward' || c.kind === 'checkpoint' || c.kind === 'note')), true, 'past the hard line the idle check makes room')
+  assert.equal(idleTrims(), beforeIdle, 'the idle check wrote no trim')
+  assert.doesNotThrow(() => assertStoredLogLoads(agent.session))
 })
 
 test('P1-4: real DSH ToolResultPruner reclaims oversized tool outputs mid-turn past hard line without triggering LLM compaction', async (t) => {

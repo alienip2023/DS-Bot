@@ -306,6 +306,8 @@ export function install(rt) {
   // The range of a Bot Session DSH is condensing for a model switch, where the route the
   // Session used last is the one being switched away from.
   const switchRanges = new Map()
+  // Sessions with a tool-result trim waiting for their next turn (see pruneToolResults).
+  const pendingIdlePrune = new Set()
   const refuseCompaction = () => Promise.reject(new Error(
     'A Bot conversation makes room on its own, and read_own_chat searches all of it.'))
   const isBotTarget = (target) => {
@@ -1355,15 +1357,41 @@ export function install(rt) {
     return 'switch'
   }
 
+  // Is there a tool result the pruner would trim? Asked of the pruner with its own budget, reading only. False when the
+  // pruner cannot say (it then trims nothing at idle).
+  function hasTrimmableResult(pruner, session) {
+    if (typeof pruner.pruneContent !== 'function') return false
+    try {
+      for (const seq of [...(session.surface?.nodes ?? [])]) {
+        const event = session.eventAt(seq)
+        if (event?.type === 'tool/result' && pruner.pruneContent(session.deriveEventMessage(event).content) !== null) return true
+      }
+    } catch (error) {
+      rt.warn('ds-bot: looking for tool results to trim in %s failed: %s', session.id, error)
+    }
+    return false
+  }
+
   // Model-free tool-result pruning through DSH's documented toolResultPruner service.
   // Called only once a part crosses a pressure line so prefix cache stays intact below
   // the line. Reclaims oversized tool outputs without spending LLM tokens or losing dialogue.
+  //
+  // Only inside a turn. DSH opens a stored Session again only if every replacement tool/result sits in an open turn,
+  // and writing one never checks that: a trim written while the Session is idle is accepted, and the next time the
+  // Session is opened it fails to load ("tool/result is outside an open turn"). So an idle pass writes nothing: it asks
+  // the pruner whether there is a result to trim, and if so leaves the trim for the first step of the next turn (the
+  // agent/pre-step below), which reports `deferred`. `{ pruned: 0 }`: nothing to trim.
   async function pruneToolResults(agent, { inTurn = false } = {}) {
     if (localPart(agent.session)) return { pruned: 0 }
     if (!inTurn && !isAgentIdle(agent)) return { busy: true, pruned: 0 }
     const pruner = ctx.get?.('agentPresets')?.serviceFor?.(agent, 'toolResultPruner') ?? ctx.get?.('toolResultPruner')
     if (typeof pruner?.pruneSession !== 'function') return { pruned: 0 }
     const run = async () => {
+      if (!inTurn) {
+        if (!hasTrimmableResult(pruner, agent.session)) return { pruned: 0 }
+        pendingIdlePrune.add(agent.session.id)
+        return { pruned: 0, deferred: true }
+      }
       const before = tokensOf(agent.session)
       const outcome = pruner.pruneSession(agent.session)
       const count = outcome?.pruned?.length ?? 0
@@ -2263,6 +2291,14 @@ export function install(rt) {
     // A local agent CLI condenses on its own inside a running turn, and DS Bot cannot
     // step in between its model calls: a part on one is checked when its turn ends.
     if (localPart(agent.session)) return next()
+    // A trim the idle check left for this turn (see pruneToolResults): turn/start is already written, so DSH takes it.
+    if (pendingIdlePrune.delete(agent.session.id) && !readOnly()) {
+      const deferred = await pruneToolResults(agent, { inTurn: true })
+      if (deferred.pruned > 0) {
+        const afterDeferred = tokensOf(agent.session)
+        if (afterDeferred !== undefined) lowerPartBase(agent.id, afterDeferred)
+      }
+    }
     const lines = await contextLines(agent.session).catch(() => undefined)
     const tokens = tokensOf(agent.session)
     if (fresh === undefined && tokens !== undefined && tokens > 0) lowerPartBase(agent.id, tokens)
@@ -2486,6 +2522,8 @@ export function install(rt) {
     try {
       const pruned = await pruneToolResults(agent, { inTurn: false })
       if (pruned.busy === true) return
+      // The next turn trims it, at no cost: nothing to condense for now. Past the hard line the room is made at once.
+      if (pruned.deferred === true && !hard) return
       if (pruned.pruned > 0) {
         const afterPrune = tokensOf(agent.session)
         if (afterPrune !== undefined && afterPrune < lines.check) {
@@ -3227,6 +3265,7 @@ export function install(rt) {
   const forgetSessionParts = (sessionId) => {
     if (typeof sessionId !== 'string' || sessionId === '') return
     partBase.delete(sessionId)
+    pendingIdlePrune.delete(sessionId)
     cliCompactions.delete(sessionId)
     condensedUnmeasured.delete(sessionId)
     cutOffs.delete(sessionId)
