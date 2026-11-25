@@ -24,6 +24,7 @@ import { checkShownView, showViewDescription, showViewParameters } from 'deep-vi
 import { BUILTIN_PACKS, install as installBuiltinPacks } from './builtin-packs.js'
 import { botsRoot } from './bots-root.js'
 import { AC_NEEDED } from './node-compat.js'
+import { skillShareStatus } from './skill-share.js'
 
 export const output = { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: String(value) }] }
 export const GROUP_REF = { type: 'string', required: true, description: 'Exact group chat name from list_bots' }
@@ -2163,13 +2164,18 @@ export function install(rt) {
       const items = Object.values(state.capabilities?.items ?? {})
       if (items.length === 0) return 'No shared capabilities are saved yet.'
       const statuses = rt.capabilityStatusesView()[bot.id] ?? {}
+      // Which skills go to the nodes, and why one does not (fork.131).
+      const sharing = new Map(skillShareStatus(rt).map(entry => [entry.name, entry]))
       const lines = items.map(item => {
         const extra = item.kind === 'pack' ? `; includes ${(item.items ?? []).join(', ') || 'nothing'}`
           : item.kind === 'mcp' && item.transport === 'stdio' ? `; ${item.approved ? 'allowed' : 'needs user approval'}` : ''
         const itemStatus = statuses[item.name]
         const state = itemStatus ? ` (${itemStatus.state}${itemStatus.error ? `: ${itemStatus.error}` : ''})` : ''
+        const shared = item.sharedFrom?.startsWith('hub:') ? '; shared by the hub' : ''
+        const toNodes = sharing.has(item.name) ? (sharing.get(item.name).shared ? '; goes to every node' : `; not shared with the nodes: ${sharing.get(item.name).reason}`) : ''
+        const on = shared !== '' && !(bot.capabilityOff ?? []).includes(item.name) ? '; on for you' : ''
         const status = bot.capabilities?.includes(item.name) ? `; attached to you${state}` : ''
-        return `- ${item.name} (${item.kind})${item.description ? ` — ${item.description}` : ''}${extra}${status}`
+        return `- ${item.name} (${item.kind})${item.description ? ` — ${item.description}` : ''}${extra}${shared}${toNodes}${on}${status}`
       })
       return ['Shared capabilities:', ...lines].join('\n')
     },

@@ -269,7 +269,7 @@ export async function pushPeerRoster(rt, nodeId) {
     level,
     hostname: osHostname().slice(0, 80),
     bots: level === 'off' ? [] : localBotsForPeer(rt),
-    skills: sharedSkillSnapshot(rt, { forward: true }),
+    skills: sharedSkillSnapshot(rt, { forward: true, toNodes: true }),
   }
   let sent = false
   try {

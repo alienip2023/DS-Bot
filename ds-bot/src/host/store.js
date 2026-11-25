@@ -383,6 +383,7 @@ export function install(rt) {
         continue
       }
       if (sessionIdOf(bot.id) === undefined) bot.id = id
+      if (bot.capabilityOff !== undefined && (!Array.isArray(bot.capabilityOff) || bot.capabilityOff.some(name => typeof name !== 'string'))) delete bot.capabilityOff
       if (!Array.isArray(bot.capabilities)) {
         bot.capabilities = []
         migrated = true

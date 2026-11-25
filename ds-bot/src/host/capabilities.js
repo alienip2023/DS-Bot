@@ -41,6 +41,13 @@ export function expandCapabilityNames(capabilities, library) {
   return expanded
 }
 
+// What the hub shares with every Bot on a node without anyone attaching it: a Bot turns one off with `capabilityOff`
+// (capability-sharing, fork.131). Only items that came from a hub; the hub's own library is attached as before.
+export const isHubShared = item => item?.sharedFrom?.startsWith('hub:') === true
+export const impliedFor = (bot, library) => Object.values(library ?? {})
+  .filter(item => isHubShared(item) && (item.kind === 'skill' || item.kind === 'mcp') && !(bot?.capabilityOff ?? []).includes(item.name))
+  .map(item => item.name)
+
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 const strings = value => {
   if (value === undefined) return []
@@ -75,6 +82,8 @@ export function install(rt) {
   let stopped = false
 
   const library = () => state.capabilities.items
+  // Something to look after for this Bot: what it attached, or what the hub shares with it and it did not turn off.
+  const hasCapabilities = bot => (bot?.capabilities ?? []).length > 0 || impliedFor(bot, library()).length > 0
   const ensureLibrary = () => {
     state.capabilities ??= { items: {} }
     state.capabilities.items ??= {}
@@ -217,12 +226,16 @@ export function install(rt) {
     if (!['always', 'catalog'].includes(mode)) throw new Error('Capability mode must be always or catalog.')
     bot.capabilities ??= []
     bot.packs ??= []
-    const wasEmpty = bot.capabilities.length === 0
+    const wasEmpty = !hasCapabilities(bot)
     bot.capabilities = bot.capabilities.filter(entry => entry !== name)
     bot.packs = bot.packs.filter(entry => entry !== name)
-    if (attached) bot[mode === 'catalog' ? 'packs' : 'capabilities'].push(name)
+    // A capability the hub shares is on for every Bot already: attaching turns it back on, detaching turns it off.
+    if (isHubShared(own(library(), name))) {
+      bot.capabilityOff = (bot.capabilityOff ?? []).filter(entry => entry !== name)
+      if (!attached) bot.capabilityOff.push(name)
+    } else if (attached) bot[mode === 'catalog' ? 'packs' : 'capabilities'].push(name)
     await rt.save()
-    if (wasEmpty && bot.capabilities.length > 0) {
+    if (wasEmpty && hasCapabilities(bot)) {
       await trackBotAgents(bot)
       void scheduleReconcile()
     }
@@ -415,6 +428,7 @@ export function install(rt) {
   const desiredFor = (agent, bot) => {
     const sessionId = agent.session.id
     const desired = bot ? expandCapabilityNames(bot.capabilities, library()) : new Set()
+    if (bot) for (const name of impliedFor(bot, library())) desired.add(name)
     const entries = loaded.get(sessionId)
     if (agent.status !== 'running') {
       for (const root of entries?.keys() ?? []) {
@@ -487,6 +501,10 @@ export function install(rt) {
     await loadInputs()
     if (stopped) return
     lastReconcileFingerprint = capabilityFingerprint()
+    // A Bot with nothing attached still has what the hub shares: its Agents are looked after too.
+    for (const bot of Object.values(state.bots)) {
+      if ((bot.capabilities ?? []).length === 0 && impliedFor(bot, library()).length > 0) await trackBotAgents(bot)
+    }
     const runs = []
     for (const [sessionId, reference] of agents) {
       const agent = reference.deref()
@@ -534,7 +552,7 @@ export function install(rt) {
     await rt.load()
     const bot = botOfSession(sessionId)
     if (!bot) return
-    if ((bot.capabilities ?? []).length === 0 && !loaded.get(sessionId)?.size && !mounts.get(agents.get(sessionId)?.deref())?.size) return
+    if (!hasCapabilities(bot) && !loaded.get(sessionId)?.size && !mounts.get(agents.get(sessionId)?.deref())?.size) return
     let agent
     try {
       agent = await rt.resolveAgent(sessionId)
@@ -621,6 +639,7 @@ export function install(rt) {
       bot.sessionId,
       bot.capabilities,
       bot.packs,
+      bot.capabilityOff,
       activeTasksOf(bot).map(task => task.sessionId),
     ]),
     Object.values(state.rooms ?? {}).map(room => [room.id, room.sessions]),
@@ -724,7 +743,7 @@ export function install(rt) {
     try {
       await rt.load()
       const bot = botOfSession(agent.session.id)
-      if ((bot?.capabilities ?? []).length > 0) await prepare(agent, agent.session.id)
+      if (bot !== undefined && hasCapabilities(bot)) await prepare(agent, agent.session.id)
     } catch (error) {
       rt.warn('ds-bot: capability load failed: %s', error)
     }
@@ -732,7 +751,7 @@ export function install(rt) {
   ctx.effect(() => {
     void rt.load().then(async () => {
       for (const bot of Object.values(state.bots)) {
-        if ((bot.capabilities ?? []).length > 0) await trackBotAgents(bot)
+        if (hasCapabilities(bot)) await trackBotAgents(bot)
       }
       await scheduleReconcile()
     }).catch(error => rt.warn('ds-bot: capability startup failed: %s', error))
