@@ -51659,6 +51659,52 @@ var SETTINGS_SHELL_CSS = `
 .bt-release-line.bt-release-done{border-top-style:solid;color:var(--bt-green);opacity:1}
 `;
 
+// src/client/jobs-rows-guard.js
+var ROWS_HOLD_MS = 2e3;
+function guardJobRows(jobs, { holdMs = ROWS_HOLD_MS, timers = { setTimeout, clearTimeout } } = {}) {
+  if (typeof jobs?.watchRows !== "function") return () => {
+  };
+  const original = jobs.watchRows;
+  const hadOwn = Object.prototype.hasOwnProperty.call(jobs, "watchRows");
+  const held = /* @__PURE__ */ new Map();
+  const stop = (key, entry) => {
+    if (held.get(key) === entry) held.delete(key);
+    entry.timer = void 0;
+    entry.release();
+  };
+  jobs.watchRows = function watchRows(sessionId) {
+    const key = String(sessionId);
+    let entry = held.get(key);
+    if (entry === void 0) {
+      entry = { refs: 0, timer: void 0, release: original.call(this ?? jobs, sessionId) };
+      held.set(key, entry);
+    }
+    timers.clearTimeout(entry.timer);
+    entry.timer = void 0;
+    entry.refs += 1;
+    const mine = entry;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      mine.refs -= 1;
+      if (mine.refs > 0 || held.get(key) !== mine) return;
+      mine.timer = timers.setTimeout(() => {
+        if (mine.refs === 0) stop(key, mine);
+      }, holdMs);
+      mine.timer?.unref?.();
+    };
+  };
+  return () => {
+    if (hadOwn) jobs.watchRows = original;
+    else delete jobs.watchRows;
+    for (const [key, entry] of held) {
+      timers.clearTimeout(entry.timer);
+      stop(key, entry);
+    }
+  };
+}
+
 // src/client/member-status.js
 var import_react71 = require("react");
 var NO_WORK = { bots: {}, rooms: {}, approvals: [] };
@@ -62096,6 +62142,9 @@ function apply(ctx) {
   }, "ds-bot: registry");
   ctx.inject(["shortcuts"], (scope) => {
     scope.effect(() => holdShellShortcuts(scope.shortcuts), "ds-bot: settings shortcut");
+  });
+  ctx.inject(["jobs"], (scope) => {
+    scope.effect(() => guardJobRows(scope.jobs), "ds-bot: job rows guard");
   });
   let openReview;
   ctx.inject(["sidebarRight"], (scope) => {

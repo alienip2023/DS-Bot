@@ -15,6 +15,7 @@ import { threadHomeGuard } from './thread-home.js'
 import { installSettingsShell, SETTINGS_SHELL_CSS } from './settings-shell.js'
 import { frameLayout, readSidebar, writeSidebar, toggledPref, DSH_NARROW } from './frame-layout.js'
 import { installFrameWatch } from './frame-watch.js'
+import { guardJobRows } from './jobs-rows-guard.js'
 import { HeaderPill } from './header.js'
 import { watchAgentTerminals } from './agent-terminals.js'
 import { ComposerPlus, ComposerVoice, DraftKeeper, menuIcons } from './composer.js'
@@ -568,6 +569,8 @@ export function apply(ctx) {
   }, 'ds-bot: registry')
 
   ctx.inject(['shortcuts'], scope => { scope.effect(() => holdShellShortcuts(scope.shortcuts), 'ds-bot: settings shortcut') })
+  // DSH's job list restarts its row stream on every render; see jobs-rows-guard.js.
+  ctx.inject(['jobs'], scope => { scope.effect(() => guardJobRows(scope.jobs), 'ds-bot: job rows guard') })
 
   // DSH's own changes-review tab opens by resource address in the right column. A window
   // without that column never provides the service; the change row then says it cannot
