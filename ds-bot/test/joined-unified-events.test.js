@@ -33,8 +33,9 @@ test('textWithSender prefix is NOT injected into openMirrorTurn', async () => {
   }
 })
 
-// Node injection needs its own sender header; the mirror remains display-only.
-test('node injection adds a sender header and preserves the complete body', async () => {
+// The node's prompt keeps the body as it is and a group's name once; who sent it is the turn's `source` (fork.111; the
+// model's "[Message from …]" header for work comes over the work frames, w3-work-link-e2e.test.js).
+test('node injection keeps the complete body and names the sender in the source', async () => {
   for (const roomId of [undefined, 'room-1']) {
     for (const text of [body, '', null, undefined]) {
       const sent = []
@@ -56,14 +57,17 @@ test('node injection adds a sender header and preserves the complete body', asyn
       assert.equal(sent.length, 1)
       assert.equal(sent[0].requestId, 'receiver-exchange')
       const received = sent[0].content[0].text
-      assert.equal(received, `${roomId ? '[群 Team]\n' : ''}[Message from Chief]\n${text ?? ''}`)
+      assert.equal(received, `${roomId ? '[群 Team] ' : ''}${text ?? ''}`)
       assert.doesNotMatch(received, /\[来自 /)
-      assert.equal(received.split(sender.name).length - 1, (text === body ? 1 : 0) + 1)
+      assert.deepEqual(sent[0].source, { senderName: sender.name, senderBotId: sender.id, kind: 'bot-message' })
+      assert.equal(received.split(sender.name).length - 1, text === body ? 1 : 0, 'the body\'s own header is the only mention of the sender')
     }
   }
 })
 
 // Knife 3: remove joinedTurn: true from both replyToSender deliveries.
+// A local sender that already has the result through its work (closeWork) is not told twice: it reads the result on its
+// next step, as with a local handoff (a room's reply, and a reply with no work, are delivered).
 test('replyToSender delivers joinedTurn: true', async () => {
   for (const roomId of [undefined, 'room-1']) {
     for (const work of [undefined, { id: 'work-1' }]) {
@@ -76,10 +80,11 @@ test('replyToSender delivers joinedTurn: true', async () => {
       await replyToSender(rt, {
         fromId: sender.id, toId: joined.id, exchangeId: 'reply-exchange', text: 'Done', roomId, work,
       })
-      assert.deepEqual(delivered, [{
+      const silent = roomId === undefined && work !== undefined
+      assert.deepEqual(delivered, silent ? [] : [{
         fromId: joined.id, toId: sender.id, text: 'Done', role: 'reply', replyTo: 'reply-exchange',
         ...(roomId ? { roomId } : {}), ...(work ? { work } : {}), joinedTurn: true,
-      }])
+      }], `room ${roomId}, work ${work?.id}`)
     }
   }
 })

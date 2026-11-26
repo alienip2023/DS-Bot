@@ -47,26 +47,28 @@ async function receive(turn) {
   assert.equal(prompts.length, 1)
   assert.equal(prompts[0].sessionId, roomId ? remoteGroupSession(roomId, 'local') : 'node-chat')
   assert.equal(prompts[0].requestId, 'node-exchange')
+  receive.last = prompts[0]
   return prompts[0].content
 }
 
+// Since fork.111 the node's prompt carries the body as it is (the sender is the turn's `source`, which the page renders as a
+// Bot-to-Bot bubble); the model's "[Message from …]" header for work comes over the work frames (w3-work-link-e2e.test.js).
 for (const senderName of ['X', '  X  ']) {
-  test(`node receiver adds one sender header and preserves the complete body: ${JSON.stringify(senderName)}`, async () => {
+  test(`node receiver keeps the complete body and names the sender once, in the source: ${JSON.stringify(senderName)}`, async () => {
     const content = await receive({ senderBotId: 'sender', senderName })
-    assert.deepEqual(content, [{ type: 'text', text: `[Message from X]\n${BODY}` }])
-    assert.equal(content[0].text.split('\n')[0], '[Message from X]')
-    assert.equal(occurrences(content[0].text, 'X'), 1)
+    assert.deepEqual(content, [{ type: 'text', text: BODY }])
+    assert.deepEqual(receive.last.source, { senderName: 'X', senderBotId: 'sender', kind: 'bot-message' })
+    assert.equal(occurrences(content[0].text, '[Message from'), 0)
     assert.equal(occurrences(content[0].text, '[来自'), 0)
   })
 }
 
 for (const [roomName, groupName] of [[' Team ', 'Team'], ['', 'room-1'], [undefined, 'room-1']]) {
-  test(`node receiver includes the group and sender exactly once: ${JSON.stringify(roomName)}`, async () => {
+  test(`node receiver names the group once and the sender in the source: ${JSON.stringify(roomName)}`, async () => {
     const content = await receive({ roomId: ' room-1 ', roomName, senderBotId: 'sender', senderName: ' X ' })
-    assert.deepEqual(content, [{ type: 'text', text: `[群 ${groupName}]\n[Message from X]\n${BODY}` }])
-    assert.equal(content[0].text.split('\n')[1], '[Message from X]')
+    assert.deepEqual(content, [{ type: 'text', text: `[群 ${groupName}] ${BODY}` }])
+    assert.deepEqual(receive.last.source, { senderName: 'X', senderBotId: 'sender', kind: 'bot-message' })
     assert.equal(occurrences(content[0].text, groupName), 1)
-    assert.equal(occurrences(content[0].text, 'X'), 1)
     assert.equal(occurrences(content[0].text, '[来自'), 0)
   })
 }

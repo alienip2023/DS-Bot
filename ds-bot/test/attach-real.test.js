@@ -128,7 +128,7 @@ describe('attach-real: the node hands the Bot\'s Session what the core\'s prompt
     const wire = []
     const hub = { ctx: w.ctx, warn() {}, resolveAgent: async id => w.ctx.agents.get(id) }
     const { collected } = await collectPrompt(hub, bot, parts, { sessionId, requestId: 'hub-req' })
-    const manifest = sendChunks({ send: (_n, _t, payload) => { wire.push(payload); return true } }, { nodeId: 'n1', remoteBotId: 'b1', exchangeId, items: collected.items })
+    const manifest = await sendChunks({ send: (_n, _t, payload) => { wire.push(payload); return true } }, { nodeId: 'n1', remoteBotId: 'b1', exchangeId, items: collected.items })
     for (const frame of wire) node.receive(frame)
     return { node, turn: { exchangeId, remoteBotId: 'b1', attachments: manifest }, collected }
   }

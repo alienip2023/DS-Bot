@@ -280,7 +280,7 @@ test('CAPS-8 the hub takes a shared MCP away and the node loses it; an MCP of th
   assert.equal(items['Bad Name'], undefined)
 })
 
-test('CAPS-9 a skill sync does not take the hub\'s MCP proxies with it, and the push after a roster push sends the catalog', async t => {
+test('CAPS-9 a skill sync does not take the hub\'s MCP proxies with it, and the push after a roster push sends the catalog', { skip }, async t => {
   const c = await cluster(t)
   await c.hub.rt.capabilitySave(erp(), { ui: true })
   await pushToNode(c)

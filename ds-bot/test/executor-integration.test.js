@@ -1,17 +1,16 @@
 // test/executor-integration.test.js
-// Integration: executor.send/deliverTurn → fake registry → mirror → historyEntry renders
-// Tests tracker lifecycle, E_OFFLINE/E_TIMEOUT/E_REJECTED, and nodeSeq S2 contract.
+// Integration: executor.send → fake registry. Tests tracker lifecycle, E_OFFLINE/E_TIMEOUT/E_REJECTED and the seq the result
+// frame carries. (The page-writing half, deliverTurn → mirror → historyEntry, went in W5: only the copy of the node Bot's chat
+// writes its hub page now; see docs/plans/2026-11-24-work-model.md.)
 
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { mock } from 'node:test'
 import EventEmitter from 'node:events'
 
-import { send, deliverTurn, ExecutorError } from '../src/host/executor.js'
+import { send, ExecutorError } from '../src/host/executor.js'
 import { JOINED_TURN_TIMEOUT_MS } from '../src/host/joined-turn.js'
-import { mirrorTurn } from '../src/host/mirror.js'
 import { createTurnTracker } from '../src/host/turn-tracker.js'
-import { historyEntry } from '../src/host/parts.js'
 
 // ---- test helpers ----
 function makeJoinedBot(overrides = {}) {
@@ -158,71 +157,6 @@ describe('executor + tracker', () => {
   })
 })
 
-describe('deliverTurn: full pipeline with mirror + historyEntry', () => {
-  it('send → real result.text → mirrorTurn → historyEntry renders user+bot', async () => {
-    const bot = makeJoinedBot()
-    const REPLY_TEXT = 'Mirror pipeline reply'
-    const registry = makeRegistry({ replyText: REPLY_TEXT })
-    const rt = makeRt(bot, registry)
-
-    const appendedEvents = []
-    const fakeSession = {
-      append: (type, data, opts) => {
-        const ev = { type, data, opts }
-        appendedEvents.push(ev)
-        return ev
-      },
-    }
-
-    const result = await deliverTurn({
-      botId: bot.id,
-      text: 'Pipeline input',
-      rt,
-      session: fakeSession,
-      turn: 1,
-      seenKeys: new Set(),
-      closedKeys: new Set(),
-      seenSteps: new Set(),
-    })
-
-    assert.equal(result.ok, true)
-    assert.equal(appendedEvents.length, 6, `expected 6 events, got: ${appendedEvents.map(e => e.type)}`)
-
-    const botMsgEvent = appendedEvents.find(e => e.type === 'assistant/message')
-    assert.ok(botMsgEvent, 'assistant/message event must exist')
-    assert.ok(Array.isArray(botMsgEvent?.data?.stream), 'assistant/message must have stream array (dsh-session settlement)')
-
-    // Knife ②: remove result.text from send() return → deliverTurn passes empty string to mirrorTurn → botEntry.text empty
-    const botEntry = historyEntry(botMsgEvent, false)
-    assert.ok(botEntry?.text?.includes(REPLY_TEXT),
-      `bot entry text must include "${REPLY_TEXT}", got: "${botEntry?.text}"`)
-  })
-
-  it('nodeSeq is null (S2 obligation: seq not yet in bot/turn-result frame)', async () => {
-    // This test documents the S2 contract: mirrorTurn receives nodeSeq:null, idempotency is skipped.
-    // S2 must add `seq` to validateBotTurnResult and bot/turn-result frame.
-    const bot = makeJoinedBot()
-    const registry = makeRegistry({ replyText: 'seq test' })
-    const rt = makeRt(bot, registry)
-    const events = []
-    const fakeSession = { append: (t, d, o) => { const ev = { type: t, data: d }; events.push(ev); return ev } }
-
-    const result = await deliverTurn({
-      botId: bot.id,
-      text: 'seq test input',
-      rt,
-      session: fakeSession,
-      turn: 1,
-      seenKeys: new Set(),
-      closedKeys: new Set(),
-      seenSteps: new Set(),
-    })
-    assert.equal(result.mirrorResult.skipped, false)
-    // Verify mirrorTurn still writes turn/end as {kind:'completed'} even without nodeSeq
-    const turnEnd = events.find(e => e.type === 'turn/end')
-    assert.equal(turnEnd?.data?.reason?.kind, 'completed')
-  })
-})
 
 describe('turn-tracker: lifecycle', () => {
   it('start → finish(done) → get reports done', () => {
@@ -290,42 +224,6 @@ describe('executor.send: edge cases', () => {
   })
 })
 
-describe('deliverTurn: multi-turn + turn allocation from session.log', () => {
-  it('missing turn → allocates turn=1 (turn param is now optional)', async () => {
-    const bot = makeJoinedBot()
-    const registry = makeRegistry({ replyText: 'r' })
-    const rt = makeRt(bot, registry)
-    const log = []
-    const fakeSession = { log, append: (t, d, o) => { const ev = { type: t, data: d }; log.push(ev); return ev } }
-    const result = await deliverTurn({ botId: bot.id, text: 'Hi', rt, session: fakeSession, seenKeys: new Set(), closedKeys: new Set(), seenSteps: new Set() })
-    assert.equal(result.ok, true)
-    const ts = log.find(e => e.type === 'turn/start')
-    assert.equal(ts.data.turn, 1, 'first call must allocate turn=1')
-  })
-
-  it('two consecutive turns → 12 events total, turn numbers 1 and 2 from session.log', async () => {
-    const bot = makeJoinedBot()
-    const registry = makeRegistry({ replyText: 'turn reply' })
-    const rt = makeRt(bot, registry)
-
-    const events = []
-    const log = []
-    const fakeSession = { log, append: (t, d, o) => { const ev = { type: t, data: d }; log.push(ev); events.push(ev); return ev } }
-
-    const seenKeys = new Set()
-    const closedKeys = new Set()
-    const seenSteps = new Set()
-
-    const r1 = await deliverTurn({ botId: bot.id, text: 'First', rt, session: fakeSession, seenKeys, closedKeys, seenSteps })
-    const r2 = await deliverTurn({ botId: bot.id, text: 'Second', rt, session: fakeSession, seenKeys, closedKeys, seenSteps })
-
-    assert.equal(r1.mirrorResult.skipped, false, 'first turn must not be skipped')
-    assert.equal(r2.mirrorResult.skipped, false, 'second turn must not be skipped')
-    assert.equal(events.length, 12, `expected 12 events (2 × 6), got ${events.length}`)
-    const turns = events.filter(e => e.type === 'turn/start').map(e => e.data.turn)
-    assert.deepEqual(turns, [1, 2], 'turn/start sequence must be 1,2 from session.log allocation')
-  })
-})
 
 // ---- S2-1 tests ----
 
@@ -365,161 +263,5 @@ describe('S21: E_INVALID input validation', () => {
   })
 })
 
-describe('S21: seq from bot/turn-result', () => {
-  function makeRegistryWithSeq({ online = true, replyText = 'Node reply', seq = 0 } = {}) {
-    const emitter = new EventEmitter()
-    return {
-      send: (nodeId, type, payload) => {
-        if (!online) return false
-        setImmediate(() => emitter.emit('botTurnResult', {
-          exchangeId: payload.exchangeId, ok: true, text: replyText, seq,
-        }))
-        return true
-      },
-      on: (ev, fn) => emitter.on(ev, fn),
-      off: (ev, fn) => emitter.off(ev, fn),
-    }
-  }
 
-  it('S21-seq-carried: send() returns seq from result frame', async () => {
-    const bot = makeJoinedBot()
-    const registry = makeRegistryWithSeq({ replyText: 'seq reply', seq: 7 })
-    const rt = makeRt(bot, registry)
-    const result = await send({ botId: bot.id, text: 'Hi', rt })
-    assert.equal(result.seq, 7, 'send() must return seq from bot/turn-result')
-  })
 
-  it('S21-seq-wiring: deliverTurn passes result.seq as nodeSeq into mirrorTurn', async () => {
-    const bot = makeJoinedBot()
-    const registry = makeRegistryWithSeq({ replyText: 'wiring test', seq: 7 })
-    const rt = makeRt(bot, registry)
-    const fakeSession = { append: (t, d, o) => { const ev = { type: t, data: d, opts: o }; return ev } }
-
-    const seenKeys = new Set()
-    await deliverTurn({
-      botId: bot.id, text: 'wiring input', rt, session: fakeSession,
-      turn: 1, seenKeys, closedKeys: new Set(), seenSteps: new Set(),
-    })
-
-    // Only true if deliverTurn passes result.seq (7) as nodeSeq to mirrorTurn,
-    // which then adds 'bot-joined-1:7' to seenKeys
-    assert.equal(seenKeys.has('bot-joined-1:7'), true, 'seenKeys must contain botId:seq — proves nodeSeq wiring')
-  })
-
-  it('S21-seq-dedup: mirrorTurn second call with same (botId, seq) skipped by seenKeys', async () => {
-    const bot = makeJoinedBot()
-    const fakeSession = { append: (t, d, o) => { const ev = { type: t, data: d, opts: o }; return ev } }
-
-    const seenKeys = new Set()
-    const seenSteps = new Set()
-
-    // First mirrorTurn call: writes events, adds 'bot-joined-1:3' to seenKeys
-    const r1 = await mirrorTurn(fakeSession, {
-      botId: bot.id, text: 'reply 1', nodeSeq: 3, turn: 1, step: 1,
-      seenKeys, closedKeys: new Set(), seenSteps,
-    })
-    assert.ok(r1.skipped !== true, 'first call should not be skipped')
-    assert.ok(seenKeys.has('bot-joined-1:3'), 'seenKeys must contain botId:seq key after first call')
-
-    // Second call with same (botId, nodeSeq), fresh closedKeys so only seenKeys can catch it
-    const r2 = await mirrorTurn(fakeSession, {
-      botId: bot.id, text: 'reply 2', nodeSeq: 3, turn: 2, step: 2,
-      seenKeys, closedKeys: new Set(), seenSteps: new Set(),
-    })
-    assert.equal(r2.skipped, true, 'second call with same (botId, seq) must be skipped')
-    assert.equal(r2.reason, 'already-written:nodeSeq', 'skipped reason must be already-written:nodeSeq')
-  })
-
-  it('S21-seq-missing-e2e: result frame missing seq → E_REJECTED, mirror no write', async () => {
-    const bot = makeJoinedBot()
-    const emitter = new EventEmitter()
-    const registry = {
-      send: (_, __, payload) => {
-        setImmediate(() => emitter.emit('botTurnResult', {
-          exchangeId: payload.exchangeId, ok: true, text: 'bad frame',
-          // seq intentionally missing
-        }))
-        return true
-      },
-      on: (ev, fn) => emitter.on(ev, fn),
-      off: (ev, fn) => emitter.off(ev, fn),
-    }
-    const rt = makeRt(bot, registry)
-    const events = []
-    const fakeSession = { append: (t, d, o) => { const ev = { type: t, data: d }; events.push(ev); return ev } }
-
-    let caughtErr
-    try {
-      await deliverTurn({
-        botId: bot.id, text: 'e2e test', rt, session: fakeSession,
-        turn: 1, seenKeys: new Set(), closedKeys: new Set(), seenSteps: new Set(),
-      })
-    } catch (err) { caughtErr = err }
-
-    assert.ok(caughtErr instanceof ExecutorError, 'must throw ExecutorError')
-    assert.equal(caughtErr.code, 'E_REJECTED', 'must be E_REJECTED not E_OFFLINE')
-    assert.ok(
-      String(caughtErr.message).includes('seq-missing') || String(caughtErr.detail ?? '').includes('seq-missing'),
-      'error must reference seq-missing, got: ' + caughtErr.message
-    )
-    assert.equal(events.length, 0, 'mirror must not write any events for frame with missing seq')
-  })
-})
-
-import { allocateTurn } from '../src/host/mirror.js'
-
-describe('allocateTurn: turn number allocation from session.log', () => {
-  function makeLog(events) {
-    const log = []
-    const session = {
-      log,
-      append: (type, data) => { const ev = { type, data }; log.push(ev); return ev },
-    }
-    for (const [type, data] of events) session.append(type, data)
-    return session
-  }
-
-  it('S22-turn-allocation: starts at 1, increments correctly from closed turns', () => {
-    // Build a session with 2 complete turns already committed
-    const session = makeLog([
-      ['turn/start', { turn: 1 }], ['turn/end', { turn: 1, reason: { kind: 'completed' } }],
-      ['turn/start', { turn: 2 }], ['turn/end', { turn: 2, reason: { kind: 'completed' } }],
-    ])
-    assert.equal(allocateTurn(session), 3, 'next turn must be 3 after 2 closed turns')
-  })
-
-  it('S22-turn-after-restart: two sequential deliverTurns on same session → turns 1 and 2', async () => {
-    // Knife: change allocateTurn to always return 1 → turns would be [1,1] → deepEqual fails
-    const bot = makeJoinedBot()
-    const registry = makeRegistry({ replyText: 'reply' })
-    const rt = makeRt(bot, registry)
-
-    const log = []
-    const session = {
-      log,
-      append: (type, data, opts) => { const ev = { type, data }; log.push(ev); return ev },
-    }
-
-    await deliverTurn({ botId: bot.id, text: 'msg1', rt, session, seenKeys: new Set(), closedKeys: new Set(), seenSteps: new Set() })
-    await deliverTurn({ botId: bot.id, text: 'msg2', rt, session, seenKeys: new Set(), closedKeys: new Set(), seenSteps: new Set() })
-
-    const turnStarts = log.filter(e => e.type === 'turn/start').map(e => e.data.turn)
-    assert.deepEqual(turnStarts, [1, 2], 'turn numbers must be 1,2 — not 1,1 (restart simulation)')
-  })
-
-  it('S22-turn-dangling: unclosed turn gets closed, new turn is openTurn+1', () => {
-    // Knife: delete dangling-close block → openTurn is not closed → allocateTurn returns wrong number
-    const session = makeLog([
-      ['turn/start', { turn: 1 }], ['turn/end', { turn: 1, reason: { kind: 'completed' } }],
-      ['turn/start', { turn: 2 }],  // NO turn/end — dangling
-    ])
-    const next = allocateTurn(session)
-    // allocateTurn must have appended turn/end for turn 2, then returns 3. The core's marker for a turn
-    // that never ended is `interrupted` (dsh-session TurnEndReasonMap); a bare `aborted` has no cause and
-    // breaks the chat rebuild (test/turn-end-core.test.js).
-    assert.equal(next, 3, 'must close dangling turn 2 and return 3')
-    const lastEvt = session.log[session.log.length - 1]
-    assert.equal(lastEvt.type, 'turn/end', 'dangling turn must be closed')
-    assert.deepEqual(lastEvt.data.reason, { kind: 'interrupted' }, 'dangling turn must be closed with interrupted')
-  })
-})

@@ -40,7 +40,7 @@ test('an image and a 2 MB file cross the real AC frame path and arrive whole', {
 
   // the hub: the frames it would put on the link
   const wire = []
-  const manifest = sendChunks({ send: (nodeId, type, payload) => { wire.push({ type, payload }); return true } }, { nodeId: 'n1', remoteBotId: 'b1', exchangeId: 'ex-1', items: collected.items })
+  const manifest = await sendChunks({ send: (nodeId, type, payload) => { wire.push({ type, payload }); return true } }, { nodeId: 'n1', remoteBotId: 'b1', exchangeId: 'ex-1', items: collected.items })
   wire.push({ type: 'bot/turn', payload: { nodeId: 'n1', remoteBotId: 'b1', exchangeId: 'ex-1', text, attachments: manifest } })
   assert.ok(wire.filter(frame => frame.type === 'bot/attach').length >= 4, 'the 2 MB file is several chunks')
 
@@ -86,7 +86,7 @@ test('the largest message ds-bot lets through (8 attachments, 20 MiB) fits AC\'s
   for (const sizes of [[MAX_TOTAL_BYTES], Array.from({ length: 8 }, () => MAX_TOTAL_BYTES / 8)]) {
     const items = sizes.map((size, index) => { const data = Buffer.alloc(size, index + 1); return { index, kind: 'file', name: `f${index}.bin`, data, sha256: sha(data) } })
     const frames = []
-    const manifest = sendChunks({ send: (_n, _t, payload) => { frames.push(payload); return true } }, { nodeId: 'n1', remoteBotId: 'b1', exchangeId: 'ex', items })
+    const manifest = await sendChunks({ send: (_n, _t, payload) => { frames.push(payload); return true } }, { nodeId: 'n1', remoteBotId: 'b1', exchangeId: 'ex', items })
     assert.ok(frames.every(frame => validateBotAttach(frame).ok), 'AC accepts every chunk')
     const checked = validateBotTurn({ nodeId: 'n1', remoteBotId: 'b1', exchangeId: 'ex', text: '', attachments: manifest })
     assert.equal(checked.ok, true, 'AC accepts the manifest (an empty text is fine beside attachments)')
@@ -98,7 +98,7 @@ test('the largest message ds-bot lets through (8 attachments, 20 MiB) fits AC\'s
   const hubSide = createSession({ role: 'hub', ownPrivB64: hub.privateKeyB64, peerPubB64: node.publicKeyB64, nodePubB64: node.publicKeyB64, hubPubB64: hub.publicKeyB64 })
   const full = Buffer.alloc(CHUNK_BYTES, 255)
   let payload
-  sendChunks({ send: (_n, _t, body) => { payload ??= body; return true } }, { nodeId: 'n1', remoteBotId: 'b1', exchangeId: 'ex', items: [{ index: 0, kind: 'file', name: 'f', data: full, sha256: sha(full) }] })
+  await sendChunks({ send: (_n, _t, body) => { payload ??= body; return true } }, { nodeId: 'n1', remoteBotId: 'b1', exchangeId: 'ex', items: [{ index: 0, kind: 'file', name: 'f', data: full, sha256: sha(full) }] })
   const sealed = encodeFrame({ t: 'bot/attach', id: 'frame-1', d: hubSide.sealFrame('bot/attach', 'frame-1', payload), to: 'n1' })
   assert.ok(Buffer.byteLength(sealed) < MAX_CONTROL_FRAME_BYTES / 2, `a sealed full chunk is ${Buffer.byteLength(sealed)} bytes, limit ${MAX_CONTROL_FRAME_BYTES}`)
 })

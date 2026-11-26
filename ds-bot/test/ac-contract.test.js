@@ -121,9 +121,9 @@ test('bot/create, bot/update, bot/delete, bot/history keep every field', { skip 
 })
 
 // The pairing itself: the real AC's node hello advertises every capability ds-bot reads (NODE_FEATURES), carries its
-// own version, and AC_NEEDED is the version of the AC this ds-bot was tested against. A new ds-bot feature that
+// own version, and AC_NEEDED is the oldest AC that has them. A new ds-bot feature that
 // waits on a capability AC does not advertise (or an AC that stops advertising one) fails here, not on a cluster.
-test('the real AC advertises every capability ds-bot depends on, and AC_NEEDED is the AC it was tested with', { skip }, async () => {
+test('the real AC advertises every capability ds-bot depends on, and AC_NEEDED is not newer than it', { skip }, async () => {
   const protocol = await load('protocol.js')
   const { NODE_FEATURES, AC_NEEDED } = await import('../src/host/node-compat.js')
   const caps = protocol.nodeCaps([])
@@ -132,7 +132,12 @@ test('the real AC advertises every capability ds-bot depends on, and AC_NEEDED i
   assert.equal(hello.ok, true)
   assert.equal(hello.hello.acVersion, AC_NEEDED, 'the hub keeps the version a node reports')
   const { version } = JSON.parse((await import('node:fs')).readFileSync(join(repo, 'package.json'), 'utf8'))
-  assert.equal(version, AC_NEEDED, `AC_NEEDED (${AC_NEEDED}) must be the AC this ds-bot pairs with (the AC repo is at ${version})`)
+  // AC_NEEDED is the oldest AC that carries every capability above, so the AC under test is that one or a later one (the
+  // capability check above is what a later AC must still keep).
+  const parts = text => text.split('.').map(Number)
+  const differing = parts(version).findIndex((n, index) => n !== parts(AC_NEEDED)[index])
+  const atLeast = differing === -1 || parts(version)[differing] > parts(AC_NEEDED)[differing]
+  assert.ok(atLeast, `AC_NEEDED (${AC_NEEDED}) is newer than the AC repo under test (${version}): raise AC in the repo, or lower AC_NEEDED`)
 })
 
 test('the roster identityId survives AC\'s whitelist, and the real locateBot answers with every field locate_bot reads', { skip }, async () => {
