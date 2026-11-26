@@ -136,3 +136,53 @@ test('release twice is one release, and a service without watchRows is left alon
   assert.equal(typeof guardJobRows(bare), 'function')
   assert.equal(bare.watchRows, undefined)
 })
+
+// fork.134 called the original on whatever `this` the wrapper met. Other plugins call `watchRows` on their own scope's
+// proxy of the service (cordis's traceable proxy swaps `this` only for the proxy the method came from), so the host's
+// method got a receiver it refuses ("Illegal invocation" on Windows) and the sidebar and the session header went with it.
+// fork.134 called the original on the receiver of the wrapper's own call. Other plugins (better-sidebar, the session header)
+// call `watchRows` through their own scope's proxy of the service, and a method taken from cordis's traceable proxy swaps
+// `this` only for the proxy it was taken from; the original was then run on a receiver it did not expect and threw
+// "Illegal invocation" on Windows, taking those plugins' views down with it. The original is called on `jobs`, always.
+test('the original is called on the service the guard was given, whatever receiver the wrapper is called on', () => {
+  const receivers = []
+  const jobs = { watchRows() { receivers.push(this); return () => {} } }
+  const restore = guardJobRows(jobs)
+  const foreign = { watchRows: jobs.watchRows }
+  foreign.watchRows('a')()                             // another plugin's proxy of the service as the receiver
+  jobs.watchRows.call(undefined, 'b')()                // the method taken off the service and called bare
+  jobs.watchRows.call({}, 'c')()
+  assert.equal(receivers.length, 3)
+  assert.ok(receivers.every(receiver => receiver === jobs), 'every call of the original was on the service the guard holds')
+  restore()
+})
+
+test('when the original refuses, the guard stands down: the call is answered by DSH\'s own and the function is put back', () => {
+  let calls = 0
+  const jobs = {
+    watchRows(sessionId) {
+      calls += 1
+      if (calls === 1) throw new TypeError('Illegal invocation')
+      return () => { jobs.released = sessionId }
+    },
+  }
+  const first = jobs.watchRows
+  const restore = guardJobRows(jobs)
+  const wrapper = jobs.watchRows
+  assert.notEqual(wrapper, first)
+  const stop = wrapper('s')                       // the original throws once: DSH's own answers this call
+  assert.equal(typeof stop, 'function')
+  assert.equal(jobs.watchRows, first, 'DSH\'s function is back')
+  assert.equal(calls, 2)
+  assert.equal(typeof wrapper('t'), 'function', 'a plugin still holding the wrapper is passed through')
+  restore()
+  assert.equal(jobs.watchRows, first)
+})
+
+test('a service whose original always throws is not made worse: the error is DSH\'s own', () => {
+  const jobs = { watchRows() { throw new TypeError('Illegal invocation') } }
+  const restore = guardJobRows(jobs)
+  assert.throws(() => jobs.watchRows('s'), /Illegal invocation/)
+  assert.throws(() => jobs.watchRows('s'), /Illegal invocation/)
+  restore()
+})

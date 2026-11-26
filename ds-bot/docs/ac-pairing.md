@@ -34,6 +34,7 @@
 | 0.3.10-fork.131 | 0.4.39 起（不需要新的 AC） | 能力共享（`ds-bot-cluster/DESIGN-capability-sharing.md`）：hub 上登记的 skill、MCP、连接器，所有节点上的 Bot 默认可用（单个 Bot 可关）。skill：hub 上建的全部发给节点（不再要求标「团队可复用」，同一个人的机器之间允许绝对路径，密钥一律不行）。MCP 和连接器：hub 为节点单独挂载一份，节点只拿到工具名、描述和参数 schema，调用经 AC 现有的 `team/act`（`cap_call`）转到 hub 执行，命令、地址、密钥都不离开 hub；hub 没连上时调用立即失败，不排队；结果脱敏、截断到 60 KiB，每个 Bot 同时 4 个、每分钟 120 次，hub 记录谁调了什么（不含参数与结果）。目录走可靠通道的 `team/caps`。`save_capability` 新增 `share_with_nodes`。没有新增 AC 帧，节点 AC 不用升级；还没有的：MCP 跑在指定节点上、能力页的共享开关、网页搜索（DSH 自带，不是 ds-bot 的）。主控与节点都要装 |
 | 0.3.10-fork.133 | 0.4.39 起（不需要新的 AC） | 修复历史载入慢、经常加载失败：DSH 0.2.2-rc.5 的任务列表对有任务行的会话每次渲染都重开 `job/list` 流（实测每秒约 2300 次，宿主 CPU 占到 45–60%，请求排队超时）。客户端新增 `jobs-rows-guard`，行流在最后一次释放后再保留 2 秒，循环就转不起来。只改客户端，不动 AC；注意：不含 fork.132（密钥逐个共享），那一版之后要重新编号。只主控需要装（节点没有这个界面） |
 | 0.3.10-fork.134 | 0.4.39 起（不需要新的 AC） | 向离线节点发消息失败时，`executor.js` 的 `dispatchRemote` 不再多抛一个未处理的 Promise 拒绝（调用方本来就拿到 E_OFFLINE）；其余是测试清理（20 条过期或依赖环境的失败），不影响行为。不含 fork.132（密钥逐个共享），那一版之后要重新编号 |
+| 0.3.10-fork.135 | 0.4.39 起（不需要新的 AC） | 修复 fork.133/134 的 `jobs-rows-guard` 在 Windows 上让别的插件（better-sidebar 的侧栏、会话页头的任务按钮）整块崩溃（`TypeError: Illegal invocation`）：守卫现在总是在它拿到的 `jobs` 上调用原方法，不再用调用者的 `this`；原方法一旦抛出意外的错，守卫立即停用、把 DSH 原函数放回去，这次调用由 DSH 自己回答，所以守卫最坏也只是不起作用。主控装 fork.133/134 的，请升到这一版 |
 
 能力位与功能的对应（`src/host/node-compat.js` 的 `NODE_FEATURES`）：
 

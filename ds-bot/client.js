@@ -51667,16 +51667,40 @@ function guardJobRows(jobs, { holdMs = ROWS_HOLD_MS, timers = { setTimeout, clea
   const original = jobs.watchRows;
   const hadOwn = Object.prototype.hasOwnProperty.call(jobs, "watchRows");
   const held = /* @__PURE__ */ new Map();
+  let standingDown = false;
   const stop = (key, entry) => {
     if (held.get(key) === entry) held.delete(key);
     entry.timer = void 0;
-    entry.release();
+    try {
+      entry.release();
+    } catch {
+    }
+  };
+  const restore = () => {
+    try {
+      if (hadOwn) jobs.watchRows = original;
+      else delete jobs.watchRows;
+    } catch {
+    }
+    for (const [key, entry] of held) {
+      timers.clearTimeout(entry.timer);
+      stop(key, entry);
+    }
   };
   jobs.watchRows = function watchRows(sessionId) {
+    if (standingDown) return original.call(jobs, sessionId);
     const key = String(sessionId);
     let entry = held.get(key);
     if (entry === void 0) {
-      entry = { refs: 0, timer: void 0, release: original.call(this ?? jobs, sessionId) };
+      let release;
+      try {
+        release = original.call(jobs, sessionId);
+      } catch {
+        standingDown = true;
+        restore();
+        return jobs.watchRows(sessionId);
+      }
+      entry = { refs: 0, timer: void 0, release };
       held.set(key, entry);
     }
     timers.clearTimeout(entry.timer);
@@ -51695,14 +51719,7 @@ function guardJobRows(jobs, { holdMs = ROWS_HOLD_MS, timers = { setTimeout, clea
       mine.timer?.unref?.();
     };
   };
-  return () => {
-    if (hadOwn) jobs.watchRows = original;
-    else delete jobs.watchRows;
-    for (const [key, entry] of held) {
-      timers.clearTimeout(entry.timer);
-      stop(key, entry);
-    }
-  };
+  return restore;
 }
 
 // src/client/member-status.js
