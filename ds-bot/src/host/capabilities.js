@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { createRequire } from 'node:module'
 import { encodeUrlComponent } from './secrets.js'
 import { own } from './store.js'
 import { sharedSkillProblem } from './skill-share.js'
@@ -318,14 +319,42 @@ export function install(rt) {
     ...(item.items ? { items: [...item.items] } : {}),
   }))
 
+  // What a failure says, for the user and for the nodes: Node's own errors carry a fixed message that says nothing
+  // ("This is caused by either a bug in Node.js ..."), so the code leads and the cause follows.
+  const describeFailure = error => {
+    const parts = [error, error?.cause].filter(Boolean).map(part => `${part.code ? `${part.code}: ` : ''}${String(part?.message ?? part)}`)
+    return rt.redactSecrets(parts.join(': ') || 'Connection failed').slice(0, 300)
+  }
+  // The whole failure for the log: the code and the stack, which the 300 characters above never hold.
+  const logFailure = (what, error) => {
+    const detail = [error, error?.cause].filter(Boolean).map(part => `${part.code ? `${part.code} ` : ''}${part.stack ?? part.message ?? part}`).join('\ncaused by: ')
+    rt.warn?.('ds-bot: %s: %s', what, rt.redactSecrets(detail))
+  }
+  // The MCP client is loaded through DSH's plugin loader. On a Windows hub (issue #7) that import threw Node's
+  // ERR_INTERNAL_ASSERTION for every MCP while `require` of the same package worked, so when the loader fails the client
+  // is taken from `require`, and what the loader said stays in the log. When both fail, both are in the error. A failure is
+  // not kept: the next attempt tries again (how often it is made is the mount's backoff, not this function's).
   async function loadMcpPlugin() {
     if (!pluginPromise) {
       pluginPromise = (async () => {
         const loader = ctx.get?.('loader')
         if (typeof loader?.import !== 'function') throw new Error('This DSH cannot load MCP servers.')
-        const exports = await loader.import(MCP_CLIENT)
-        return loader.unwrapExports?.(exports) ?? exports?.default ?? exports
-      })()
+        try {
+          const exports = await loader.import(MCP_CLIENT)
+          return loader.unwrapExports?.(exports) ?? exports?.default ?? exports
+        } catch (first) {
+          logFailure('the DSH plugin loader could not load the MCP client; trying require', first)
+          try {
+            const exports = (rt.config?.requireMcpClient ?? createRequire(import.meta.url))(MCP_CLIENT)
+            return loader.unwrapExports?.(exports) ?? exports?.default ?? exports
+          } catch (second) {
+            throw Object.assign(new Error(`${MCP_CLIENT} could not be loaded: ${second?.message ?? second}`, { cause: first }), { code: second?.code })
+          }
+        }
+      })().catch((error) => {
+        pluginPromise = undefined
+        throw error
+      })
     }
     return pluginPromise
   }
@@ -439,7 +468,7 @@ export function install(rt) {
     } catch (error) {
       if (agentMounts.get(name) !== mounted) return
       await drop()
-      const message = rt.redactSecrets([error, error?.cause].filter(Boolean).map(part => String(part?.message ?? part)).join(': ') || 'Connection failed').slice(0, 300)
+      const message = describeFailure(error)
       statusSet(bot.id, name, sessionId, { state: 'error', error: message })
     }
   }
@@ -823,8 +852,13 @@ export function install(rt) {
     }
     const key = createHash('sha256').update(JSON.stringify(config)).digest('hex')
     if (existing?.key === key && existing.error === undefined) return false
+    // A mount that failed waits before it is tried again (a changed config does not wait): a pass runs for every roster
+    // push and every node's catalog, and a failed mount that is redone on each of them was 1,620 mounts in two minutes (issue #7).
+    const now = (rt.config?.now ?? Date.now)()
+    if (existing?.key === key && existing.error !== undefined && now < (existing.retryAt ?? 0)) return false
+    const attempts = existing?.key === key ? (existing.attempts ?? 0) + 1 : 1
     await dropHost(item.name)
-    const host = { key, tools: new Map(), error: undefined, fiber: undefined }
+    const host = { key, tools: new Map(), error: undefined, fiber: undefined, attempts, retryAt: 0 }
     hosts.set(item.name, host)
     try {
       const plugin = await loadMcpPlugin()
@@ -833,7 +867,9 @@ export function install(rt) {
       host.fiber = base.plugin(plugin, config)
       await host.fiber.await()
     } catch (error) {
-      host.error = rt.redactSecrets([error, error?.cause].filter(Boolean).map(part => String(part?.message ?? part)).join(': ') || 'Connection failed').slice(0, 300)
+      host.error = describeFailure(error)
+      host.retryAt = now + Math.min(5_000 * 2 ** (attempts - 1), 5 * 60_000)
+      logFailure(`the shared MCP ${item.name} could not be mounted (attempt ${attempts}, next try in ${Math.round((host.retryAt - now) / 1000)} s)`, error)
     }
     return true
   }
