@@ -66,7 +66,7 @@ export async function send({ botId, text, rt, tracker, timeoutMs: timeoutOverrid
 // send() result or throws an ExecutorError; `cancel()` drops the listener.
 function dispatchRemote(args) {
   const prepared = prepareRemote(args)
-  void prepared.send()
+  prepared.send().catch(() => {})   // a refusal cancels the listener, so settle() ends with E_OFFLINE: not also an unhandled one
   return prepared
 }
 
