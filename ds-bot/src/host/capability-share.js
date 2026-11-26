@@ -196,7 +196,7 @@ export async function runCapabilityCall(rt, shadow, act) {
 
 const pullTimes = new WeakMap()
 /** On the hub: answer a node's `secret_sync`: the keys the user shared with the nodes. Returns { ok, text }. */
-export async function runSecretSync(rt, shadow, act) {
+export async function runSecretSync(rt, shadow) {
   const nodeId = shadow.worker?.nodeId
   const times = pullTimes.get(rt) ?? new Map()
   pullTimes.set(rt, times)
