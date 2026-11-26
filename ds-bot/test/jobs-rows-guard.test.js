@@ -157,32 +157,31 @@ test('the original is called on the service the guard was given, whatever receiv
   restore()
 })
 
-test('when the original refuses, the guard stands down: the call is answered by DSH\'s own and the function is put back', () => {
-  let calls = 0
-  const jobs = {
-    watchRows(sessionId) {
-      calls += 1
-      if (calls === 1) throw new TypeError('Illegal invocation')
-      return () => { jobs.released = sessionId }
-    },
+// The defaults must call the browser's own timer functions bare: in a browser `window.setTimeout` refuses any other `this`
+// ("Illegal invocation"), in Node it does not, so only a test that makes Node's globals as strict can see the difference.
+// fork.134 and fork.135 kept `{ setTimeout, clearTimeout }` in an object and called `timers.clearTimeout(...)`.
+test('the default timers call the global setTimeout and clearTimeout bare, as a browser requires', async () => {
+  const strict = (name, real) => function (...args) {
+    if (this !== undefined && this !== globalThis) throw new TypeError(`Illegal invocation: ${name}`)
+    return real.apply(globalThis, args)
   }
-  const first = jobs.watchRows
-  const restore = guardJobRows(jobs)
-  const wrapper = jobs.watchRows
-  assert.notEqual(wrapper, first)
-  const stop = wrapper('s')                       // the original throws once: DSH's own answers this call
-  assert.equal(typeof stop, 'function')
-  assert.equal(jobs.watchRows, first, 'DSH\'s function is back')
-  assert.equal(calls, 2)
-  assert.equal(typeof wrapper('t'), 'function', 'a plugin still holding the wrapper is passed through')
-  restore()
-  assert.equal(jobs.watchRows, first)
-})
-
-test('a service whose original always throws is not made worse: the error is DSH\'s own', () => {
-  const jobs = { watchRows() { throw new TypeError('Illegal invocation') } }
-  const restore = guardJobRows(jobs)
-  assert.throws(() => jobs.watchRows('s'), /Illegal invocation/)
-  assert.throws(() => jobs.watchRows('s'), /Illegal invocation/)
-  restore()
+  const { setTimeout: realSet, clearTimeout: realClear } = globalThis
+  globalThis.setTimeout = strict('setTimeout', realSet)
+  globalThis.clearTimeout = strict('clearTimeout', realClear)
+  try {
+    const root = boot()
+    await settle()
+    const jobs = root.get('jobs')
+    const restore = guardJobRows(jobs, { holdMs: 5 })        // the default timers
+    const first = jobs.watchRows('s')                          // clearTimeout
+    first()                                                    // setTimeout
+    jobs.watchRows('s')()                                      // the next render
+    await new Promise(resolve => realSet(resolve, 30))         // the hold runs out: the stream stops
+    assert.equal(jobs.opens, 1)
+    assert.equal(jobs.closes, 1)
+    restore()
+  } finally {
+    globalThis.setTimeout = realSet
+    globalThis.clearTimeout = realClear
+  }
 })

@@ -10,52 +10,39 @@
 // release. The stop/start pair of a re-render then finds the stream still open, nothing is replaced, nothing renders
 // again, and the cycle has nothing to feed on. A real unmount still stops the stream, `holdMs` later.
 //
-// Two rules from fork.134, which broke every other plugin's use of `jobs` on Windows ("Illegal invocation"):
-//  - The method we wrap came out of cordis's traceable proxy of `jobs`, which swaps a method's `this` for its own shadow
-//    only when it is called on that same proxy. Other plugins call `watchRows` on their own scope's proxy, so the
-//    receiver of OUR wrapper is not the one the original wants: the original is always called on the `jobs` we were given.
-//  - Whatever the original does that we did not expect, the guard stands down: it puts DSH's function back and the call
-//    that met the surprise is answered by DSH's own, so a plugin's job list is never worse off for our being there.
+// Two rules (fork.134 and fork.135 broke the sidebar and the session header's job button with "TypeError: Illegal
+// invocation" in the renderer while every test passed):
+//  - The browser's setTimeout/clearTimeout must be called with `window` (or nothing) as `this`. Kept in a plain object and
+//    called as `timers.clearTimeout(...)` they throw in a browser and work in Node, which is where the tests run. The
+//    defaults are arrow functions that call the globals bare, and a test makes the globals refuse any other `this`.
+//  - The original is called on the `jobs` we were given, not on the receiver of the wrapper's own call.
 export const ROWS_HOLD_MS = 2_000
+
+// The globals called bare, as a browser requires; looked up when a timer is set, not when the module loads.
+const browserTimers = () => ({
+  setTimeout: (callback, ms) => setTimeout(callback, ms),
+  clearTimeout: handle => clearTimeout(handle),
+})
 
 /**
  * Wrap `jobs.watchRows` (DSH's client jobs service). Returns the function that puts the original back and stops every
  * stream still held.
  */
-export function guardJobRows(jobs, { holdMs = ROWS_HOLD_MS, timers = { setTimeout, clearTimeout } } = {}) {
+export function guardJobRows(jobs, { holdMs = ROWS_HOLD_MS, timers = browserTimers() } = {}) {
   if (typeof jobs?.watchRows !== 'function') return () => {}
   const original = jobs.watchRows
   const hadOwn = Object.prototype.hasOwnProperty.call(jobs, 'watchRows')
   const held = new Map()
-  let standingDown = false
   const stop = (key, entry) => {
     if (held.get(key) === entry) held.delete(key)
     entry.timer = undefined
-    try { entry.release() } catch { /* the stream is gone already */ }
-  }
-  const restore = () => {
-    try {
-      if (hadOwn) jobs.watchRows = original
-      else delete jobs.watchRows
-    } catch { /* the service is gone */ }
-    for (const [key, entry] of held) { timers.clearTimeout(entry.timer); stop(key, entry) }
+    entry.release()
   }
   jobs.watchRows = function watchRows(sessionId) {
-    if (standingDown) return original.call(jobs, sessionId)
     const key = String(sessionId)
     let entry = held.get(key)
     if (entry === undefined) {
-      let release
-      try {
-        release = original.call(jobs, sessionId)
-      } catch {
-        // Not what we expected of the original: DSH's own answers this call (and throws what it throws), and from here on
-        // every call is DSH's own.
-        standingDown = true
-        restore()
-        return jobs.watchRows(sessionId)
-      }
-      entry = { refs: 0, timer: undefined, release }
+      entry = { refs: 0, timer: undefined, release: original.call(jobs, sessionId) }
       held.set(key, entry)
     }
     timers.clearTimeout(entry.timer)
@@ -72,5 +59,9 @@ export function guardJobRows(jobs, { holdMs = ROWS_HOLD_MS, timers = { setTimeou
       mine.timer?.unref?.()
     }
   }
-  return restore
+  return () => {
+    if (hadOwn) jobs.watchRows = original
+    else delete jobs.watchRows
+    for (const [key, entry] of held) { timers.clearTimeout(entry.timer); stop(key, entry) }
+  }
 }

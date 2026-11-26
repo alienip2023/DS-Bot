@@ -51730,46 +51730,26 @@ var SETTINGS_SHELL_CSS = `
 
 // src/client/jobs-rows-guard.js
 var ROWS_HOLD_MS = 2e3;
-function guardJobRows(jobs, { holdMs = ROWS_HOLD_MS, timers = { setTimeout, clearTimeout } } = {}) {
+var browserTimers = () => ({
+  setTimeout: (callback, ms) => setTimeout(callback, ms),
+  clearTimeout: (handle) => clearTimeout(handle)
+});
+function guardJobRows(jobs, { holdMs = ROWS_HOLD_MS, timers = browserTimers() } = {}) {
   if (typeof jobs?.watchRows !== "function") return () => {
   };
   const original = jobs.watchRows;
   const hadOwn = Object.prototype.hasOwnProperty.call(jobs, "watchRows");
   const held = /* @__PURE__ */ new Map();
-  let standingDown = false;
   const stop = (key, entry) => {
     if (held.get(key) === entry) held.delete(key);
     entry.timer = void 0;
-    try {
-      entry.release();
-    } catch {
-    }
-  };
-  const restore = () => {
-    try {
-      if (hadOwn) jobs.watchRows = original;
-      else delete jobs.watchRows;
-    } catch {
-    }
-    for (const [key, entry] of held) {
-      timers.clearTimeout(entry.timer);
-      stop(key, entry);
-    }
+    entry.release();
   };
   jobs.watchRows = function watchRows(sessionId) {
-    if (standingDown) return original.call(jobs, sessionId);
     const key = String(sessionId);
     let entry = held.get(key);
     if (entry === void 0) {
-      let release;
-      try {
-        release = original.call(jobs, sessionId);
-      } catch {
-        standingDown = true;
-        restore();
-        return jobs.watchRows(sessionId);
-      }
-      entry = { refs: 0, timer: void 0, release };
+      entry = { refs: 0, timer: void 0, release: original.call(jobs, sessionId) };
       held.set(key, entry);
     }
     timers.clearTimeout(entry.timer);
@@ -51788,7 +51768,14 @@ function guardJobRows(jobs, { holdMs = ROWS_HOLD_MS, timers = { setTimeout, clea
       mine.timer?.unref?.();
     };
   };
-  return restore;
+  return () => {
+    if (hadOwn) jobs.watchRows = original;
+    else delete jobs.watchRows;
+    for (const [key, entry] of held) {
+      timers.clearTimeout(entry.timer);
+      stop(key, entry);
+    }
+  };
 }
 
 // src/client/member-status.js
