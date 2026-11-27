@@ -705,7 +705,7 @@ export function install(rt) {
   // is installed before the ones that load it.
   ctx?.effect?.(() => {
     const timer = setTimeout(() => {
-      void rt.load()
+      void (typeof rt.adoptLiveWork === 'function' ? rt.adoptLiveWork() : rt.load())
         .then(() => {
           reconcileLostWorks()
           rt.pruneOrphanRequests?.()
@@ -790,6 +790,31 @@ export function install(rt) {
     return lines.join('; ')
   }
 
+  // All works whose Bot is currently paused (needs_input or no_progress), projected from
+  // state.works so the inbox can surface them without a coordDb.
+  function pausedWorksView() {
+    const out = []
+    for (const [id, lw] of Object.entries(state.works ?? {})) {
+      if (!lw || typeof lw !== 'object' || lw.state !== 'paused') continue
+      const detail = lw.paused ?? {}
+      out.push({
+        id,
+        ref: lw.ref ?? null,
+        from: lw.from ?? null,
+        fromName: lw.from ? (nameOf(lw.from) ?? null) : null,
+        to: lw.to ?? null,
+        toName: lw.to ? (nameOf(lw.to) ?? null) : null,
+        reason: detail.reason ?? 'paused',
+        kind: detail.kind ?? 'no_progress',
+        goal: lw.goal ?? headOf(detail.message ?? detail.text ?? '', 200),
+        ...(detail.question ? { question: headOf(detail.question, 200) } : {}),
+        ...(detail.bounces !== undefined ? { bounces: detail.bounces } : {}),
+        at: typeof detail.at === 'number' ? detail.at : (lw.at ?? 0),
+      })
+    }
+    return out.sort((a, b) => a.at - b.at)
+  }
+
   // P3: When a Bot enters blocked state, immediately notify any Bot waiting on its work.
   // The blocking code is safe to share (it's an error category, not credentials).
   function notifyBlockedDelegators(botId, code) {
@@ -807,7 +832,7 @@ export function install(rt) {
     stopHandedOn, stopWaitingIn, isStoppedWork, chainOf, depthAfter, takenWork: taken, lateWork, answerMissed,
     ownsWork: owns, waitsWork: waits, holdWork: hold, workAsker: askedBy,
     workImOrigin, mergeWorkImOrigin, rememberImReplyOrigin, imReplyOrigin,
-    answerText, upstreamOf, sameWork, forgetBotWork: forgetBot, statusOf, waitingView,
+    answerText, upstreamOf, sameWork, forgetBotWork: forgetBot, statusOf, waitingView, pausedWorksView,
     settleSubWork, subWorkRun, nameSubWork, abandonWork, abandonedWork: takeAbandoned, notifyBlockedDelegators,
   })
 }
