@@ -1,6 +1,6 @@
 # Gateway Slice 0 Probe — Tailnet
 
-**Date**: 2026-11-23T19:54:18.800Z
+**Date**: 2026-11-27T18:01:36.695Z
 **Method**: This test uses tailnet plain TCP (100.64.x.x), NOT ssh2 reverse tunnel.
 **Hub IP**: 100.64.0.3 (Mac tailscale0)
 **Tokens**: 200 × 20ms = ~4000ms stream, n=10 median
@@ -10,20 +10,20 @@
 | Metric | Local Baseline | Tailnet (local) | Remote | Gate | Result |
 |--------|---------------|-----------------|------|------|--------|
 | TTFT (ms) | 0 | 0 | — | ≤ baseline + 300ms | ✅ PASS |
-| 200-token total (ms) | 4178 | 4178 | — | ≤ baseline × 1.5 | ✅ PASS |
-| Abort propagation (ms) | — | 3 | — | ≤ 1000ms | ✅ PASS |
+| 200-token total (ms) | 4324 | 4346 | — | ≤ baseline × 1.5 | ✅ PASS |
+| Abort propagation (ms) | — | 4 | — | ≤ 1000ms | ✅ PASS |
 | Token count | 200 | 200 | — | === 200 | ✅ PASS |
-| Connection est. (ms) | — | 2 | — | — | — |
+| Connection est. (ms) | — | 3 | — | — | — |
 
 ## Raw data (sorted)
 
-- Local TTFT: [0, 0, 0, 0, 0, 0, 1, 1, 1, 1]
-- Local total: [4123, 4129, 4157, 4168, 4178, 4178, 4181, 4187, 4189, 4190]
+- Local TTFT: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+- Local total: [4270, 4282, 4314, 4320, 4321, 4324, 4326, 4327, 4327, 4347]
 - Local tokens: [200, 200, 200, 200, 200, 200, 200, 200, 200, 200]
 - Tailnet TTFT: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-- Tailnet total: [4166, 4169, 4169, 4171, 4173, 4178, 4179, 4182, 4182, 4184]
+- Tailnet total: [4340, 4343, 4344, 4344, 4346, 4346, 4348, 4353, 4354, 4355]
 - Tailnet tokens: [200, 200, 200, 200, 200, 200, 200, 200, 200, 200]
-- Conn times: [1, 2, 2, 2, 2, 2, 2, 2, 2, 3]
+- Conn times: [2, 3, 3, 3, 3, 3, 4, 4, 4, 5]
 
 ## Remote verification
 

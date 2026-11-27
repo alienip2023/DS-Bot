@@ -110,7 +110,8 @@ test('a quiet node Bot row names where it runs', () => {
 
 test('a node Bot waiting for the user shows the wait line, like a hub Bot, not the machine', () => {
   const learning = { 'joined:n1:rb1': [{ id: 'p1', kind: 'skill', name: 'release-notes' }] }
-  const line = lineOf(rowOf(renderSidebar({ bots: [node()], rosterExtra: { learning } })))
+  const inbox = { items: [{ group: 'suggest', kind: 'learning', ref: 'p1', botId: 'joined:n1:rb1' }], count: 1 }
+  const line = lineOf(rowOf(renderSidebar({ bots: [node()], rosterExtra: { learning, inbox } })))
   assert.equal(textOf(line), 'Waiting for your approval')
   assert.ok(classes(line).includes('bt-row-preview-wait'))
 })
@@ -137,5 +138,6 @@ test('an offline node, or one that needs an update, rides on whichever line the 
   const offline = node({ worker: { nodeId: 'n1', remoteBotId: 'rb1', hostname: 'desk-1', home: 'remote', online: false } })
   assert.equal(textOf(lineOf(rowOf(renderSidebar({ bots: [offline] })))), 'Running on desk-1 · 离线')
   const learning = { 'joined:n1:rb1': [{ id: 'p1', kind: 'skill', name: 'x' }] }
-  assert.equal(textOf(lineOf(rowOf(renderSidebar({ bots: [offline], rosterExtra: { learning } })))), 'Waiting for your approval · 离线')
+  const inbox = { items: [{ group: 'suggest', kind: 'learning', ref: 'p1', botId: 'joined:n1:rb1' }], count: 1 }
+  assert.equal(textOf(lineOf(rowOf(renderSidebar({ bots: [offline], rosterExtra: { learning, inbox } })))), 'Waiting for your approval · 离线')
 })

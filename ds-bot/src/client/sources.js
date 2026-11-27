@@ -21,6 +21,7 @@ export const EMPTY_ROSTER = { revision: -1, mainBotId: null, homeBotId: null, ma
 // Where the interface goes home to: the Main Bot, or on a node (no Main Bot) its first Bot.
 export const homeOf = roster => roster?.homeBotId ?? roster?.mainBotId ?? null
 export const isMainOf = (roster, id) => id !== undefined && (roster.mainBotIds ?? []).includes(id)
+export const sectionCollapsed = (section, sectionFolds) => sectionFolds?.[section.id] ?? section.collapsed
 
 // A Bot's chat is a chain of Sessions ("parts"): the Bot id is its first part's id
 // and `sessionId` its current one. Every part id finds the Bot; Session state

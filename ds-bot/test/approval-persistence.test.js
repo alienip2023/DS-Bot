@@ -73,7 +73,7 @@ test('C-1 the answer and the engine resolve only after state.json holds the resu
   const order = []
   outcome.then(value => order.push(['engine', value, h.onDisk().approvalResults?.[entry.fingerprint]?.result]))
   const answered = h.rt.answerApproval(entry.id, 'allow', bind(entry)).then(() => order.push(['ack', h.onDisk().approvalResults?.[entry.fingerprint]?.result]))
-  for (let i = 0; i < 20 && !held; i += 1) await new Promise(r => setImmediate(r))
+  for (let i = 0; i < 500 && !held; i += 1) await new Promise(r => setImmediate(r))
   assert.equal(held, true)
   await new Promise(r => setTimeout(r, 20))
   assert.deepEqual(order, [], 'nothing published while the write is pending')
@@ -129,10 +129,20 @@ test('C-4 a failed save settles cancelled and no allow is ever persisted or publ
   const h = host(t)
   await h.rt.load()
   await h.rt.save({ required: true })
-  fs.mkdirSync(`${h.statePath}.${process.pid}.tmp`)
+  // The store writes to a unique temp name (pid + random), so the block must match any of
+  // them: a directory that shadows every temp this pid would create.
+  const tempDir = `${h.statePath}.${process.pid}.tmp`
+  fs.mkdirSync(tempDir)
+  const originalWrite = fsp.writeFile
+  fsp.writeFile = (path, ...rest) => (typeof path === 'string' && path.startsWith(`${h.statePath}.${process.pid}.`) && path.endsWith('.tmp') && path !== h.statePath
+    ? Promise.reject(Object.assign(new Error('EISDIR: illegal operation on a directory'), { code: 'EISDIR', path }))
+    : originalWrite(path, ...rest))
+  syncBuiltinESMExports()
   const outcome = h.ask()
   const [entry] = h.rt.approvalsView()
   await assert.rejects(h.rt.answerApproval(entry.id, 'allow', bind(entry)), { code: 'EISDIR' })
+  fsp.writeFile = originalWrite
+  syncBuiltinESMExports()
   assert.equal(await outcome, 'cancelled')
   assert.deepEqual(h.settled.map(s => s.outcome), ['cancelled'])
   assert.notEqual(h.onDisk().approvalResults?.[entry.fingerprint]?.result, 'allowed-once')

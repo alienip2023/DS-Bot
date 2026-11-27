@@ -25,7 +25,11 @@ const expand = (node) => {
   if (node === null || node === undefined || node === false || node === true) return node
   if (Array.isArray(node)) return node.map(expand)
   if (typeof node !== 'object') return node
-  if (typeof node.type === 'function') return expand(node.type(node.props))
+  if (typeof node.type === 'function') {
+    const result = node.type(node.props)
+    if (result === null || result === undefined) return result
+    return expand(result)
+  }
   return { ...node, props: { ...node.props, children: expand(node.props?.children) } }
 }
 const rerender = () => { idx = 0; concrete = expand(module.exports.CreateBot(props)) }
@@ -33,7 +37,12 @@ const react = {
   createElement: (type, p, ...children) => ({ type, props: { ...p, children } }),
   Fragment: 'fragment',
   useCallback: fn => fn,
+  useMemo: make => make(),
+  useId: () => 'cid',
+  useSyncExternalStore: (_sub, get) => get(),
   useEffect() {}, useLayoutEffect() {},
+  useContext: ctx => ctx?._value,
+  createContext: (val) => { const ctx = { _value: val, Provider: ({ value, children }) => { ctx._value = value; return children } }; return ctx },
   useState: (init) => {
     const i = idx++
     if (!(i in slots)) slots[i] = typeof init === 'function' ? init() : init
@@ -42,7 +51,7 @@ const react = {
   useRef: (current) => {
     const i = idx++
     if (!(i in slots)) slots[i] = { current }
-    return slots[i]
+    return slots[i] ?? { current }
   },
 }
 const dom = new JSDOM('<!doctype html><body></body>')
@@ -74,9 +83,9 @@ const collect = (match) => {
   return out
 }
 const button = text => collect(n => n.type === 'button' && flatten(n).join('') === text)[0]
-const render = (roster) => {
+const render = (roster, extra = {}) => {
   slots.length = 0
-  props = { roster: { bots: [], rooms: [], prefs: {}, ...roster }, actions: {}, onBack() {}, onCreated() {} }
+  props = { roster: { bots: [], rooms: [], prefs: {}, ...roster }, actions: {}, onBack() {}, onCreated() {}, ...extra }
   rerender()
 }
 
@@ -85,9 +94,9 @@ const MODELS = [
   { ref: 'local-codex-cli/default', provider: 'local-codex-cli', id: 'default', name: 'CLI default', providerName: 'Codex CLI' },
 ]
 
-test('the form opens on DS Bot models and can create at once', () => {
+test('the form opens on Built-in engine and can create at once', () => {
   render({ models: MODELS })
-  assert.equal(button('DS Bot model').props['aria-pressed'], true)
+  assert.equal(button('Built-in engine').props['aria-pressed'], true)
   assert.equal(button('Local agent').props['aria-pressed'], false)
   assert.equal(button('Create').props.disabled, false)
 })
@@ -103,11 +112,15 @@ test('a name another Bot has blocks Create on both sides', () => {
 
 test('on Local agent, Create waits for a CLI', () => {
   render({ models: MODELS })
+  const presetPickers = () => collect(n => String(n.props?.className ?? '').includes('bt-preset-trigger'))
+  assert.equal(presetPickers().length, 1)
   button('Local agent').props.onClick()
+  assert.equal(presetPickers().length, 0)
   assert.equal(button('Local agent').props['aria-pressed'], true)
   assert.match(flatten(concrete).join(' '), /Looking for agent CLIs/)
   assert.equal(button('Create').props.disabled, true)
-  button('DS Bot model').props.onClick()
+  button('Built-in engine').props.onClick()
+  assert.equal(presetPickers().length, 1)
   assert.equal(button('Create').props.disabled, false)
 })
 
@@ -124,7 +137,7 @@ test('switching to a node moves the model onto that node\'s default', () => {
   const machine = collect(n => n.type === 'select' && n.props['aria-label'] === 'Machine')[0]
   // The node list lives in state; set it through the setter the effect uses.
   // remoteNodes is the 18th useState (index 17); the harness numbers slots by hook order.
-  slots[17] = [
+  slots[20] = [
     { nodeId: 'n1', hostname: 'box', defaultModel: 'node/beta', models: [{ ref: 'node/alpha' }, { ref: 'node/beta' }] },
   ]
   machine.props.onChange({ target: { value: 'n1' } })
@@ -142,7 +155,7 @@ test('switching back to this machine restores a hub model', () => {
   render({ models: MODELS, prefs: { defaultBotModel: 'ds/flash' } })
   const calls = []
   props.actions = { createBot: (payload) => { calls.push(payload); return Promise.resolve({ id: 'b1' }) } }
-  slots[17] = [
+  slots[20] = [
     { nodeId: 'n1', hostname: 'box', defaultModel: 'node/beta', models: [{ ref: 'node/alpha' }, { ref: 'node/beta' }] },
   ]
   const machine = collect(n => n.type === 'select' && n.props['aria-label'] === 'Machine')[0]
@@ -160,7 +173,7 @@ test('a node with no default keeps the current model', () => {
   render({ models: MODELS, prefs: { defaultBotModel: 'ds/flash' } })
   const calls = []
   props.actions = { createBot: (payload) => { calls.push(payload); return Promise.resolve({ id: 'b1' }) } }
-  slots[17] = [{ nodeId: 'n3', hostname: 'plain', defaultModel: null, models: [{ ref: 'node/alpha' }] }]
+  slots[20] = [{ nodeId: 'n3', hostname: 'plain', defaultModel: null, models: [{ ref: 'node/alpha' }] }]
   const machine = collect(n => n.type === 'select' && n.props['aria-label'] === 'Machine')[0]
   machine.props.onChange({ target: { value: 'n3' } })
   button('Create').props.onClick()
@@ -170,9 +183,16 @@ test('a node with no default keeps the current model', () => {
 
 test('a node with an empty catalog disables Create and says so', () => {
   render({ models: MODELS })
-  slots[17] = [{ nodeId: 'n2', hostname: 'empty', models: [] }]
+  slots[20] = [{ nodeId: 'n2', hostname: 'empty', models: [] }]
   const machine = collect(n => n.type === 'select' && n.props['aria-label'] === 'Machine')[0]
   machine.props.onChange({ target: { value: 'n2' } })
   assert.equal(button('Create').props.disabled, true)
   assert.match(flatten(concrete).join(' '), /model catalog has not synced yet/)
+})
+
+test('inline Settings subpage does not autoFocus Name below the avatar picker', () => {
+  render({ models: MODELS }, { inline: true })
+  assert.equal(collect(n => n.type === 'input' && n.props['aria-label'] === 'Name')[0].props.autoFocus, false)
+  render({ models: MODELS }, { inline: false })
+  assert.equal(collect(n => n.type === 'input' && n.props['aria-label'] === 'Name')[0].props.autoFocus, true)
 })

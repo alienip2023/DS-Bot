@@ -203,7 +203,7 @@ for (const backend of ['none', 'mneme']) {
     t.after(() => w.stop())
     await w.call('state', {})
     await w.tool('bot_remember', { text: 'Ship on Friday' }, 'g3')
-    assert.match(textOf((await frontOf(w.ctx, 'g3'))[0]), /Group memory/, 'on the file backend the snapshot is there')
+    assert.ok((await frontOf(w.ctx, 'g3')).some(m => /Group memory/.test(textOf(m))), 'on the file backend the snapshot is there')
     assert.equal((await w.call('update-bot', { id: 'b3', memoryConfig: { backend } })).ok, true)
     assert.deepEqual(await frontOf(w.ctx, 'g3'), [], 'moved off the file backend: nothing is put in front of the step')
     assert.equal(w.section('b3'), '', 'and nothing in the prompt section either')

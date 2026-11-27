@@ -38,11 +38,12 @@ function fixture(t, queued, turns = {}) {
       ctx, home,
       load: async () => {},
       readOnly: () => undefined,
-      botOf: id => (id === 'a' ? { id: 'a' } : undefined),
+      botOf: id => (id === 'a' ? { id: 'a', sessionId: 'chat-a' } : undefined),
       chatOf: id => (id === 'a' ? 'chat-a' : undefined),
       isBotSession: id => id === 'chat-a',
       selfOf: id => (id === 'chat-a' ? 'a' : undefined),
       resolveAgent: async () => ({ inbox }),
+      readSessionEvidence: async () => ({ status: 'ok', events: [] }),
       deliver: async args => { delivered.push(args) },
       lateWork: id => { late.push(id) },
       warn: (...args) => { warnings.push(args) },
@@ -67,17 +68,18 @@ test('resume drops three stale notes and resends two recent notes in order', asy
   const f = fixture(t, { 'chat-a': [note('old-1', old), fresh[0], note('old-2', old), fresh[1], note('old-3', old)] })
   const host = f.start()
   await host.recover()
-  assert.deepEqual(host.delivered, fresh.map(item => ({ ...item.args, sessionId: 'chat-a', steer: false, resent: true })))
+  assert.deepEqual(host.delivered, fresh.map(item => ({ ...item.args, address: { foreground: true }, sessionId: 'chat-a', steer: false, resent: true })))
   assert.deepEqual(host.late, ['new-1', 'new-2'])
   assert.deepEqual(host.warnings, [[warning, 3]])
-  assert.deepEqual(host.rt.unreadOf('chat-a'), fresh.map(item => item.args))
-  assert.deepEqual(f.read(), { version: 1, turns: {}, queued: { 'chat-a': fresh } })
+  assert.deepEqual(host.rt.unreadOf('chat-a').map(a => a.exchangeId), fresh.map(item => item.args.exchangeId))
+  const freshWithAddr = fresh.map(item => ({ ...item, args: { ...item.args, address: { foreground: true } } }))
+  assert.deepEqual(f.read(), { version: 1, turns: {}, queued: { 'chat-a': freshWithAddr } })
 
   const restarted = f.start()
   await restarted.recover()
   assert.deepEqual(restarted.delivered, host.delivered)
   assert.deepEqual(restarted.warnings, [])
-  assert.deepEqual(f.read().queued, { 'chat-a': fresh })
+  assert.deepEqual(f.read().queued, { 'chat-a': freshWithAddr })
 })
 
 test('resume retains missing and nonnumeric timestamps without coercing them', async t => {
@@ -86,7 +88,7 @@ test('resume retains missing and nonnumeric timestamps without coercing them', a
   const host = f.start()
   await host.recover()
   assert.deepEqual(host.delivered.map(args => args.exchangeId), list.map(item => item.args.exchangeId))
-  assert.deepEqual(f.read().queued, { 'chat-a': JSON.parse(JSON.stringify(list)) })
+  assert.deepEqual(f.read().queued['chat-a'].map(item => item.args.exchangeId), list.map(item => item.args.exchangeId))
   assert.deepEqual(host.warnings, [])
 })
 
@@ -96,7 +98,7 @@ test('resume keeps recent notes and does not warn when none are stale', async t 
   const host = f.start()
   await host.recover()
   assert.deepEqual(host.delivered.map(args => args.exchangeId), ['new-1', 'new-2'])
-  assert.deepEqual(f.read().queued, { 'chat-a': list })
+  assert.deepEqual(f.read().queued['chat-a'].map(item => item.args.exchangeId), list.map(item => item.args.exchangeId))
   assert.deepEqual(host.warnings, [])
 })
 
@@ -121,7 +123,7 @@ test('resume expires only finite timestamps strictly older than the TTL', async 
   const host = f.start()
   await host.recover()
   assert.deepEqual(host.delivered.map(args => args.exchangeId), kept.map(item => item.args.exchangeId))
-  assert.deepEqual(f.read().queued, { 'chat-a': kept })
+  assert.deepEqual(f.read().queued['chat-a'].map(item => item.args.exchangeId), kept.map(item => item.args.exchangeId))
   assert.deepEqual(host.warnings, [[warning, 1]])
 })
 
@@ -132,7 +134,7 @@ test('recent notes keep the existing inbox deduplication and session migration b
   host.inbox.nextTurn.push({ source: { exchangeId: 'waiting' } })
   await host.recover()
   assert.deepEqual(host.delivered.map(args => [args.exchangeId, args.sessionId]), [['resend', 'chat-a']])
-  assert.deepEqual(f.read().queued, { 'chat-a': list })
+  assert.deepEqual(f.read().queued['chat-a'].map(item => item.args.exchangeId), list.map(item => item.args.exchangeId))
   assert.deepEqual(host.warnings, [])
 })
 

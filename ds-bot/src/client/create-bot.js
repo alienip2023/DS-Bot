@@ -7,6 +7,8 @@ import { DEFAULT_SHAPES, DEFAULT_COLORS } from './characters.js'
 import { ChevronLeftIcon, CloseIcon } from './icons.js'
 import { useEscape } from './overlay-hooks.js'
 import { createPayload, freshBotName, startModel } from './bot-draft.js'
+import { AgentPresetMenu, useAgentPresets } from './agent-preset-menu.js'
+import { presetState } from './agent-preset.js'
 import { ModelMenu, useAgentModels } from './model-menu.js'
 import { CliList, ReadingModels, RunModeSwitch, useLocalAgents } from './agent-cards.js'
 import { agentAvatar, modelsFor, routeOf } from './agent-routes.js'
@@ -39,6 +41,8 @@ export function CreateBot({ roster, actions, start, brief = '', onBack, canGoBac
   const [hubUrl, setHubUrl] = useState('')
   const [remotePort, setRemotePort] = useState('19387')
   const [workerToken, setWorkerToken] = useState('')
+  const [agentPreset, setAgentPreset] = useState(null)
+  const { presets, error: presetError, refresh: refreshPresets } = useAgentPresets(actions)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   // Remote node selection: '' = this machine, a nodeId = create on that node
@@ -48,7 +52,6 @@ export function CreateBot({ roster, actions, start, brief = '', onBack, canGoBac
   const [templates, setTemplates] = useState([])
   const templatesLoaded = useRef(false)
   const fileRef = useRef(null)
-  const frame = useRef(null)
   // When a remote node is selected, skip the worker-bot form fields entirely.
   const isRemoteNode = targetNodeId !== ''
   // A local agent is a CLI on THIS machine: not for a Bot created on a node, nor for a Worker Bot.
@@ -58,8 +61,6 @@ export function CreateBot({ roster, actions, start, brief = '', onBack, canGoBac
   const [reading, readModels] = useAgentModels(actions)
   const chosen = local ? agentModel : model
   useEscape(onBack)
-  // Inside Settings the form opens below other sections, so it scrolls itself into view.
-  useEffect(() => { if (inline) frame.current?.scrollIntoView({ block: 'start', behavior: 'smooth' }) }, [])
   // Fetch online nodes so the user can pick a machine.
   useEffect(() => {
     let cancelled = false
@@ -102,7 +103,7 @@ export function CreateBot({ roster, actions, start, brief = '', onBack, canGoBac
       const extra = botType === 'remote-worker'
         ? { type: 'remote-worker', worker: { hubUrl: hubUrl.trim() || undefined, remotePort: remotePort ? Number(remotePort) : undefined, token: workerToken.trim() || undefined } }
         : {}
-      const bot = await actions.createBot({ ...createPayload({ name: finalName, look, image, model: chosen, effort: local ? undefined : effort, brief, ownLook, sectionId: start?.sectionId }), ...(role.trim() ? { role: role.trim() } : {}), ...(instructions.trim() ? { instructions: instructions.trim() } : {}), memoryConfig: { backend: memoryBackend }, ...extra })
+      const bot = await actions.createBot({ ...createPayload({ name: finalName, look, image, model: chosen, effort: local ? undefined : effort, brief, agentPreset: local ? undefined : agentPreset, ownLook, sectionId: start?.sectionId }), ...(role.trim() ? { role: role.trim() } : {}), ...(instructions.trim() ? { instructions: instructions.trim() } : {}), memoryConfig: { backend: memoryBackend }, ...extra })
       onCreated(bot)
     } catch (failure) {
       setError(failureText(failure))
@@ -206,6 +207,14 @@ export function CreateBot({ roster, actions, start, brief = '', onBack, canGoBac
         : (isRemoteNode ? nodeRoster.models : modelsFor(roster.models)).length > 0
           ? t('Pick a model here, or the Bot asks for one in its chat.')
           : t('Add a provider and a model in DeepSeek Harness first, or pick one in the Bot\'s chat later.'))) : null,
+    !local && !isRemoteNode ? h('div', { className: 'bt-field' },
+      h('span', { className: 'bt-field-label' }, t('Agent preset')),
+      h(AgentPresetMenu, { value: agentPreset, presets, error: presetError, onPick: setAgentPreset, onRefresh: refreshPresets, wide: true }),
+      h('span', { className: presetError ? 'bt-note bt-danger' : 'bt-note' }, presetError
+        ? t('The preset list could not be loaded.')
+        : agentPreset
+          ? t('The Bot runs on the {name} agent preset.', { name: presetState(agentPreset, presets).name })
+          : t('The Bot runs on the default agent preset.'))) : null,
     h('div', { className: 'bt-field' },
       h('span', { className: 'bt-field-label' }, t('Machine')),
       h('select', {
@@ -279,7 +288,7 @@ export function CreateBot({ roster, actions, start, brief = '', onBack, canGoBac
     h('div', { className: 'bt-create-foot' },
       h('button', { type: 'button', className: 'bt-soft', onClick: onBack }, canGoBack ? t('Back') : t('Cancel')),
       h('button', { type: 'button', className: 'bt-send bt-create-go', disabled: blocked, onClick: () => void create() }, busy ? t('Creating…') : t('Create'))))
-  if (inline) return h('div', { ref: frame, className: 'bt-create-inline', role: 'group', 'aria-label': t('Create Bot') }, card)
+  if (inline) return h('div', { className: 'bt-create-inline', role: 'group', 'aria-label': t('Create Bot') }, card)
   return h('div', { className: 'bt-create', role: 'dialog', 'aria-label': t('Create Bot') },
     h('div', { className: 'bt-create-head' },
       canGoBack ? h('button', { type: 'button', className: 'bt-icon-btn', 'aria-label': t('Back to new chat'), onClick: onBack }, h(ChevronLeftIcon)) : h('span', { className: 'bt-create-gap' }),

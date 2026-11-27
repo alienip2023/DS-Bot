@@ -8,7 +8,7 @@ export const EXTRA_COLORS = ['charcoal', 'graphite', 'rose', 'sky', 'tangerine',
 // Renamed color ids, so a Bot saved with an old one keeps its color (LEGACY: old id → new id).
 export const LEGACY_COLORS = { kimi: 'charcoal', zai: 'graphite', minimax: 'rose', stepfun: 'sky', mimo: 'tangerine', qwen: 'cobalt' }
 // Renamed theme ids, so a saved choice keeps its look (LEGACY: old id → new id).
-export const LEGACY_THEMES = { grok: 'mono' }
+export const LEGACY_THEMES = { grok: 'mono', celadon: 'fei' }
 
 // Threads: one Bot can keep several saved conversations (docs/thread-model.md). The team
 // file calls the schema version that introduced `state.threads` 2. A Bot's default Main
@@ -139,6 +139,26 @@ export const USER_UI_TOOLS = new Set([
   'mail_send', 'browser_handoff', 'computer_handoff', 'present_file',
 ])
 
+// Short wrap-up / acknowledgement / standby texts used to detect ACK-of-ACK ping-pong
+// immediately (on bounce #1) while allowing substantive multi-step pure-LLM work.
+// Uses two flat, non-nested O(n) scans to guarantee zero catastrophic backtracking.
+const ACK_CORE_TOKEN = /(?:收到|好的|好|明白|明白了|了解|了解了|知道了|没问题|谢谢|多谢|感谢|辛苦了|辛苦|收工|待命|完毕了|完毕|完|静默|无待办|没有待办|不用再回|不用回|无需回复|已知悉|\b(?:okay|ok|got\s+it|roger|acknowledged|ack|noted|thank\s+you|thanks|done|all\s+set|standing\s+by|standby|no\s+action|no\s+reply|wrapped\s+up|good\s+to\s+go)\b)/gi
+const ACK_FILLER_TOKEN = /(?:我也|我已|我|这边|这里|一切|全部|继续|没有|不用|无需|待办|嗯|行|已|先|就|都|[，,。.!！、；;：:~～\s]+)/gi
+export const isAckLikeText = text => {
+  const trimmed = String(text ?? '').trim()
+  if (trimmed === '' || trimmed.length > 140) return false
+  if (isSilentTurnText(trimmed)) return true
+  ACK_CORE_TOKEN.lastIndex = 0
+  if (!ACK_CORE_TOKEN.test(trimmed)) return false
+  ACK_CORE_TOKEN.lastIndex = 0
+  const stripped = trimmed.replace(ACK_CORE_TOKEN, ' ').replace(ACK_FILLER_TOKEN, '')
+  return stripped === ''
+}
+
+// Max ask_back clarification rounds on one delegated work before pausing for the user.
+export const WORK_ASK_BACK_LIMIT = 2
+// Idle/rework pair loop entries expire after this much inactivity between two Bots.
+export const PAIR_LOOP_TTL_MS = 10 * 60_000
 // Consecutive automatic admin wakes with no goal progress before the goal waits
 // for the user instead of waking the admin again.
 export const GOAL_IDLE_NUDGES = 2

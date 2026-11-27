@@ -59,6 +59,14 @@ export function install(rt) {
   const keptName = file => (typeof file === 'string' && /^[A-Za-z0-9_-]+\.txt$/.test(file) ? file : undefined)
   const writes = () => rt.readOnly?.() === undefined
   let savedWrites = 0
+  let startupSweepDone = typeof ctx?.effect !== 'function'
+  // Files written by this process before the one-shot startup orphan sweep finishes
+  // belong to live dropResults() bookkeeping, not to a prior crashed host.
+  const createdBeforeStartupSweep = new Set()
+  const finishStartupSweep = () => {
+    startupSweepDone = true
+    createdBeforeStartupSweep.clear()
+  }
   const tracksSaved = typeof rt.onSaved === 'function'
   if (tracksSaved) rt.onSaved(() => { savedWrites += 1 })
 
@@ -73,6 +81,7 @@ export function install(rt) {
       mkdirSync(resultsDir, { recursive: true })
       writeFileSync(temp, text, 'utf8')
       renameSync(temp, path)
+      if (!startupSweepDone) createdBeforeStartupSweep.add(name)
       return name
     } catch (error) {
       rt.warn('ds-bot: result of work %s not kept whole: %s', id, error)
@@ -123,18 +132,22 @@ export function install(rt) {
 
   // Startup async sweep for orphan `handoff-results/*.txt` files left behind by a crash.
   async function pruneOrphanResultFiles() {
-    if (!writes()) return
-    let entries
     try {
-      entries = await readdir(resultsDir)
-    } catch {
-      return
-    }
-    const referenced = referencedInWorks(works())
-    for (const file of entries) {
-      const name = keptName(file)
-      if (name === undefined || referenced.has(name)) continue
-      await rm(resultPath(name), { force: true }).catch(() => {})
+      if (!writes()) return
+      let entries
+      try {
+        entries = await readdir(resultsDir)
+      } catch {
+        return
+      }
+      const referenced = referencedInWorks(works())
+      for (const file of entries) {
+        const name = keptName(file)
+        if (name === undefined || referenced.has(name) || createdBeforeStartupSweep.has(name)) continue
+        await rm(resultPath(name), { force: true }).catch(() => {})
+      }
+    } finally {
+      finishStartupSweep()
     }
   }
 
@@ -404,6 +417,7 @@ export function install(rt) {
     if (waiting === undefined || rt.botOf(waiting) === undefined) return
     void rt.deliver({
       fromName: late.name ?? 'the subagent', toId: waiting, text: LATE_ANSWER + text, role: 'reply',
+      replyTo: id,
       exchangeId: randomUUID(), recordExchange: false,
     }).catch(error => rt.warn('ds-bot: the late result of %s did not reach %s: %s', late.name ?? 'a subagent', waiting, error))
   }
@@ -426,6 +440,7 @@ export function install(rt) {
     if (above !== undefined) above.open = above.open.filter(other => other !== id)
     for (const result of work.results ?? []) whole.delete(result.id)
     log('dropped', id)
+    rt.clearWorkNotes?.(id)
     const savedBefore = savedWrites
     void rt.save().then(() => {
       dropResults(work.results, savedBefore)
@@ -547,8 +562,10 @@ export function install(rt) {
       if (result.failed === true) return `${result.name} could not send its reply to you; what it had answered:\n${text}${cut}`
       return `${result.name}:\n${text}${cut}`
     })
-    const body = results.length === 0 ? said || `${botName} finished without a reply.`
+    let body = results.length === 0 ? said || `${botName} finished without a reply.`
       : [said || `${botName} finished and wrote nothing more.`, `[Handed back to ${botName} for this work]`, ...results].join('\n\n')
+    const unreadNotes = rt.unreadWorkNotes?.(workId, work)
+    if (unreadNotes > 0) body += `\n\n[${botName} finished before reading ${unreadNotes} queued work update(s). They were not applied.]`
     // The request reached its target only after a restart; the answer says so.
     return work?.late === true ? `[This request reached ${botName} only after DeepSeek Harness restarted.]\n\n${body}` : body
   }
@@ -712,10 +729,12 @@ export function install(rt) {
           return pruneOrphanResultFiles()
         })
         .catch(error => rt.warn('ds-bot: lost waits not settled: %s', error))
+        .finally(finishStartupSweep)
       void rt.load().then(() => reconcileLostResumes()).catch(error => rt.warn('ds-bot: lost resumes not sent again: %s', error))
     }, 0)
     return () => {
       clearTimeout(timer)
+      finishStartupSweep()
       offAdopted?.()
       whole.clear()
     }

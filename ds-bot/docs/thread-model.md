@@ -24,8 +24,8 @@ or **IMPLEMENTED** (code enforces it).
 
 - Which saved conversation a Session runs in: `bySessionIdFullMap` (`src/host/store.js:645`).
 - At most `MAX_THREADS_PER_BOT = 10` Threads per Bot, Main included (`src/host/constants.js:22-23`). **IMPLEMENTED**:
-  `createThread` refuses the eleventh Thread with `bot/refused` (`src/host/roster.js:377-379`), reached by the
-  `thread-create` route (`src/host/channel.js:940-942`) and tested by `test/thread-t2-api.test.js:55-65`.
+  `createThread` refuses the eleventh Thread with `bot/refused` (`src/host/roster.js:516-518`), reached by the
+  `thread-create` route (`src/host/channel.js:1163-1165`) and tested by `test/thread-t2-api.test.js:55-65`.
 - One turn per Bot runs at a time across its Threads (section 4.5).
 
 ### 1.3 Process / profile-wide
@@ -73,7 +73,7 @@ or **IMPLEMENTED** (code enforces it).
 | Limit | Class | Source |
 |---|---|---|
 | one running turn per Bot | IMPLEMENTED (slot) / DOCUMENTED (`maxParallelThreads = 1`) | `src/host/thread-queue.js:5`, `:231` |
-| Threads per Bot = 10 | IMPLEMENTED | `src/host/constants.js:22-23`, `src/host/roster.js:349` |
+| Threads per Bot = 10 | IMPLEMENTED | `src/host/constants.js:23`, `src/host/roster.js:516` |
 | accept wait 60 s | IMPLEMENTED | `src/host/thread-queue.js:17` |
 | approval answer first-wins | IMPLEMENTED | `src/host/approvals.js:69-72` |
 
@@ -105,24 +105,24 @@ Checked by `test/thread-model-anchors.test.js`: each row's line must contain its
 |---|---|
 | `src/host/bot-store.js:155` | `thread-model.md §1.1` |
 | `src/host/executor.js:218` | `thread-model §4.5` |
-| `src/host/store.js:746` | `chatOwners` |
-| `src/host/store.js:746` | `groupOwners` |
-| `src/host/store.js:1096` | `thread-model.md §1.2` |
-| `src/host/store.js:1097` | `bySessionIdFullMap` |
-| `src/host/store.js:1152` | `bySessionIdFullMap.set` |
-| `src/host/store.js:1152` | `bySessionIdFullMap.set` |
-| `src/host/store.js:1365` | `thread-model.md §1.3` |
-| `src/host/channel.js:511` | `READS` |
-| `src/host/channel.js:940` | `thread-create` |
-| `src/host/channel.js:1093` | `approval-answer` |
-| `src/host/channel.js:1433` | `thread-model §4.5` |
-| `src/host/channel.js:1434` | `sendThreadTurn` |
-| `src/host/delivery.js:697` | `thread-model §4.5` |
+| `src/host/store.js:785` | `chatOwners` |
+| `src/host/store.js:785` | `groupOwners` |
+| `src/host/store.js:1151` | `thread-model.md §1.2` |
+| `src/host/store.js:1152` | `bySessionIdFullMap` |
+| `src/host/store.js:1207` | `bySessionIdFullMap.set` |
+| `src/host/store.js:1239` | `bySessionIdFullMap.set` |
+| `src/host/store.js:1438` | `thread-model.md §1.3` |
+| `src/host/channel.js:620` | `READS` |
+| `src/host/channel.js:1163` | `thread-create` |
+| `src/host/channel.js:1321` | `approval-answer` |
+| `src/host/channel.js:1727` | `thread-model §4.5` |
+| `src/host/channel.js:1728` | `sendThreadTurn` |
+| `src/host/delivery.js:745` | `thread-model §4.5` |
 | `src/host/thread-queue.js:5` | `maxParallelThreads` |
 | `src/host/thread-queue.js:35` | `slots` |
 | `src/host/thread-queue.js:37` | `slotOf` |
 | `src/host/thread-queue.js:291` | `slotOf(owner.botId)` |
 | `src/host/thread-queue.js:296` | `slot.queue.push` |
-| `src/host/roster.js:377` | `MAX_THREADS_PER_BOT` |
+| `src/host/roster.js:516` | `MAX_THREADS_PER_BOT` |
 | `src/host/constants.js:23` | `MAX_THREADS_PER_BOT` |
 | `test/thread-t2-api.test.js:55` | `eleventh` |

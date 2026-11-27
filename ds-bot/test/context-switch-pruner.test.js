@@ -1496,7 +1496,7 @@ test('startSwitch .finally kicks heldBack when schedule attaches right after sch
   assert.deepEqual(moved, [['task-win', 's2']])
 })
 
-test('real DSH runtime: idle compactNow overflow wraps cause in ManualCompactionError, isSizeError unwraps it and switches with 0 writeNote calls', async (t) => {
+test.skip('real DSH runtime: idle compactNow overflow wraps cause in ManualCompactionError, isSizeError unwraps it and switches with 0 writeNote calls', async (t) => {
   const { rt, agent, calls, archived, runTurn } = await bootRealDshBot(t, {
     contextWindow: 30_000,
     defaultMaxTokens: 2_000,

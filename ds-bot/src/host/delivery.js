@@ -2,10 +2,12 @@
 import { randomUUID } from 'node:crypto'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { HISTORY_TIMEOUT_MS, LONG_HEAD, MESSAGE_INLINE_MAX, READ_LINE_MAX, SOURCE_KIND, TEXT_KEPT, TEXT_SHOW_MAX } from './constants.js'
+import { isContextOnlySource } from './context-messages.js'
 import { joinedShadow, refuseJoinedDispatch } from './roster-join.js'
 import { headOf, textOf } from './text.js'
 import { classify } from './msg-classes.js'
-import { sameConversation, threadCurrentOfPart } from './threads.js'
+import { addressedSession, sameConversation, threadCurrentOfPart } from './threads.js'
+import { workNotes } from './work-notes.js'
 
 // For remote dispatch, control is local, an answer is refused, everything else is work.
 // An answer is not new work: never dispatch it to another machine.
@@ -18,6 +20,11 @@ export function install(rt) {
   const queuedDeliveries = new Set()
   let disposed = false
   ctx.effect?.(() => () => { disposed = true }, 'ds-bot: visible delivery turns')
+  const addressedNotes = workNotes(rt)
+  rt.enqueueWorkNote = addressedNotes.enqueue
+  rt.workNoteTaken = addressedNotes.taken
+  rt.unreadWorkNotes = addressedNotes.unreadCount
+  rt.clearWorkNotes = addressedNotes.clear
 
   const resolveAgent = async (sessionId) => {
     if (ctx.fiber?.uid === null || ctx.sessionController === undefined) {
@@ -57,6 +64,7 @@ export function install(rt) {
     if (role === 'continue' && note !== undefined) return `[Retry after a failed turn · ${note}]`
     if (retried && role !== 'room') return '[Your last reply wrote a tool call as text, so nothing ran]'
     if (resumed && role === 'resume') return '[DeepSeek Harness restarted while you were working]'
+    if (resumed && role === 'reply') return '[Reply · DeepSeek Harness restarted while you were working on its result; go on with it]'
     if (resumed && role !== 'room') return `[Message from ${fromName} · DeepSeek Harness restarted while you were working on it]`
     if (resent && role === 'reply') return `[Reply from ${fromName} · DeepSeek Harness restarted before it could reach you]`
     if (resent && role !== 'room') return `[Message from ${fromName} · DeepSeek Harness restarted before it could reach you]`
@@ -90,6 +98,27 @@ export function install(rt) {
   const flushingSilent = new Set()
   const isBusyAgent = (agent, sessionId) => agent?.status === 'running' || rt.live?.get(sessionId)?.turn !== undefined
   const syncSilent = (sessionId) => { rt.noteSilent?.(sessionId, pendingSilent.get(sessionId)) }
+  const switchingOwnerOf = (sessionId) => (
+    sessionId !== undefined && state.switching != null && Object.hasOwn(state.switching, sessionId)
+      ? state.switching[sessionId]
+      : undefined
+  )
+  const appendUniqueSilent = (targetList, entries, toSessionId) => {
+    const seenIds = new Set(targetList.map(item => item?.message?.source?.exchangeId).filter(Boolean))
+    const seenMsgIds = new Set(targetList.map(item => item?.message?.id).filter(Boolean))
+    for (const entry of entries ?? []) {
+      if (entry?.message === undefined) continue
+      const exId = entry.message?.source?.exchangeId
+      const msgId = entry.message?.id
+      if ((exId !== undefined && seenIds.has(exId)) || (msgId !== undefined && seenMsgIds.has(msgId))) continue
+      if (exId !== undefined) seenIds.add(exId)
+      if (msgId !== undefined) seenMsgIds.add(msgId)
+      targetList.push({
+        message: entry.message,
+        ...(entry.ledger !== undefined ? { ledger: { ...entry.ledger, sessionId: toSessionId } } : {}),
+      })
+    }
+  }
   const waitIdleBriefly = (agent, timeoutMs = 2000) => {
     if (typeof agent?.whenIdle !== 'function') return Promise.resolve()
     return new Promise((resolve) => {
@@ -159,7 +188,7 @@ export function install(rt) {
     try {
       const agent = await resolveAgent(sessionId).catch(() => undefined)
       if (agent === undefined) {
-        if (rt.selfOf?.(sessionId) === undefined) {
+        if (rt.selfOf?.(sessionId) === undefined && switchingOwnerOf(sessionId) === undefined) {
           pendingSilent.delete(sessionId)
           syncSilent(sessionId)
         }
@@ -198,24 +227,30 @@ export function install(rt) {
   const takeSilentNotes = (sessionId) => takeSilentEntries(sessionId).map(entry => entry.message)
   const moveSilentNotes = (fromSessionId, toSessionId, { awaitFlush = false, rethrow = false } = {}) => {
     if (fromSessionId === undefined || toSessionId === undefined || fromSessionId === toSessionId) return Promise.resolve()
-    const entries = takeSilentEntries(fromSessionId)
-    if (entries.length > 0) {
-      const targetList = pendingSilent.get(toSessionId) ?? []
-      const seenIds = new Set(targetList.map(item => item?.message?.source?.exchangeId).filter(Boolean))
-      const seenMsgIds = new Set(targetList.map(item => item?.message?.id).filter(Boolean))
-      for (const entry of entries) {
-        const exId = entry?.message?.source?.exchangeId
-        const msgId = entry?.message?.id
-        if ((exId !== undefined && seenIds.has(exId)) || (msgId !== undefined && seenMsgIds.has(msgId))) continue
-        if (exId !== undefined) seenIds.add(exId)
-        if (msgId !== undefined) seenMsgIds.add(msgId)
-        targetList.push({
-          message: entry.message,
-          ...(entry.ledger !== undefined ? { ledger: { ...entry.ledger, sessionId: toSessionId } } : {}),
-        })
+    const fromStartup = rt.peekStartupSilent?.(fromSessionId) ?? []
+    const fromMemory = pendingSilent.get(fromSessionId) ?? []
+    const entries = fromStartup.length > 0 ? [...fromStartup, ...fromMemory] : fromMemory
+    const toStartup = rt.peekStartupSilent?.(toSessionId) ?? []
+    if (entries.length > 0 || toStartup.length > 0) {
+      const existingTarget = pendingSilent.get(toSessionId) ?? []
+      const targetList = []
+      appendUniqueSilent(targetList, toStartup, toSessionId)
+      appendUniqueSilent(targetList, existingTarget, toSessionId)
+      appendUniqueSilent(targetList, entries, toSessionId)
+      // Persist destination before removing source so a crash mid-move never drops notes.
+      if (targetList.length > 0) {
+        pendingSilent.set(toSessionId, targetList)
+        syncSilent(toSessionId)
       }
-      pendingSilent.set(toSessionId, targetList)
-      syncSilent(toSessionId)
+      if (toStartup.length > 0) rt.clearStartupSilent?.(toSessionId)
+      if (pendingSilent.has(fromSessionId) || fromStartup.length > 0) {
+        pendingSilent.delete(fromSessionId)
+        rt.clearStartupSilent?.(fromSessionId)
+        syncSilent(fromSessionId)
+      }
+    } else if (pendingSilent.has(fromSessionId)) {
+      pendingSilent.delete(fromSessionId)
+      syncSilent(fromSessionId)
     }
     if (!pendingSilent.has(toSessionId)) return Promise.resolve()
     if (awaitFlush) return flushSilentNotes(toSessionId, { rethrow })
@@ -227,31 +262,31 @@ export function install(rt) {
     const touched = new Set()
     for (const [oldSid, list] of Object.entries(savedMap)) {
       if (!Array.isArray(list) || list.length === 0) continue
-      const botId = rt.selfOf?.(oldSid)
+      const switching = switchingOwnerOf(oldSid)
+      const botId = rt.selfOf?.(oldSid) ?? switching?.botId
       const bot = botId === undefined ? undefined : rt.botOf(botId)
       if (bot === undefined) continue
       const groupOwner = rt.groupOwners?.get(oldSid)
+      const switchingRoom = switching?.roomId !== undefined ? rt.roomOf(switching.roomId) : undefined
       const destSid = groupOwner !== undefined
         ? (rt.roomOf(groupOwner.roomId)?.sessions?.[botId] ?? oldSid)
-        : (threadCurrentOfPart(bot, oldSid) ?? (rt.isBotSession?.(oldSid) ? oldSid : rt.chatOf(botId)))
+        : switchingRoom !== undefined
+          ? (switchingRoom.sessions?.[botId] ?? oldSid)
+          : (threadCurrentOfPart(bot, oldSid)
+            ?? (switching?.next !== undefined && rt.chatOwners?.has(switching.next) ? switching.next : undefined)
+            ?? (rt.isBotSession?.(oldSid) ? oldSid : rt.chatOf(botId)))
       if (destSid === undefined) continue
       const destList = pendingSilent.get(destSid) ?? []
-      const seenIds = new Set(destList.map(item => item?.message?.source?.exchangeId).filter(Boolean))
-      for (const raw of list) {
-        const message = raw?.message
-        if (message === undefined) continue
-        const exId = message?.source?.exchangeId
-        if (exId !== undefined && seenIds.has(exId)) continue
-        if (exId !== undefined) seenIds.add(exId)
-        destList.push({
-          message,
-          ...(raw.ledger !== undefined ? { ledger: { ...raw.ledger, sessionId: destSid } } : {}),
-        })
-      }
+      appendUniqueSilent(destList, list, destSid)
       if (destList.length > 0) {
         pendingSilent.set(destSid, destList)
         syncSilent(destSid)
         touched.add(destSid)
+      }
+      if (destSid !== oldSid) {
+        pendingSilent.delete(oldSid)
+        rt.clearStartupSilent?.(oldSid)
+        syncSilent(oldSid)
       }
     }
     for (const sid of touched) await flushSilentNotes(sid)
@@ -265,24 +300,21 @@ export function install(rt) {
     return true
   }
 
-  const NON_WAKING_PRE_STEP_KINDS = new Set([
-    'working-directory', 'runtime-context', 'time-context', 'ds-bot-time-context',
-    'bot-memory', 'skill-catalog', 'compact-checkpoint', 'snapshot',
-  ])
   const isWakingPreStepMessage = (msg) => {
     const src = msg?.source
     if (src === undefined) return true
-    if (src.form === 'snapshot' || NON_WAKING_PRE_STEP_KINDS.has(src.kind)) return false
-    if (src.kind === SOURCE_KIND && (src.silent === true || ['note', 'cancelled'].includes(src.role))) return false
-    return true
+    // A stop wakes the Bot it was sent to: it is not a silent notice.
+    if (src.kind === SOURCE_KIND && src.role === 'stopped' && src.silent !== true) return true
+    return !isContextOnlySource(src)
   }
 
   // Deterministically prepend any buffered silent notices before step 1 of a real
   // waking turn so queued work (e.g. a request queued after a silent note) never runs
   // ahead of them, while never waking an empty or snapshot-only wake boundary.
   ctx.on?.('agent/pre-step', async ({ agent, step, messages, signal }, next) => {
-    const decision = await next()
-    if (decision?.kind === 'reject' || signal?.aborted || !Array.isArray(decision?.messages)) return decision
+    const raw = await next()
+    if (raw?.kind === 'reject' || signal?.aborted || !Array.isArray(raw?.messages)) return raw
+    const decision = addressedNotes.atStep(agent, step, raw)
     if (step !== 1 || !decision.messages.some(isWakingPreStepMessage) || (Array.isArray(messages) && !messages.some(isWakingPreStepMessage))) return decision
     if (!pendingSilent.has(agent.id)) return decision
     const entries = takeSilentEntries(agent.id)
@@ -507,7 +539,7 @@ export function install(rt) {
   // result that came back goes on with. `merged`: a request that takes in an earlier
   // one its recipient had not read, under that one's exchange. `fromPart`: the Session
   // of the sending Bot, which a reply comes back to when that is a background part.
-  async function deliver({ fromId, fromName: senderName, pairFrom, toId, sessionId, text, role, replyTo, roomId, audience, note, exchangeId = randomUUID(), untilSent = false, steer = false, wake = true, afterCancel = false, deferred = false, resumed = false, retried = false, resent = false, merged = false, abandoned = false, abandonedReason, recordExchange = true, askedBy, fromRoomId, fromPart, images = [], files = [], length, work, taskId, imOrigin, failureRequestId, joinedTurn = false, joinedAsync = false, wait = false, stopped = false, results, resultFrom }) {
+  async function deliver({ fromId, fromName: senderName, pairFrom, toId, sessionId, address, text, role, replyTo, roomId, audience, note, exchangeId = randomUUID(), transferId, untilSent = false, steer = false, wake = true, afterCancel = false, deferred = false, resumed = false, retried = false, resent = false, merged = false, abandoned = false, abandonedReason, recordExchange = true, askedBy, resultRef, follows, batchKey, resumedUpstream = false, fromRoomId, fromPart, images = [], files = [], length, work, taskId, imOrigin, failureRequestId, joinedTurn = false, joinedAsync = false, wait = false, stopped = false, results, resultFrom }) {
     const from = rt.botOf(fromId)
     const to = rt.botOf(toId)
     if (to === undefined) throw Object.assign(new Error(`Unknown Bot ${toId}`), { delivered: false })
@@ -531,7 +563,7 @@ export function install(rt) {
     const writeBook = async () => {
       if (book === undefined) return
       if (!merged && pairRecords(bookPeer, toId).written.has(exchangeId)) return
-      rt.ledger.append(book, { id: exchangeId, from: fromId ?? 'user', to: toId, role, text, time: Date.now(), ...(length !== undefined ? { length, files } : {}), ...(replyTo ? { replyTo } : {}), ...(audience === 'user' ? { audience } : {}), ...(roomId ? { roomId } : {}) })
+      rt.ledger.append(book, { id: exchangeId, from: fromId ?? 'user', to: toId, role, text, time: Date.now(), ...(follows ? { follows } : {}), ...(length !== undefined ? { length, files } : {}), ...(replyTo ? { replyTo } : {}), ...(audience === 'user' ? { audience } : {}), ...(roomId ? { roomId } : {}) })
       await rt.ledger.written(book)
     }
     // A joined shadow is visible in the sidebar. Step 2 sends the turn to that
@@ -576,6 +608,7 @@ export function install(rt) {
       form: 'relay',
       role,
       exchangeId,
+      ...(transferId ? { transferId } : {}),
       senderName: fromName,
       ...(wake === false ? { silent: true } : {}),
       ...(work ? { work } : {}),
@@ -590,6 +623,10 @@ export function install(rt) {
       ...(resumed ? { resumed: true } : {}),
       ...(retried ? { retried: true } : {}),
       ...(askedBy ? { askedBy } : {}),
+      ...(resultRef ? { resultRef } : {}),
+      ...(follows ? { follows } : {}),
+      ...(batchKey ? { batchKey } : {}),
+      ...(resumedUpstream ? { resumedUpstream: true } : {}),
       ...(fromRoomId ? { senderRoomId: fromRoomId } : {}),
       ...(joinedTurn ? { joinedTurn: true } : {}),
       ...(abandoned ? { abandoned: true } : {}),
@@ -597,10 +634,21 @@ export function install(rt) {
       ...(Array.isArray(resultFrom) && resultFrom.length > 0 ? { resultFrom } : {}),
       ...(role === 'results' && note ? { note } : {}),
     }
-    const targetSessionId = sessionId ?? rt.chatOf(toId)
+    let targetSessionId = sessionId ?? rt.chatOf(toId)
     await writeBook()
     await rt.ensureCapabilities(targetSessionId)
-    const agent = await resolveAgent(targetSessionId)
+    let agent = await resolveAgent(targetSessionId)
+    // The conversation a delivery is addressed to may have moved on while it waited: it goes where the address is now.
+    if (address && addressedSession(rt, toId, address) !== targetSessionId) {
+      const currentTarget = addressedSession(rt, toId, address)
+      const fallbackTarget = currentTarget ?? ((role === 'reply' || role === 'report') ? rt.chatOf(toId) : undefined)
+      if (fallbackTarget === undefined) {
+        throw Object.assign(new Error('The delivery recipient changed during admission'), { code: 'bot/unresolved-return', delivered: false })
+      }
+      targetSessionId = fallbackTarget
+      await rt.ensureCapabilities(targetSessionId)
+      agent = await resolveAgent(targetSessionId)
+    }
     const message = createUserMessage({
       content: [
         { type: 'text', text: `${headerFor(role, fromName, room?.name, audience, note, deferred, { resumed, retried, resent, abandoned, abandonedReason, asker })}\n${text}` },

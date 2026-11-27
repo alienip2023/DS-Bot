@@ -8,11 +8,12 @@ import { deleteBotTool, isNodeBot, updateNodeBot } from './node-bot-tools.js'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { readAvatar } from './avatar.js'
 import { listenBotStopResult, settleStoppedTurns } from './joined-turn.js'
-import { CATALOG_PACK_TOOLS, COLORS, EXTRA_COLORS, GROUP_ONLY_TOOLS, MESSAGE_INLINE_MAX, ROOM_MODES, SOURCE_KIND, TASK_HIDDEN_TEAM_TOOLS, TEXT_KEPT, WORK_DEPTH_MAX } from './constants.js'
+import { CATALOG_PACK_TOOLS, COLORS, EXTRA_COLORS, GROUP_ONLY_TOOLS, isAckLikeText, MESSAGE_INLINE_MAX, ROOM_MODES, SOURCE_KIND, TASK_HIDDEN_TEAM_TOOLS, TEXT_KEPT, WORK_DEPTH_MAX } from './constants.js'
 import { within } from './folders.js'
 import { missingFileRefs } from './claims.js'
 import { absoluteLinks } from './links.js'
 import { NAME_MAX } from './requests.js'
+import { roomRequest, roomNote, waitsOnMember } from './room-message.js'
 import { unquote } from './text.js'
 import { machinesOf } from './bot-network.js'
 import { formatRemoteTask } from './remote-tasks.js'
@@ -97,6 +98,13 @@ export function install(rt) {
   const callerBot = (exec) => rt.botOf(rt.selfOf(exec.agent?.id))
   // A Main Bot, or a node Bot the hub lets manage the team (team-act.js).
   const canManage = id => teamCanManage(rt, id)
+  // A photo the user names for a Bot or a group: the same input and checks either way, and
+  // never a file out of a private Bot's folder, which no other Bot reads from.
+  const readPhoto = (input, exec) => readAvatar(String(input), {
+    baseDir: rt.sessionFolder?.(exec.agent?.session ?? exec.agent),
+    isData: rt.inData,
+    isClosed: path => rt.privateOwnerOf?.(path, { self: rt.selfOf(exec.agent?.id) }),
+  })
   const callerRoom = (exec) => {
     const roomId = (rt.groupOwners.get(exec.agent?.id) ?? rt.pastOwners?.get(exec.agent?.id))?.roomId
     return roomId ? { fromRoomId: roomId } : {}
@@ -302,12 +310,24 @@ export function install(rt) {
     return `Not sent: ${target.name} is not in "${room.name}", and work for this group stays in it. Ask the user to add ${target.name} to the group${add}.`
   }
 
-  const callInGroup = async (exec, room, sender, target, message) => {
+  const callInGroup = async (room, sender, target, message, follows, { worked = false, callerExchangeId, callerId, parentBatchKey } = {}) => {
+    if (waitsOnMember(state.roomBatches, room.id, sender.id, target.id)) refuse(`Not sent: ${target.name} is already waiting for your result. Write the result or blocking question in your reply.`)
     const call = `@${target.name}`
     const everyone = room.members.map(rt.botOf).filter(Boolean)
     const alreadyCalls = mentionSpans(message, everyone).some(span => !span.all && span.bot?.id === target.id)
-    await rt.roomStepText(exec.agent.id, rt.live.get(exec.agent.id)?.info, alreadyCalls ? message : `${call} ${message}`, false)
-    return `Called ${target.name} in "${room.name}" with your message, as writing "${call}" there does: it works on it in the group, and you answer its result there. Nothing went to its own chat.`
+    const posted = await rt.postToRoom(room, sender, alreadyCalls ? message : `${call} ${message}`, {
+      progress: true,
+      explicitDelegate: true,
+      ...(worked ? { worked: true } : {}),
+      ...(callerExchangeId ? { callerExchangeId } : {}),
+      ...(callerId ? { callerId } : {}),
+      ...(parentBatchKey ? { parentBatchKey } : {}),
+      route: { ...roomRequest([target.id]), expectsResult: true, ...(follows ? { follows } : {}) },
+    })
+    if (posted?.paused === true) {
+      return `Paused in "${room.name}": consecutive handoffs without running a work tool reached the loop guard. The call to ${target.name} waits until the user continues or writes in the group.`
+    }
+    return `Called ${target.name} in "${room.name}". Its result returns in the group. Nothing went to its own chat.`
   }
 
   // The Bots each Session's post_to_group called by name in its current turn, so that
@@ -369,6 +389,7 @@ export function install(rt) {
     parameters: {
       to: { type: 'string', required: true, description: 'Exact Bot name from list_bots' },
       message: { type: 'string', required: true, description: 'Self-contained message; the other Bot cannot see this conversation' },
+      follow_up_to: { type: 'string', description: 'For a distinct task prompted by a completed result, cite the reference in this turn (e.g. G12 in a group). Acknowledgements are not follow-ups.' },
       reply_to: {
         type: 'string',
         enum: ['me', 'user'],
@@ -430,15 +451,20 @@ export function install(rt) {
       }
       const room = rt.roomOf(rt.groupOwners.get(exec.agent?.id)?.roomId)
       // The request the caller named: it is admitted once, and a repeat of it is not sent again.
+      const trigger = rt.live.get(exec.agent?.id)?.info
+      const resultRef = trigger?.resultRef ?? (trigger?.role === 'reply' ? trigger.workRef ?? rt.workRefOf?.(trigger.replyTo) ?? trigger.replyTo : undefined)
+      const followUp = String(args.follow_up_to ?? '').trim().replace(/^#/, '').toUpperCase()
+      const rawGoal = String(args.message ?? '')
       const request = name === '' ? undefined : rt.requestIdentity({
         caller: sender.id,
         context: room === undefined ? 'chat' : `room:${room.id}`,
         name,
         payload: {
           to: target.id,
-          message: String(args.message ?? '').replace(/\r\n?/g, '\n').trim(),
+          message: rawGoal.replace(/\r\n?/g, '\n').trim(),
           reply_to: args.reply_to === 'user' ? 'user' : 'me',
           when: args.when === 'queue' ? 'queue' : 'now',
+          ...(followUp ? { followUp } : {}),
         },
       })
       // What the caller gets for a request that was admitted before.
@@ -454,10 +480,37 @@ export function install(rt) {
         const seen = await rt.knownRequest(request)
         if (seen !== undefined) return answer(seen)
       }
+      const fromResult = (trigger?.role === 'reply' || Boolean(trigger?.resultRef)) && !trigger?.work
+      const userTurn = rt.live.get(exec.agent?.id)?.userInput === true
+      if (fromResult && !userTurn && resultRef !== undefined) {
+        if (!followUp) {
+          refuse(`Not sent: this is a result, not a new request. Report it to the user or leave a silent note. Only for a distinct next task, cite ${resultRef} in follow_up_to.`)
+        }
+        if (followUp !== resultRef.toUpperCase()) {
+          refuse(`Not sent: follow_up_to must identify the completed work that opened this turn (${resultRef}).`)
+        }
+        if (isAckLikeText(rawGoal)) {
+          refuse('Not sent: an acknowledgement does not open a follow-up task. The work is already closed.')
+        }
+      }
       if (room !== undefined) {
         const refusal = groupRefusal(room, sender, target)
         if (refusal !== undefined) refuse(refusal)
-        const send = () => callInGroup(exec, room, sender, target, text.trim())
+        if (waitsOnMember(state.roomBatches, room.id, sender.id, target.id)) {
+          refuse(`Not sent: ${target.name} is already waiting for your result. Write the result or blocking question in your reply.`)
+        }
+        const callerWorked = (rt.live.get(exec.agent?.id)?.workToolCount ?? 0) > 0
+        const parentBatchKey = rt.activeRoomBatchKey?.(exec.agent?.id, trigger)
+        const send = async () => {
+          const receipt = await callInGroup(room, sender, target, text.trim(), followUp, {
+            worked: callerWorked,
+            callerExchangeId: trigger?.exchangeId,
+            callerId: trigger?.askedBy,
+            ...(parentBatchKey ? { parentBatchKey } : {}),
+          })
+          rt.markExplicitRoomCall?.(trigger?.exchangeId, target.id)
+          return receipt
+        }
         return request === undefined ? await send() : answer(await rt.admitRequest(request, send))
       }
       const posted = calledInPosts.get(exec.agent?.id)
@@ -521,7 +574,7 @@ export function install(rt) {
         // messages to a Bot that cannot read them do not pile up. Two parts of the
         // sender's own chat are two conversations, though: one answer could come back to
         // only one of them, so their requests are sent and answered apart.
-        const earlier = unreadRequest(agent, sender.id, toUser)
+        const earlier = unreadRequest(agent, sender.id, toUser); if (process.env.DBG) console.log('DBG', JSON.stringify({ n: agent.inbox?.nextStep?.map(m => m.source), t: agent.inbox?.nextTurn?.map(m => m.source), sid: sender.id }))
         const joinable = earlier !== undefined
           && (toUser || ((earlier.message.source.senderPart ?? undefined) === fromPart && rt.sameWork(earlier.message.source.exchangeId, work)))
         const before = joinable ? bodyOf(earlier.message) : undefined
@@ -713,7 +766,7 @@ export function install(rt) {
           return `Created ${String(args.name).trim()} on node "${nodeArg}". It is now available on that machine.`
         }
         // ── Hub-side creation (original path) ─────────────────────────────
-        const avatar = args.avatar ? await readAvatar(String(args.avatar), { baseDir: rt.sessionFolder?.(exec.agent?.session ?? exec.agent), isData: rt.inData }) : undefined
+        const avatar = args.avatar ? await readPhoto(args.avatar, exec) : undefined
         const workDir = args.work_dir ? await rt.cleanWorkDir(args.work_dir) : undefined
         const name = String(args.name ?? '').trim()
         await rt.approveFolder(exec, { path: workDir, who: { en: `the new Bot ${name}`, zh: `新 Bot ${name} ` } })
@@ -721,7 +774,7 @@ export function install(rt) {
         const served = new Set((await rt.catalog()).filter(entry => entry.needsKey !== true && rt.isLocalAgentRef?.(entry.ref) !== true).map(entry => entry.ref))
         const fallback = [state.prefs.defaultBotModel, creator?.model].find(ref => ref && served.has(ref))
         const model = args.model || fallback
-        const bot = await rt.createBot({ ...args, avatar: avatar === undefined ? undefined : { image: avatar }, model, workDir, effort: args.effort, section: args.section, createdBy: creator?.id })
+        const bot = await rt.createBot({ name: args.name, role: args.role, instructions: args.instructions, brief: args.brief, type: args.type, worker: args.worker, avatar: avatar === undefined ? undefined : { image: avatar }, model, workDir, effort: args.effort, section: args.section, createdBy: creator?.id })
         return `Created ${bot.name}${workDir ? `, working in ${workDir}` : ''}. It is greeting the user now.`
       } catch (error) {
         return `Could not create the Bot: ${error.message}`
@@ -774,7 +827,7 @@ export function install(rt) {
         let image
         if (args.avatar !== undefined) {
           const input = typeof args.avatar === 'string' ? args.avatar.trim() : args.avatar
-          image = input === null || input === '' ? null : await readAvatar(String(input), { baseDir: rt.sessionFolder?.(exec.agent?.session ?? exec.agent), isData: rt.inData })
+          image = input === null || input === '' ? null : await readPhoto(input, exec)
         }
         const moving = typeof args.work_dir === 'string'
         const workDir = moving ? await rt.cleanWorkDir(args.work_dir) : undefined
@@ -919,6 +972,7 @@ export function install(rt) {
       members: { type: 'array', required: true, items: { type: 'string' }, description: 'Exact names of the other Bots to add; you are added automatically' },
       name: { type: 'string', description: 'Group name; defaults to the member names' },
       notice: { type: 'string', description: 'Shared instructions every member reads before speaking in this group; at most 2000 characters' },
+      avatar: { ...AVATAR_PARAM, description: `${AVATAR_PARAM.description} Optional; without one the group shows its members.` },
       admin: { type: 'string', description: 'Member who leads the group; defaults to you' },
       mode: MODE_PARAM,
       section: SECTION_PARAM,
@@ -936,7 +990,9 @@ export function install(rt) {
       const members = [...new Set([self, ...bots.map(bot => bot.id), admin.id])]
       try {
         const hadRooms = Object.keys(state.rooms).length > 0
-        const room = await rt.createRoom({ members, name: args.name, notice: args.notice, mode: args.mode, admin: admin.id, section: args.section, createdBy: self })
+        const given = typeof args.avatar === 'string' ? args.avatar.trim() : ''
+        const photo = given === '' ? undefined : { image: await readPhoto(given, exec) }
+        const room = await rt.createRoom({ members, name: args.name, avatar: photo, notice: args.notice, mode: args.mode, admin: admin.id, section: args.section, createdBy: self })
         if (!hadRooms) rt.refreshToolScopeForSession?.(exec.agent?.id)
         return `Created group "${room.name}" with ${room.members.map(id => rt.botOf(id).name).join(', ')}. ${admin.id === self ? 'You are' : `${admin.name} is`} its admin. It is in the user's sidebar; use post_to_group to start a discussion there.`
       } catch (error) {
@@ -947,10 +1003,11 @@ export function install(rt) {
 
   rt.teamTools.push(defineTool({
     name: 'update_group',
-    description: 'Change a group chat: rename it, set its notice, add or remove members, change its admin or reply mode. Main Bots may change any group; a group\'s admin may change its own group.',
+    description: 'Change a group chat: rename it, set its notice or photo, add or remove members, change its admin or reply mode. Main Bots may change any group; a group\'s admin may change its own group.',
     parameters: {
       group: GROUP_REF,
       name: { type: 'string', description: 'New group name; an empty string names it after its members again' },
+      avatar: { ...AVATAR_PARAM, description: `${AVATAR_PARAM.description} An empty string removes the photo and shows the members again.` },
       notice: { type: 'string', description: 'Replacement notice, the shared instructions every member reads; an empty string clears it; at most 2000 characters' },
       add_members: { type: 'array', items: { type: 'string' }, description: 'Exact names of Bots to add' },
       remove_members: { type: 'array', items: { type: 'string' }, description: 'Exact names of Bots to remove' },
@@ -985,6 +1042,11 @@ export function install(rt) {
         }
       }
       try {
+        let photo
+        if (args.avatar !== undefined) {
+          const input = typeof args.avatar === 'string' ? args.avatar.trim() : args.avatar
+          photo = input === null || input === '' ? null : { image: await readPhoto(input, exec) }
+        }
         const workDir = moving ? await rt.cleanWorkDir(args.work_dir) : undefined
         const targetDir = moving ? workDir : room.workDir
         const removing = new Set(remove.bots.map(bot => bot.id))
@@ -1034,6 +1096,7 @@ export function install(rt) {
           ...(args.section === undefined ? {} : { section: args.section }),
           ...(moving ? { workDir: workDir ?? '' } : {}),
           ...(extraDirs === undefined ? {} : { extraDirs }),
+          ...(photo === undefined ? {} : { avatar: photo }),
         }, self)
         return changes.length === 0 ? `Nothing changed in "${next.name}".` : `Updated "${next.name}": ${changes.join('; ')}.`
       } catch (failure) {
@@ -1205,10 +1268,11 @@ export function install(rt) {
 
   rt.teamTools.push(defineTool({
     name: 'post_to_group',
-    description: 'Post a message into a group chat as yourself. A Main Bot may post into any group, any other Bot into a group it is in. A Main Bot\'s or the group admin\'s post starts a round: members reply in the group, where the user reads them. Another member\'s post calls only the members it names with "@Name"; without one it is only written into the group. By default, whenever your post calls members, their final outcome comes back to you as a new message once the group\'s work (including long tasks, approvals, relays and any active goal) finishes; pass report_back: false for a one-way notice or when the user reads in the group themselves.',
+    description: 'Post into a group chat as yourself. Main Bots may post into any group; others only into their groups. A notice never wakes anyone. To ask for work, address members with @Name, or use intent "request" as Main Bot or admin to start a discussion. The final outcome of a request comes back once the group finishes; set report_back false to leave it in the group.',
     parameters: {
       group: GROUP_REF,
       message: { type: 'string', required: true, description: 'What to say; write "@Name" to choose who answers, and a name without "@" to only mention a member' },
+      intent: { type: 'string', enum: ['notice', 'request'], description: 'A notice is visible but never calls members, even if the body contains @names. A request invites answers. Without named members, explicitly use request to open a discussion.' },
       report_back: { type: 'boolean', description: 'Send the group\'s final replies back to you as a new message once its work finishes (default true when your post calls members; set false for a one-way notice)' },
     },
     output,
@@ -1234,10 +1298,14 @@ export function install(rt) {
         if (span.bot && span.bot.id !== self && !named.includes(span.bot.id)) named.push(span.bot.id)
       }
       const mentions = { ids: named, all: spans.some(span => span.all === true) }
-      if (member && named.length === 0 && args.report_back === true) {
+      const receipt = info?.role === 'report' && info.roomId === room.id
+      const notice = args.intent === 'notice' || (args.intent !== 'request'
+        && (receipt || (args.report_back !== true && named.length === 0 && !(mentions.all && !member))))
+      if (notice && args.report_back === true) return 'A notice calls nobody and cannot report back. Use intent "request" to ask for work.'
+      if (!notice && member && named.length === 0 && args.report_back === true) {
         return 'Nobody would answer: your post only calls the members you name. Write "@Name" for each member who should answer, or post with report_back: false.'
       }
-      const reportBack = !(member && named.length === 0) && args.report_back !== false
+      const reportBack = !notice && !(member && named.length === 0) && args.report_back !== false
       const long = await rt.attachLong(text, `Post from ${sender.name}.txt`)
       if (long === undefined) return tooLong(text)
       // Replies the poster waits for, while it works on what a Bot asked it for — or from
@@ -1257,7 +1325,7 @@ export function install(rt) {
       try {
         // A post that wants the replies names the conversation it was written
         // from, so the report comes back there instead of the own chat.
-        await rt.postToRoom(room, sender, long.text, { mentions, ...(claims ? { claims } : {}), ...(callerOrigin ? { callerOrigin } : {}), ...(reportBack ? { reportBack: true, reportId, ...(fromTaskId ? { fromTaskId } : {}), ...(imOrigin ? { imOrigin } : {}), ...callerRoom(exec), ...callerPart(exec) } : {}), ...(member ? { member: true } : {}), ...(sub ? { sub } : {}), ...(long.length ? { length: long.length } : {}) }, long.files)
+        await rt.postToRoom(room, sender, long.text, { mentions, ...(notice ? { route: roomNote(), quiet: true } : {}), ...(claims ? { claims } : {}), ...(callerOrigin ? { callerOrigin } : {}), ...(reportBack ? { reportBack: true, reportId, ...(fromTaskId ? { fromTaskId } : {}), ...(imOrigin ? { imOrigin } : {}), ...callerRoom(exec), ...callerPart(exec) } : {}), ...(member ? { member: true } : {}), ...(sub ? { sub } : {}), ...(long.length ? { length: long.length } : {}) }, long.files)
       } catch (failure) {
         if (failure?.delivered !== true) {
           if (sub !== undefined) rt.dropWork(sub)
@@ -1266,6 +1334,7 @@ export function install(rt) {
         return `Could not post in "${room.name}": ${failure.message}`
       }
       if (member && named.length === 0) return `Posted in "${room.name}", where the user and its members read it. Nobody answers it: your post only calls the members you name with @Name.`
+      if (notice) return `Posted in "${room.name}" as a notice. Nobody answers it.`
       if (named.length > 0) {
         const turn = turnOf(exec)
         const earlier = calledInPosts.get(exec.agent?.id)
@@ -1319,6 +1388,12 @@ export function install(rt) {
         .filter(option => option.label !== '')
         .slice(0, 6)
       if (options.length === 0) return 'Give at least one option.'
+      // A card still open (the user has not written since; a Bot's message started this
+      // turn) closes in the chat instead of vanishing from it (#2172).
+      const prevQuestion = rt.own(state.questions, id)
+      if (prevQuestion !== undefined && ((prevQuestion.callSessionId ?? id) !== id || prevQuestion.callId !== exec.callId)) {
+        rt.closeCard(id, prevQuestion, 'dismissed')
+      }
       state.questions[id] = {
         id: randomUUID(),
         ...(exec.callId ? { callId: exec.callId } : {}),
@@ -1334,7 +1409,6 @@ export function install(rt) {
         rt.logRoom(rt.roomOf(owner.roomId), { who: rt.botOf(owner.botId).name, botId: owner.botId, questionId: state.questions[id].id, text: `Asked: ${state.questions[id].question}\n${options.map((option, index) => `${index + 1}. ${option.label}`).join('\n')}` })
       }
       await rt.save()
-      rt.cardShown?.(id, 'question', state.questions[id].question)
       exec.concludeTurn?.()
       return 'The card is on screen; the user\'s answer arrives as their next message.'
     },
@@ -1375,9 +1449,16 @@ export function install(rt) {
         return 'The view is on screen.'
       }
       const imOrigin = rt.captureImOrigin?.(owner === undefined ? id : rt.roomOf(owner.roomId)?.sessionId ?? owner.roomId)
+      // As with ask_user: an earlier view still open closes instead of vanishing (#2172).
+      const prevView = rt.own(state.views, id)
+      if (prevView !== undefined && ((prevView.callSessionId ?? id) !== id || prevView.callId !== exec.callId)) {
+        rt.closeCard(id, prevView, 'dismissed')
+      }
+      const callSeq = exec.callId ? rt.callSeq?.(id, exec.callId) : undefined
       state.views[id] = {
         id: randomUUID(),
         ...(exec.callId ? { callId: exec.callId } : {}),
+        ...(typeof callSeq === 'number' && Number.isInteger(callSeq) ? { callSeq } : {}),
         title,
         view,
         ...(issueDraft === undefined ? {} : { issueDraft }),
@@ -1388,7 +1469,6 @@ export function install(rt) {
         rt.logRoom(rt.roomOf(owner.roomId), { who: rt.botOf(owner.botId).name, botId: owner.botId, viewId: state.views[id].id, text: viewCardText({ title, view }) || title })
       }
       await rt.save()
-      rt.cardShown?.(id, 'view', title)
       exec.concludeTurn?.()
       return 'The view is on screen; the user\'s answer arrives as their next message.'
     },
@@ -1411,13 +1491,14 @@ export function install(rt) {
     main: rt.isMain(rt.selfOf(id)),
     hasRooms: Object.keys(state.rooms ?? {}).length > 0,
     inRoom: rt.roomsOf?.(rt.selfOf(id))?.length > 0,
+    isGroup: rt.groupOwners?.has(id) === true,
     isTask: rt.taskOwners?.has(id) === true,
     hasTaskRoom: rt.taskOwners?.get(id)?.roomId !== undefined,
     hasPacks: (rt.botOf(rt.selfOf(id))?.packs?.length ?? 0) > 0 || rt.hasLoadedPacks?.(id) === true,
   }
   const scopeKeyOf = (id) => {
     const s = scopeOf(id)
-    return `${s.main ? 1 : 0}:${s.hasRooms ? 1 : 0}:${s.inRoom ? 1 : 0}:${s.isTask ? 1 : 0}:${s.hasTaskRoom ? 1 : 0}:${s.hasPacks ? 1 : 0}`
+    return `${s.main ? 1 : 0}:${s.hasRooms ? 1 : 0}:${s.inRoom ? 1 : 0}:${s.isGroup ? 1 : 0}:${s.isTask ? 1 : 0}:${s.hasTaskRoom ? 1 : 0}:${s.hasPacks ? 1 : 0}`
   }
 
   // Team tools that have zero valid actions in this Bot Session's current role/context.
@@ -1437,6 +1518,9 @@ export function install(rt) {
     } else if (!s.hasRooms) {
       for (const name of GROUP_ONLY_TOOLS) hidden.add(name)
       hidden.add('delete_group')
+    }
+    if (s.isGroup) {
+      hidden.add('prepare_ds_bot_issue')
     }
     if (s.isTask) {
       for (const name of TASK_HIDDEN_TEAM_TOOLS) hidden.add(name)
@@ -1938,6 +2022,11 @@ export function install(rt) {
   // and delegation tools. The restricts are kept with the Session's scope, so they
   // lift with it.
   const hideBotUnusedTools = (agent) => {
+    try {
+      rt.scopeCodeMode?.(agent)
+    } catch (error) {
+      rt.warn?.('ds-bot: scoping code-mode for %s failed: %s', agent?.session?.id, error)
+    }
     shareBotTools(agent)
     const id = agent?.session?.id
     // The shell shadows go with the scope, so a reload or a Session that leaves
@@ -1960,7 +2049,10 @@ export function install(rt) {
     maskConnectorTools(agent, held)
     maskPluginTools(agent, held)
   }
-  ctx.on('tools/change', () => reapplyToolMasks())
+  ctx.on('tools/change', () => {
+    reapplyToolMasks()
+    rt.notifyLocalAgentToolsChanged?.()
+  })
   // A new Bot, part, or group Session gets its Agent before ds-bot records it, so the
   // recording path resolves it again once the session is known as a Bot's; meanwhile
   // the guard refuses the question and delegation tools in any Bot Session, and a
@@ -2013,12 +2105,24 @@ export function install(rt) {
   // assembly hook drops hidden tools and their guidance for that Bot Session.
   // restrict still masks what it can, so lookup and execution stay aligned, and the
   // guard refuses calls.
-  const filterAssembled = (id, assembled) => {
+  const filterAssembled = (agent, id, assembled) => {
     if (!rt.isBotSession(id) || assembled === undefined || assembled === null) return assembled
     const hidden = new Set([...HIDDEN_TOOLS, ...hiddenSessionTools(id)])
+    const localCli = rt.contextRuntime?.isLocal?.(agent?.session ?? id) === true
+    const bridged = localCli ? new Set([...rt.teamTools.map(def => def.name), 'approve_agent_action']) : undefined
     const dropTool = tool => hidden.has(tool?.name)
-    const dropSection = section => HIDDEN_SECTIONS.has(section?.name)
-      || (typeof section?.name === 'string' && section.name.startsWith('tool:') && hidden.has(section.name.slice(5)))
+    const dropSection = (section) => {
+      const name = section?.name
+      if (HIDDEN_SECTIONS.has(name)) return true
+      if (typeof name === 'string' && name.startsWith('tool:')) {
+        const toolName = name.slice(5)
+        if (hidden.has(toolName)) return true
+        // Local agent CLIs use their own file/shell/search tools and only receive
+        // DS Bot's bridged team tools over MCP; strip DSH's built-in tool prose.
+        if (bridged !== undefined && !bridged.has(toolName)) return true
+      }
+      return false
+    }
     const filterTools = Array.isArray(assembled.tools) && assembled.tools.some(dropTool)
     const filterSections = Array.isArray(assembled.sections) && assembled.sections.some(dropSection)
     if (!filterTools && !filterSections) return assembled
@@ -2058,7 +2162,7 @@ export function install(rt) {
         // Cleared whatever happens below: the names are offered once, not on
         // every step.
         held.unlisted.clear()
-        if (!assembled.tools.some(tool => tool.name === 'run_code') && typeof ctx.tools?.schemas === 'function') {
+        if (!(assembled.tools.length === 1 && assembled.tools[0].name === 'run_code') && typeof ctx.tools?.schemas === 'function') {
           try {
             const wanted = new Set(pending)
             const current = new Map(ctx.tools.schemas(agent).filter(schema => wanted.has(schema.name)).map(schema => [schema.name, schema]))
@@ -2082,7 +2186,7 @@ export function install(rt) {
         }
       }
     }
-    return filterAssembled(id, assembled)
+    return filterAssembled(agent, id, assembled)
   })
 
   // DSH adds tools after system-prompt/assemble. Transform the final request through
@@ -2199,10 +2303,10 @@ export function install(rt) {
       description: { type: 'string', description: 'What this capability provides' },
       transport: { type: 'string', enum: ['stdio', 'streamable-http'], description: 'How to reach an MCP server: a local command or an HTTP URL' },
       command: { type: 'string', description: 'Program that starts a local MCP server' },
-      args: { type: 'array', items: { type: 'string' }, description: 'Arguments for command' },
-      env: { type: 'object', additionalProperties: true, description: 'Environment variables for command; write $DSH_SECRET_<NAME> to insert a saved secret instead of the value' },
-      url: { type: 'string', description: 'MCP server URL; write $DSH_SECRET_<NAME> in the path or query to insert a saved secret, URL-encoded. Prefer headers for keys' },
-      headers: { type: 'object', additionalProperties: true, description: 'HTTP headers; write $DSH_SECRET_<NAME> to insert a saved secret instead of the value' },
+      args: { type: 'array', items: { type: 'string' }, description: 'Arguments for command; write $DSH_SECRET_<NAME> or a one-time secret-ref:<32hex> handle instead of a raw key' },
+      env: { type: 'object', additionalProperties: true, description: 'Environment variables for command; write $DSH_SECRET_<NAME> or a one-time secret-ref:<32hex> handle to insert a secret instead of the value' },
+      url: { type: 'string', description: 'MCP server URL; write $DSH_SECRET_<NAME> or a one-time secret-ref:<32hex> handle in the path or query to insert a secret, URL-encoded. Prefer headers for keys' },
+      headers: { type: 'object', additionalProperties: true, description: 'HTTP headers; write $DSH_SECRET_<NAME> or a one-time secret-ref:<32hex> handle to insert a secret instead of the value' },
       content: { type: 'string', description: 'Skill instructions' },
       items: { type: 'array', items: { type: 'string' }, description: 'MCP server and skill names in the pack' },
       share_with_nodes: { type: 'boolean', description: 'MCP server only: false keeps it to the hub. By default every Bot on every node can use it, called through the hub (its command, address and secrets stay here); an edit that leaves this out keeps what it was' },
@@ -2295,7 +2399,8 @@ export function install(rt) {
     }))
   }
 
-  Object.assign(rt, { pickRoom, hideBotUnusedTools, syncScopedTools, syncScopedSession, hiddenTeamToolsFor, hiddenSessionTools, refreshBotTools, addTeamTool, removeTeamTool, reapplyToolMasks })
+  const hiddenToolsFor = id => new Set([...HIDDEN_TOOLS, ...hiddenSessionTools(id)])
+  Object.assign(rt, { pickRoom, hideBotUnusedTools, syncScopedTools, syncScopedSession, hiddenTeamToolsFor, hiddenSessionTools, hiddenToolsFor, refreshBotTools, addTeamTool, removeTeamTool, reapplyToolMasks })
 
   // ── burst_task：并行分割执行（对标 openmausbot burst mode）──────────────
   //
