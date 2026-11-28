@@ -499,6 +499,11 @@ export function install(rt) {
         || binding.sessionId !== entry.sessionId || binding.fingerprint !== entry.fingerprint)) {
       throw stale('This approval no longer matches the request it was shown for')
     }
+    // A missing or null binding must be accompanied by an explicit sessionId that matches
+    // the owning session; without either, the caller has not identified themselves.
+    if ((binding === undefined || binding === null) && sessionId === undefined) {
+      throw Object.assign(new Error('Only the owning session can answer this approval'), { code: 'bot/forbidden' })
+    }
     if (sessionId !== undefined && sessionId !== entry.sessionId) {
       throw Object.assign(new Error('Only the owning session can answer this approval'), { code: 'bot/forbidden' })
     }

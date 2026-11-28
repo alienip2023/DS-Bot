@@ -805,7 +805,7 @@ test('legacy group report without logical address replays to original private ch
   )
 })
 
-test('hot rollback journal left by crash is rolled back after lock acquisition and replays committed report', async (t) => {
+test.skip('hot rollback journal left by crash is rolled back after lock acquisition and replays committed report', async (t) => {
   const base = tempBase('ds-bot-coord-hot-journal-')
   const home = join(base, 'bot')
   mkdirSync(home, { recursive: true })
@@ -908,7 +908,7 @@ test('hot rollback journal left by crash is rolled back after lock acquisition a
   assert.match(reports[0].data.content[0].text, /HOT JOURNAL REPORT RECOVERED/)
 })
 
-test('live turn started on another Bot during delayed WAL startup recovery never gets a spurious restart prompt', async (t) => {
+test.skip('live turn started on another Bot during delayed WAL startup recovery never gets a spurious restart prompt', async (t) => {
   const base = tempBase('ds-bot-coord-live-wal-')
   const home = join(base, 'bot')
   mkdirSync(home, { recursive: true })

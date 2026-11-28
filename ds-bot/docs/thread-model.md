@@ -112,11 +112,11 @@ Checked by `test/thread-model-anchors.test.js`: each row's line must contain its
 | `src/host/store.js:1207` | `bySessionIdFullMap.set` |
 | `src/host/store.js:1239` | `bySessionIdFullMap.set` |
 | `src/host/store.js:1438` | `thread-model.md §1.3` |
-| `src/host/channel.js:620` | `READS` |
-| `src/host/channel.js:1163` | `thread-create` |
-| `src/host/channel.js:1321` | `approval-answer` |
-| `src/host/channel.js:1727` | `thread-model §4.5` |
-| `src/host/channel.js:1728` | `sendThreadTurn` |
+| `src/host/channel.js:622` | `READS` |
+| `src/host/channel.js:1165` | `thread-create` |
+| `src/host/channel.js:1323` | `approval-answer` |
+| `src/host/channel.js:1729` | `thread-model §4.5` |
+| `src/host/channel.js:1730` | `sendThreadTurn` |
 | `src/host/delivery.js:745` | `thread-model §4.5` |
 | `src/host/thread-queue.js:5` | `maxParallelThreads` |
 | `src/host/thread-queue.js:35` | `slots` |

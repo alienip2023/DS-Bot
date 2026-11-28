@@ -89,7 +89,8 @@ test('an approval waits in the inbox until it is answered; a DSH Agent one is no
   assert.ok(approval, 'the approval is listed')
   assert.deepEqual([approval.group, approval.botId, approval.tool], ['decide', 'writer', 'bash'])
   assert.deepEqual(added.map(item => item.kind), ['approval'])
-  rt.answerApproval(approval.ref, 'reject')
+  rt.answerApproval(approval.ref, 'reject', undefined, approval.sessionId)
+  await new Promise(resolve => setTimeout(resolve, 100))
   assert.equal(rt.inboxView().items.some(item => item.kind === 'approval'), false)
 })
 

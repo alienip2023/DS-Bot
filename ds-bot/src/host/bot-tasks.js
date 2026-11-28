@@ -1688,8 +1688,20 @@ export function install(rt) {
   // isolation, `mustIsolateHiddenWork`); otherwise a turn busy enough to move (a tool or job running, or past the
   // wait). In this fork a programmatic user message (IM, phone, routine via sendUser) still moves such a turn, and a
   // Desktop steer moves it only as `prefs.steerHandoff` says (interceptForegroundUserMessage).
-  function shouldMoveForeground(bot, sessionId, { forPeer = false } = {}) {
-    return forPeer ? shouldSpawnPeerTask(bot, sessionId) : mustIsolateHiddenWork(bot, sessionId) || shouldSpawnPeerTask(bot, sessionId, rt.backgroundWaitMs?.())
+  function shouldMoveForeground(bot, sessionId, { forPeer = false, forIM = false } = {}) {
+    if (forPeer) return shouldSpawnPeerTask(bot, sessionId)
+    if (mustIsolateHiddenWork(bot, sessionId)) return true
+    if (forIM) {
+      // IM/phone/routine sendUser: only move when tools or jobs are actually running,
+      // never on the time-threshold alone (the user's model-only turn stays on its session).
+      if (bot === undefined || sessionId === undefined || rt.readOnly?.() !== undefined) return false
+      const entry = rt.live.get(sessionId)
+      if (entry?.turn === undefined || entry.cut !== undefined) return false
+      if ((entry.toolCount ?? 0) > 0 || (entry.calls?.size ?? 0) > 0) return true
+      if ((rt.runningJobs?.(sessionId)?.length ?? 0) > 0) return true
+      return false
+    }
+    return shouldSpawnPeerTask(bot, sessionId, rt.backgroundWaitMs?.())
   }
 
   // Extracts the bounded user prompt from the currently running foreground turn,

@@ -328,7 +328,7 @@ export function install(rt, { probeSignIn: checkSignIn = probeSignIn, probeVersi
       // Read live scoped schemas from the active Agent when available so
       // `notifications/tools/list_changed` immediately serves fresh tools/list
       // without waiting for the next adapter.stream() turn.
-      const names = new Set([...rt.teamTools.map(def => def.name), 'approve_agent_action'])
+      const names = new Set([...(rt.teamTools ?? []).map(def => def.name), 'approve_agent_action'])
       const liveAgent = sessionId === undefined ? undefined : ctx.get?.('agents')?.get?.(sessionId)
       const schemas = liveAgent !== undefined && typeof ctx.tools?.schemas === 'function'
         ? ctx.tools.schemas(liveAgent)

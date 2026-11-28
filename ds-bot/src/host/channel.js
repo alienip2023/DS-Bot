@@ -245,7 +245,9 @@ export function createSendUser(rt, { textOfContent, ctx, ownThreadTarget } = {})
     // to move is read now, before anything awaits, so a message arriving meanwhile joins the same move.
     const ownerBotId = rt.chatOwners.get(sessionId)
     const owner = ownerBotId !== undefined && !rt.groupOwners.has(sessionId) && !rt.taskOwners?.has(sessionId) ? rt.botOf(ownerBotId) : undefined
-    const moving = owner !== undefined && rt.shouldMoveForeground?.(owner, sessionId) === true
+    // sendUser (IM, phone, routine) queues or steers on the existing session: hidden
+    // peer-work isolation still moves, but an ordinary model-only busy turn does not.
+    const moving = owner !== undefined && rt.shouldMoveForeground?.(owner, sessionId, { forIM: true }) === true
       ? rt.handoffForeground(owner, sessionId)
       : undefined
     let handoffFallback = false

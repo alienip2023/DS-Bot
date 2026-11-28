@@ -721,7 +721,7 @@ test('L1: Codex turn/start rejection rolls back handedId; ACP pre-event rejectio
         if (!line) continue
         const { id, method, params = {} } = JSON.parse(line)
         if (method === 'initialize') send({ jsonrpc: '2.0', id, result: {} })
-        else if (method === 'thread/start') send({ jsonrpc: '2.0', id, result: { thread: { id: 'th-1' } } })
+        else if (method === 'thread/start') send({ jsonrpc: '2.0', id, result: { thread: { id: 'th-1', sandbox: { type: 'workspaceWrite' } } } })
         else if (method === 'turn/start') {
           starts += 1
           if (starts === 2) {
@@ -827,7 +827,7 @@ test('Codex thread/inject_items failure leaves promptHash unchanged and retries 
         if (!line) continue
         const { id, method, params = {} } = JSON.parse(line)
         if (method === 'initialize') send({ jsonrpc: '2.0', id, result: {} })
-        else if (method === 'thread/start') send({ jsonrpc: '2.0', id, result: { thread: { id: 'th-1' } } })
+        else if (method === 'thread/start') send({ jsonrpc: '2.0', id, result: { thread: { id: 'th-1', sandbox: { type: 'workspaceWrite' } } } })
         else if (method === 'thread/inject_items') {
           injects += 1
           if (injects === 1) send({ jsonrpc: '2.0', id, error: { code: -32001, message: 'transient inject error' } })

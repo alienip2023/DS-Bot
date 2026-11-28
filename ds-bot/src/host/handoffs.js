@@ -36,6 +36,11 @@ const RESUME_RETRY_MS = 1_000
 export function install(rt) {
   const { ctx, state } = rt
   const works = () => (state.works ??= {})
+
+  const nextWorkRef = () => {
+    state.workSeq = (Number.isInteger(state.workSeq) && state.workSeq >= 0 ? state.workSeq : 0) + 1
+    return `W${state.workSeq}`
+  }
   // What came back, whole; state.json keeps the start of each.
   const whole = new Map()
   const save = () => void rt.save().catch(() => {})
@@ -182,15 +187,67 @@ export function install(rt) {
   // sender for this work, kept out of public views and Session logs.
   // No clock runs on a work (docs/plans/2026-11-24-work-model.md): a Bot that waits for the user's approval, or
   // a machine that is away, keeps the work open, and the status line says whom it waits for.
+  const normalizeRef = ref => {
+    const text = String(ref ?? '').trim()
+    const match = /^#?(w\d+)$/i.exec(text)
+    return match === null ? undefined : match[1].toUpperCase()
+  }
+  function resolveWork(refOrId) {
+    const key = String(refOrId ?? '').trim()
+    if (key === '') return undefined
+    const direct = own(works(), key)
+    if (direct !== undefined) return { id: key, work: direct }
+    const ref = normalizeRef(key)
+    if (ref === undefined) return undefined
+    for (const [id, work] of Object.entries(works())) {
+      if (work?.ref === ref) return { id, work }
+    }
+    return undefined
+  }
+  function closedWorkOf(refOrId) {
+    const key = String(refOrId ?? '').trim()
+    if (key === '') return undefined
+    const direct = own(closedWorks(), key)
+    if (direct !== undefined) return direct
+    const ref = normalizeRef(key)
+    if (ref === undefined) return undefined
+    return Object.values(closedWorks()).find(entry => entry?.ref === ref)
+  }
+
   function openWork(id, { from, to, parent, fromRoom, room, name, child, fromPart, imOrigin }) {
     if (!safeKey(id)) return undefined
     const above = parent === undefined ? undefined : own(works(), parent)
     const cleanOrigin = normalizeImOrigin(imOrigin)
-    works()[id] = { ...(from ? { from } : {}), ...(to ? { to } : {}), ...(room ? { room } : {}), ...(above ? { parent } : {}), ...(fromRoom ? { fromRoom } : {}), ...(fromPart ? { fromPart } : {}), ...(name ? { name } : {}), ...(child ? { child } : {}), ...(cleanOrigin ? { imOrigin: cleanOrigin } : {}), open: [], results: [], at: Date.now() }
+    const ref = from !== undefined && to !== undefined && room === undefined && child === undefined ? nextWorkRef() : undefined
+    works()[id] = { ...(from ? { from } : {}), ...(to ? { to } : {}), ...(room ? { room } : {}), ...(above ? { parent } : {}), ...(fromRoom ? { fromRoom } : {}), ...(fromPart ? { fromPart } : {}), ...(name ? { name } : {}), ...(child ? { child } : {}), ...(cleanOrigin ? { imOrigin: cleanOrigin } : {}), ...(ref !== undefined ? { ref } : {}), open: [], results: [], at: Date.now() }
     if (above !== undefined) above.open.push(id)
     log('open', id, { ...(from ? { from } : {}), ...(to ? { to } : {}), ...(room ? { room } : {}), ...(above ? { parent } : {}) })
     save()
     return works()[id]
+  }
+
+
+  function pausedWorksView() {
+    const out = []
+    for (const [id, work] of Object.entries(works())) {
+      if (work?.state !== 'paused' || work.paused === undefined) continue
+      out.push({
+        id,
+        ref: work.ref ?? null,
+        from: work.from ?? null,
+        fromName: nameOf(work.from) ?? null,
+        to: work.to ?? null,
+        toName: nameOf(work.to) ?? null,
+        reason: work.paused.reason,
+        kind: work.paused.kind,
+        goal: work.goal ?? headOf(work.paused.text ?? '', 200),
+        ...(work.paused.question ? { question: headOf(work.paused.question, 200) } : {}),
+        ...(work.paused.bounces !== undefined ? { bounces: work.paused.bounces } : {}),
+        ...(work.paused.rounds !== undefined ? { rounds: work.paused.rounds } : {}),
+        at: work.paused.at ?? work.at ?? Date.now(),
+      })
+    }
+    return out.sort((a, b) => a.at - b.at)
   }
 
   const workImOrigin = (id) => {
@@ -824,7 +881,7 @@ export function install(rt) {
   Object.assign(rt, {
     workOf, openWork, openRootWork, isRootWork, resumeWork, workTurnEnded, noteWorkPart: notePart, closeWork, dropWork,
     stopHandedOn, stopWaitingIn, isStoppedWork, chainOf, depthAfter, takenWork: taken, lateWork, answerMissed,
-    ownsWork: owns, waitsWork: waits, holdWork: hold, workAsker: askedBy,
+    ownsWork: owns, waitsWork: waits, holdWork: hold, workAsker: askedBy, pausedWorksView, resolveWork,
     workImOrigin, mergeWorkImOrigin, rememberImReplyOrigin, imReplyOrigin,
     answerText, upstreamOf, sameWork, forgetBotWork: forgetBot, statusOf, waitingView,
     settleSubWork, subWorkRun, nameSubWork, abandonWork, abandonedWork: takeAbandoned, notifyBlockedDelegators,

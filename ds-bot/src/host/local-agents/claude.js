@@ -302,6 +302,9 @@ class ClaudeSession {
         // init and with no turn.
         if (this.resumeId !== undefined && this.cliSessionId === undefined && event.is_error === true && event.num_turns === 0) {
           this.resumeState.rejected = true
+          // Mark missing here (before the process close event fires) so that
+          // rollbackUnread in the drain catch can detect it synchronously.
+          this.resumeMissing = true
           // It exits next and reads no more input.
           this.dead = true
           this.emit({ type: 'error', error: Object.assign(new Error(`${this.engine.engine.name} no longer has this conversation`), { code: 'LOCAL_AGENT_EXIT' }) })

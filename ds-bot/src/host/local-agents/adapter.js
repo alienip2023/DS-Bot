@@ -903,7 +903,13 @@ export class LocalAgentAdapter extends LlmAdapter {
       live.handedSessionAwaitingId = undefined
       // A CLI that refused an option or the saved conversation before it started never
       // ran the prompt: that is a refusal before the write, whatever the protocol saw.
-      const refused = session?.promptFileUnsupported === true || session?.resumeMissing === true || session?.forkUnsupported === true
+      // A missing conversation is 'before-accept' only when DS Bot will formally switch
+      // parts (switchOnResumeLost); without it, keep 'unknown' so unknownOutcome fires
+      // instead of a silent replay that starts a fresh unrelated session.
+      const switchOnResumeLost = this.deps.switchOnResumeLost?.(sessionId) === true
+      const refused = session?.promptFileUnsupported === true
+        || (session?.resumeMissing === true && switchOnResumeLost)
+        || session?.forkUnsupported === true
       live.resumeClass = refused ? 'before-accept' : session?.resumeClass ?? 'unknown'
       // A deferred Claude fork rejected `--fork-session` or could not find the parent
       // conversation before init: never resume the parent without `--fork-session`;
@@ -1230,6 +1236,12 @@ export class LocalAgentAdapter extends LlmAdapter {
       live.engineSession = await live.engine.open(sessionId, openArgs)
         .catch(async error => {
           this.rollbackUnread(live, sessionId, true)
+          // rollbackUnread marked the saved conversation as gone: escalate to
+          // the formal runtime-lost part switch instead of an unknownOutcome.
+          if (live.resumeLost === true && switchOnResumeLost) {
+            await this.closeLive(live)
+            throw new LlmError(`${live.spec.name} no longer has this conversation`, 'LOCAL_AGENT_SESSION_LOST')
+          }
           if (live.spec.kind === 'codex' || error?.code === 'LOCAL_AGENT_SESSION_LOST') await this.closeLive(live)
           const failure = toLlmError(error, live)
           throw live.spec.kind === 'claude' && failure.code !== 'LOCAL_AGENT_SESSION_LOST' ? unknownOutcome(failure) : failure
@@ -1318,6 +1330,23 @@ export class LocalAgentAdapter extends LlmAdapter {
         return
       }
       rememberInput()
+      // Recompute context/user split with the fresh-rebuild filter (clock-only as context):
+      // the non-fresh filter treated memory-updates as context-only, staging them on
+      // pendingContext rather than remaining.  With fresh=true they must land in remaining
+      // so renderRebuild can apply the memory-update replay cap to the unread input.
+      const isContextFresh = msg => msg.role === 'user' && isClockSource(msg.source)
+      const contextMessagesFresh = delta.filter(isContextFresh)
+      const usersFresh = delta.filter(msg => msg.role === 'user' && !isContextFresh(msg))
+      contextMessages.length = 0
+      contextMessages.push(...contextMessagesFresh)
+      remaining.length = 0
+      for (const msg of usersFresh) {
+        if (msg.source?.kind === 'bot') {
+          remaining.push(msg)
+        } else {
+          remaining.push(msg)
+        }
+      }
     }
     const contextSessionId = live.cliSessionId
     const startedFreshCli = freshCli || resumeDropped
@@ -1457,7 +1486,7 @@ export class LocalAgentAdapter extends LlmAdapter {
       }
       // The saved conversation is gone: inside DS Bot, escalate to a formal
       // `runtime-lost` part switch.
-      if (live.closeFailure === undefined && live.resumeLost === true) {
+      if (live.resumeLost === true) {
         live.resumeLost = false
         if (switchOnResumeLost) {
           await this.closeLive(live)
@@ -2212,6 +2241,26 @@ function stagePendingContext(live, messages) {
   }
 }
 
+async function renderDeltaBounded(contextText, remaining, resolveImage) {
+  // Bound memory-update messages in the remaining (unread) input using the same
+  // cap as the history pool: newest-first up to MEMORY_UPDATE_REPLAY_MAX / BYTES.
+  const dropped = new Set()
+  let memoryUpdates = 0
+  let memoryUpdateBytes = 0
+  for (let index = remaining.length - 1; index >= 0; index -= 1) {
+    const message = remaining[index]
+    if (message.source?.kind !== MEMORY_UPDATE_SOURCE) continue
+    const len = textOf(message.content).length + 8
+    if (memoryUpdates >= MEMORY_UPDATE_REPLAY_MAX || (memoryUpdates > 0 && memoryUpdateBytes + len > MEMORY_UPDATE_REPLAY_BYTES)) {
+      dropped.add(message)
+      continue
+    }
+    memoryUpdates += 1
+    memoryUpdateBytes += len
+  }
+  return renderDelta(contextText, remaining.filter(m => !dropped.has(m)), resolveImage)
+}
+
 async function renderDelta(contextText, remaining, resolveImage) {
   const parts = []
   if (contextText !== '') parts.push({ type: 'text', text: contextText })
@@ -2302,21 +2351,22 @@ async function renderRebuild(messages, system, resolveImage, { contextText, rema
     const message = history[index]
     const handoff = message.source?.handoff === true
     const maxText = openingPart && !handoff ? 2_000 : undefined
-    if (maxText !== undefined) {
-      const cost = Math.min(textOf(message.content).length, maxText) + 32
-      if (index < recent || cost > budget) continue
-      budget -= cost
-    }
     // Keep older text without re-reading older image attachments.
     const image = index >= recent || handoff
       ? resolveImage : () => ({ type: 'text', text: '[older image omitted]' })
-    entries.push(await renderTranscriptMessage(message, image, maxText))
+    const rendered = await renderTranscriptMessage(message, image, maxText)
+    // Byte accounting for every entry (text plus rendered tool-call notes), so a
+    // tool-call-heavy history is evicted from the oldest end, not only a long text.
+    const cost = rendered.reduce((sum, block) => sum + utf8Bytes(String(block.text ?? '')) + 32, 0)
+    if (cost > budget) continue
+    budget -= cost
+    entries.push(rendered)
   }
   parts.push(...entries.reverse().flat(), { type: 'text', text: 'End of background. Current input follows.' })
   if (openingPart) {
     if (contextText !== '') parts.push({ type: 'text', text: contextText })
     for (const message of remaining) parts.push(...await renderTranscriptMessage(message, resolveImage))
-  } else parts.push(...await renderDelta(contextText, remaining, resolveImage))
+  } else parts.push(...await renderDeltaBounded(contextText, remaining, resolveImage))
   return mergeTextBlocks(parts)
 }
 
