@@ -8,7 +8,7 @@ export const EXTRA_COLORS = ['charcoal', 'graphite', 'rose', 'sky', 'tangerine',
 // Renamed color ids, so a Bot saved with an old one keeps its color (LEGACY: old id → new id).
 export const LEGACY_COLORS = { kimi: 'charcoal', zai: 'graphite', minimax: 'rose', stepfun: 'sky', mimo: 'tangerine', qwen: 'cobalt' }
 // Renamed theme ids, so a saved choice keeps its look (LEGACY: old id → new id).
-export const LEGACY_THEMES = { grok: 'mono' }
+export const LEGACY_THEMES = { grok: 'mono', celadon: 'fei' }
 
 // Threads: one Bot can keep several saved conversations (docs/thread-model.md). The team
 // file calls the schema version that introduced `state.threads` 2. A Bot's default Main
@@ -88,6 +88,7 @@ export const AGENT_SESSION_TITLE_MAX = 80
 // served to one session can be shorter.
 export const TEAM_TOOLS = [
   'list_bots', 'list_remote_tasks', 'message_bot', 'stop_bot', 'create_bot', 'update_bot', 'delete_bot', 'list_bot_models',
+  'delegate_work', 'note_bot', 'ask_back', 'answer_work', 'cancel_work',
   'create_group', 'update_group', 'delete_group', 'group_todo', 'post_to_group', 'ask_user', 'show_view', 'prepare_ds_bot_issue',
   'request_secret', 'list_secrets', 'group_relay', 'read_own_chat',
   'read_group_chat', 'bot_remember', 'bot_forget', 'bot_recall', 'read_browser', 'read_document',
@@ -105,6 +106,7 @@ export const TEAM_TOOLS = [
 // when checking Bot-to-Bot or group ping-pong loops.
 export const NON_WORK_TOOLS = new Set([
   'message_bot', 'stop_bot',
+  'delegate_work', 'note_bot', 'ask_back', 'answer_work', 'cancel_work',
   'list_bots', 'list_bot_models', 'post_to_group', 'group_relay',
   'bot_remember', 'bot_forget', 'bot_recall', 'remember', 'forget', 'recall',
   'read_own_chat', 'read_group_chat', 'task_list', 'task_read',
@@ -139,6 +141,26 @@ export const USER_UI_TOOLS = new Set([
   'mail_send', 'browser_handoff', 'computer_handoff', 'present_file',
 ])
 
+// Short wrap-up / acknowledgement / standby texts used to detect ACK-of-ACK ping-pong
+// immediately (on bounce #1) while allowing substantive multi-step pure-LLM work.
+// Uses two flat, non-nested O(n) scans to guarantee zero catastrophic backtracking.
+const ACK_CORE_TOKEN = /(?:收到|好的|好|明白|明白了|了解|了解了|知道了|没问题|谢谢|多谢|感谢|辛苦了|辛苦|收工|待命|完毕了|完毕|完|静默|无待办|没有待办|不用再回|不用回|无需回复|已知悉|\b(?:okay|ok|got\s+it|roger|acknowledged|ack|noted|thank\s+you|thanks|done|all\s+set|standing\s+by|standby|no\s+action|no\s+reply|wrapped\s+up|good\s+to\s+go)\b)/gi
+const ACK_FILLER_TOKEN = /(?:我也|我已|我|这边|这里|一切|全部|继续|没有|不用|无需|待办|嗯|行|已|先|就|都|[，,。.!！、；;：:~～\s]+)/gi
+export const isAckLikeText = text => {
+  const trimmed = String(text ?? '').trim()
+  if (trimmed === '' || trimmed.length > 140) return false
+  if (isSilentTurnText(trimmed)) return true
+  ACK_CORE_TOKEN.lastIndex = 0
+  if (!ACK_CORE_TOKEN.test(trimmed)) return false
+  ACK_CORE_TOKEN.lastIndex = 0
+  const stripped = trimmed.replace(ACK_CORE_TOKEN, ' ').replace(ACK_FILLER_TOKEN, '')
+  return stripped === ''
+}
+
+// Max ask_back clarification rounds on one delegated work before pausing for the user.
+export const WORK_ASK_BACK_LIMIT = 2
+// Idle/rework pair loop entries expire after this much inactivity between two Bots.
+export const PAIR_LOOP_TTL_MS = 10 * 60_000
 // Consecutive automatic admin wakes with no goal progress before the goal waits
 // for the user instead of waking the admin again.
 export const GOAL_IDLE_NUDGES = 2
@@ -176,6 +198,16 @@ export const ROOM_IDLE_RELAY_LIMIT = 2
 // Consecutive Bot-to-Bot relays with no work tool at all before pausing even when
 // each turn rephrases its chatter.
 export const ROOM_ZERO_WORK_RELAY_LIMIT = 4
+// Runaway single-Bot & multi-Bot pause guards: pause visibly so the user can see and
+// click Continue (or steer), never silently drop work.
+export const CONSECUTIVE_TOOL_ERROR_PAUSE = 8
+export const REPEAT_TOOL_CALL_PAUSE = 12
+export const REPEAT_TOOL_CYCLE_PAUSE = 6
+export const AUTO_SWITCH_RESUME_LIMIT = 3
+export const LOCAL_AGENT_SESSION_LOST_LIMIT = 2
+export const GOAL_STAGE_REWORK_LIMIT = 4
+export const ALWAYS_RETRY_MAX = 10
+export const ALWAYS_AUX_RETRY_MAX = 6
 
 export const OWN_CHAT_LINE_MAX = 400
 // The message an anchor points at is shown whole (up to this), so a long draft takes

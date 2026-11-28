@@ -155,7 +155,7 @@ export default {
       setRuntime({ contextTokens: next })
     }
 
-    const deliver = async (msg) => {
+    const deliver = async (msg, msgIndex = 0, pollCursor = '') => {
       const userId = String(msg.from_user_id ?? '')
       if (userId === '') return
       remember(userId, msg.context_token)
@@ -190,11 +190,24 @@ export default {
           if (bytes !== undefined && bytes.length > 0) files.push({ name, data: bytes })
         }
       }
+      const explicitId = [msg.client_id, msg.message_id, msg.msg_id, msg.msgid, msg.seq]
+        .find(value => (typeof value === 'string' && value.trim() !== '') || (typeof value === 'number' && Number.isFinite(value)))
+      const joinedText = texts.join('\n').trim()
+      const rawItems = (msg.item_list ?? []).map(item => [
+        item?.type ?? 0,
+        item?.text_item?.text ?? item?.voice_item?.text ?? '',
+        item?.image_item?.media?.encrypt_query_param ?? item?.image_item?.media?.file_id ?? item?.image_item?.aeskey ?? '',
+        item?.file_item?.file_name ?? '',
+        item?.file_item?.media?.encrypt_query_param ?? item?.file_item?.media?.file_id ?? item?.file_item?.aeskey ?? '',
+      ])
+      const messageId = explicitId !== undefined
+        ? String(explicitId)
+        : `wx:${createHash('sha256').update(JSON.stringify([userId, pollCursor, msgIndex, msg.create_time ?? msg.timestamp ?? '', joinedText, rawItems])).digest('hex').slice(0, 24)}`
       await handlers.onMessage({
         chat: { key: userId, kind: 'direct', title: '' },
         sender: { id: userId, name: userId },
-        text: texts.join('\n').trim(), images, files,
-        mentioned: false, messageId: String(msg.client_id ?? msg.message_id ?? ''),
+        text: joinedText, images, files,
+        mentioned: false, messageId,
         quote: quotedOf(msg),
       })
     }
@@ -295,13 +308,16 @@ export default {
           pollAttempt = 0
           clearTransient()
           handlers.onStatus({ state: 'ready' })
-          for (const msg of answer.msgs ?? []) {
+          const pollCursor = runtime().cursor ?? ''
+          const msgs = answer.msgs ?? []
+          for (let msgIndex = 0; msgIndex < msgs.length; msgIndex += 1) {
             if (stopped || generation !== gen) return
-            await deliver(msg).catch(error => env.log?.warn?.('ds-bot im: weixin message failed: %s', error?.message ?? error))
+            await deliver(msgs[msgIndex], msgIndex, pollCursor).catch(error => env.log?.warn?.('ds-bot im: weixin message failed: %s', error?.message ?? error))
           }
           if (stopped || generation !== gen) return
-          if (answer.get_updates_buf !== undefined && answer.get_updates_buf !== runtime().cursor) {
-            setRuntime({ cursor: String(answer.get_updates_buf) })
+          const nextCursor = [answer.get_updates_buf, answer.sync_buf].find(value => typeof value === 'string' && value.trim() !== '')
+          if (nextCursor !== undefined && nextCursor !== runtime().cursor) {
+            setRuntime({ cursor: nextCursor })
           }
         }
       } finally {
@@ -547,6 +563,12 @@ const chunk = (text, limit) => {
       const space = rest.lastIndexOf(' ', at)
       if (space > limit / 2) at = space
     }
+    // The limit and the cut are both UTF-16 offsets, so the cut can land between the two
+    // halves of an astral character. WeChat then receives a lone surrogate and draws a
+    // replacement character for each half; stepping back one unit keeps the pair whole in
+    // the next chunk, the same way `chunkMarkdown` does it for the other platforms.
+    const before = rest.charCodeAt(at - 1)
+    if (at > 1 && before >= 0xd800 && before <= 0xdbff) at -= 1
     chunks.push(rest.slice(0, at))
     rest = rest.slice(at).replace(/^\s+/, '')
   }

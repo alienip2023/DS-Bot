@@ -23,7 +23,7 @@ const assistantText = text => ({ message: { role: 'assistant', content: [{ type:
 const settle = async (check, ms = 4000, label = 'condition not reached') => {
   const until = Date.now() + ms
   while (!check() && Date.now() < until) await realDelay(10)
-  assert.ok(check(), label)
+  assert.ok(check(), typeof label === 'function' ? label() : label)
 }
 
 function makeTeam(over = {}) {
@@ -354,6 +354,137 @@ test('F4 (turns.js): deferred later/joined preserve attachments and defer takenW
   assert.deepEqual(rt.state.works.w_parent.open, [], 'takenWork must clear open once owning turn consumes deferred reply')
 })
 
+async function checkDeferredRecovery(t, rejectedBeforeAccept) {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const home = mkdtempSync(join(tmpdir(), 'ds-bot-f4-resume-'))
+  t.after(() => rmSync(home, { recursive: true, force: true, maxRetries: 5 }))
+
+  const img = { attachmentId: 'att-img-2', mediaType: 'image/png', name: 'snap.png' }
+  const team = makeTeam({
+    works: {
+      w_parent: { from: 'a', to: 'b', open: ['w_child'], results: [], at: 1 },
+      w_ask: { from: 'b', to: 'c', state: 'need_input', question: 'Which env?', open: [], results: [], at: 2 },
+      w_ans: { from: 'a', to: 'b', state: 'open', open: [], results: [], at: 3 },
+      w_paused: { from: 'a', to: 'b', state: 'paused', paused: { reason: 'idle_loop', kind: 'delegate', text: 'paused' }, open: [], results: [], at: 4 },
+      w_open_not_need_input: { from: 'b', to: 'c', state: 'open', open: [], results: [], at: 5 },
+      w_need_input_not_open: { from: 'a', to: 'b', state: 'need_input', open: [], results: [], at: 6 },
+    },
+  })
+  // Seed inflight.json:
+  // 1) dm-b had an ordinary user turn (trigger === undefined, turn: 1) that COMPLETED in DSH log while offline,
+  //    having absorbed a steered reply (for w_parent) + ask_back (for w_ask) + answer (for w_ans).
+  // 2) dm-c had an interrupted turn that recorded a steered request. Only an explicit
+  //    pre-accept rejection permits replay of the primary request.
+  // 3) queued entries for dm-b include paused, mismatched ask_back, mismatched answer -> all skipped; valid one resent.
+  team.works.w_cut_primary = { from: 'a', to: 'c', open: [], results: [], at: 7 }
+  team.works.w_cut_steered = { from: 'b', to: 'c', open: [], results: [], at: 8 }
+  const queuedAt = Date.now()
+  writeFileSync(join(home, 'inflight.json'), JSON.stringify({
+    turns: {
+      'dm-b': { botId: 'b', turn: 1, since: 10 },
+      'dm-c': {
+        botId: 'c', turn: 1, since: 10,
+        trigger: { role: 'request', exchangeId: 'w_cut_primary', senderSessionId: 'a' },
+        ...(rejectedBeforeAccept ? { attempted: true, rejected: true, promptSubmitted: false, producedOutput: false } : {}),
+      },
+    },
+    queued: {
+      'dm-b': [
+        { at: queuedAt, args: { fromId: 'a', toId: 'b', text: 'stale paused', role: 'request', exchangeId: 'w_paused' } },
+        { at: queuedAt + 1, args: { fromId: 'c', toId: 'b', text: 'stale ask', role: 'ask_back', askWork: 'w_open_not_need_input', exchangeId: 'q-stale-ask' } },
+        { at: queuedAt + 2, args: { fromId: 'a', toId: 'b', text: 'stale ans', role: 'answer', work: 'w_need_input_not_open', exchangeId: 'q-stale-ans' } },
+        { at: queuedAt + 3, args: { fromId: 'c', toId: 'b', text: 'child done for paused parent', role: 'reply', work: 'w_paused', replyTo: 'w_child_of_paused', exchangeId: 'ex-child-for-paused-parent' } },
+      ],
+    },
+  }))
+
+  const logs = new Map([
+    ['dm-b', [
+      { type: 'turn/start', seq: 1, data: { turn: 1 } },
+      { type: 'user/message', seq: 2, data: { source: { kind: 'user' }, content: textBlock('ordinary user chat') } },
+      {
+        type: 'user/message', seq: 3,
+        data: {
+          source: { kind: SOURCE_KIND, role: 'reply', exchangeId: 'ex-steered-reply', senderSessionId: 'c', senderName: 'Reviewer', work: 'w_parent', replyTo: 'w_child' },
+          content: [{ type: 'text', text: '[Work completed by Reviewer]\nChild finished' }, { type: 'image', attachment: img }],
+        },
+      },
+      {
+        type: 'user/message', seq: 4,
+        data: {
+          source: { kind: SOURCE_KIND, role: 'ask_back', exchangeId: 'ex-steered-ask', senderSessionId: 'c', senderName: 'Reviewer', askWork: 'w_ask' },
+          content: textBlock('[Work · Reviewer asks]\nWhich env?'),
+        },
+      },
+      {
+        type: 'user/message', seq: 5,
+        data: {
+          source: { kind: SOURCE_KIND, role: 'answer', exchangeId: 'ex-steered-ans', senderSessionId: 'a', senderName: 'Chief', work: 'w_ans' },
+          content: textBlock('[Work · Chief answered]\nUse staging'),
+        },
+      },
+      { type: 'assistant/message', seq: 6, data: { message: { content: textBlock('Done answering user.') } } },
+      { type: 'turn/end', seq: 7, data: { turn: 1, reason: { kind: 'completed' } } },
+    ]],
+    ['dm-c', [
+      { type: 'turn/start', seq: 1, data: { turn: 1 } },
+      { type: 'user/message', seq: 2, data: { source: { kind: SOURCE_KIND, role: 'request', exchangeId: 'w_cut_primary', senderSessionId: 'a', senderName: 'Chief' }, content: textBlock('[Work from Chief]\nPrimary cut work') } },
+      { type: 'user/message', seq: 3, data: { source: { kind: SOURCE_KIND, role: 'request', exchangeId: 'w_cut_steered', senderSessionId: 'b', senderName: 'Writer' }, content: textBlock('[Work from Writer]\nSteered during cut turn') } },
+    ]],
+  ])
+
+  const host = await startHost(t, { home, team, logs })
+  t.mock.timers.tick(3000)
+  const observed = () => JSON.stringify(['dm-b', 'dm-c'].map(id => [id, host.agents.get(id)?.calls.map(([kind, msg]) => [kind, msg.source?.role, msg.source?.exchangeId])]))
+  const expectedCutCalls = rejectedBeforeAccept ? 2 : 1
+  await settle(() => (host.agents.get('dm-b')?.calls.length ?? 0) >= 4 && (host.agents.get('dm-c')?.calls.length ?? 0) >= expectedCutCalls, 4000, observed)
+
+  const bMsgs = host.agents.get('dm-b').calls.map(([, m]) => m)
+  // Ordinary user turn was completed -> MUST NOT be re-run as role: 'resume'!
+  assert.equal(bMsgs.some(m => m.source?.role === 'resume'), false, 'completed ordinary user turn must not re-run via resumeTurn')
+  // All 3 deferred messages from the completed user turn were recovered with attachments!
+  const recReply = bMsgs.find(m => m.source?.exchangeId === 'ex-steered-reply')
+  assert.ok(recReply && recReply.source.deferred === true)
+  assert.deepEqual(recReply.content.filter(b => b.type === 'image').map(b => b.attachment), [img])
+  assert.ok(bMsgs.some(m => m.source?.exchangeId === 'ex-steered-ask' && m.source?.role === 'ask_back' && m.source?.deferred === true))
+  assert.ok(bMsgs.some(m => m.source?.exchangeId === 'ex-steered-ans' && m.source?.role === 'answer' && m.source?.deferred === true))
+  // Stale paused request / mismatched ask_back / mismatched answer were filtered out by resendQueued,
+  // while a child reply for a paused parent work MUST still be resent so it does not strand parent.open!
+  assert.equal(bMsgs.some(m => ['w_paused', 'q-stale-ask', 'q-stale-ans'].includes(m.source?.exchangeId)), false, 'stale queued items must not be resent')
+  assert.ok(bMsgs.some(m => m.source?.exchangeId === 'ex-child-for-paused-parent' && m.source?.role === 'reply'), 'child reply for paused parent work must still be resent')
+
+  // A steered request is recovered in both cases; the primary has its own replay guard.
+  const cMsgs = host.agents.get('dm-c').calls.map(([, m]) => m)
+  const primary = cMsgs.filter(m => m.source?.exchangeId === 'w_cut_primary')
+  assert.equal(primary.length, rejectedBeforeAccept ? 1 : 0)
+  if (rejectedBeforeAccept) assert.equal(primary[0].source.resumed, true)
+  assert.equal(cMsgs.filter(m => m.source?.exchangeId === 'w_cut_steered' && m.source?.deferred === true).length, 1)
+
+  // Atomic inflight.json write leaves no leftover .tmp files once async persist settles.
+  await host.stop()
+  assert.equal(readdirSync(home).filter(name => name.startsWith('inflight.json.') && name.endsWith('.tmp')).length, 0, 'atomic inflight.json write must leave no leftover .tmp files')
+  assert.doesNotThrow(() => JSON.parse(readFileSync(join(home, 'inflight.json'), 'utf8')))
+}
+
+test('F4 (resume.js): deferred deliveries recover and an explicitly rejected primary request resumes once', t => checkDeferredRecovery(t, true))
+test('F4 (resume.js): deferred deliveries recover without replaying a primary request of unknown acceptance', t => checkDeferredRecovery(t, false))
+
+test('startup orphan recovery removes previous work but leaves a newly opened remote delegation alone', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const team = makeTeam({ works: { old: { from: 'a', to: 'c', open: [], results: [], at: 1 } } })
+  const { rt } = await startHost(t, { team })
+  const cancelled = []
+  t.mock.method(rt.link, 'cancel', id => { cancelled.push(id) })
+  const parent = rt.openRootWork({ to: 'a', part: 'a' })
+  const child = rt.openWork('new-remote', { from: 'a', to: 'b', parent })
+  child.remote = { nodeId: 'fixture-node' }
+  t.mock.timers.tick(3000)
+  await settle(() => rt.state.works.old === undefined)
+  assert.deepEqual(rt.state.works[parent].open, ['new-remote'])
+  assert.equal(rt.state.works['new-remote'], child)
+  assert.deepEqual(cancelled, [])
+})
+
 test('G-08 & G-09: unseen completed/failed group turns reconcile once, double-interrupt resets tasks, aborted turn keeps non-stopped joined room call', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const home = mkdtempSync(join(tmpdir(), 'ds-bot-g08-g09-'))
@@ -599,8 +730,8 @@ test('F10 + State Hygiene + Weixin: deleteBot/startup prune requests & pair ledg
   host.emit(newestTask.sessionId, 'turn/start', { turn: 1 })
   host.emit(newestTask.sessionId, 'assistant/message', assistantText('Done 51'))
   host.emit(newestTask.sessionId, 'turn/end', { turn: 1, reason: { kind: 'completed' } })
-  await settle(() => archiveCalls.some(c => c.sid === 'old-task-sess-0'), 2000, 'pruneSettledTasks must archive pruned task session')
-  await settle(() => archiveCalls.some(c => c.sid === 'old-task-seg-0'), 2000, 'pruneSettledTasks must archive pruned task segments too')
+  await settle(() => archiveCalls.some(c => c.sid === 'old-task-sess-0'), 4000, 'pruneSettledTasks must archive pruned task session')
+  await settle(() => archiveCalls.some(c => c.sid === 'old-task-seg-0'), 4000, 'pruneSettledTasks must archive pruned task segments too')
   assert.equal(archiveCalls.find(c => c.sid === 'old-task-seg-0').opts?.stopActivity, undefined, 'archiving a pruned task must not forcibly stop Session activity')
 
   // 2) F10: feed.js skips taskOwners events & streams, and displayItems/feed/tails suppress silent [PASS] on Bot-triggered own-chat turns!

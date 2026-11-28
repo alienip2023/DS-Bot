@@ -42,18 +42,18 @@ test('retryDecision: rate_limit 直接 stop，不管有无 fallback', () => {
   assert.equal(retryDecision(f, {}, 1).reason, 'rate_limit')
 })
 
-test('retryDecision: 有 fallback 时 fallback 优先于预算', () => {
+test('retryDecision: fallback cannot exceed the total attempt budget', () => {
   const f = { kind: 'server', retryable: true }
   const result = retryDecision(f, { fallback: ['p/m2', 'p/m3'], maxAttempts: 1 }, 1)
-  assert.equal(result.action, 'fallback')
-  assert.equal(result.fallbackRef, 'p/m2')
+  assert.equal(result.action, 'stop')
 })
 
-test('retryDecision: fallback 耗尽后用最后一个', () => {
+test('retryDecision: fallback routes are not repeated after exhaustion', () => {
   const f = { kind: 'server', retryable: true }
-  const result = retryDecision(f, { fallback: ['p/m2'], fallbackIndex: 5 }, 6)
-  assert.equal(result.action, 'fallback')
-  assert.equal(result.fallbackRef, 'p/m2')
+  const config = { fallback: ['p/m2', 'p/m3'], maxAttempts: 5 }
+  assert.equal(retryDecision(f, config, 1).fallbackRef, 'p/m2')
+  assert.equal(retryDecision(f, config, 2).fallbackRef, 'p/m3')
+  assert.equal(retryDecision(f, config, 3).action, 'stop')
 })
 
 test('retryDecision: 无 fallback + retryable + 在预算内 → retry', () => {

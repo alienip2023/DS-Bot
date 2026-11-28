@@ -8,13 +8,14 @@ import { spawnSync } from 'node:child_process'
 import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import { install as installStore } from '../src/host/store.js'
 import { install as installApprovals } from '../src/host/approvals.js'
 
 const CHILD = fileURLToPath(new URL('./fixtures/approval-crash-child.js', import.meta.url))
-const RESOLVE = fileURLToPath(new URL('./harness-resolve.mjs', import.meta.url))
+const RESOLVE = new URL('./harness-resolve.mjs', import.meta.url).href
 
 function host(t, saved) {
   const home = fs.mkdtempSync(join(tmpdir(), 'ds-bot-persist-'))
@@ -62,9 +63,10 @@ test('C-1 the answer and the engine resolve only after state.json holds the resu
   await h.rt.save({ required: true })
   let release
   const gate = new Promise(r => { release = r })
-  let held = false
+  let reached
+  const held = new Promise(r => { reached = r })
   const restore = patchRename(original => async (from, to) => {
-    if (to === h.statePath && !held) { held = true; await gate }
+    if (to === h.statePath) { reached(); await gate }
     return original(from, to)
   })
   t.after(restore)
@@ -73,13 +75,20 @@ test('C-1 the answer and the engine resolve only after state.json holds the resu
   const order = []
   outcome.then(value => order.push(['engine', value, h.onDisk().approvalResults?.[entry.fingerprint]?.result]))
   const answered = h.rt.answerApproval(entry.id, 'allow', bind(entry)).then(() => order.push(['ack', h.onDisk().approvalResults?.[entry.fingerprint]?.result]))
-  for (let i = 0; i < 20 && !held; i += 1) await new Promise(r => setImmediate(r))
-  assert.equal(held, true)
-  await new Promise(r => setTimeout(r, 20))
-  assert.deepEqual(order, [], 'nothing published while the write is pending')
-  assert.equal(h.settled.length, 0)
-  assert.equal(h.onDisk().approvalResults?.[entry.fingerprint], undefined)
-  release()
+  const timeout = new AbortController()
+  try {
+    await Promise.race([
+      held,
+      answered.then(() => assert.fail('answer resolved without holding the state rename')),
+      delay(5_000, undefined, { signal: timeout.signal }).then(() => assert.fail('state rename did not start')),
+    ])
+    assert.deepEqual(order, [], 'nothing published while the write is pending')
+    assert.equal(h.settled.length, 0)
+    assert.equal(h.onDisk().approvalResults?.[entry.fingerprint], undefined)
+  } finally {
+    timeout.abort()
+    release()
+  }
   await answered
   await outcome
   assert.deepEqual(order, [['engine', 'allowed-once', 'allowed-once'], ['ack', 'allowed-once']])
@@ -129,14 +138,20 @@ test('C-4 a failed save settles cancelled and no allow is ever persisted or publ
   const h = host(t)
   await h.rt.load()
   await h.rt.save({ required: true })
-  fs.mkdirSync(`${h.statePath}.${process.pid}.tmp`)
   const outcome = h.ask()
   const [entry] = h.rt.approvalsView()
-  await assert.rejects(h.rt.answerApproval(entry.id, 'allow', bind(entry)), { code: 'EISDIR' })
+  const restore = patchRename(original => async (from, to) => {
+    if (to === h.statePath) throw Object.assign(new Error('Injected state rename failure'), { code: 'EIO' })
+    return original(from, to)
+  })
+  try {
+    await assert.rejects(h.rt.answerApproval(entry.id, 'allow', bind(entry)), { code: 'EIO' })
+  } finally {
+    restore()
+  }
   assert.equal(await outcome, 'cancelled')
   assert.deepEqual(h.settled.map(s => s.outcome), ['cancelled'])
   assert.notEqual(h.onDisk().approvalResults?.[entry.fingerprint]?.result, 'allowed-once')
-  fs.rmSync(`${h.statePath}.${process.pid}.tmp`, { recursive: true })
   await h.rt.save({ required: true, force: true })
   assert.equal(h.onDisk().approvalResults[entry.fingerprint].result, 'cancelled')
   assert.throws(() => h.rt.answerApproval(entry.id, 'allow', bind(entry)), stale)
@@ -172,10 +187,20 @@ function crash(t, point) {
   const home = fs.mkdtempSync(join(tmpdir(), 'ds-bot-crash-'))
   t.after(() => fs.rmSync(home, { recursive: true, force: true }))
   const run = spawnSync(process.execPath, ['--import', RESOLVE, CHILD, home, point], { encoding: 'utf8', timeout: 60_000 })
-  const lines = run.stdout.split('\n')
-  const base = JSON.parse(JSON.parse(lines.find(l => l.startsWith('BASE ')).slice(5)))
-  const fp = lines.find(l => l.startsWith('FP ')).slice(3)
-  return { home, run, base, fp, acked: lines.includes('ACK'), ackBeforeRename: lines.includes('ACK') && lines.indexOf('ACK') < lines.indexOf('RENAME') }
+  assert.ifError(run.error)
+  const lines = run.stdout.split(/\r?\n/)
+  assert.ok(lines.includes(`CRASH ${point}`), run.stderr || 'child did not reach the requested crash point')
+  if (process.platform === 'win32') {
+    assert.equal(run.status, 1)
+  } else {
+    assert.equal(run.signal, 'SIGKILL')
+  }
+  const baseline = lines.find(l => l.startsWith('BASE '))
+  const fingerprint = lines.find(l => l.startsWith('FP '))
+  assert.ok(baseline && fingerprint, 'child must write the baseline and approval fingerprint before crashing')
+  const base = JSON.parse(JSON.parse(baseline.slice(5)))
+  const fp = fingerprint.slice(3)
+  return { home, base, fp, acked: lines.includes('ACK'), ackBeforeRename: lines.includes('ACK') && lines.indexOf('ACK') < lines.indexOf('RENAME') }
 }
 async function restart(t, home) {
   const statePath = join(home, 'state.json')
@@ -189,8 +214,7 @@ async function restart(t, home) {
 }
 
 test('K-1 killed after the temp write: a fresh start loads the old complete file', async (t) => {
-  const { home, run, base, fp, acked } = crash(t, 'after-temp-write')
-  assert.equal(run.signal, 'SIGKILL')
+  const { home, base, fp, acked } = crash(t, 'after-temp-write')
   assert.equal(acked, false)
   const rt = await restart(t, home)
   assert.equal(rt.readOnly(), undefined)
@@ -200,8 +224,7 @@ test('K-1 killed after the temp write: a fresh start loads the old complete file
 })
 
 test('K-2 killed between the lock check and the rename: old complete data', async (t) => {
-  const { home, run, base, fp, acked } = crash(t, 'before-rename')
-  assert.equal(run.signal, 'SIGKILL')
+  const { home, base, fp, acked } = crash(t, 'before-rename')
   assert.equal(acked, false)
   const rt = await restart(t, home)
   assert.equal(rt.state.revision, base.revision)
@@ -209,9 +232,8 @@ test('K-2 killed between the lock check and the rename: old complete data', asyn
 })
 
 test('K-3 killed after the rename, before the ack: new complete data and no ack', async (t) => {
-  const { home, run, base, fp, acked, ackBeforeRename } = crash(t, 'after-rename')
+  const { home, base, fp, acked, ackBeforeRename } = crash(t, 'after-rename')
   assert.equal(ackBeforeRename, false, 'the ack must not precede the state rename')
-  assert.equal(run.signal, 'SIGKILL')
   assert.equal(acked, false, 'the ack must come after the rename, so a kill there means no ack')
   const rt = await restart(t, home)
   assert.equal(rt.state.revision, base.revision + 1)

@@ -2,7 +2,7 @@
 
 Each Bot has its own conversation. In a group it speaks from a separate conversation. A group has members, an optional admin, shared memory and an optional shared working folder. Group work can use more model calls than one Bot.
 
-To change a group's photo, open **Settings → Team → Group chats**, select the group and open its avatar editor. Use **Upload** or **Library**, or remove the photo to show members' avatars again. This is a settings action, not an `update_group` tool argument.
+To change a group's photo, open **Settings → Team → Group chats**, select the group and open its avatar editor. Use **Upload** or **Library**, or remove the photo to show members' avatars again. A Bot can do the same through the avatar argument of `create_group` and `update_group`: a local image path or a data URL, PNG/JPEG/WebP/GIF, up to 120 KB, and an empty string removes it.
 
 ## UI and tools
 
@@ -11,7 +11,7 @@ Use **Settings → Group chats** to inspect and change groups. In a chat's **+**
 - `message_bot` delegates to another Bot. Use it only for work or useful facts, not acknowledgements. Replies arrive later; do not poll. In a group it reaches only that group's members.
 - `create_group` is Main Bot only. It joins the creator as admin unless another admin is named.
 - `update_group` changes name, notice, members, admin, reply mode or work_dir. A Main Bot can manage any group; the group's admin can manage its group, but only a Main Bot can change its working folder or sidebar section.
-- `post_to_group` posts from outside a group. A Main Bot's or the admin's post starts a discussion. Another member's post calls the members it names with @Name. A Main Bot can post to any group.
+- `post_to_group` posts from outside a group. A plain update is visible without waking anyone. `intent: "notice"` keeps even @names passive. Use `intent: "request"` to start a discussion as Main Bot or admin, or name the members who should answer. A Main Bot can post to any group.
 - `delete_group` archives a group and is Main Bot only. Use it only when the user asks.
 - `group_goal` manages staged goals. The admin normally runs it. Load goal-grill before starting: align objective, acceptance, constraints, stages and assigned tasks with the user.
 - `group_task` manages the group's shared task board. `group_todo` manages its checklist. These are not scheduled reminders.

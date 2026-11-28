@@ -19,6 +19,7 @@
 //   建群 名: A, B · 群发[回报] 名: 消息 · 改群 名 公告|管理员|模式|加|踢: 值 · 删群 名
 //   看群 名 (read_group_chat) · 转告 名: 消息, also over several lines (message_bot) · 搜索：查询1 | 查询2 (web_search)
 //   进目录 路径 (working_directory with cd)
+//   代码模式烟测 (run_code prints CODE_MODE_OK through bash, if offered)
 //   插话 名: 消息 (message_bot when "now") · 排队 名: 消息 (message_bot when "queue") · 叫停 名: 原因 (stop_bot)
 //   In a message from a Bot: 转告 名: 消息 (hands it on with message_bot) · 慢慢做 N (answers after N seconds)
 //   长文 N / long N (N×1000 characters) · 长任务 N [K] (N steps of K×1000, default 4)
@@ -56,7 +57,7 @@
 // POST /api/web_search is an Ollama-shaped search API for the searchApis config.
 import { createServer } from 'node:http'
 import { createHash } from 'node:crypto'
-import { appendFileSync, mkdirSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -114,16 +115,48 @@ function isSummary(body) {
 function decide(body) {
   const system = systemText(body.system) + '\n' + (body.messages ?? []).filter(m => m.role === 'system').map(m => textOf(m.content)).join('\n')
   const tools = new Set((body.tools ?? []).map(entry => entry.name))
-  // Clock snapshots and a group's memory snapshot are context, not a new scripted user command.
+  // Clock snapshots and conversation-layer memory snapshots/updates are context, not a new scripted user command.
   const messages = (body.messages ?? []).filter(m => m.role !== 'system').map(message => {
     if (message.role !== 'user') return message
-    const isClock = value => value.startsWith('Current time: ') || value.startsWith('Time sampled while preparing turn ') || value.startsWith('## Group memory, shared by the members of this group chat')
-    const content = typeof message.content === 'string' ? (isClock(message.content) ? '' : message.content)
-      : message.content.filter(block => block.type !== 'text' || !isClock(block.text))
+    const isContext = value => value.startsWith('Current time: ')
+      || value.startsWith('Time sampled while preparing turn ')
+      || value.startsWith('## Group memory, shared by the members of this group chat')
+      || value.startsWith('## Your memory (MEMORY.md)')
+      || value.startsWith('## Memory update')
+      || value.startsWith('## Possibly relevant memory')
+    const content = typeof message.content === 'string' ? (isContext(message.content) ? '' : message.content)
+      : message.content.filter(block => block.type !== 'text' || !isContext(block.text))
     return { ...message, content }
   }).filter(message => message.role !== 'user' || message.content.length > 0)
   const last = messages.at(-1)
   const blocks = Array.isArray(last?.content) ? last.content : []
+  if (process.env.MOCK_DESKTOP_CHECK === '1' && last?.role === 'user') {
+    const line = textOf(last.content)
+    // Harness can append workspace reminders to the original user command.
+    const command = /^codex-batch ([a-f0-9]{12}) (\S+) (\S+)$/.exec(line.trimStart().split(/\r?\n/, 1)[0].trimEnd())
+    if (command) {
+      const [, batch, first, second] = command
+      return [first, second].map((to, i) => {
+        const request_id = `codex-batch-${batch}-${i + 1}`
+        return tool('message_bot', { to, request_id, message: `Inspect the synthetic fixture ${request_id}` })
+      })
+    }
+    const assignment = /^\[Message from [^\]]+\][\s\S]*\b(codex-batch-[a-f0-9]{12}-[12])\b/.exec(line)
+    if (assignment) return Object.assign([text(`Batch fixture done: ${assignment[1]}`)], { gate: process.env.MOCK_BATCH_GATE })
+    const batch = /^\[Work handed back[^\]]*\][\s\S]*\bcodex-batch-([a-f0-9]{12})-1\b/.exec(line)
+    if (batch && line.includes(`codex-batch-${batch[1]}-2`)) return [text(`Batch complete: ${batch[1]}`)]
+  }
+  const desktopCheck = process.env.MOCK_DESKTOP_CHECK === '1' && last?.role === 'user'
+    ? (/^\[Message from [^\]]+\]/.test(textOf(last.content))
+      ? /\bcodex-delegated-[a-f0-9]{12}\b/.exec(textOf(last.content))?.[0]
+      : undefined) ?? /\bcodex-(?:joined|desktop-turn)-[a-f0-9]{12}\b/.exec(textOf(last.content))?.[0]
+    : undefined
+  if (desktopCheck) return [text(`Desktop check: ${desktopCheck}`)]
+  if (last?.role === 'user' && textOf(last.content).trim() === '代码模式烟测') {
+    return tools.has('run_code')
+      ? [tool('run_code', { code: 'console.log((await tools.bash({command: "printf CODE_MODE_OK", description: "Code-mode smoke"})).stdout.text)', description: 'Code-mode smoke' })]
+      : [text('Code-mode is off.')]
+  }
   // A side-chat question (side.js). The first line is the marker; the reply is
   // fixed and calls nothing. Its count of earlier answers proves follow-ups
   // carry the chat's finished pairs.
@@ -195,6 +228,7 @@ function decide(body) {
     const resultText = typeof result.content === 'string' ? result.content : textOf(result.content)
     const call = [...messages].reverse().find(m => m.role === 'assistant' && Array.isArray(m.content) && m.content.some(b => b.type === 'tool_use'))
     const used = call?.content.find(b => b.type === 'tool_use' && b.id === result.tool_use_id) ?? call?.content.find(b => b.type === 'tool_use')
+    if (used?.name === 'run_code') return [text(`Code-mode ${result.is_error ? 'failed' : 'ok'}: ${resultText}`)]
     // "长任务 N [K]": N steps in one turn, each adding about K thousand characters (default 4).
     const openerAt = messages.findLastIndex(m => m.role === 'user' && !isResults(m) && /^长任务\s*\d+/.test(textOf(m.content).trimStart()))
     if (openerAt !== -1 && used?.name === 'list_bots') {
@@ -356,9 +390,18 @@ function decide(body) {
       .map(line => /^[^:\n]{1,40}: \D*?(\d+)/.exec(line)?.[1])
       .filter(Boolean).map(Number)
     const mentioner = /^\[Group chat [^\]]*· (\S+) mentioned you\]/.exec(userText)?.[1]
-    const peer = /^Members: the user, ([^,\n]+?)(?:,| and you)/m.exec(userText)?.[1]?.replace(/ \(admin\)$/, '')
+    const latestMembersLine = [...messages].reverse()
+      .filter(m => m.role === 'user')
+      .map(m => /^Members: .*/m.exec(textOf(m.content))?.[0])
+      .find(Boolean) ?? ''
+    const peer = /^Members: the user, ([^,\n]+?)(?:,| and you)/.exec(latestMembersLine)?.[1]?.replace(/ \(admin\)$/, '')
     const room = /^\[Group chat "([^"]+)"/.exec(userText)?.[1] ?? ''
-    const leads = /^Members: .* and you \(admin\)\./m.test(userText)
+    const leads = /^Members: .* and you \(admin\)\./.test(latestMembersLine)
+    if (userText.includes('route-contract:')) {
+      if (leads && userLine.includes('route-contract: start')) return [tool('delegate_work', { to: 'Writer', goal: 'route-contract: check the note from @Coder' })]
+      if (me === 'Writer' && block.includes('route-contract: check')) return [text('@Chief @Coder route-contract: the backup is ready')]
+      if (leads && block.includes('route-contract: the backup is ready')) return [text('@Writer route-contract: received, no reply needed')]
+    }
     let ask
     if ((ask = /把\s*(\S+?)\s*拉进群/.exec(userLine))) return [tool('update_group', { group: room, add_members: [ask[1]] })]
     if ((ask = /把\s*(\S+?)\s*踢出群/.exec(userLine))) return [tool('update_group', { group: room, remove_members: [ask[1]] })]
@@ -439,7 +482,14 @@ function decide(body) {
     return [tool('update_group', { group: order[1], ...field })]
   }
   if ((order = /^删群\s*(\S+)$/.exec(userText))) return [tool('delete_group', { group: order[1] })]
-  if ((order = /^转告\s*(\S+?)\s*[:：]\s*([\s\S]+)$/.exec(userText))) return [tool('message_bot', { to: order[1], message: order[2] })]
+  if ((order = /^转告\s*(\S+?)\s*[:：]\s*([\s\S]+)$/.exec(userText))) {
+    const requestId = process.env.MOCK_DESKTOP_CHECK === '1' ? /\bcodex-delegated-[a-f0-9]{12}\b/.exec(order[2])?.[0] : undefined
+    if (requestId !== undefined) {
+      const args = { to: order[1], message: order[2], request_id: requestId }
+      return [tool('message_bot', args), tool('message_bot', args)]
+    }
+    return [tool('message_bot', { to: order[1], message: order[2] })]
+  }
   if ((order = /^插话\s*(\S+?)\s*[:：]\s*(.+)$/.exec(userText))) return [tool('message_bot', { to: order[1], message: order[2], when: 'now' })]
   if ((order = /^排队\s*(\S+?)\s*[:：]\s*(.+)$/.exec(userText))) return [tool('message_bot', { to: order[1], message: order[2], when: 'queue' })]
   if ((order = /^叫停\s*(\S+?)\s*[:：]\s*(.+)$/.exec(userText))) return [tool('stop_bot', { bot: order[1], reason: order[2] })]
@@ -474,7 +524,11 @@ function decide(body) {
     return [text(all.includes(order[1]) ? `上下文里有「${order[1]}」。` : `上下文里没有「${order[1]}」。`)]
   }
   let match
-  if ((match = /^\[Message from ([^\]·]+?) · the user sees your reply here\]/.exec(userText))) {
+  if (/^\[Work #W\d+ from [^\n]+\]\nroute-contract: check backup/.test(userText)) return [text('route-contract: backup complete')]
+  if ((match = /^\[Work #W\d+ completed by (.+?) · [^\n]+\]\nroute-contract: backup complete/.exec(userText))) {
+    return [tool('delegate_work', { to: match[1], goal: 'route-contract: acknowledgement' })]
+  }
+  if ((match = /^\[(?:Message|Work) from ([^\]·]+?) · the user sees your reply here\]/.exec(userText))) {
     const asked = userText.split('\n').slice(1).join(' ').trim().replace(/[。.!！?？]+$/u, '')
     return [text(`${match[1]} 转来一句话：「${asked}」。我先说打算：把手头已有的材料理一遍，列出还缺什么，再和你确认先后顺序；你确认之前我不会动手。`)]
   }
@@ -610,6 +664,8 @@ function decide(body) {
   if (card && tools.has('ask_user')) {
     return [text(filler(Number(card[1] ?? 4) * 1000, '卡片前')), tool('ask_user', { question: '接下来先做哪个？', options: ['写正文', '改标题', '先停'] })]
   }
+  // A message that starts with 想想 thinks first, whatever the reminders after it say.
+  if (/^想想/.test(userText)) return [think('用户想让我认真想一下。先拆成三件事：目标、约束、下一步。'), text('想了一下，建议分三步走：先定目标，再看约束，最后定下一步。')]
   if (/团队|班底|team/i.test(userText) && tools.has('list_bots')) return [tool('list_bots', {})]
   if (/想想|思考|think/i.test(userText)) {
     return [think('用户想让我认真想一下。先拆成三件事：目标、约束、下一步。'), text('想了一下，建议分三步走：先定目标，再看约束，最后定下一步。')]
@@ -784,6 +840,17 @@ const server = createServer((req, res) => {
       return
     }
     setTimeout(async () => {
+      if (out.gate) {
+        // Keep the second fixture blocked while the Desktop finishes the first turn.
+        const deadline = Date.now() + 240_000
+        while (!res.destroyed && !existsSync(out.gate) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50))
+        if (res.destroyed) return
+        if (!existsSync(out.gate)) {
+          res.writeHead(503)
+          res.end()
+          return
+        }
+      }
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
       sse(res, { type: 'message_start', message: { id: `mock-${id}`, type: 'message', role: 'assistant', model: body.model ?? 'mock', content: [], usage: { input_tokens: tokens - cached, output_tokens: 0, cache_read_input_tokens: cached } } })
       let index = 0

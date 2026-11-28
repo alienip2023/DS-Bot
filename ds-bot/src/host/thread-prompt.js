@@ -75,12 +75,12 @@ export function install(rt) {
       requestId: request?.requestId,
       kind: 'send',
       preview: text.slice(0, 120),
-      text,
+      text: Array.isArray(request.content) && request.content.some(part => part?.type !== 'text') ? '' : text,
       // A prompt resolves as soon as the Session accepts it, so 'run' would not queue at
       // all; the turn's own end releases the Bot.
       releaseOn: 'turn-end',
       signal: rest[0],
-      run: () => original.call(this, request, ...rest),
+      run: requestId => original.call(this, requestId === request.requestId ? request : { ...request, requestId }, ...rest),
     })
   }, 'ds-bot: thread prompt gate')
 

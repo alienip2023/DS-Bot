@@ -339,6 +339,35 @@ test('API turns do not leak to IM outbound and tag apiVia instead of imVia', asy
   assert.equal(rt.apiViaView().b1?.[1], 'Claude Code')
 })
 
+test('apiVia keeps a bounded recent window on a long-lived session', async t => {
+  const home = mkdtempSync(join(tmpdir(), 'dsb-apivia-'))
+  const { ctx, rt } = startHost(home, {
+    version: 1, mainBotIds: ['b1'], bots: { b1: { id: 'b1', name: 'Chief', createdAt: 1 } },
+    rooms: {}, exchanges: [], exchangeTurns: {}, revision: 1,
+  })
+  t.after(async () => { await ctx.dispose(); rmSync(home, { recursive: true, force: true, maxRetries: 5 }) })
+  await rt.load()
+  const prompt = ctx.sessionController.prompt
+  ctx.sessionController.prompt = async args => {
+    for (let seq = 1; seq <= 300; seq += 1) {
+      const event = { type: 'user/message', seq, time: Date.now(), data: { source: { kind: 'user', rpcId: args.requestId }, content: args.content } }
+      for (const listener of ctx.listeners.get('session/event') ?? []) listener({ id: args.sessionId }, event)
+    }
+    return prompt(args)
+  }
+  const view = await rt.apiEndpoint('api-set', { enabled: true, port: 0 })
+  const { token } = await rt.apiEndpoint('api-token-create', { name: 'Test API', scopes: ['message'], targetScope: 'all_public' })
+  const res = await fetch(`${view.baseUrl}/v1/bots/b1/messages`, {
+    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: 'Record origin', wait: 5 }),
+  })
+  assert.equal(res.status, 200)
+  const badges = rt.apiViaView().b1
+  assert.equal(Object.keys(badges).length, 256)
+  assert.equal(badges[2], undefined)
+  assert.equal(badges[300], 'Test API')
+})
+
 test('API group runs queue behind existing IM work without clearing its origin', async t => {
   const home = mkdtempSync(join(tmpdir(), 'dsb-api-group-origin-'))
   const { ctx, rt } = startHost(home, {

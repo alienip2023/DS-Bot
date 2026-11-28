@@ -32,12 +32,15 @@ function validateCursor(cursor) {
   if (cursor === undefined) return cursor
   if (!cursor || typeof cursor !== 'object' || Array.isArray(cursor)
     || !Number.isSafeInteger(cursor.part) || cursor.part < 0
-    || Object.keys(cursor).some(key => !['part', 'beforeSeq'].includes(key))
-    || (cursor.beforeSeq !== undefined && (!Number.isSafeInteger(cursor.beforeSeq) || cursor.beforeSeq < 0))) {
-    throw httpError(400, 'api/invalid', 'cursor must contain a non-negative integer part and optional beforeSeq')
+    || Object.keys(cursor).some(key => !['part', 'beforeSeq', 'skip'].includes(key))
+    || (cursor.beforeSeq !== undefined && (!Number.isSafeInteger(cursor.beforeSeq) || cursor.beforeSeq < 0))
+    || (cursor.skip !== undefined && (!Number.isSafeInteger(cursor.skip) || cursor.skip <= 0 || cursor.beforeSeq === undefined))) {
+    throw httpError(400, 'api/invalid', 'Invalid history cursor')
   }
   return cursor
 }
+
+const historyLimit = limit => Math.max(1, Math.min(200, Math.trunc(Number(limit)) || 60))
 
 function parseCursor(raw) {
   if (raw === null) return undefined
@@ -493,9 +496,8 @@ export function createApiRoutes(rt, { auth, runs, sseClients }) {
     async readBotHistory(principal, botId, { cursor, limit } = {}) {
       requireScope(principal, 'read')
       const bot = findAuthorizedBot(principal, botId)
-      const page = await rt.chatPage(bot.id, validateCursor(cursor), false)
-      const cap = Math.max(1, Math.min(200, Number(limit) || 60))
-      const items = (page.items ?? []).slice(-cap).map(item => {
+      const page = await rt.chatPage(bot.id, validateCursor(cursor), false, { rowLimit: historyLimit(limit) })
+      const items = (page.items ?? []).map(item => {
         const out = { ...item }
         if (Array.isArray(item.imageRefs)) {
           out.files = item.imageRefs.map(ref => ({
@@ -519,12 +521,10 @@ export function createApiRoutes(rt, { auth, runs, sseClients }) {
     async readGroupHistory(principal, groupId, { cursor, limit } = {}) {
       requireScope(principal, 'read')
       const room = findAuthorizedGroup(principal, groupId)
-      const page = await rt.mobileEndpoint('room-chat', { roomId: room.id, cursor: validateCursor(cursor) })
-      const cap = Math.max(1, Math.min(200, Number(limit) || 60))
-      const items = (page.items ?? []).slice(-cap)
+      const page = await rt.mobileEndpoint('room-chat', { roomId: room.id, cursor: validateCursor(cursor) }, { rowLimit: historyLimit(limit) })
       return {
         groupId: room.id,
-        items,
+        items: page.items ?? [],
         cursor: page.cursor ?? null,
         running: page.running === true,
         speaking: page.speaking ?? null,
@@ -818,10 +818,16 @@ export function createApiRoutes(rt, { auth, runs, sseClients }) {
         throw httpError(400, 'api/invalid', 'Invalid goal action, text, goalId, or stopWork')
       }
       if (body.action === 'draft' && typeof body.text === 'string') {
-        const res = await rt.goalDraft(room.id, body.text)
+        // The token holder's words are no owner's words: the draft travels
+        // tagged 'api' through the relay into the group ledger, so the memory
+        // review's external filter treats it like any API input (viaOf's tag).
+        const res = await rt.goalDraft(room.id, body.text, { via: 'api' })
         if (res?.error) throw httpError(400, res.code ?? 'bot/refused', res.error)
       } else {
-        const res = await rt.goalControl(room.id, patch)
+        // Thread `{ via: 'api' }` on goalControl too so API `resume` relays carry the
+        // external channel marker in the group ledger and never trigger memory review
+        // as if the owner had posted in the group.
+        const res = await rt.goalControl(room.id, patch, { via: 'api' })
         if (res?.error) throw httpError(400, res.code ?? 'bot/refused', res.error)
       }
       return groupSummary(rt.roomOf(room.id), principal)

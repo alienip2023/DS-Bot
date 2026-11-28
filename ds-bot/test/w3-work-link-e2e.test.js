@@ -33,6 +33,7 @@ const SURFACE = new Set(['system/message', 'developer/message', 'user/message', 
 const team = bots => ({ version: 1, mainBotIds: [], revision: 1, whaleStored: true, bots: Object.fromEntries(bots.map(b => [b.id, b])), rooms: {}, exchanges: [], exchangeTurns: {}, questions: {} })
 
 async function cluster(t) {
+  const linkLog = process.env.W3_TEST_TRACE === '1' ? (...args) => t.diagnostic(JSON.stringify(args)) : undefined
   const { NodeRegistry } = await load('hub/node-registry.js')
   const { createHubBotNetwork } = await load('hub/bot-network.js')
   const { createBotNetwork } = await load('node/bot-network.js')
@@ -42,7 +43,7 @@ async function cluster(t) {
   registry.e2eReady = nodeId => registry.nodes.get(nodeId)?.online === true   // sealing is AC's own test
   let hubCtx
   const hubNetwork = createHubBotNetwork({ registry, ctx: { get: (name, d) => hubCtx?.get(name, d) } })
-  const detachHub = attachHubReliable({ registry, network: hubNetwork })
+  const detachHub = attachHubReliable({ registry, network: hubNetwork, log: linkLog })
   const world = (prefix, state, services) => {
     const home = mkdtempSync(join(tmpdir(), prefix))
     writeFileSync(join(home, 'state.json'), JSON.stringify(state))
@@ -82,16 +83,17 @@ async function cluster(t) {
     const transport = new EventEmitter()
     transport.online = true
     const send = (type, data) => {
+      linkLog?.('node→hub', nodeId, type, data?.type ?? null, data?.data?.status ?? data?.data?.outcome ?? null)
       if (!transport.online) return false
       queueMicrotask(() => registry.handleFrameFor(nodeId, { v: 1, t: type, id: 'x', d: structuredClone(data) }))
       return true
     }
     const network = createBotNetwork({ nodeId, send, sendHub: send })
     const dispatch = createFrameDispatcher({ network, send, sendError() {}, logger: {}, ctx: undefined })
-    const detach = attachNodeReliable({ nodeId, transport, send, network })
+    const detach = attachNodeReliable({ nodeId, transport, send, network, log: linkLog })
     registry.nodes.set(nodeId, {
       nodeId, online: true, tasks: new Map(), hello: { hostname: `box-${nodeId}`, os: 'linux' },
-      conn: { closed: false, send: text => { if (!transport.online) throw new Error('closed'); const frame = JSON.parse(text); queueMicrotask(() => dispatch(frame, frame.d)) } },
+      conn: { closed: false, send: text => { if (!transport.online) throw new Error('closed'); const frame = JSON.parse(text); linkLog?.('hub→node', nodeId, frame.t, frame.d?.type ?? null); queueMicrotask(() => dispatch(frame, frame.d)) } },
     })
     const w = world(`w3-${nodeId}-`, team([local]), { 'remote-agent:bot-network': network })
     machines[nodeId] = { nodeId, transport, network, w, detach }
@@ -118,8 +120,8 @@ async function cluster(t) {
 }
 
 const peer = (rt, name) => Object.values(rt.state.bots).find(b => b.origin === 'peer' && b.name === name)
-const messageBot = (rt, from, to, message) => rt.teamTools.find(def => def.name === 'message_bot')
-  .execute({ to, message }, { agent: { id: from }, callId: 'c', signal: new AbortController().signal })
+const messageBot = (rt, from, to, message, requestId) => rt.teamTools.find(def => def.name === 'message_bot')
+  .execute({ to, message, ...(requestId ? { request_id: requestId } : {}) }, { agent: { id: from }, callId: 'c', signal: new AbortController().signal })
 const textOf = message => (message?.content ?? []).map(block => block.text ?? '').join('\n')
 const delivered = w => [...w.followups, ...w.steers]
 const workThread = (rt, botId) => (rt.botOf(botId).tasks ?? []).find(task => task.origin === 'bot-work')
@@ -143,28 +145,84 @@ function runTurn(w, sessionId, message, reply) {
 }
 const userTurn = (w, sessionId, text) => runTurn(w, sessionId, { content: [{ type: 'text', text }], source: { kind: 'user' } })
 
-test('W3-E2E-1 a hub Bot hands work to a node Bot: it runs in the pair\'s work thread there, and the hub Bot is resumed once with the result', { skip }, async t => {
+test('W3 batch waits for both nodes and runs each assignment in the receiving Bot chat', { skip }, async t => {
+  const { hub, n10, n11 } = await cluster(t)
+  const chief = userTurn(hub, 'chief', 'check the two halves')
+  await messageBot(hub.rt, 'chief', 'Exec10', 'inspect the first half')
+  await messageBot(hub.rt, 'chief', 'Exec11', 'inspect the second half')
+  chief.end('Both checks are underway.')
+
+  const requestOf = (w, id) => delivered(w).find(d => d.sessionId === id && d.message.source.role === 'request')
+  await until(() => delivered(n10.w).length > 0 && delivered(n11.w).length > 0, 'both nodes received work')
+  const first = requestOf(n10.w, 'e10')
+  const second = requestOf(n11.w, 'e11')
+  assert.ok(first, 'the first request reached Exec10’s own chat')
+  assert.ok(second, 'the second request reached Exec11’s own chat')
+  assert.equal(workThread(n10.w.rt, 'e10'), undefined)
+  assert.equal(workThread(n11.w.rt, 'e11'), undefined)
+
+  const parent = hub.rt.state.works[first.message.source.exchangeId].parent
+  assert.equal(hub.rt.state.works[second.message.source.exchangeId].parent, parent)
+  runTurn(n10.w, 'e10', first.message, 'first half checked')
+  await until(() => hub.rt.state.works[parent]?.results?.length === 1, 'first result persisted in the batch')
+  assert.deepEqual(n10.w.rt.state.exchangeTurns.e10 ?? [], [], 'foreground handoff is not hidden in the receiving chat')
+  await until(() => pageOf(hub, 'joined:node010:e10')?.log.some(e => e.data?.source?.exchangeId === first.message.source.exchangeId), 'actual worker conversation copied to its page')
+  await settle()
+  assert.equal(delivered(hub).filter(d => d.sessionId === 'chief').length, 0, 'a partial return never wakes Chief')
+  const waiting = hub.rt.waitingView().chief
+  assert.deepEqual(waiting.waits.map(item => item.id), [second.message.source.exchangeId])
+  assert.deepEqual(waiting.batches, [{
+    id: parent, part: 'chief', total: 2, pending: [second.message.source.exchangeId],
+    returned: [{ id: first.message.source.exchangeId, from: 'joined:node010:e10', name: 'Exec10', outcome: 'done' }],
+  }])
+
+  runTurn(n11.w, 'e11', second.message, 'second half checked')
+  await until(() => delivered(hub).some(d => d.sessionId === 'chief'), 'completed batch returned')
+  await settle()
+  const replies = delivered(hub).filter(d => d.sessionId === 'chief')
+  assert.equal(replies.length, 1)
+  assert.equal(replies[0].message.source.role, 'results')
+  assert.deepEqual(new Set(replies[0].message.source.results), new Set([first.message.source.exchangeId, second.message.source.exchangeId]))
+  assert.match(textOf(replies[0].message), /Exec10:\nfirst half checked/)
+  assert.match(textOf(replies[0].message), /Exec11:\nsecond half checked/)
+})
+
+test('W3 admits one remote assignment for a named request, including concurrent retries', { skip }, async t => {
+  const { hub, n10 } = await cluster(t)
+  const chief = userTurn(hub, 'chief', 'check a file')
+  const send = (message) => messageBot(hub.rt, 'chief', 'Exec10', message, 'file-check')
+  const [first, retry] = await Promise.all([send('check the file'), send('check the file')])
+  assert.match(String(first), /^Handed to Exec10/)
+  assert.equal(retry, first)
+  const works = Object.values(hub.rt.state.works).filter(work => work.remote !== undefined)
+  assert.equal(works.length, 1)
+  await assert.rejects(() => send('run a different check'), /already used for a different request/)
+  chief.end('Waiting for the check.')
+  await until(() => delivered(n10.w).some(delivery => delivery.message.source.role === 'request'), 'worker received work')
+  await settle()
+  assert.equal(delivered(n10.w).filter(delivery => delivery.message.source.role === 'request').length, 1)
+})
+
+test('W3-E2E-1 a hub Bot hands work to a node Bot: it runs in the receiving Bot\'s own chat, and the hub Bot is resumed once with the result', { skip }, async t => {
   const { hub, n10 } = await cluster(t)
   const chief = userTurn(hub, 'chief', 'have Exec10 check the build')
   const out = await messageBot(hub.rt, 'chief', 'Exec10', 'check the build')
   assert.match(String(out), /^Handed to Exec10 on box-node010\./)
   chief.end('Exec10 is on it.')
-  // On node010: the request is in Exec10's work thread for Chief, not in the chat its user reads.
-  await until(() => workThread(n10.w.rt, 'e10') !== undefined && delivered(n10.w).some(d => d.sessionId === workThread(n10.w.rt, 'e10').sessionId), 'the request reached node010')
-  const thread = workThread(n10.w.rt, 'e10')
-  assert.equal(thread.title, '@Chief · 工作')
-  assert.equal(delivered(n10.w).some(d => d.sessionId === 'e10'), false, 'nothing in Exec10\'s own chat')
-  const request = delivered(n10.w).find(d => d.sessionId === thread.sessionId).message
+  // On node010: the request stays in Exec10's own chat.
+  await until(() => delivered(n10.w).some(d => d.sessionId === 'e10'), 'the request reached node010')
+
+  assert.equal(workThread(n10.w.rt, 'e10'), undefined)
+  const request = delivered(n10.w).find(d => d.sessionId === 'e10').message
   assert.equal(textOf(request), '[Message from Chief]\ncheck the build')
   // Exec10 answers in a real turn; the result goes home, and Chief goes on with it once.
-  runTurn(n10.w, thread.sessionId, request, 'the build is green')
+  runTurn(n10.w, 'e10', request, 'the build is green')
   await until(() => delivered(hub).some(d => d.sessionId === 'chief' && d.message.source?.role === 'results'), 'Chief was resumed')
   await settle()
   const toChief = delivered(hub).filter(d => d.sessionId === 'chief')
   assert.equal(toChief.length, 1, 'one resume, nothing else')
   assert.equal(toChief[0].message.source.kind, 'bot')
   assert.match(textOf(toChief[0].message), /^\[Work handed back to you · from Exec10 · everything you handed on is back\]\nExec10:\nthe build is green$/)
-  await until(() => thread.status === 'standing', 'the work thread stands by')
   assert.equal(Object.keys(n10.w.rt.state.works ?? {}).length, 0, 'node010 owes nothing')
   // Chief goes on with it; nothing is left open on the hub.
   runTurn(hub, 'chief', toChief[0].message, 'Build checked.')
@@ -174,24 +232,23 @@ test('W3-E2E-1 a hub Bot hands work to a node Bot: it runs in the pair\'s work t
   assert.deepEqual(book, [['request', 'check the build'], ['reply', 'the build is green']])
 })
 
-test('W3-E2E-2 node011 and node010 hold three rounds through the hub, all in one work thread on node010, and the hub keeps the conversation', { skip }, async t => {
+test('W3-E2E-2 node011 and node010 hold three rounds through the hub, in the same chat on node010, and the hub keeps the conversation', { skip }, async t => {
   const { hub, n10, n11 } = await cluster(t)
   for (let round = 1; round <= 3; round += 1) {
     const asking = userTurn(n11.w, 'e11', `round ${round}`)
     const out = await messageBot(n11.w.rt, 'e11', 'Exec10', `question ${round}`)
     assert.match(String(out), /^Handed to Exec10 on box-node010\./)
     asking.end(`asked Exec10 (${round})`)
-    const thread = () => workThread(n10.w.rt, 'e10')
-    await until(() => thread() !== undefined && delivered(n10.w).some(d => d.sessionId === thread().sessionId && textOf(d.message).endsWith(`question ${round}`)), `round ${round}: the question reached node010`)
-    const request = delivered(n10.w).filter(d => d.sessionId === thread().sessionId).at(-1).message
-    runTurn(n10.w, thread().sessionId, request, `answer ${round}`)
+
+    await until(() => delivered(n10.w).some(d => d.sessionId === 'e10' && d.sessionId === 'e10' && textOf(d.message).endsWith(`question ${round}`)), `round ${round}: the question reached node010`)
+    const request = delivered(n10.w).filter(d => d.sessionId === 'e10').at(-1).message
+    runTurn(n10.w, 'e10', request, `answer ${round}`)
     await until(() => delivered(n11.w).filter(d => d.sessionId === 'e11' && d.message.source?.role === 'results').length === round, `round ${round}: node011 was resumed`)
     const resume = delivered(n11.w).filter(d => d.sessionId === 'e11').at(-1).message
     assert.match(textOf(resume), new RegExp(`Exec10:\\nanswer ${round}$`))
     runTurn(n11.w, 'e11', resume, `thanks (${round})`)
   }
-  assert.equal((n10.w.rt.botOf('e10').tasks ?? []).filter(task => task.origin === 'bot-work').length, 1, 'one thread for the pair')
-  assert.equal(delivered(n10.w).some(d => d.sessionId === 'e10'), false, 'nothing in Exec10\'s own chat')
+  assert.equal((n10.w.rt.botOf('e10').tasks ?? []).filter(task => task.origin === 'bot-work').length, 0, 'no background work thread for the pair')
   // The hub, which carried every frame, has the whole conversation of the two node Bots.
   let book = []
   for (const end = Date.now() + 3000; book.length !== 6 && Date.now() < end;) {
@@ -211,10 +268,10 @@ test('W3-E2E-3 a node that is away gets the work when it is back: kept at the hu
   assert.equal(hub.rt.ctx.get('remote-agent:bot-network').reliablePending('node010').length, 1, 'kept at the hub for node010')
   assert.equal(workThread(n10.w.rt, 'e10'), undefined)
   comeBack('node010')
-  await until(() => workThread(n10.w.rt, 'e10') !== undefined && delivered(n10.w).some(d => textOf(d.message).endsWith('when you are back')), 'delivered once node010 is back')
-  const thread = workThread(n10.w.rt, 'e10')
-  const request = delivered(n10.w).find(d => d.sessionId === thread.sessionId).message
-  runTurn(n10.w, thread.sessionId, request, 'back and done')
+  await until(() => delivered(n10.w).some(d => d.sessionId === 'e10' && textOf(d.message).endsWith('when you are back')), 'delivered once node010 is back')
+
+  const request = delivered(n10.w).find(d => d.sessionId === 'e10').message
+  runTurn(n10.w, 'e10', request, 'back and done')
   await until(() => delivered(hub).some(d => d.sessionId === 'chief' && /back and done/.test(textOf(d.message))), 'Chief got the result')
   assert.equal(delivered(n10.w).filter(d => textOf(d.message).endsWith('when you are back')).length, 1, 'handled exactly once')
 })
@@ -224,12 +281,12 @@ test('W3-E2E-4 giving up the wait stops the work on the other machine, and its a
   const chief = userTurn(hub, 'chief', 'ask Exec10')
   await messageBot(hub.rt, 'chief', 'Exec10', 'long job')
   chief.end('asked')
-  await until(() => workThread(n10.w.rt, 'e10') !== undefined && delivered(n10.w).some(d => textOf(d.message).endsWith('long job')), 'the request reached node010')
-  const thread = workThread(n10.w.rt, 'e10')
-  const request = delivered(n10.w).find(d => d.sessionId === thread.sessionId).message
-  const running = runTurn(n10.w, thread.sessionId, request)
+  await until(() => delivered(n10.w).some(d => d.sessionId === 'e10' && textOf(d.message).endsWith('long job')), 'the request reached node010')
+
+  const request = delivered(n10.w).find(d => d.sessionId === 'e10').message
+  const running = runTurn(n10.w, 'e10', request)
   const cancelled = []
-  n10.w.agentOf(thread.sessionId).cancel = cause => { cancelled.push(cause) }
+  n10.w.agentOf('e10').cancel = cause => { cancelled.push(cause) }
   // The user gives the wait up on the hub.
   const child = Object.entries(hub.rt.state.works).find(([, work]) => work.to === 'joined:node010:e10')[0]
   assert.equal((await hub.call('abandon-work', { id: child })).ok, true)
@@ -256,16 +313,15 @@ test('W3-E2E-5 a frame that claims to come from another machine than it did is d
   assert.equal(delivered(n10.w).some(d => textOf(d.message).endsWith('do it')), false, 'nothing reached a Session')
 })
 
-test('W3-E2E-6 a node Bot hands work to a hub Bot: it runs in the hub Bot\'s work thread, and the answer goes home', { skip }, async t => {
+test('W3-E2E-6 a node Bot hands work to a hub Bot: it runs in the hub Bot\'s own chat, and the answer goes home', { skip }, async t => {
   const { hub, n11 } = await cluster(t)
   const asking = userTurn(n11.w, 'e11', 'ask Chief')
   assert.match(String(await messageBot(n11.w.rt, 'e11', 'Chief', 'may I deploy?')), /^Handed to Chief on /)
   asking.end('asked Chief')
-  await until(() => workThread(hub.rt, 'chief') !== undefined && delivered(hub).some(d => d.sessionId === workThread(hub.rt, 'chief').sessionId), 'the request is in Chief\'s work thread for Exec11')
-  const thread = workThread(hub.rt, 'chief')
-  assert.equal(thread.title, '@Exec11 · 工作')
-  assert.equal(delivered(hub).some(d => d.sessionId === 'chief'), false, 'nothing in Chief\'s chat with the user')
-  runTurn(hub, thread.sessionId, delivered(hub).find(d => d.sessionId === thread.sessionId).message, 'yes, deploy')
+  await until(() => delivered(hub).some(d => d.sessionId === 'chief'), 'the request is in Chief\'s own chat')
+
+  assert.equal(workThread(hub.rt, 'chief'), undefined)
+  runTurn(hub, 'chief', delivered(hub).find(d => d.sessionId === 'chief').message, 'yes, deploy')
   await until(() => delivered(n11.w).some(d => d.sessionId === 'e11' && /yes, deploy/.test(textOf(d.message))), 'the answer reached Exec11')
   assert.equal(delivered(n11.w).filter(d => d.sessionId === 'e11')[0].message.source.role, 'results')
 })
@@ -275,24 +331,24 @@ test('W3-E2E-7 Chief → Exec11 → Exec10 and back: Exec11 goes on once with Ex
   const chief = userTurn(hub, 'chief', 'run the release')
   await messageBot(hub.rt, 'chief', 'Exec11', 'run the release')
   chief.end('asked Exec11')
-  // Exec11 works on it in its thread for Chief, and hands part of it to Exec10 from there.
-  await until(() => workThread(n11.w.rt, 'e11') !== undefined && delivered(n11.w).some(d => d.sessionId === workThread(n11.w.rt, 'e11').sessionId), 'Exec11 got the work')
-  const t11 = workThread(n11.w.rt, 'e11')
-  const exec11 = runTurn(n11.w, t11.sessionId, delivered(n11.w).find(d => d.sessionId === t11.sessionId).message)
-  assert.match(String(await messageBot(n11.w.rt, t11.sessionId, 'Exec10', 'run the tests')), /^Handed to Exec10 on box-node010\. .*Your answer goes to Chief after that\.$/)
+  // Exec11 receives the assignment in its own chat, then hands part onward.
+  await until(() => delivered(n11.w).some(d => d.sessionId === 'e11'), 'Exec11 got the work')
+
+  const exec11 = runTurn(n11.w, 'e11', delivered(n11.w).find(d => d.sessionId === 'e11').message)
+  assert.match(String(await messageBot(n11.w.rt, 'e11', 'Exec10', 'run the tests')), /^Handed to Exec10 on box-node010\. .*Your answer goes to Chief after that\.$/)
   exec11.end('Exec10 runs the tests.')
-  await until(() => workThread(n10.w.rt, 'e10') !== undefined && delivered(n10.w).some(d => d.sessionId === workThread(n10.w.rt, 'e10').sessionId), 'Exec10 got its part')
-  const t10 = workThread(n10.w.rt, 'e10')
-  assert.equal(t10.title, '@Exec11 · 工作')
+  await until(() => delivered(n10.w).some(d => d.sessionId === 'e10'), 'Exec10 got its part')
+
+  assert.equal(workThread(n10.w.rt, 'e10'), undefined)
   await new Promise(r => setTimeout(r, 30))
   assert.equal(delivered(hub).filter(d => d.sessionId === 'chief').length, 0, 'Chief hears nothing yet')
-  runTurn(n10.w, t10.sessionId, delivered(n10.w).find(d => d.sessionId === t10.sessionId).message, 'tests pass')
-  // Exec11 is resumed in its thread for Chief, once, with Exec10's answer.
-  await until(() => delivered(n11.w).some(d => d.sessionId === t11.sessionId && d.message.source?.role === 'results'), 'Exec11 was resumed')
-  const resume = delivered(n11.w).filter(d => d.sessionId === t11.sessionId).at(-1).message
+  runTurn(n10.w, 'e10', delivered(n10.w).find(d => d.sessionId === 'e10').message, 'tests pass')
+  // Exec11 is resumed in its own chat, once, with Exec10's answer.
+  await until(() => delivered(n11.w).some(d => d.sessionId === 'e11' && d.message.source?.role === 'results'), 'Exec11 was resumed')
+  const resume = delivered(n11.w).filter(d => d.sessionId === 'e11').at(-1).message
   assert.match(textOf(resume), /Exec10:\ntests pass$/)
   assert.equal(delivered(hub).filter(d => d.sessionId === 'chief').length, 0, 'still nothing for Chief')
-  runTurn(n11.w, t11.sessionId, resume, 'released: tests pass')
+  runTurn(n11.w, 'e11', resume, 'released: tests pass')
   await until(() => delivered(hub).some(d => d.sessionId === 'chief'), 'Chief got Exec11\'s answer')
   const toChief = delivered(hub).filter(d => d.sessionId === 'chief')
   assert.equal(toChief.length, 1)
@@ -305,12 +361,12 @@ test('W3-E2E-8 a roster frame (federation off) between rounds keeps the director
     const asking = userTurn(n11.w, 'e11', `round ${round}`)
     await messageBot(n11.w.rt, 'e11', 'Exec10', `question ${round}`)
     asking.end('asked')
-    const thread = () => workThread(n10.w.rt, 'e10')
-    await until(() => thread() !== undefined && delivered(n10.w).some(d => textOf(d.message).endsWith(`question ${round}`)), `round ${round} reached node010`)
+
+    await until(() => delivered(n10.w).some(d => d.sessionId === 'e10' && textOf(d.message).endsWith(`question ${round}`)), `round ${round} reached node010`)
     // The hub's roster push lands on node010 now, before it answers.
     assert.equal(await handlePeerRoster(n10.w.rt, { hubId: 'hub-1', level: 'off', bots: [] }), true)
     assert.ok(peer(n10.w.rt, 'Exec11'), 'the directory row for Exec11 is still there')
-    runTurn(n10.w, thread().sessionId, delivered(n10.w).filter(d => d.sessionId === thread().sessionId).at(-1).message, `answer ${round}`)
+    runTurn(n10.w, 'e10', delivered(n10.w).filter(d => d.sessionId === 'e10').at(-1).message, `answer ${round}`)
     await until(() => delivered(n11.w).some(d => d.sessionId === 'e11' && textOf(d.message).endsWith(`answer ${round}`)), `round ${round} answered`)
     runTurn(n11.w, 'e11', delivered(n11.w).filter(d => d.sessionId === 'e11').at(-1).message, 'ok')
   }
@@ -321,10 +377,10 @@ test('W3-E2E-9 the asker\'s stand-in is gone when the answer is ready: it still 
   const asking = userTurn(n11.w, 'e11', 'ask')
   await messageBot(n11.w.rt, 'e11', 'Exec10', 'question')
   asking.end('asked')
-  await until(() => workThread(n10.w.rt, 'e10') !== undefined && delivered(n10.w).some(d => textOf(d.message).endsWith('question')), 'reached node010')
-  const thread = workThread(n10.w.rt, 'e10')
+  await until(() => delivered(n10.w).some(d => d.sessionId === 'e10' && textOf(d.message).endsWith('question')), 'reached node010')
+
   delete n10.w.rt.state.bots[peer(n10.w.rt, 'Exec11').id]
-  runTurn(n10.w, thread.sessionId, delivered(n10.w).find(d => d.sessionId === thread.sessionId).message, 'answer')
+  runTurn(n10.w, 'e10', delivered(n10.w).find(d => d.sessionId === 'e10').message, 'answer')
   await until(() => delivered(n11.w).some(d => d.sessionId === 'e11' && textOf(d.message).endsWith('answer')), 'the answer reached node011 anyway')
 })
 
@@ -404,9 +460,11 @@ test('W4-2 a copy sent twice is written once, and a turn whose start the copy mi
 
 test('W4-3 a node Bot\'s work thread is copied to the hub too: listed on its page, readable there, standing between works', { skip }, async t => {
   const { hub, n10 } = await cluster(t)
-  const chief = userTurn(hub, 'chief', 'have Exec10 check the build')
-  await messageBot(hub.rt, 'chief', 'Exec10', 'check the build')
-  chief.end('asked')
+  const asker = peer(n10.w.rt, 'Chief')
+  const { task, sessionId } = await n10.w.rt.workThreadFor(n10.w.rt.botOf('e10'), asker, 'compat-test')
+  n10.w.rt.openWork('w4-copy-test', { from: asker.id, to: 'e10' })
+  await n10.w.rt.workThreadTakes(task, 'w4-copy-test')
+  await n10.w.rt.deliver({ fromId: asker.id, toId: 'e10', sessionId, role: 'request', exchangeId: 'w4-copy-test', text: 'check the build' })
   await until(() => workThread(n10.w.rt, 'e10') !== undefined && delivered(n10.w).some(d => d.sessionId === workThread(n10.w.rt, 'e10').sessionId), 'the request reached node010')
   const thread = workThread(n10.w.rt, 'e10')
   const request = delivered(n10.w).find(d => d.sessionId === thread.sessionId).message
@@ -508,9 +566,9 @@ test('W3-E2E-10 the answer from another machine reaches a node Bot whose turn is
   const asking = userTurn(n11.w, 'e11', 'ask Exec10, then keep checking things')
   await messageBot(n11.w.rt, 'e11', 'Exec10', 'question')
   // Exec11 goes on in the same turn (no end yet) while Exec10 answers on node010.
-  await until(() => workThread(n10.w.rt, 'e10') !== undefined && delivered(n10.w).some(d => textOf(d.message).endsWith('question')), 'reached node010')
-  const thread = workThread(n10.w.rt, 'e10')
-  runTurn(n10.w, thread.sessionId, delivered(n10.w).find(d => d.sessionId === thread.sessionId).message, 'answer')
+  await until(() => delivered(n10.w).some(d => d.sessionId === 'e10' && textOf(d.message).endsWith('question')), 'reached node010')
+
+  runTurn(n10.w, 'e10', delivered(n10.w).find(d => d.sessionId === 'e10').message, 'answer')
   await until(() => n11.w.steers.some(d => d.sessionId === 'e11'), 'steered into the running turn on node011')
   const steered = n11.w.steers.find(d => d.sessionId === 'e11').message
   assert.equal(steered.source.role, 'results')
@@ -530,17 +588,17 @@ test('W3-E2E-11 the user stops Chief: Exec11 on node011 and Exec10 on node010, w
   const { hub, n10, n11 } = await cluster(t)
   userTurn(hub, 'chief', 'run the release')
   await messageBot(hub.rt, 'chief', 'Exec11', 'run the release')
-  await until(() => workThread(n11.w.rt, 'e11') !== undefined && delivered(n11.w).some(d => d.sessionId === workThread(n11.w.rt, 'e11').sessionId), 'Exec11 got the work')
-  const t11 = workThread(n11.w.rt, 'e11')
-  const exec11 = runTurn(n11.w, t11.sessionId, delivered(n11.w).find(d => d.sessionId === t11.sessionId).message)
+  await until(() => delivered(n11.w).some(d => d.sessionId === 'e11'), 'Exec11 got the work')
+
+  const exec11 = runTurn(n11.w, 'e11', delivered(n11.w).find(d => d.sessionId === 'e11').message)
   const cancelled11 = []
-  n11.w.agentOf(t11.sessionId).cancel = cause => { cancelled11.push(cause) }
-  await messageBot(n11.w.rt, t11.sessionId, 'Exec10', 'run the tests')
-  await until(() => workThread(n10.w.rt, 'e10') !== undefined && delivered(n10.w).some(d => d.sessionId === workThread(n10.w.rt, 'e10').sessionId), 'Exec10 got its part')
-  const t10 = workThread(n10.w.rt, 'e10')
-  const exec10 = runTurn(n10.w, t10.sessionId, delivered(n10.w).find(d => d.sessionId === t10.sessionId).message)
+  n11.w.agentOf('e11').cancel = cause => { cancelled11.push(cause) }
+  await messageBot(n11.w.rt, 'e11', 'Exec10', 'run the tests')
+  await until(() => delivered(n10.w).some(d => d.sessionId === 'e10'), 'Exec10 got its part')
+
+  const exec10 = runTurn(n10.w, 'e10', delivered(n10.w).find(d => d.sessionId === 'e10').message)
   const cancelled10 = []
-  n10.w.agentOf(t10.sessionId).cancel = cause => { cancelled10.push(cause) }
+  n10.w.agentOf('e10').cancel = cause => { cancelled10.push(cause) }
   // The user presses Stop on Chief's turn.
   hub.sessionEvent('chief', { type: 'turn/end', seq: 99, data: { turn: 1, reason: { kind: 'aborted', reason: { kind: 'user' } } } })
   await until(() => cancelled11.length === 1 && cancelled10.length === 1, 'both turns on the nodes were stopped')
@@ -552,26 +610,26 @@ test('W3-E2E-11 the user stops Chief: Exec11 on node011 and Exec10 on node010, w
   await new Promise(r => setTimeout(r, 50))
   await settle()
   assert.equal(delivered(hub).filter(d => d.sessionId === 'chief').length, 0, 'nothing comes back to Chief')
-  assert.equal(delivered(n11.w).filter(d => d.sessionId === t11.sessionId).length, 1, 'nothing comes back to Exec11')
+  assert.equal(delivered(n11.w).filter(d => d.sessionId === 'e11').length, 1, 'nothing comes back to Exec11')
 })
 
 test('W3-E2E-12 a Bot may not hand work back to a Bot waiting above it on another machine: refused at the sender, and at the receiver', { skip }, async t => {
   const { hub, n10, n11 } = await cluster(t)
   userTurn(hub, 'chief', 'run the release')
   await messageBot(hub.rt, 'chief', 'Exec11', 'run the release')
-  await until(() => workThread(n11.w.rt, 'e11') !== undefined && delivered(n11.w).some(d => d.sessionId === workThread(n11.w.rt, 'e11').sessionId), 'Exec11 got the work')
-  const t11 = workThread(n11.w.rt, 'e11')
-  runTurn(n11.w, t11.sessionId, delivered(n11.w).find(d => d.sessionId === t11.sessionId).message)
+  await until(() => delivered(n11.w).some(d => d.sessionId === 'e11'), 'Exec11 got the work')
+
+  runTurn(n11.w, 'e11', delivered(n11.w).find(d => d.sessionId === 'e11').message)
   // Back to Chief, from Exec11's work on it: refused on node011, nothing is sent.
-  const back = String(await messageBot(n11.w.rt, t11.sessionId, 'Chief', 'what do you think?'))
+  const back = String(await messageBot(n11.w.rt, 'e11', 'Chief', 'what do you think?'))
   assert.match(back, /^Not sent: Chief is waiting for the result of the work you are doing/)
   // Exec11 → Exec10 is fine; then Exec10 → Chief and Exec10 → Exec11 are refused on node010.
-  await messageBot(n11.w.rt, t11.sessionId, 'Exec10', 'run the tests')
-  await until(() => workThread(n10.w.rt, 'e10') !== undefined && delivered(n10.w).some(d => d.sessionId === workThread(n10.w.rt, 'e10').sessionId), 'Exec10 got its part')
-  const t10 = workThread(n10.w.rt, 'e10')
-  runTurn(n10.w, t10.sessionId, delivered(n10.w).find(d => d.sessionId === t10.sessionId).message)
-  assert.match(String(await messageBot(n10.w.rt, t10.sessionId, 'Chief', 'ok?')), /^Not sent: Chief is waiting/)
-  assert.match(String(await messageBot(n10.w.rt, t10.sessionId, 'Exec11', 'ok?')), /^Not sent: Exec11 is waiting/)
+  await messageBot(n11.w.rt, 'e11', 'Exec10', 'run the tests')
+  await until(() => delivered(n10.w).some(d => d.sessionId === 'e10'), 'Exec10 got its part')
+
+  runTurn(n10.w, 'e10', delivered(n10.w).find(d => d.sessionId === 'e10').message)
+  assert.match(String(await messageBot(n10.w.rt, 'e10', 'Chief', 'ok?')), /^Not sent: Chief is waiting/)
+  assert.match(String(await messageBot(n10.w.rt, 'e10', 'Exec11', 'ok?')), /^Not sent: Exec11 is waiting/)
   // A frame from a sender that did not check is refused at the receiver: Exec11 is in the chain it came with.
   n10.network.post('work/handoff', { id: 'loop-1', from: { id: 'joined:node010:e10', name: 'Exec10', nodeId: 'node010' }, to: { id: 'joined:node011:e11', name: 'Exec11', nodeId: 'node011' }, part: 'x', text: 'again', chain: [{ id: 'chief', nodeId: 'hub' }, { id: 'joined:node011:e11', nodeId: 'node011' }, { id: 'joined:node010:e10', nodeId: 'node010' }] }, { to: 'node011' })
   await settle()
@@ -598,7 +656,7 @@ test('W3-E2E-14 a stop that arrives before its work: the work is not taken when 
   await until(() => hub.rt.state.works?.[id] === undefined || (hub.rt.state.works[id].results ?? []).length > 0 || delivered(hub).some(d => d.sessionId === 'chief' && d.message.source?.role === 'results'), 'the hub heard back')
   await settle()
   assert.equal(n10.w.rt.state.works?.[id], undefined, 'node010 did not take it')
-  assert.equal(workThread(n10.w.rt, 'e10') === undefined || !delivered(n10.w).some(d => d.sessionId === workThread(n10.w.rt, 'e10').sessionId), true, 'Exec10 never got the request')
+  assert.equal(!delivered(n10.w).some(d => d.sessionId === 'e10' && d.message.source?.role === 'request'), true, 'Exec10 never got the request')
   assert.equal(n10.w.rt.state.cancelledAhead?.[id], undefined, 'the mark is used up')
   const back = delivered(hub).find(d => d.sessionId === 'chief' && d.message.source?.role === 'results')
   if (back) assert.match(textOf(back.message), /Stopped before it started/)
@@ -664,8 +722,8 @@ test('W3-E2E-13 depth: work that passed through too many hands is not taken, and
   assert.equal(delivered(n10.w).some(d => textOf(d.message).endsWith('deep work')), false)
   // Four above (the limit): taken, but Exec10 may not hand it on again.
   n11.network.post('work/handoff', { id: 'deep-2', from: { id: 'joined:node011:e11', name: 'Exec11', nodeId: 'node011' }, to: { id: 'joined:node010:e10', name: 'Exec10', nodeId: 'node010' }, part: 'x', text: 'at the limit', chain: [...refs(3), { id: 'joined:node011:e11', nodeId: 'node011' }] }, { to: 'node010' })
-  await until(() => workThread(n10.w.rt, 'e10') !== undefined && delivered(n10.w).some(d => textOf(d.message).endsWith('at the limit')), 'taken on node010')
-  const t10 = workThread(n10.w.rt, 'e10')
-  runTurn(n10.w, t10.sessionId, delivered(n10.w).find(d => textOf(d.message).endsWith('at the limit')).message)
-  assert.match(String(await messageBot(n10.w.rt, t10.sessionId, 'Chief', 'one more hand')), /^Not sent: this work has already passed through 4 Bots/)
+  await until(() => delivered(n10.w).some(d => d.sessionId === 'e10' && textOf(d.message).endsWith('at the limit')), 'taken on node010')
+
+  runTurn(n10.w, 'e10', delivered(n10.w).find(d => textOf(d.message).endsWith('at the limit')).message)
+  assert.match(String(await messageBot(n10.w.rt, 'e10', 'Chief', 'one more hand')), /^Not sent: this work has already passed through 4 Bots/)
 })

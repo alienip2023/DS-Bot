@@ -30,6 +30,9 @@ import { startPageTurn } from './executor.js'
 import { JOINED_TURN_TIMEOUT_MS } from './joined-turn.js'
 import { createTurnTracker } from './turn-tracker.js'
 import { pickRemoteTasks } from './remote-tasks.js'
+import { validateOnePasswordConfig } from './secret-providers/onepassword.js'
+import { presentedFileName } from '../shared/group-replies.js'
+import { COMPUTER_APPEARANCE_FIELDS } from '../shared/appearance.js'
 
 // Pure helper: map a registry defaultModel (string or {provider,model} object) to a ref string.
 export function mapDefaultModel(dm) {
@@ -40,8 +43,29 @@ export function mapDefaultModel(dm) {
 
 const STAGED_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
 const STAGED_MS = 30 * 60_000
-const STAGED_MAX_ITEMS = 20
-const STAGED_MAX_BYTES = 50 * 1024 * 1024
+const STAGED_SWEEP_MS = 5 * 60_000
+const STAGED_FILE_MAX = 16 * 1024 * 1024
+const STAGED_TOTAL_MAX = 64 * 1024 * 1024
+const STAGED_MAX_ENTRIES = 20
+
+function sanitizeFileName(raw) {
+  const base = String(raw ?? '').split(/[\\/]/).pop() ?? ''
+  // eslint-disable-next-line no-control-regex
+  const clean = base.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 255)
+  return clean === '.' || clean === '..' ? '' : clean
+}
+
+function decodeCanonicalBase64(data, maxBytes, { allowEmpty = false } = {}) {
+  if (typeof data !== 'string') return { invalid: true }
+  if (data === '') return allowEmpty ? { bytes: Buffer.alloc(0) } : { invalid: true }
+  const maxEncoded = Math.ceil(maxBytes / 3) * 4
+  if (data.length > maxEncoded) return { tooLarge: true }
+  if (data.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) return { invalid: true }
+  const bytes = Buffer.from(data, 'base64')
+  if (bytes.length > maxBytes) return { tooLarge: true }
+  if (bytes.toString('base64') !== data) return { invalid: true }
+  return { bytes }
+}
 
 const LANGUAGES = {
   zh: 'Chinese (简体中文)',
@@ -143,7 +167,7 @@ function pumpJoinedQueue(rt, bot) {
  */
 export function createSendUser(rt, { textOfContent, ctx, ownThreadTarget } = {}) {
   const _textOfContent = textOfContent ?? ((c) => (typeof c === 'string' ? c : Array.isArray(c) ? c.map(b => typeof b?.text === 'string' ? b.text : '').join('') : ''))
-  return async function sendUser({ sessionId: ref, content, requestId: providedRequestId, wait = false, mode = 'queue' }) {
+  return async function sendUser({ sessionId: ref, content, requestId: providedRequestId, wait = false, mode = 'queue', queueReceipt = false }) {
     const callerSupplied = providedRequestId !== undefined
     const requestId = providedRequestId ?? randomUUID()
     // Joined shadow: ensureMirrorSession + startPageTurn (user message on the page first, node answer after)
@@ -200,14 +224,33 @@ export function createSendUser(rt, { textOfContent, ctx, ownThreadTarget } = {})
     // to move is read now, before anything awaits, so a message arriving meanwhile joins the same move.
     const ownerBotId = rt.chatOwners.get(sessionId)
     const owner = ownerBotId !== undefined && !rt.groupOwners.has(sessionId) && !rt.taskOwners?.has(sessionId) ? rt.botOf(ownerBotId) : undefined
-    const moving = owner !== undefined && rt.shouldMoveForeground?.(owner, sessionId) === true
-      ? rt.handoffForeground(owner, sessionId)
-      : undefined
-    if (moving !== undefined) sessionId = await moving
-    // A retried request already taken (by the old or the new foreground) is not prompted again.
-    if (await rt.isAdmittedForSend?.({ ref, sessionId, requestId, callerSupplied })) return
+    const shouldMove = owner !== undefined && rt.shouldMoveForeground?.(owner, sessionId) === true
+    const findAdmission = async () => {
+      const found = await rt.findAdmittedForSend?.({ ref, sessionId, requestId, callerSupplied })
+      if (found !== undefined) {
+        if (found.admitted !== true) return undefined
+        return { sessionId: found.sessionId ?? sessionId, alreadyAdmitted: true, durable: found.durable === true }
+      }
+      if (await rt.isAdmittedForSend?.({ ref, sessionId, requestId, callerSupplied, durable: queueReceipt })) {
+        return { sessionId, alreadyAdmitted: true, durable: queueReceipt }
+      }
+    }
+    const admittedBefore = await findAdmission()
+    if (admittedBefore !== undefined) return admittedBefore
+    let handoffFallback = false
+    if (shouldMove) {
+      try {
+        sessionId = await rt.handoffForeground(owner, sessionId)
+      } catch (error) {
+        if (rt.chatOf(ownerBotId) !== sessionId || rt.taskOwners?.has(sessionId)) throw error
+        handoffFallback = true
+        rt.warn('ds-bot: foreground handoff for %s failed before commit; queueing on the current chat: %s', sessionId, error)
+      }
+      const admittedAfter = await findAdmission()
+      if (admittedAfter !== undefined) return admittedAfter
+    }
     await rt.ensureCapabilities(sessionId)
-    const promptMode = mode === 'steer' ? 'steer' : 'queue'
+    const promptMode = !handoffFallback && mode === 'steer' ? 'steer' : 'queue'
     const request = {
       requestId,
       sessionId,
@@ -223,6 +266,7 @@ export function createSendUser(rt, { textOfContent, ctx, ownThreadTarget } = {})
     try {
       await _ctx.sessionController.prompt(request, AbortSignal.timeout(30_000))
       rt.noteSendPrompted?.(sessionId, requestId)
+      return { sessionId, alreadyAdmitted: false, durable: false }
     } catch (error) {
       // A Session that cannot take a steer right now takes the message as the next turn.
       if (promptMode === 'steer' && error?.code === 'session/steer-unavailable') {
@@ -230,7 +274,7 @@ export function createSendUser(rt, { textOfContent, ctx, ownThreadTarget } = {})
         rt.markThreadPromptAdmitted?.(queued)
         await _ctx.sessionController.prompt(queued, AbortSignal.timeout(30_000))
         rt.noteSendPrompted?.(sessionId, requestId)
-        return
+        return { sessionId, alreadyAdmitted: false, durable: false }
       }
       throw error
     }
@@ -336,34 +380,45 @@ export function install(rt) {
 
   // The DSH interface language of the last browser that asked for the team.
   let uiLocale
+  rt.uiLocale = () => uiLocale
   rt.uiLanguage = () => {
     if (uiLocale === undefined) return undefined
     const lower = uiLocale.toLowerCase()
     return LANGUAGES[lower] ?? LANGUAGES[lower.split('-')[0]] ?? uiLocale
   }
 
-  // Photos staged by `stage-image`, kept until the message that names them is sent.
+  // Photos and files staged by `stage-image` / `stage-file`, kept until the message that names them is sent.
   const staged = new Map()
-  let stagedBytes = 0
-  let stagedTimer
-  const dropStaged = (id) => {
-    const entry = staged.get(id)
-    if (entry === undefined) return
-    staged.delete(id)
-    stagedBytes -= entry.bytes
+  const stagedFiles = new Map()
+  const stagedTotalBytes = () => {
+    let total = 0
+    for (const entry of staged.values()) total += entry.byteLength ?? 0
+    for (const entry of stagedFiles.values()) total += entry.byteLength ?? 0
+    return total
   }
   const sweepStaged = (now = Date.now()) => {
-    let earliest
-    for (const [id, entry] of staged) {
-      if (entry.at <= now - STAGED_MS) dropStaged(id)
-      else if (earliest === undefined || entry.at < earliest) earliest = entry.at
+    for (const [id, entry] of staged) if (entry.at < now - STAGED_MS) staged.delete(id)
+    for (const [id, entry] of stagedFiles) if (entry.at < now - STAGED_MS) stagedFiles.delete(id)
+  }
+  const evictOldestStaged = () => {
+    const oldestImg = staged.entries().next().value
+    const oldestFile = stagedFiles.entries().next().value
+    if (oldestImg === undefined && oldestFile === undefined) return false
+    if (oldestFile === undefined || (oldestImg !== undefined && oldestImg[1].at <= oldestFile[1].at)) {
+      staged.delete(oldestImg[0])
+    } else {
+      stagedFiles.delete(oldestFile[0])
     }
-    clearTimeout(stagedTimer)
-    stagedTimer = undefined
-    if (earliest !== undefined) {
-      stagedTimer = setTimeout(() => sweepStaged(), Math.max(1, earliest + STAGED_MS - now))
-      stagedTimer.unref?.()
+    return true
+  }
+  const pruneStaged = (map, incomingBytes, now) => {
+    sweepStaged(now)
+    while (map.size >= STAGED_MAX_ENTRIES) {
+      const oldest = map.keys().next().value
+      if (oldest === undefined) break
+      map.delete(oldest)
     }
+    while (stagedTotalBytes() + incomingBytes > STAGED_TOTAL_MAX && evictOldestStaged()) { /* evict oldest across both maps */ }
   }
   const ok = value => ({ ok: true, value })
   const fail = (message, code = 'bot/error', details = {}) => ({ ok: false, error: { code, message, details } })
@@ -371,6 +426,18 @@ export function install(rt) {
   // changes the view without a new revision.
   const modelsKey = () => `${rt.cachedCatalog().map(entry => `${entry.ref}${entry.needsKey ? '!' : ''}${entry.reasoning ? `:${JSON.stringify(entry.reasoning)}` : ''}`).join(',')}|${rt.cachedDefault() ?? ''}`
   const publicCards = cards => Object.fromEntries(Object.entries(cards ?? {}).map(([sessionId, { imOrigin, ...card }]) => [sessionId, card]))
+  const botTailOf = (botId) => {
+    const partId = rt.chatOf?.(botId) ?? botId
+    const tail = rt.chatTail?.(partId)
+    const liveTurn = rt.latestTurnOf?.(partId)
+    const latestTurn = tail?.latestTurn !== undefined && liveTurn !== undefined
+      ? Math.max(tail.latestTurn, liveTurn)
+      : (liveTurn ?? tail?.latestTurn)
+    return {
+      ...(tail ? { lastAt: tail.lastAt, preview: tail.preview, ...(tail.lastBotAt !== undefined ? { lastBotAt: tail.lastBotAt } : {}) } : {}),
+      ...(latestTurn !== undefined ? { latestTurn } : {}),
+    }
+  }
   const view = () => ({
     revision: state.revision,
     workspaceId: state.workspaceId ?? null,
@@ -386,10 +453,9 @@ export function install(rt) {
     // `sessionId` is the Bot's current own-chat part; `parts` its earlier ones.
     // `waiting`: the Bot holds its greeting until the user picks its model or fixes
     // what failed it. `blocked`: the facts of a failure only the user can fix (turns.js).
-    bots: Object.values(state.bots).map(({ segments, kickoff, tasks: _rawTasks, nodeTasks, ...bot }) => {
+    bots: Object.values(state.bots).map(({ segments, kickoff, agentPresetDefault, agentPresetDefaultPending, tasks: _rawTasks, nodeTasks, ...bot }) => {
       const peer = bot.origin === 'peer'
       const own = peer ? null : rt.chatOf(bot.id)
-      const tail = peer ? undefined : rt.chatTail(own)
       const botTasks = joinedShadow(bot) ? remoteTasksOf(bot, nodeTasks, state.replicas?.[bot.id]?.tasks) : rt.taskViewOf?.(state.bots[bot.id]) ?? []
       return {
         ...bot, sessionId: own, parts: (peer ? [] : segments ?? []).map(segment => segment.sessionId),
@@ -397,7 +463,7 @@ export function install(rt) {
         ...(kickoff && !peer ? { waiting: true } : {}),
         // `engine` is the Bot's local-agent route, present only on abots.
         ...(rt.localAgentBadge?.(bot.model ?? bot.appliedModel) !== undefined ? { engine: rt.localAgentBadge(bot.model ?? bot.appliedModel) } : {}),
-        ...(tail ? { lastAt: tail.lastAt, preview: tail.preview } : {}),
+        ...botTailOf(bot.id),
       }
     }),
     // `sessionId` is the group's own Session's current part, `ownParts` its earlier
@@ -406,7 +472,8 @@ export function install(rt) {
     rooms: Object.values(state.rooms).map(({ log, seen, paused, sessions, segments, parts: ownParts, ...room }) => {
       const parts = [...Object.values(sessions ?? {}), ...Object.values(segments ?? {}).flat().map(segment => segment.sessionId), ...(ownParts ?? []).map(segment => segment.sessionId)]
       const last = (log ?? []).filter(line => line.kind === undefined).at(-1)
-      return { ...room, sessionId: rt.sessionOfRoom(room), ownParts: (ownParts ?? []).map(segment => segment.sessionId), parts, ...(last ? { lastAt: last.time, preview: last.who === 'User' ? last.text : `${last.who}：${last.text}` } : {}) }
+      const lastBody = last ? (last.text || (Array.isArray(last.presented) ? last.presented.map(file => presentedFileName(file.path)).join(', ') : '')) : ''
+      return { ...room, sessionId: rt.sessionOfRoom(room), ownParts: (ownParts ?? []).map(segment => segment.sessionId), parts, ...(last ? { lastAt: last.time, preview: last.who === 'User' ? lastBody : `${last.who}：${lastBody}` } : {}) }
     }),
     // Deleted private Bots whose folder, memory and chats stay closed to the others.
     privateArchives: rt.archivesView(),
@@ -465,7 +532,7 @@ export function install(rt) {
     secretStore: rt.secretStoreStatus(),
     secrets: rt.secretsView(),
     activity: rt.activityView(),
-    work: { bots: rt.workView(), agents: rt.agentWorkView?.() ?? {}, rooms: rt.roomWorkView(), approvals: rt.approvalsView(), waiting: rt.waitingView?.() ?? {}, turns: rt.turnsView?.() ?? {}, steered: rt.steeredView?.() ?? {}, canBackground: rt.canBackgroundView?.() ?? {} },
+    work: { bots: rt.workView(), agents: rt.agentWorkView?.() ?? {}, rooms: rt.roomWorkView(), activeRooms: Object.values(state.rooms ?? {}).filter(room => rt.roomActive?.(room.id) === true).map(room => room.id), approvals: rt.approvalsView(), waiting: rt.waitingView?.() ?? {}, paused: rt.pausedWorksView?.() ?? [], turns: rt.turnsView?.() ?? {}, steered: rt.steeredView?.() ?? {}, canBackground: rt.canBackgroundView?.() ?? {} },
     memoryNews: rt.memoryNews(),
     memoryReviews: rt.memoryReviews(),
     learning: rt.learningView(),
@@ -488,9 +555,34 @@ export function install(rt) {
     // Browser holds (handoffs and takeovers) change without bumping state.revision,
     // so they ride on live() to reconcile unchanged-revision polls.
     browserHolds: rt.browserChannel?.holdSnapshot?.() ?? {},
+    // Everything across the team that waits on the user (inbox.js): one list for the
+    // sidebar, the inbox page, the phone and notifications.
+    inbox: rt.inboxView?.() ?? null,
     // Plugin runtime summary (active slots, restart status, installed count) updates
     // asynchronously as slots reconcile, so it rides on live().
     plugins: rt.pluginsSummary?.() ?? null,
+    // Whether DSH's speech-to-text controller (Voice Input plugin) is active on this host.
+    speech: Boolean(ctx.get?.('speechController')),
+    // Pending DSH user-questions & plan-review requests (Classic sessions & own-window fallback).
+    userQuestions: rt.userQuestionsView?.() ?? [],
+    // User-authored queued messages per active Session (`next-turn` inbox).
+    sessionQueues: rt.sessionQueuesView?.() ?? {},
+    // Per-Bot own-chat tail metadata (lastAt, lastBotAt, latestTurn, preview) changes on
+    // normal turns and stopped retries without bumping state.revision, so it rides on live()
+    // for unchanged-revision mobile polls. Empty sessions stay omitted so cold fillTail
+    // resolving `{ lastAt: 0, preview: '' }` never churns liveKey.
+    botTails: Object.fromEntries(Object.values(state.bots).flatMap((bot) => {
+      const entry = botTailOf(bot.id)
+      const hasData = (entry.lastAt ?? 0) > 0
+        || (entry.preview ?? '') !== ''
+        || entry.lastBotAt !== undefined
+        || entry.latestTurn !== undefined
+      return hasData ? [[bot.id, entry]] : []
+    })),
+    // True once until the user confirms or declines the telemetry privacy notice.
+    telemetryPrompt: rt.telemetry?.shouldPromptNotice?.() === true,
+    // Release notes state for local windows (excluded from remote/relay payloads).
+    releaseNotes: rt.releaseNotesView?.() ?? null,
   })
   // The live fields' sources are spread across the host with no single change
   // counter, so the serialized answer itself is the detector: a poll whose `live`
@@ -508,12 +600,23 @@ export function install(rt) {
   }
   // What a host that only reads the team may still answer.
   // Updates change the dsh profile, not the team, so a reading host may run them too.
-  const READS = new Set(['secret-store', 'secret-unlock', 'state', 'models', 'efforts', 'providers', 'provider-models', 'earlier', 'chat', 'run-stats', 'room-progress', 'group-rows', 'exchange', 'exchange-text', 'file-text', 'usage', 'schedules', 'memory-view', 'browser-wait', 'browser-result', 'diagnostics', 'diagnostics-log', 'diagnostics-clear', 'update-check', 'update-install', 'dsh-update-install', 'repo-stars', 'approval-answer', 'thinking', 'avatar-library', 'computer-system-status', 'computer-shot', 'local-agents', 'local-agent-models', 'browser-frame', 'hello', 'notices', 'avatar', 'room-chat', 'usage-summary', 'image', 'markdown-image', 'file-download', 'changes-check', 'changes-summary', 'changes-diff', 'threads', 'thread-queue', 'thread-owner', 'remote-tasks', 'agent-chat', 'bot-task-read', 'group-relay-replies', 'deepseek-services', 'deepseek-synthesize', 'memory-history', 'api-audit', 'plugins-list', 'plugins-catalog-refresh', 'plugins-versions', 'plugins-detail'])
+  const READS = new Set(['secret-store', 'secret-unlock', 'secret-refresh-external', 'state', 'models', 'presets', 'efforts', 'providers', 'provider-models', 'earlier', 'chat', 'agent-chat', 'bot-task-read', 'run-stats', 'room-progress', 'group-rows', 'group-relay-replies', 'exchange', 'exchange-text', 'file-text', 'usage', 'schedules', 'memory-view', 'memory-history', 'browser-wait', 'browser-result', 'diagnostics', 'diagnostics-log', 'diagnostics-clear', 'telemetry-status', 'telemetry-client-error', 'update-check', 'update-install', 'dsh-update-install', 'repo-stars', 'approval-answer', 'thinking', 'avatar-library', 'computer-system-status', 'computer-shot', 'local-agents', 'local-agent-models', 'browser-frame', 'hello', 'notices', 'avatar', 'room-chat', 'usage-summary', 'image', 'markdown-image', 'file-download', 'changes-check', 'deepseek-services', 'deepseek-synthesize', 'speech-catalog', 'api-audit', 'background-picture', 'session-page', 'job-list', 'job-read', 'session-controls', 'session-commands', 'session-skills', 'session-files', 'workspace-list', 'workspace-read', 'workspace-changes', 'workspace-watch', 'workspace-unwatch', 'workspace-open', 'engine-settings-list', 'engine-account-state', 'engine-plugins-list', 'engine-presets-list', 'engine-presets-read', 'engine-archived-list', 'engine-classic-sessions', 'engine-feedback-list', 'engine-web-providers', 'engine-model-catalog', 'plugins-list', 'plugins-catalog-refresh', 'plugins-versions', 'plugins-detail', 'changes-summary', 'changes-diff', 'threads', 'thread-queue', 'thread-owner', 'remote-tasks'])
   READS.add('chatgpt')
 
   const modelRequests = { approvalModel: 0, defaultBotModel: 0 }
 
-  async function setPrefs(body, requests) {
+  // A change is all or nothing: one field the host refuses leaves every other field of it
+  // unsaved too, so a refused change never shows up later with the next save.
+  // Model catalog checks run before anything changes; the rest applies in one step so a
+  // refused change cannot roll back another request's save.
+  async function setPrefs(body, requests = {}, { remote = false } = {}) {
+    if (remote && body.appearance !== null && typeof body.appearance === 'object' && !Array.isArray(body.appearance)) {
+      const blocked = Object.keys(body.appearance).filter(field => COMPUTER_APPEARANCE_FIELDS.has(field))
+      if (blocked.length > 0) {
+        throw Object.assign(new Error(`These appearance fields can only be changed on this computer: ${blocked.join(', ')}`), { code: 'bot/refused' })
+      }
+    }
+    const model = await defaultModelOf(body)
     let approvalModel
     if (body.approvalModel !== undefined) {
       const ref = body.approvalModel
@@ -521,6 +624,37 @@ export function install(rt) {
       if (rt.isLocalAgentRef?.(ref)) throw invalid('Choose a model API for approval review')
       approvalModel = ref ? await rt.resolveModel(ref) : undefined
     }
+    const before = structuredClone(state.prefs)
+    let secretChanges
+    try {
+      secretChanges = applyPrefs(body, model, approvalModel, requests)
+    } catch (error) {
+      for (const key of Object.keys(state.prefs)) delete state.prefs[key]
+      Object.assign(state.prefs, before)
+      throw error
+    }
+    // The appearance and the user themes (appearance.js); a picture a change stops using is removed later.
+    await rt.save()
+    if (secretChanges.secretShellModeChanged || secretChanges.secretProvidersChanged) {
+      rt.onSecretPrefsChanged?.({
+        shellModeChanged: secretChanges.secretShellModeChanged,
+        providersChanged: secretChanges.secretProvidersChanged,
+      })
+    }
+    if (body.appearance !== undefined || body.themes !== undefined) void rt.backgroundSweep()
+    if (body.defaultBotModel !== undefined) await rt.syncRoomSessions?.()
+  }
+
+  // The model new Bots start on when a create names none. It resolves now, so the
+  // saved ref is one the catalog served at save time; a create still re-checks it.
+  async function defaultModelOf(body) {
+    const ref = body.defaultBotModel
+    if (ref === undefined || ref === null || ref === '') return ref
+    if (rt.isLocalAgentRef?.(ref) === true) throw invalid('A local agent cannot be the default model: a new Bot chooses to run on one when it is created')
+    return rt.resolveModel(ref)
+  }
+
+  function applyPrefs(body, model, approvalModel, requests = {}) {
     if (body.theme !== undefined) {
       if (typeof body.theme !== 'string' || !/^[a-z][\w-]{0,31}$/.test(body.theme)) throw invalid('Unknown theme')
       state.prefs.theme = body.theme
@@ -556,16 +690,11 @@ export function install(rt) {
       else throw invalid('Flat text width must be a whole percent from 50 to 100')
     }
     if (body.defaultBotModel !== undefined) {
-      // The model new Bots start on when a create names none. It resolves now, so the
-      // saved ref is one the catalog served at save time; a create still re-checks it.
-      const ref = body.defaultBotModel
-      if (rt.isLocalAgentRef?.(ref) === true) throw invalid('A local agent cannot be the default model: a new Bot chooses to run on one when it is created')
-      const model = ref === null || ref === '' ? undefined : await rt.resolveModel(ref)
-      if (requests.defaultBotModel === modelRequests.defaultBotModel) {
+      if (requests.defaultBotModel === undefined || requests.defaultBotModel === modelRequests.defaultBotModel) {
         // Resolution may yield while new reviews start on the old default.
         if (!state.prefs.approvalModel) rt.cancelApprovalReviews?.({})
-        if (model) state.prefs.defaultBotModel = model
-        else delete state.prefs.defaultBotModel
+        if (model === null || model === '' || model === undefined) delete state.prefs.defaultBotModel
+        else state.prefs.defaultBotModel = model
       }
     }
     if (body.thinking !== undefined) {
@@ -593,16 +722,54 @@ export function install(rt) {
       if (sizes.length === 0) delete state.prefs.memoryLimits
       else state.prefs.memoryLimits = { ...state.prefs.memoryLimits, ...Object.fromEntries(sizes) }
     }
-    if (body.approvalModel !== undefined && requests.approvalModel === modelRequests.approvalModel) {
+    let secretShellModeChanged = false
+    let secretProvidersChanged = false
+    if (body.secretShellMode !== undefined) {
+      const prevMode = state.prefs.secretShellMode ?? 'env'
+      if (body.secretShellMode === null || body.secretShellMode === 'env') delete state.prefs.secretShellMode
+      else if (body.secretShellMode === 'file') state.prefs.secretShellMode = 'file'
+      else throw invalid('Secret shell exposure must be env or file')
+      secretShellModeChanged = (state.prefs.secretShellMode ?? 'env') !== prevMode
+    }
+    if (body.secretProviders !== undefined) {
+      const prevJson = JSON.stringify(state.prefs.secretProviders ?? {})
+      if (body.secretProviders === null) {
+        delete state.prefs.secretProviders
+      } else if (typeof body.secretProviders === 'object' && !Array.isArray(body.secretProviders)) {
+        const next = { ...state.prefs.secretProviders }
+        if (body.secretProviders.onepassword !== undefined) {
+          if (body.secretProviders.onepassword === null) {
+            delete next.onepassword
+          } else {
+            let cleaned
+            try {
+              cleaned = validateOnePasswordConfig(body.secretProviders.onepassword)
+            } catch (error) {
+              throw invalid(error?.message ?? 'Invalid 1Password configuration.')
+            }
+            if (cleaned.account === '') delete next.onepassword
+            else next.onepassword = cleaned
+          }
+        }
+        if (Object.keys(next).length === 0) delete state.prefs.secretProviders
+        else state.prefs.secretProviders = next
+      } else {
+        throw invalid('Secret providers settings must be an object')
+      }
+      secretProvidersChanged = JSON.stringify(state.prefs.secretProviders ?? {}) !== prevJson
+    }
+    if (body.approvalModel !== undefined && (requests.approvalModel === undefined || requests.approvalModel === modelRequests.approvalModel)) {
       rt.cancelApprovalReviews?.({})
       if (approvalModel) state.prefs.approvalModel = approvalModel
       else delete state.prefs.approvalModel
     }
-    await rt.save({ immediate: true })
-    if (body.defaultBotModel !== undefined) await rt.syncRoomSessions?.()
+    rt.appearancePrefs(body)
+    return { secretShellModeChanged, secretProvidersChanged }
   }
 
-  const handle = async (endpoint, payload, signal, remote = false) => {
+  const handle = async (endpoint, payload, signal, metaOrRemote = false) => {
+    const remote = metaOrRemote === true || metaOrRemote?.remote === true
+    const meta = metaOrRemote && typeof metaOrRemote === 'object' ? metaOrRemote : undefined
     try {
       const body = payload ?? {}
       const requests = {}
@@ -619,8 +786,20 @@ export function install(rt) {
           await rt.catalog()
           await rt.loadSecrets()
           const answer = liveAnswer()
-          const { api: _, ...remoteLive } = answer.value
-          const liveValue = remote ? remoteLive : answer.value
+          const { api: _, telemetryPrompt: _tp, releaseNotes: _rn, userQuestions: _uq, sessionQueues: _sq, ...remoteLive } = answer.value
+          const liveValue = remote
+            ? {
+              ...remoteLive,
+              ...(Array.isArray(remoteLive.work?.approvals)
+                ? {
+                  work: {
+                    ...remoteLive.work,
+                    approvals: remoteLive.work.approvals.map(({ alwaysAllow: _aa, ...entry }) => entry),
+                  },
+                }
+                : {}),
+            }
+            : answer.value
           if (body.since === state.revision && (body.models === undefined || body.models === modelsKey())) {
             if (body.live === answer.key) return ok({ revision: state.revision, unchanged: true, liveKey: answer.key })
             return ok({ revision: state.revision, unchanged: true, liveKey: answer.key, ...liveValue })
@@ -632,6 +811,11 @@ export function install(rt) {
         case 'models':
           await rt.catalog({ fresh: true })
           return ok({ modelsKey: modelsKey() })
+        // The Agent presets this profile serves, for the Bot settings picker. A broken
+        // one stays listed with its reason, and so does one whose composition would
+        // replace the Bot's own prompt, so the picker shows it as unusable.
+        case 'presets':
+          return ok({ presets: await rt.agentPresetRows({ fit: true }) })
         case 'efforts':
           return ok(await rt.reasoningOf(String(body.ref ?? '')) ?? { efforts: [] })
         // A Turn's exact thinking time, from the timed stream in its events; `ms`
@@ -674,7 +858,7 @@ export function install(rt) {
           return ok(await rt.duplicateBot(body.id))
         case 'set-prefs':
           await rt.load()
-          await setPrefs(body, requests)
+          await setPrefs(body, requests, { remote })
           return ok(state.prefs)
         case 'exchange': {
           await rt.load()
@@ -705,10 +889,12 @@ export function install(rt) {
             if (bot === undefined) return fail('Unknown Bot', 'bot/not-found')
             const thread = threadOf(state, body.threadId)
             if (thread === undefined || thread.botId !== bot.id) return fail('Unknown thread', 'bot/not-found')
-            if (typeof thread.sessionId !== 'string' || thread.sessionId === '') {
-              return ok({ sessionId: null, items: [], cursor: null })
+            if (thread.id !== mainThreadId(bot.id)) {
+              if (typeof thread.sessionId !== 'string' || thread.sessionId === '') {
+                return ok({ sessionId: null, items: [], cursor: null })
+              }
+              return ok(await threadPage(rt, ctx, thread, body.cursor))
             }
-            if (thread.id !== mainThreadId(bot.id)) return ok(await threadPage(rt, ctx, thread, body.cursor))
           }
           const chatPageRoute = createChatPageRoute(rt)
           return ok(await chatPageRoute(body))
@@ -742,15 +928,15 @@ export function install(rt) {
           const sessionId = rt.chatOf(bot.id)
           const agent = await rt.resolveAgent(sessionId)
           const values = projections.snapshot(agent.session, RUN_STATS).values
-          const isLocal = rt.isLocalAgentRoute?.(agent.session?.requestHeader?.()?.config?.provider ?? '') === true
-            || rt.isLocalAgentSession?.(sessionId) === true
+          const measured = rt.contextRuntime?.measure?.(agent.session)
+          const isLocal = measured?.isLocal === true
           if (values && isLocal) {
-            const localContext = rt.localAgentContext?.(sessionId)
-            const contextWindow = localContext?.size ?? values.contextPressure?.contextWindow
+            const resolved = await rt.contextRuntime.resolveWindow(agent.session).catch(() => undefined)
+            const contextWindow = (resolved?.source !== 'default' ? resolved?.window : undefined) ?? values.contextPressure?.contextWindow
             return ok({
               ...values,
-              contextPressure: Number.isFinite(localContext?.used) && contextWindow > 0
-                ? { ...values.contextPressure, pressureTokens: localContext.used, projectedTokens: localContext.used, contextWindow }
+              contextPressure: Number.isFinite(measured.workingTokens) && contextWindow > 0
+                ? { ...values.contextPressure, pressureTokens: measured.workingTokens, projectedTokens: measured.workingTokens, contextWindow }
                 : undefined,
             })
           }
@@ -811,7 +997,7 @@ export function install(rt) {
             return ok(result)
           }
           await rt.bootstrap()
-          const bot = await rt.createBot({ name: body.name, role: body.role, color: body.color, instructions: body.instructions, brief: body.brief, avatar: body.avatar, model: body.model, effort: body.effort, workDir: body.workDir, type: body.type, worker: body.worker, memoryConfig: body.memoryConfig, section: body.section, sectionId: body.sectionId })
+          const bot = await rt.createBot({ name: body.name, role: body.role, color: body.color, instructions: body.instructions, brief: body.brief, avatar: body.avatar, model: body.model, effort: body.effort, workDir: body.workDir, type: body.type, worker: body.worker, memoryConfig: body.memoryConfig, agentPreset: body.agentPreset, section: body.section, sectionId: body.sectionId })
           return ok(bot)
         }
         case 'bot-create-targets': {
@@ -865,6 +1051,14 @@ export function install(rt) {
           await rt.load()
           if (rt.abandonWork?.(String(body.id ?? '')) !== true) return fail('That wait is no longer open', 'bot/stale')
           return ok(true)
+        case 'resume-work':
+          await rt.load()
+          if (typeof body.id !== 'string' || body.id.trim() === '' || await rt.resumePausedWork?.(body.id.trim()) !== true) return fail('That paused work is no longer open', 'bot/stale')
+          return ok(true)
+        case 'cancel-work':
+          await rt.load()
+          if (typeof body.id !== 'string' || body.id.trim() === '' || await rt.cancelWorkByUser?.(body.id.trim(), typeof body.reason === 'string' && body.reason.trim() !== '' ? body.reason.trim() : undefined) !== true) return fail('That work is no longer open', 'bot/stale')
+          return ok(true)
         case 'resume-room-pause':
           await rt.load()
           if (typeof body.roomId !== 'string' || body.roomId.trim() === '' || await rt.resumeRoomPause?.(body.roomId.trim()) !== true) return fail('That group is not paused', 'bot/stale')
@@ -877,6 +1071,28 @@ export function install(rt) {
           await rt.resumeBot(bot)
           return ok(true)
         }
+        // Recovery escape hatch when continuous context overflow prevents auto-switching.
+        case 'new-part': {
+          await rt.load()
+          const botId = String(body.botId ?? '')
+          const sessionId = typeof body.sessionId === 'string' && body.sessionId.trim() !== '' ? body.sessionId.trim() : undefined
+          return ok(await rt.recoverOverflowPart(botId, sessionId))
+        }
+        // Recovery when a Bot's foreground Session is gone from the Session library (#1929).
+        case 'recover-session': {
+          await rt.load()
+          const botId = String(body.botId ?? '')
+          return ok(await rt.recoverMissingSession(botId))
+        }
+        // Background pictures and a chat's own background (appearance.js).
+        case 'background-add':
+          await rt.load()
+          return ok(await rt.backgroundAdd(body.image))
+        case 'background-picture':
+          return ok(await rt.backgroundPicture(body.id))
+        case 'set-chat-background':
+          await rt.load()
+          return ok(await rt.setChatBackground(body))
         // The avatar library: photos the user imported once, kept beside the team.
         case 'avatar-library':
           await rt.load()
@@ -1050,13 +1266,13 @@ export function install(rt) {
           return ok({ team: await rt.setTeamWorkspace(String(body.path ?? '')) })
         case 'add-agent':
           await rt.load()
-          return ok(await rt.addAgent())
+          return ok(await rt.addAgent(body.agentPreset))
         case 'agent-chat':
           await rt.load()
           return ok(await rt.agentPage(String(body.agentId ?? ''), body.cursor ?? undefined, body.steps === true))
         case 'agent-session':
           await rt.load()
-          return ok({ sessionId: await rt.createAgentSession(body.agentId, body.workspaceId) })
+          return ok({ sessionId: await rt.createAgentSession(body.agentId, body.workspaceId, body.agentPreset) })
         case 'agent-adopt':
           await rt.load()
           return ok({ sessionId: await rt.adoptAgentSession(body.agentId, body.sessionId) })
@@ -1075,9 +1291,14 @@ export function install(rt) {
         case 'set-flags':
           await rt.load()
           return ok(await rt.setFlags(body.id, body))
-        case 'section-save':
+        case 'section-save': {
           await rt.load()
-          return ok(await rt.saveSection(body))
+          const saved = await rt.saveSection(body)
+          if (body.withRevision !== true) return ok(saved)
+          // Read the current section and revision together: a concurrent save may have won.
+          const section = state.sections?.find(entry => entry.id === saved.id)
+          return ok({ section: section ? { ...section } : null, revision: state.revision })
+        }
         case 'section-order':
           await rt.load()
           await rt.reorderSections(body.ids)
@@ -1091,6 +1312,11 @@ export function install(rt) {
           await rt.deleteRoom(body.id)
           return ok(view())
         case 'approval-answer':
+          if (body.choice === 'always') {
+            if (remote) return fail('Always allow is available on the computer', 'bot/refused')
+            const readOnly = rt.readOnly()
+            if (readOnly !== undefined) return fail(readOnly, 'bot/read-only')
+          }
           await rt.answerApproval(body.id, body.choice, body.binding ?? undefined, body.sessionId)
           return ok(true)
         // A stop that fails partway still parks the goal, or it wakes the admin again.
@@ -1145,7 +1371,10 @@ export function install(rt) {
         case 'stop-chat':
           return ok(await rt.stopChat(String(body.botId ?? '')))
         case 'stop-agent':
-          return ok(await rt.stopAgent(String(body.agentId ?? '')))
+          return ok(await rt.stopAgent(
+            String(body.agentId ?? ''),
+            typeof body.sessionId === 'string' && body.sessionId !== '' ? body.sessionId : undefined,
+          ))
         case 'dismiss-question':
           await rt.load()
           if (rt.own(state.questions, body.sessionId) !== undefined) {
@@ -1171,6 +1400,7 @@ export function install(rt) {
         case 'secret-unlock':
         case 'secret-encrypt':
         case 'secret-decrypt':
+        case 'secret-refresh-external':
           await rt.load()
           return ok(await rt.secretEndpoint(endpoint, body))
         case 'connector-connect':
@@ -1212,11 +1442,12 @@ export function install(rt) {
           await rt.load()
           return ok(await rt.capabilityEndpoint(endpoint, body))
         case 'schedules':
+        case 'schedule-enable':
         case 'schedule-create':
         case 'schedule-pause':
         case 'schedule-delete':
           await rt.load()
-          return ok(await rt.scheduleEndpoint(endpoint, body))
+          return ok(await rt.scheduleEndpoint(endpoint, body, { remote }))
         case 'memory-view':
         case 'memory-ask':
         case 'memory-pin':
@@ -1352,12 +1583,17 @@ export function install(rt) {
         case 'notices':
         case 'avatar':
         case 'room-chat':
-        case 'image':
         case 'file-download':
         case 'markdown-image':
         case 'usage-summary':
         case 'memory-edit':
         case 'memory-add':
+          await rt.load()
+          return ok(await rt.mobileEndpoint(endpoint, body))
+        case 'image':
+          if (remote && body?.parent != null && String(body.parent).trim() !== '') {
+            return fail('Session logs are read on the computer', 'bot/refused')
+          }
           await rt.load()
           return ok(await rt.mobileEndpoint(endpoint, body))
         case 'answer-question': {
@@ -1376,80 +1612,107 @@ export function install(rt) {
         case 'stage-image': {
           const mediaType = String(body.mediaType ?? '')
           const data = typeof body.data === 'string' ? body.data : ''
-          if (!STAGED_TYPES.has(mediaType) || data === '' || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) return fail('This is not a photo DS Bot can send', 'bot/invalid')
+          if (!STAGED_TYPES.has(mediaType)) return fail('This is not a photo DS Bot can send', 'bot/invalid')
+          const hostImageMax = ctx.get?.('attachments')?.imageLimits?.maxImageBytes
+          const maxBytes = Number.isFinite(hostImageMax) && hostImageMax > 0
+            ? Math.min(hostImageMax, STAGED_FILE_MAX)
+            : STAGED_FILE_MAX
+          const decoded = decodeCanonicalBase64(data, maxBytes, { allowEmpty: false })
+          if (decoded.tooLarge) return fail('This file is too large to send (max 16 MB)', 'bot/refused')
+          if (decoded.invalid) return fail('This is not a photo DS Bot can send', 'bot/invalid')
+          const name = body.name === undefined ? '' : sanitizeFileName(body.name)
           const now = Date.now()
-          sweepStaged(now)
-          const bytes = Buffer.byteLength(data, 'utf8')
-          while (staged.size >= STAGED_MAX_ITEMS || (staged.size > 0 && stagedBytes + bytes > STAGED_MAX_BYTES)) {
-            const oldest = staged.keys().next().value
-            if (oldest === undefined) break
-            dropStaged(oldest)
-          }
+          const byteLength = data.length
+          pruneStaged(staged, byteLength, now)
           const id = randomUUID()
-          staged.set(id, { mediaType, data, bytes, at: now })
-          stagedBytes += bytes
-          sweepStaged(now)
+          staged.set(id, { mediaType, data, byteLength, ...(name ? { name } : {}), at: now })
+          return ok({ id })
+        }
+        // A file for the next `send`: held here until `sendUser` resolves the receiving
+        // Session (after any foreground rollover) and uploads it through DSH's fileUploads.
+        case 'stage-file': {
+          if (typeof ctx.get?.('fileUploads')?.uploadStream !== 'function') {
+            return fail('File uploads are not available on this host', 'bot/refused')
+          }
+          const name = sanitizeFileName(body.name)
+          const data = typeof body.data === 'string' ? body.data : null
+          if (name === '' || data === null) {
+            return fail('This is not a file DS Bot can send', 'bot/invalid')
+          }
+          const decoded = decodeCanonicalBase64(data, STAGED_FILE_MAX, { allowEmpty: true })
+          if (decoded.tooLarge) return fail('This file is too large to send (max 16 MB)', 'bot/refused')
+          if (decoded.invalid) return fail('This is not a file DS Bot can send', 'bot/invalid')
+          const now = Date.now()
+          pruneStaged(stagedFiles, decoded.bytes.length, now)
+          const id = randomUUID()
+          stagedFiles.set(id, { name, bytes: decoded.bytes, byteLength: decoded.bytes.length, at: now })
           return ok({ id })
         }
         case 'send': {
           const text = String(body.text ?? '').trim()
           const ids = Array.isArray(body.images) ? body.images.map(String) : []
-          if (text === '' && ids.length === 0) return fail('Nothing to send', 'bot/invalid')
-          const images = ids.map(id => staged.get(id))
-          if (images.some(entry => entry === undefined)) return fail('A photo did not arrive. Send it again.', 'bot/stale')
-          const requestId = typeof body.requestId === 'string' && body.requestId.trim() !== '' ? body.requestId.trim() : undefined
-          const mode = body.mode === 'steer' ? 'steer' : 'queue'
+          const fileIds = Array.isArray(body.files) ? body.files.map(String) : []
+          if (text === '' && ids.length === 0 && fileIds.length === 0) return fail('Nothing to send', 'bot/invalid')
+          if (new Set(ids).size !== ids.length || new Set(fileIds).size !== fileIds.length) return fail('Duplicate attachment reference', 'bot/invalid')
           await rt.load()
           let thread
           let sessionId
           if (typeof body.threadId === 'string' && body.threadId !== '') {
             thread = threadOf(state, body.threadId)
             if (thread === undefined) return fail('Unknown thread', 'bot/not-found')
-            if (thread.archived === true) return fail('This thread is archived', 'bot/thread-archived')
-            sessionId = thread.sessionId
-            // A local Bot's Main thread keeps its conversation in the Bot's chat Session.
-            if ((typeof sessionId !== 'string' || sessionId === '') && thread.id === mainThreadId(thread.botId)) {
-              sessionId = rt.chatOf?.(thread.botId)
-            }
-            if (typeof sessionId !== 'string' || sessionId === '') return fail('This thread has no session yet', 'bot/invalid')
+            sessionId = thread.id === mainThreadId(thread.botId) ? rt.chatOf(thread.botId) : thread.sessionId
           } else {
-            if (typeof body.sessionId !== 'string' || body.sessionId === '') return fail('Nothing to send', 'bot/invalid')
             sessionId = body.sessionId
-            const owner = rt.bySessionIdFull?.(sessionId)
-            thread = owner === undefined ? undefined : threadOf(state, owner.threadId)
-            if (thread?.archived === true) return fail('This thread is archived', 'bot/thread-archived')
+            const full = rt.bySessionIdFull?.(sessionId)
+            thread = full === undefined ? undefined : threadOf(state, full.threadId)
           }
-          const owner = thread === undefined ? ownerOfSession(rt, sessionId) : { botId: thread.botId, threadId: thread.id }
-          const sendRequestId = requestId ?? randomUUID()
-          const payload = {
-            sessionId,
-            requestId: sendRequestId,
-            mode,
-            content: [
+          if (thread?.archived === true) return fail('This thread is archived', 'bot/thread-archived')
+          if (typeof sessionId !== 'string' || sessionId === '') return fail('No session to send to', 'bot/invalid')
+          sweepStaged(Date.now())
+          const images = ids.map(id => staged.get(id))
+          if (images.some(entry => entry === undefined)) return fail('A photo did not arrive. Send it again.', 'bot/stale')
+          const files = fileIds.map(id => stagedFiles.get(id))
+          if (files.some(entry => entry === undefined)) return fail('A file did not arrive. Send it again.', 'bot/stale')
+          // Claim entries before awaiting so concurrent duplicate sends cannot replay them.
+          const claimedImages = ids.map((id, i) => [id, images[i]])
+          const claimedFiles = fileIds.map((id, i) => [id, files[i]])
+          for (const id of ids) staged.delete(id)
+          for (const id of fileIds) stagedFiles.delete(id)
+          const requestId = typeof body.requestId === 'string' && body.requestId.trim() !== '' ? body.requestId.trim() : randomUUID()
+          const mode = body.mode === 'steer' ? 'steer' : 'queue'
+          try {
+            const owner = thread === undefined ? ownerOfSession(rt, sessionId) : { botId: thread.botId, threadId: thread.id }
+            const content = [
               ...(text === '' ? [] : [{ type: 'text', text }]),
-              ...images.map(({ mediaType, data }) => ({ type: 'image', mediaType, data })),
-            ],
+              ...images.map(({ mediaType, data, name }) => ({ type: 'image', mediaType, data, ...(name ? { name } : {}) })),
+              ...files.map(({ name, bytes }) => ({ type: 'file', name, data: bytes })),
+            ]
+            const run = (_, queueReceipt) => rt.sendUser({ sessionId, requestId, mode, content, queueReceipt })
+            if (typeof rt.sendThreadTurn === 'function') {
+              await rt.sendThreadTurn({
+                botId: owner?.botId, threadId: owner?.threadId, sessionId, requestId,
+                kind: 'send', preview: text, text: ids.length === 0 && fileIds.length === 0 ? text : '', run,
+              })
+            } else {
+              await run()
+            }
+            return ok(true)
+          } catch (error) {
+            const now = Date.now()
+            for (const [id, entry] of claimedImages) {
+              if (entry.at >= now - STAGED_MS && !staged.has(id)) {
+                pruneStaged(staged, entry.byteLength ?? entry.data?.length ?? 0, now)
+                staged.set(id, entry)
+              }
+            }
+            for (const [id, entry] of claimedFiles) {
+              if (entry.at >= now - STAGED_MS && !stagedFiles.has(id)) {
+                pruneStaged(stagedFiles, entry.byteLength ?? entry.bytes?.length ?? 0, now)
+                stagedFiles.set(id, entry)
+              }
+            }
+            throw error
           }
-          // One turn per Bot: a second message waits for the running one (thread-model §4.5).
-          if (typeof rt.sendThreadTurn === 'function') {
-            await rt.sendThreadTurn({
-              botId: owner?.botId,
-              threadId: owner?.threadId,
-              sessionId,
-              requestId: sendRequestId,
-              kind: 'send',
-              preview: text,
-              run: () => rt.sendUser(payload),
-            })
-          } else {
-            await rt.sendUser(payload)
-          }
-          for (const id of ids) dropStaged(id)
-          if (staged.size === 0) {
-            clearTimeout(stagedTimer)
-            stagedTimer = undefined
-          }
-          return ok(true)
         }
         case 'btw-delete': {
           if (typeof body.sessionId !== 'string' || body.sessionId === '' || typeof body.cardId !== 'string' || body.cardId === '') return fail('Nothing to delete', 'bot/invalid')
@@ -1487,6 +1750,9 @@ export function install(rt) {
         }
         case 'update-install':
           return ok(rt.updateStart())
+        case 'release-notes-claim':
+          if (remote) return fail('Release notes can only be claimed on this computer', 'bot/refused')
+          return ok(await rt.claimReleaseNotes(body.version))
         case 'dsh-update-install':
           return ok(rt.dshUpdateStart?.())
         case 'repo-stars':
@@ -1517,7 +1783,7 @@ export function install(rt) {
           // Taking over a handoff keeps its reason, note, and call, so its card stays up.
           const asked = rt.browserChannel.holdOf(botId)
           rt.browserChannel.setHold(botId, asked?.callId !== undefined
-            ? { by: 'user', reason: asked.reason, note: asked.note, callId: asked.callId, ...(asked.sessionId !== undefined ? { sessionId: asked.sessionId } : {}) }
+            ? { by: 'user', reason: asked.reason, note: asked.note, callId: asked.callId, ...(Number.isFinite(asked.at) ? { at: asked.at } : {}), ...(asked.sessionId !== undefined ? { sessionId: asked.sessionId } : {}) }
             : { by: 'user', reason: 'takeover', note: 'The user is controlling this browser.' })
           return ok(true)
         }
@@ -1582,6 +1848,9 @@ export function install(rt) {
         case 'local-agent-add':
         case 'local-agent-update':
         case 'local-agent-remove':
+        case 'local-agent-profile-add':
+        case 'local-agent-profile-update':
+        case 'local-agent-profile-remove':
           await rt.load()
           return ok(await rt.localAgentsEndpoint(endpoint, body))
         case 'bot-move-to-background': {
@@ -1598,6 +1867,18 @@ export function install(rt) {
             ...(typeof body.expectedTurn === 'number' && Number.isInteger(body.expectedTurn) ? { expectedTurn: body.expectedTurn } : {}),
             ...(typeof body.operationId === 'string' && body.operationId !== '' ? { operationId: body.operationId } : {}),
           }))
+        }
+        case 'bot-steer-queue': {
+          await rt.load()
+          const sessionId = typeof body.sessionId === 'string' && body.sessionId !== '' ? body.sessionId : undefined
+          const botId = sessionId === undefined ? undefined : rt.chatOwners.get(sessionId)
+          if (sessionId === undefined || botId === undefined
+            || (typeof rt.chatOf === 'function' && rt.chatOf(botId) !== sessionId)
+            || rt.groupOwners.has(sessionId) || rt.taskOwners?.has(sessionId)) {
+            return fail('Unknown Bot session', 'bot/not-found')
+          }
+          const ids = Array.isArray(body.ids) ? body.ids.filter(id => typeof id === 'string' && id !== '') : undefined
+          return ok(rt.steerQueued?.(sessionId, ids) ?? { steered: 0 })
         }
         case 'bot-stop-task': {
           await rt.load()
@@ -1626,6 +1907,38 @@ export function install(rt) {
         case 'deepseek-services-config':
         case 'deepseek-synthesize':
           return ok(await rt.deepseekEndpoint(endpoint, body, signal))
+        case 'speech-catalog':
+        case 'speech-configure':
+        case 'speech-prepare':
+        case 'speech-cancel':
+        case 'speech-transcribe': {
+          const speech = ctx.get?.('speechController')
+          if (!speech) return fail('Speech recognition service is not available on this host', 'bot/unavailable')
+          if (endpoint === 'speech-catalog') return ok(await speech.catalog())
+          if (endpoint === 'speech-configure') {
+            if (!body || typeof body !== 'object' || Array.isArray(body)) return fail('Speech config patch is required', 'bot/invalid')
+            return ok(await speech.configure(body))
+          }
+          if (endpoint === 'speech-prepare') {
+            const providerId = String(body?.providerId ?? '').trim()
+            if (!providerId) return fail('Speech provider id is required', 'bot/invalid')
+            await speech.prepare(providerId, body?.options)
+            return ok(true)
+          }
+          if (endpoint === 'speech-cancel') {
+            const providerId = String(body?.providerId ?? '').trim()
+            if (!providerId) return fail('Speech provider id is required', 'bot/invalid')
+            return ok(await speech.cancelPreparation(providerId))
+          }
+          const audioBase64 = typeof body?.audioBase64 === 'string' ? body.audioBase64 : ''
+          if (!audioBase64) return fail('Audio data is required', 'bot/invalid')
+          const req = {
+            audioBase64,
+            ...(body?.providerId === undefined ? {} : { providerId: String(body.providerId) }),
+            ...(body?.language === undefined ? {} : { language: String(body.language) }),
+          }
+          return ok(await speech.transcribe(req, signal ?? new AbortController().signal))
+        }
         case 'diagnostics':
           await rt.load()
           return ok(await rt.diagnostics.report(body))
@@ -1634,7 +1947,116 @@ export function install(rt) {
         case 'diagnostics-clear':
           await rt.diagnostics.clear()
           return ok(true)
+        case 'telemetry-status':
+          if (remote) return fail('Privacy settings can only be viewed on this computer', 'bot/refused')
+          return ok(rt.telemetry.status())
+        case 'telemetry-update': {
+          if (remote) return fail('Privacy settings can only be changed on this computer', 'bot/refused')
+          const readOnly = rt.readOnly()
+          if (readOnly !== undefined) return fail(readOnly, 'bot/read-only')
+          return ok(await rt.telemetry.update(body ?? {}))
+        }
+        case 'telemetry-reset-id': {
+          if (remote) return fail('Privacy settings can only be changed on this computer', 'bot/refused')
+          const readOnly = rt.readOnly()
+          if (readOnly !== undefined) return fail(readOnly, 'bot/read-only')
+          return ok(await rt.telemetry.resetId())
+        }
+        case 'telemetry-clear-log': {
+          if (remote) return fail('Privacy settings can only be changed on this computer', 'bot/refused')
+          const readOnly = rt.readOnly()
+          if (readOnly !== undefined) return fail(readOnly, 'bot/read-only')
+          return ok(await rt.telemetry.clearLog())
+        }
+        case 'telemetry-client-error':
+          if (remote) return fail('Privacy settings can only be changed on this computer', 'bot/refused')
+          await rt.telemetry.noteError({
+            source: 'renderer',
+            errorName: typeof body?.errorName === 'string' ? body.errorName : 'Error',
+            code: typeof body?.errorCode === 'string' ? body.errorCode : undefined,
+            where: typeof body?.where === 'string' ? body.where : undefined,
+            stack: typeof body?.stack === 'string' ? body.stack : undefined,
+          })
+          return ok(true)
         default:
+          if (endpoint.startsWith('session-')) {
+            const name = endpoint.slice('session-'.length)
+            if (name === 'command-run') {
+              const ids = Array.isArray(body.images) ? body.images.map(String) : []
+              const fileIds = Array.isArray(body.files) ? body.files.map(String) : []
+              if (new Set(ids).size !== ids.length || new Set(fileIds).size !== fileIds.length) return fail('Duplicate attachment reference', 'bot/invalid')
+              // Defer claiming staged attachments and uploading to DSH until `runCommand` validates
+              // write permission, Classic ownership, slash syntax, and command availability.
+              const claimAttachments = async (targetSessionId, sig) => {
+                if (ids.length === 0 && fileIds.length === 0) return { submittedAttachments: [], restore: () => {} }
+                sweepStaged(Date.now())
+                const images = ids.map(id => staged.get(id))
+                if (images.some(entry => entry === undefined)) {
+                  throw Object.assign(new Error('A photo did not arrive. Send it again.'), { code: 'bot/stale' })
+                }
+                const files = fileIds.map(id => stagedFiles.get(id))
+                if (files.some(entry => entry === undefined)) {
+                  throw Object.assign(new Error('A file did not arrive. Send it again.'), { code: 'bot/stale' })
+                }
+                const claimedImages = ids.map((id, i) => [id, images[i]])
+                const claimedFiles = fileIds.map((id, i) => [id, files[i]])
+                const restore = () => {
+                  const now = Date.now()
+                  for (const [id, entry] of claimedImages) {
+                    if (entry.at >= now - STAGED_MS && !staged.has(id)) {
+                      pruneStaged(staged, entry.byteLength ?? entry.data?.length ?? 0, now)
+                      staged.set(id, entry)
+                    }
+                  }
+                  for (const [id, entry] of claimedFiles) {
+                    if (entry.at >= now - STAGED_MS && !stagedFiles.has(id)) {
+                      pruneStaged(stagedFiles, entry.byteLength ?? entry.bytes?.length ?? 0, now)
+                      stagedFiles.set(id, entry)
+                    }
+                  }
+                }
+                for (const id of ids) staged.delete(id)
+                for (const id of fileIds) stagedFiles.delete(id)
+                try {
+                  const uploaded = []
+                  if (files.length > 0) {
+                    const uploads = ctx.get?.('fileUploads')
+                    if (typeof uploads?.uploadStream !== 'function') {
+                      throw Object.assign(new Error('File uploads are not available on this host'), { code: 'bot/refused' })
+                    }
+                    for (const file of files) {
+                      const bytes = file.bytes
+                      const receipt = await uploads.uploadStream({
+                        sessionId: targetSessionId,
+                        name: file.name,
+                        data: (async function* () { yield bytes })(),
+                        signal: sig ?? AbortSignal.timeout(30_000),
+                      })
+                      uploaded.push({ type: 'file', receiptId: receipt.receiptId })
+                    }
+                  }
+                  return {
+                    submittedAttachments: [
+                      ...images.map(({ mediaType, data, name }) => ({ type: 'image', mediaType, data, ...(name ? { name } : {}) })),
+                      ...uploaded,
+                    ],
+                    restore,
+                  }
+                } catch (error) {
+                  restore()
+                  throw error
+                }
+              }
+              return ok(await rt.sessionControlsEndpoint('command-run', { ...body, claimAttachments }, signal))
+            }
+            if (rt.hasSessionControlEndpoint?.(name)) return ok(await rt.sessionControlsEndpoint(name, body, signal))
+            return ok(await rt.sessionEndpoint(name, body, signal))
+          }
+          if (endpoint.startsWith('job-')) return ok(await rt.jobEndpoint(endpoint.slice('job-'.length), body, signal))
+          if (endpoint.startsWith('workspace-')) return ok(await rt.workspaceEndpoint(endpoint.slice('workspace-'.length), body, signal))
+          if (endpoint.startsWith('terminal-')) return ok(await rt.terminalEndpoint(endpoint.slice('terminal-'.length), body, signal))
+          if (endpoint.startsWith('engine-feedback-')) return ok(await rt.feedbackEndpoint(endpoint.slice('engine-feedback-'.length), body, signal))
+          if (endpoint.startsWith('engine-')) return ok(await rt.engineEndpoint(endpoint.slice('engine-'.length), body, signal, meta))
           if (endpoint.startsWith('computer-')) {
             await rt.load()
             return ok(await rt.computerEndpoint(endpoint.slice('computer-'.length), body, signal))
@@ -1648,7 +2070,7 @@ export function install(rt) {
       const code = errorCode(error)
       const message = error?.message ?? String(error)
       const details = error?.details && typeof error.details === 'object' ? error.details : {}
-      if (code === 'bot/internal') rt.noteFailure({ source: 'api', text: `${endpoint}: ${message}`, code: error?.code ?? error?.name, stack: error?.stack })
+      if (code === 'bot/internal') rt.noteFailure?.({ source: 'api', text: `${endpoint}: ${message}`, code: error?.code ?? error?.name, stack: error?.stack })
       return fail(message, code, details)
     }
   }
@@ -1752,17 +2174,30 @@ export function install(rt) {
   sweepTimer.unref?.()
 
   // An exact Fetch route on the shared /api channel; the browser authenticates with its session cookie.
-  ctx.effect(() => ctx.connection.fetch.register({
-    path: ROUTE,
-    methods: ['POST'],
-    requestBody: 'buffered',
-    fetch: async (request) => {
-      let body
-      try { body = await request.json() } catch { body = {} }
-      const result = await handle(String(body?.endpoint ?? ''), body?.payload, request.signal)
-      return new Response(JSON.stringify(result), { status: 200, headers: { 'content-type': 'application/json' } })
-    },
-  }), 'ds-bot: api route')
+  ctx.effect(() => {
+    const timer = setInterval(() => sweepStaged(Date.now()), STAGED_SWEEP_MS)
+    timer.unref?.()
+    const stopRoute = ctx.connection.fetch.register({
+      path: ROUTE,
+      methods: ['POST'],
+      requestBody: 'buffered',
+      fetch: async (request) => {
+        let body
+        try { body = await request.json() } catch { body = {} }
+        let requestOrigin
+        try { requestOrigin = new URL(request.url).origin } catch { requestOrigin = undefined }
+        const result = await handle(String(body?.endpoint ?? ''), body?.payload, request.signal, { requestOrigin })
+        return new Response(JSON.stringify(result), { status: 200, headers: { 'content-type': 'application/json' } })
+      },
+    })
+    return () => {
+      clearInterval(timer)
+      staged.clear()
+      stagedFiles.clear()
+      stopRoute?.()
+      return rt.terminalDispose?.()
+    }
+  }, 'ds-bot: api route')
 
   ctx.effect(() => {
     void rt.load()
@@ -1770,10 +2205,8 @@ export function install(rt) {
     // In-flight side questions abort here; their entries stay answering for the
     // next owner.
     return () => {
-      clearTimeout(stagedTimer)
-      stagedTimer = undefined
       staged.clear()
-      stagedBytes = 0
+      stagedFiles.clear()
       return Promise.all([rt.btwDispose?.(), rt.sideDispose?.()])
     }
   }, 'ds-bot: load state')

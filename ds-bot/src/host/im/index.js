@@ -366,22 +366,30 @@ export function install(rt) {
     if (!hasLegacyCutoff) await writeRuntime(id)
     return held
   }
+  const DISPOSE_DRAIN_MS = 2_000
+  let runtimeWritesClosed = false
   const scheduleWrite = (id) => {
+    if (stopped || runtimeWritesClosed) return
     const held = runtimes.get(id)
     if (held === undefined || held.timer !== undefined) return
     held.timer = setTimeout(() => {
       held.timer = undefined
+      if (runtimeWritesClosed) return
       void writeRuntime(id).catch(error => rt.warn('ds-bot: im runtime %s not saved: %s', id, error))
     }, RUNTIME_SAVE_MS)
     held.timer.unref?.()
   }
-  const writeRuntime = (id) => {
-    const held = runtimes.get(id)
-    if (held === undefined || rt.readOnly() !== undefined) return Promise.resolve()
-    held.write = (held.write ?? Promise.resolve()).catch(() => {}).then(() => persistRuntime(id, held))
+  const queueRuntimeWrite = (id, held, { force = false } = {}) => {
+    held.write = (held.write ?? Promise.resolve()).catch(() => {}).then(() => persistRuntime(id, held, { force }))
     return held.write
   }
-  const persistRuntime = async (id, held) => {
+  const writeRuntime = (id) => {
+    const held = runtimes.get(id)
+    if (held === undefined || runtimeWritesClosed || rt.readOnly() !== undefined) return Promise.resolve()
+    return queueRuntimeWrite(id, held)
+  }
+  const persistRuntime = async (id, held, { force = false } = {}) => {
+    if (!force && runtimeWritesClosed) return
     await mkdir(imDir, { recursive: true })
     const temp = join(imDir, `${id}.${process.pid}.tmp`)
     // `sent` only exists for platforms that can quote (weixin): a runtime file
@@ -1440,6 +1448,11 @@ export function install(rt) {
     if (conn.chats[msg.chat.key] === undefined) {
       conn.chats[msg.chat.key] = { kind: msg.chat.kind, title: msg.chat.title, at: Date.now() }
       await rt.save()
+    } else if (typeof msg.chat.title === 'string' && msg.chat.title !== '' && conn.chats[msg.chat.key].title !== msg.chat.title) {
+      // A group rename (or a first title after the chat was recorded by an older
+      // build): keep the stored name fresh so the settings page shows the real one.
+      conn.chats[msg.chat.key].title = msg.chat.title
+      await rt.save()
     }
     const raw = String(msg.text ?? '')
     const body = raw.trim()
@@ -1463,8 +1476,55 @@ export function install(rt) {
     const releaseInboundSeen = () => {
       if (inboundKey !== '') seenInboundIds.delete(inboundKey)
     }
+    const checkPriorImAdmission = async ({ allowTargetOnlyFallback = false } = {}) => {
+      if (inboundKey === '' || typeof rt.findAdmittedForSend !== 'function') return false
+      const priorRequestId = `im:${conn.platform}:${inboundKey}`
+      const targetRef = target?.botId ?? target?.roomId
+      let admitted
+      try {
+        admitted = await rt.findAdmittedForSend({
+          ref: targetRef,
+          requestId: priorRequestId,
+          callerSupplied: true,
+        })
+      } catch (error) {
+        // When an unrelated Bot's cold archive is unreadable, check both this chat's current
+        // target AND any recorded former bindings (`chat.pastTargets` and connection-level
+        // `conn.pastBotIds` for direct chats) so a corrupt unrelated Bot never bricks cards
+        // here while a corrupt former explicit or implicit binding still fails closed.
+        if (!allowTargetOnlyFallback || targetRef === undefined) throw error
+        const relevantRefs = [
+          targetRef,
+          ...(Array.isArray(chat?.pastTargets) ? chat.pastTargets : []),
+          ...(msg.chat.kind === 'direct' && Array.isArray(conn.pastBotIds) ? conn.pastBotIds : []),
+        ]
+        admitted = await rt.findAdmittedForSend({
+          ref: targetRef,
+          refs: relevantRefs,
+          requestId: priorRequestId,
+          callerSupplied: true,
+          targetOnly: true,
+        })
+      }
+      if (admitted?.admitted === true) {
+        if (admitted.durable === true
+          || (admitted.sessionId !== undefined && await rt.confirmSessionFlushed?.(admitted.sessionId, priorRequestId) === true)) {
+          await persistInboundSeen()
+        }
+        return true
+      }
+      return false
+    }
     try {
-      if (await answerViewCode(conn, msg.chat, raw.trimStart(), msg.sender.id)) {
+      const trimmedStart = raw.trimStart()
+      const isReservedCardCommand = /^[!/]card\b/i.test(trimmedStart)
+      // Reserved `!card` / `/card` commands are never admitted as ordinary prompts via `sendUser`,
+      // so let them reach `answerViewCode` directly without scanning unrelated cold histories.
+      // Only guard ambiguous legacy `V<n>` view replies before `answerViewCode`.
+      if (!isReservedCardCommand && /^V[1-9]\d*(?=\s|$)/i.test(trimmedStart)) {
+        if (await checkPriorImAdmission({ allowTargetOnlyFallback: true })) return
+      }
+      if (await answerViewCode(conn, msg.chat, trimmedStart, msg.sender.id)) {
         await persistInboundSeen()
         return
       }
@@ -1529,6 +1589,10 @@ export function install(rt) {
       if (NUMBERS.test(body)) {
         const picked = body.trim().split(/\s+/).map(Number)
         const held = newestOpenCard(conn, msg.chat.key)
+        // Before letting a bare numeric message answer an open card, suppress redelivered
+        // ordinary messages already admitted into DSH (even if `conn.seenInbound` was lost
+        // across restart) so a redelivered "1" never answers a newly opened card (#2077).
+        if (held !== undefined && await checkPriorImAdmission({ allowTargetOnlyFallback: true })) return
         // Anything that does not clearly answer the newest open card — a stale
         // source, an out-of-range pick, several picks on a single choice — is a
         // normal message for the Bot, never swallowed and never 'stale'.
@@ -1599,11 +1663,14 @@ export function install(rt) {
         // The turn this starts belongs to this chat: its replies go back here and nowhere else.
         if (conn.platform === 'weixin') await rememberWeixinRequest(conn, requestId, msg.chat.key, msg.sender.id)
         else rememberRequest(requestId, conn, msg.chat.key, msg.sender.id)
-        await rt.sendUser({ sessionId, content, requestId, mode: promptMode })
-        // Persist `conn.seenInbound` ONLY after the receiving DSH Session confirms flush() === true
-        // so a crash before session durability can never leave a persisted seen key that suppresses
-        // redelivery of a lost prompt.
-        if (inboundKey !== '' && await rt.confirmSessionFlushed?.(sessionId) === true) {
+        const delivered = await rt.sendUser({ sessionId, content, requestId, mode: promptMode })
+        // Persist `conn.seenInbound` ONLY after the exact receiving DSH Session confirms
+        // flush() === true (or a cold on-disk session already holds `requestId`), never by
+        // resolving the logical Bot/room id whose foreground may have moved since prompt admission.
+        const deliveredSid = delivered?.sessionId
+        if (inboundKey !== ''
+          && (delivered?.durable === true
+            || (deliveredSid !== undefined && await rt.confirmSessionFlushed?.(deliveredSid, requestId) === true))) {
           await persistInboundSeen()
         }
       } catch (error) {
@@ -1803,7 +1870,10 @@ export function install(rt) {
         if (chat === undefined) continue
         entry.edited = true
         const body = entry.text !== undefined ? `${entry.text}\n— ${entry.answer}` : `(${text('answered')})`
-        runner.handle.edit({ key: entry.chatKey, kind: chat.kind, title: chat.title }, entry.messageId, { text: body }).catch(() => {})
+        // The platform sent the card as its own final chunk; tell the adapter how much of
+        // `body` was already on screen so an edit rewrites that chunk instead of the head
+        // of the card.
+        runner.handle.edit({ key: entry.chatKey, kind: chat.kind, title: chat.title }, entry.messageId, { text: body, sentLength: entry.text?.length }).catch(() => {})
         scheduleWrite(conn.id)
       }
     }
@@ -1980,7 +2050,9 @@ export function install(rt) {
   // reserved slots rather than start a second adapter.
   let syncing = Promise.resolve()
   const sync = () => {
+    if (stopped) return Promise.resolve()
     const run = syncing.then(async () => {
+      if (stopped) return
       const conns = connections()
       for (const conn of Object.values(conns)) {
         const wants = stopped !== true && adapters[conn.platform] !== undefined && conn.enabled !== false
@@ -2087,6 +2159,13 @@ export function install(rt) {
       if (body.botId !== undefined) {
         const bot = rt.botOf(String(body.botId))
         if (bot === undefined) throw new Error('Choose a Bot first')
+        if (typeof conn.botId === 'string' && conn.botId !== '' && conn.botId !== bot.id) {
+          const past = Array.isArray(conn.pastBotIds) ? conn.pastBotIds : (conn.pastBotIds = [])
+          const idx = past.indexOf(conn.botId)
+          if (idx !== -1) past.splice(idx, 1)
+          past.push(conn.botId)
+          while (past.length > 16) past.shift()
+        }
         conn.botId = bot.id
       }
       if (body.enabled !== undefined) conn.enabled = body.enabled === true
@@ -2160,6 +2239,15 @@ export function install(rt) {
       if (conn === undefined) throw new Error('No such IM bot')
       const chat = conn.chats?.[String(body.chatKey ?? '')]
       if (chat === undefined) throw new Error('No such chat')
+      const rememberPastTarget = (prevTarget) => {
+        const prevRef = prevTarget?.botId ?? prevTarget?.roomId
+        if (typeof prevRef !== 'string' || prevRef === '') return
+        const past = Array.isArray(chat.pastTargets) ? chat.pastTargets : (chat.pastTargets = [])
+        const idx = past.indexOf(prevRef)
+        if (idx !== -1) past.splice(idx, 1)
+        past.push(prevRef)
+        while (past.length > 16) past.shift()
+      }
       if (body.remove === true) {
         const chatKey = String(body.chatKey ?? '')
         delete conn.chats[chatKey]
@@ -2170,12 +2258,18 @@ export function install(rt) {
           scheduleWrite(conn.id)
         }
       } else if (body.target === null) {
+        rememberPastTarget(resolveTarget(conn, chat))
         delete chat.target
       } else if (body.target !== undefined) {
         const target = body.target
         if (target.botId !== undefined && rt.botOf(target.botId) === undefined) throw new Error('Choose a Bot or a group')
         if (target.roomId !== undefined && rt.roomOf(target.roomId) === undefined) throw new Error('Choose a Bot or a group')
-        chat.target = target.botId !== undefined ? { botId: String(target.botId) } : { roomId: String(target.roomId) }
+        const nextTarget = target.botId !== undefined ? { botId: String(target.botId) } : { roomId: String(target.roomId) }
+        const prevTarget = resolveTarget(conn, chat)
+        if ((prevTarget?.botId ?? prevTarget?.roomId) !== (nextTarget.botId ?? nextTarget.roomId)) {
+          rememberPastTarget(prevTarget)
+        }
+        chat.target = nextTarget
       }
       await rt.save()
       return true
@@ -2529,7 +2623,7 @@ export function install(rt) {
     }
     const origin = originOf(session.id)
     for (const item of rt.displayItems(session.id, [event])) {
-      if (item.kind !== 'bot' && item.kind !== 'view') continue
+      if (item.kind !== 'bot' && (item.kind !== 'view' || item.pending === true)) continue
       if (origin === undefined) {
         warnWithheldOrigin(session.id)
         continue
@@ -2553,6 +2647,7 @@ export function install(rt) {
 
   rt.onApproval((kind, data) => {
     if (kind === 'open') {
+      if (stopped || data.botId === undefined) return
       void trackOutbound((async () => {
         const origin = approvalOrigin(data)
         if (origin === undefined) return
@@ -2560,23 +2655,39 @@ export function install(rt) {
       })().catch(error => rt.warn('ds-bot: im approval card failed: %s', error)))
       return
     }
-    if (kind !== 'settled') return
-    void (async () => {
+    if (kind !== 'settled' || stopped) return
+    void trackOutbound((async () => {
       for (const conn of Object.values(connections())) {
         await settleCard(conn.id, `a:${data.id}`, data.outcome === 'allowed-once' ? text('allow') : data.outcome === 'rejected' ? text('reject')
           : data.outcome === 'cancelled' ? text('cancelled') : text('answered'))
         await settledEdits(conn)
       }
-    })().catch(() => {})
+    })().catch(() => {}))
   })
 
   // Settling and pruning follow the saved state. This fork's store skips a save that changes nothing
   // (and so notifies no one), so a start, a retry and the reconcile tick settle them as well.
   const settleCards = () => diffCards().then(settleGone).catch(() => {})
   rt.onSaved(() => {
-    void settleCards()
-    void sync().catch(() => {})
+    if (stopped) return
+    void trackOutbound(settleCards())
+    void trackOutbound(sync().catch(() => {}))
   })
+
+  const drainOutboundBounded = async (ms = DISPOSE_DRAIN_MS) => {
+    const deadline = Date.now() + ms
+    while (outboundWork.size > 0) {
+      const left = deadline - Date.now()
+      if (left <= 0) break
+      let timer
+      const timeout = new Promise((resolve) => {
+        timer = setTimeout(resolve, left)
+        timer.unref?.()
+      })
+      await Promise.race([Promise.allSettled([...outboundWork]), timeout])
+      clearTimeout(timer)
+    }
+  }
 
   let interval
   ctx.effect(() => {
@@ -2590,8 +2701,24 @@ export function install(rt) {
       clearInterval(interval)
       resumedOrigins.clear()
       return Promise.all([...runners.keys()].map(stop)).then(async () => {
-        for (const held of runtimes.values()) if (held.timer !== undefined) clearTimeout(held.timer)
-        await Promise.all([...runtimes.keys()].map(writeRuntime)).catch(() => {})
+        await drainOutboundBounded()
+        runtimeWritesClosed = true
+        for (const held of runtimes.values()) {
+          if (held.timer !== undefined) {
+            clearTimeout(held.timer)
+            held.timer = undefined
+          }
+        }
+        if (rt.readOnly() === undefined) {
+          await Promise.allSettled([...runtimes.entries()].map(([id, held]) => queueRuntimeWrite(id, held, { force: true })))
+        }
+        for (;;) {
+          const snapshot = new Map([...runtimes.values()].map(held => [held, held.write]))
+          const pending = [...snapshot.values()].filter(Boolean)
+          if (pending.length === 0) break
+          await Promise.allSettled(pending)
+          if ([...runtimes.values()].every(held => held.write === snapshot.get(held))) break
+        }
       })
     }
   }, 'ds-bot: im')

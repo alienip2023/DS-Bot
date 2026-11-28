@@ -29,7 +29,10 @@ rt.state.prefs.marker = 'baseline'
 await rt.save({ required: true })
 say(`BASE ${JSON.stringify(await fsp.readFile(statePath, 'utf8'))}`)
 
-const die = () => process.kill(process.pid, 'SIGKILL')
+const die = () => {
+  say(`CRASH ${point}`)
+  process.kill(process.pid, 'SIGKILL')
+}
 const { writeFile, rename } = fsp
 fsp.writeFile = async (path, ...rest) => {
   const done = await writeFile(path, ...rest)

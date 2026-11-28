@@ -47,6 +47,7 @@ export class BotViews {
   #wss
   #address
   #onChange
+  #onInputShortcut
   #downloadPaths = new Map()
   #downloadRoots = new Map()
   #statePath
@@ -71,7 +72,7 @@ export class BotViews {
   #disposed = false
 
   constructor({
-    window, WebContentsView, guests, origin, devTools = false, onChange = () => {}, statePath,
+    window, WebContentsView, guests, origin, devTools = false, onChange = () => {}, onInputShortcut = () => false, statePath,
     maxLiveViews = MAX_LIVE_VIEWS, idleMs = IDLE_EVICT_MS, maxTabsPerBot = MAX_TABS_PER_BOT,
     persistDebounceMs = PERSIST_DEBOUNCE_MS,
   }) {
@@ -81,6 +82,7 @@ export class BotViews {
     this.#origin = origin
     this.#devTools = devTools
     this.#onChange = onChange
+    this.#onInputShortcut = onInputShortcut
     this.#statePath = statePath
     this.#maxLiveViews = maxLiveViews
     this.#idleMs = idleMs
@@ -160,7 +162,7 @@ export class BotViews {
       },
     })
     const entry = {
-      tabId, botId, view, createdByBot, openerId, shown: false,
+      tabId, botId, view, createdByBot, openerId, shown: false, visibleNow: false,
       favicon: dormant?.favicon ?? null,
       fallbackUrl: url || dormant?.url || 'about:blank',
       fallbackTitle: dormant?.title ?? '',
@@ -216,6 +218,9 @@ export class BotViews {
       return { action: 'deny' }
     })
     contents.on('will-attach-webview', event => event.preventDefault())
+    contents.on('before-input-event', (event, input) => {
+      if (this.#onInputShortcut(input) === true) event.preventDefault()
+    })
     contents.on('login', (event, _details, _auth, callback) => { event.preventDefault(); callback() })
     this.#guests.setDownloadHandler(`bot:${botId}`, (event, item, source) => {
       const target = [...this.#views.values()].find(value => value.botId === botId && value.view.webContents === source)
@@ -377,7 +382,9 @@ export class BotViews {
           else if (payload.command === 'reload') contents.reload()
           else if (payload.command === 'stop') contents.stop()
           return true
-        case 'focus': contents.focus(); return true
+        case 'focus':
+          if (this.#isVisible(entry)) contents.focus()
+          return true
         case 'read': return await contents.executeJavaScript(String(payload.script))
         default: throw new Error('Unknown browser view operation')
       }
@@ -407,12 +414,16 @@ export class BotViews {
     this.#waiting.delete(tabId)
     this.#dormant.delete(tabId)
     this.#dropSaved(botId, tabId)
+    const wasVisible = entry.visibleNow === true
+    const wasFocused = !entry.view.webContents.isDestroyed()
+      && (typeof entry.view.webContents.isFocused === 'function' ? entry.view.webContents.isFocused() : wasVisible)
     // The view leaves the window too: only closing its contents would keep the child view.
     this.#window()?.contentView.removeChildView(entry.view)
     entry.sessions.clear()
     entry.sessionMaps.clear()
     this.#releaseDebugger(entry)
     if (!entry.view.webContents.isDestroyed()) entry.view.webContents.close({ waitForBeforeUnload: false })
+    if (wasVisible && wasFocused) this.#returnFocusToWindow()
     this.#onChange({ type: 'closed', botId, tabId })
     return true
   }
@@ -496,7 +507,11 @@ export class BotViews {
    */
   release() {
     for (const [tabId, entry] of [...this.#views]) {
-      if (!entry.view.webContents.isDestroyed()) { this.#waiting.add(tabId); continue }
+      if (!entry.view.webContents.isDestroyed()) {
+        entry.visibleNow = false
+        this.#waiting.add(tabId)
+        continue
+      }
       for (const { item } of entry.downloads.values()) { try { item.cancel?.() } catch {} }
       entry.downloads.clear()
       entry.sessions.clear()
@@ -583,12 +598,30 @@ export class BotViews {
     return count
   }
 
+  #isVisible(entry) {
+    return entry.shown === true && !this.#covered && !this.#windowHidden && !this.#systemPaused
+  }
+
+  #returnFocusToWindow() {
+    if (this.#windowHidden || this.#systemPaused) return
+    const win = this.#window()
+    const main = win?.webContents
+    if (!main || main.isDestroyed?.()) return
+    if (win.isVisible?.() === false || win.isMinimized?.() === true) return
+    if (typeof win.isFocused === 'function' && !win.isFocused()) return
+    main.focus?.()
+  }
+
   #applyVisibility(entry) {
     const contents = entry.view.webContents
     if (contents.isDestroyed()) return
-    const visibleNow = entry.shown === true && !this.#covered && !this.#windowHidden && !this.#systemPaused
+    const visibleNow = this.#isVisible(entry)
+    const wasVisible = entry.visibleNow === true
+    const wasFocused = typeof contents.isFocused === 'function' ? contents.isFocused() : wasVisible
+    entry.visibleNow = visibleNow
     entry.view.setVisible(visibleNow)
     contents.setAudioMuted?.(!visibleNow)
+    if (wasVisible && !visibleNow && wasFocused) this.#returnFocusToWindow()
   }
 
   #syncVisibility() {
@@ -915,14 +948,12 @@ export class BotViews {
         }
         if (method === 'Target.createTarget') {
           const entry = this.create(botId, { url: params.url ?? 'about:blank', createdByBot: true })
-          if (entry && params.background !== true) entry.view.webContents.focus()
           reply({ targetId: entry.tabId }); return
         }
         if (method === 'Target.closeTarget') { await this.close(botId, params.targetId); reply({ success: true }); return }
         if (method === 'Target.activateTarget') {
           const entry = this.#owned(botId, params.targetId)
           this.#touch(entry)
-          entry.view.webContents.focus()
           reply({}); return
         }
         if (method === 'Target.detachFromTarget') {

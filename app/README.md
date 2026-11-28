@@ -1,16 +1,16 @@
 # DS Bot desktop app
 
-The Electron app for Windows, macOS and Linux. It installs a pinned DeepSeek Harness (DSH 0.2.2-rc.5) and the `ds-bot` plugin of this repository, boots its own DSH profile `ds-bot` through `@deepseek-ai/dsh/profile-boot`, and keeps its data in its own `DSH_HOME`. It never writes to `~/.dsh`. Its window shows DSH's Web front end with the plugin, as DSH Desktop does. The design is in [docs/plans/2026-10-16-desktop-app.md](../docs/plans/2026-10-16-desktop-app.md).
+The Electron app for Windows, macOS and Linux. It installs a pinned DeepSeek Harness (DSH 0.2.2-rc.5) and the `ds-bot` plugin of this repository, boots its own DSH profile `ds-bot` through `@deepseek-ai/dsh/profile-boot`, and keeps its data in its own `DSH_HOME`. It never writes to `~/.dsh`. Its window loads DS Bot's own frontend (`ui/dist`), served same-origin by the pure-host `dsbot-engine` bundle (`engine/`) without DSH Web's front end. The design is in [docs/plans/2026-10-16-desktop-app.md](../docs/plans/2026-10-16-desktop-app.md) and [docs/plans/2026-11-21-own-frontend.md](../docs/plans/2026-11-21-own-frontend.md).
 
 ## Run
 
 ```sh
 npm ci
 node node_modules/electron/install.js   # when npm did not download Electron (no node_modules/electron/dist)
-npm start                               # starts the app
+npm start                               # builds ui/dist (via prestart) and starts the app
 ```
 
-When GitHub downloads are slow, set `ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/` before the Electron download. Unset `ELECTRON_RUN_AS_NODE` before `npm start` if your terminal has it (terminals inside some Electron-based editors do): with it, Electron runs as plain Node and the app does not start.
+When GitHub downloads are slow, set `ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/` before the Electron download. Unset `ELECTRON_RUN_AS_NODE` before `npm start` if your terminal has it (terminals inside some Electron-based editors do): with it, Electron runs as plain Node and the app does not start. On macOS, unpackaged source runs with an isolated `DS_BOT_SHELL_DATA` directory automatically enable Chromium's mock keychain (`--use-mock-keychain`) so they neither prompt against nor overwrite an installed `DS Bot.app`'s login keychain entry; ChatGPT sign-in fails closed while the mock keychain is active so credentials are never saved under the mock key. Packaged builds and default shell directories keep the real login keychain unless `--use-mock-keychain` is passed explicitly (as in the automated check scripts).
 
 `npm run runtime` downloads the runtime payload (Python with the document libraries, a standalone Node, the Office skill assets) into `build/runtime`. On Linux, run it before `npm start`: the Host uses this plain Node to keep sharp's libvips out of Electron's process. On macOS and Windows the payload is optional for source runs; without it only the Office skills are unavailable. `beforePack` prepares the payload for every package.
 
@@ -21,7 +21,7 @@ npm installs `ds-bot` from `../ds-bot` as a copy of its package files (`install-
 | `DS_BOT_HOME` | The data location: the `DSH_HOME` of the app. When it is set, the app asks nothing at its first start and imports nothing | The folder chosen at the first start |
 | `DS_BOT_WORKSPACE` | With `DS_BOT_HOME`: the team workspace | `bot/workspace` in the data location |
 | `DS_BOT_SHELL_DATA` | The app's own data (window, Chromium storage, the Bot browsers' logins, `locations.json`) | Electron's `userData` (Windows: `%APPDATA%\DS Bot`; macOS: `~/Library/Application Support/DS Bot`) |
-| `DS_BOT_UPDATE_URL` | Windows and a Linux AppImage: a folder URL with `latest.yml` / `latest-linux.yml` and the installer. macOS and a Linux deb: a URL returning a JSON list like GitHub's `releases` API; a release counts only when this machine's package is attached. Prereleases count only for prerelease installs (see [Updates](#updates)). With `DS_BOT_HOME`, the app checks only when this is set | The newest GitHub release |
+| `DS_BOT_UPDATE_URL` | Windows and a Linux AppImage: a folder URL with `latest.yml` / `latest-linux.yml` and the installer. macOS and a Linux deb: a URL returning a JSON list like GitHub's `releases` API; a release counts only when this machine's package is attached (macOS in-place updates also require `SHA256SUMS.txt`). Prereleases count only for prerelease installs (see [Updates](#updates)). With `DS_BOT_HOME`, the app checks only when this is set | The newest GitHub release |
 
 Existing installations keep their shell data, browser logins and saved locations in place. New installations use the DS Bot directory. A saved team workspace keeps its path; only a new workspace defaults to `~/DS Bot`.
 
@@ -53,15 +53,16 @@ The Host reads model settings and API keys the way DSH does: environment variabl
 
 ## The profile
 
-The Host's profile `ds-bot` is in `profiles/ds-bot` in the data location. It stacks three bundles, and after them the bundles that the user installs:
+The Host's profile `ds-bot` is in `profiles/ds-bot` in the data location. It stacks four bundles, and after them the bundles that the user installs:
 
 | Bundle | What it adds |
 |---|---|
 | `@deepseek-ai/dsh-base` | DSH's shared core: models, Sessions, tools, settings, plugin management |
-| `@deepseek-ai/dsh-web-app` | DSH's Web front end, which the window shows, and the host services that it and ds-bot use |
+| `dsbot-engine` | Loopback transport, pure-host services, built-in agent presets, and the static server for `ui/dist` (no DSH Web front end) |
+| `@deepseek-ai/dsh-experimental-voice-input-bundle` | Local SenseVoice / speech-to-text host service |
 | `ds-bot` | The Bot team |
 
-At every start the Host puts these three bundles at the head of the profile's bundle list. Settings for one machine go into the profile's `cordis.patch.yml`, as in DSH. A profile from an earlier build that lists `dsbot-engine` gets `@deepseek-ai/dsh-web-app` in its place.
+At every start the Host puts these bundles at the head of the profile's bundle list. Settings for one machine go into the profile's `cordis.patch.yml`, as in DSH. A profile from an earlier build that lists `@deepseek-ai/dsh-web-app` is migrated automatically to `dsbot-engine`.
 
 ## Check a change
 
@@ -101,23 +102,24 @@ Linux gets one AppImage for every distribution with glibc 2.28 or newer — it u
 
 The installed app on Windows updates itself with electron-updater (`src/updates.mjs`), and so does an AppImage on Linux (`APPIMAGE` is set then). At its start and every 4 hours it reads `latest.yml` (Windows) or `latest-linux.yml` (AppImage) of the newest GitHub release, which names the installer and its sha512. It downloads that installer in the background and checks its sha512. When the download is done, a dialog on the team window asks whether to restart now (a download that is done during the start waits for the team window): then the app stops its Host and runs the installer, which opens the app again. Otherwise the installer runs when the app quits.
 
-The checks start before the Host (after a first start's import), so that a version whose Host does not start can still update. When the start fails, the start window shows its failure page, and the app waits up to 15 seconds for the newest check. When it found a newer version, a box on the failure page says so; after the box the app waits for the download, then installs it and opens again, unless the user has tried again meanwhile. On macOS and for a deb, the release page opens after the box instead.
+The checks start before the Host (after a first start's import), so that a version whose Host does not start can still update. When the start fails, the start window shows its failure page, and the app waits up to 15 seconds for the newest check. When it found a newer version, a box on the failure page says so; after the box the app waits for the download, then installs it and opens again, unless the user has tried again meanwhile. For a read-only/translocated macOS install or a Linux deb, the release page opens after the box instead.
 
-On macOS, the app checks GitHub's releases at start and every 4 hours. It asks once per version, after that release's zip for this Mac is attached. A Linux deb works the same way, except that it waits for the `linux-amd64` deb (Debian's name for x64). Stable installs ignore prereleases; prerelease installs can see them. Download opens the release page; Later closes the dialog. The app does not install the update itself. `DS_BOT_UPDATE_URL` on macOS and for a deb points to a JSON list like the `releases` API response. A release needs `tag_name`, an HTTPS `html_url`, and the machine's package in `assets`.
+On macOS, a packaged app running from a writable, non-translocated `.app` bundle updates itself (`src/mac-updater.mjs`) through the same `watchUpdates()` flow as Windows and Linux AppImage: at start and every 4 hours it checks GitHub's releases, downloads the matching-architecture zip over HTTPS, verifies its SHA-256 against `SHA256SUMS.txt`, extracts with `/usr/bin/ditto -x -k --noqtn`, verifies `Info.plist` and `codesign --verify --deep --strict`, and atomically swaps the bundle on restart or quit via `NSFileManager.replaceItemAtURL`. When the bundle is read-only or running under App Translocation, macOS falls back to opening the release page. A Linux deb also opens the release page, waiting for the `linux-amd64` deb (Debian's name for x64). Stable installs ignore prereleases; prerelease installs can see them. `DS_BOT_UPDATE_URL` on macOS and for a deb points to a JSON list like the `releases` API response (HTTPS or loopback HTTP only for macOS self-updates).
 
-On Windows and for an AppImage, `app-update.yml` tells the app where its releases are; `npm run dist` writes it from `publish` in `electron-builder.yml`, together with `latest.yml` / `latest-linux.yml` beside the installer (`npm run pack` writes neither). Neither command publishes. The release workflow (`.github/workflows/release.yml`) builds the packages when a release is published and attaches the Windows installer with its `.blockmap` and `latest.yml`, the AppImage with its `.blockmap`, the deb and `latest-linux.yml` to the release. The release tag is the version of `ds-bot`, and `npm test` checks that the app has the same version. The macOS release job builds each zip on a matching-architecture runner and attaches only the zip.
+On Windows and for an AppImage, `app-update.yml` tells the app where its releases are; `npm run dist` writes it from `publish` in `electron-builder.yml`, together with `latest.yml` / `latest-linux.yml` beside the installer (`npm run pack` writes neither). Neither command publishes. The release workflow (`.github/workflows/release.yml`) builds the packages when a release is published and attaches the Windows installer with its `.blockmap` and `latest.yml`, the AppImage with its `.blockmap`, the deb and `latest-linux.yml` to the release. The release tag is the version of `ds-bot`, and `npm test` checks that the app has the same version. The macOS release job builds each zip on a matching-architecture runner and attaches the zip alongside `SHA256SUMS.txt`.
 
 On throwaway folders (`DS_BOT_HOME`) the app checks for updates only from `DS_BOT_UPDATE_URL`, and it never asks: the update waits until the app quits. `scripts/check-update.mjs` checks the update of a packaged app with such a feed:
 
 ```sh
 npx electron-builder --publish never -c.extraMetadata.version=<next version> -c.directories.output=dist-next   # the feed
 node scripts/check-update.mjs "dist-pack/win-unpacked/DS Bot.exe" dist-next --kill   # Windows
+node scripts/check-update.mjs "/Applications/DS Bot.app/Contents/MacOS/DS Bot" dist-next --kill   # macOS
 node scripts/check-update.mjs ./dsbot.AppImage dist-next --kill                     # a Linux AppImage (latest-linux.yml)
 ```
 
-It serves the feed folder, starts the app on throwaway folders and waits until the app has downloaded the update and checked its sha512. Then it ends the app the way the tray's Quit ends it, so that the app installs the update as it quits; with `--kill` it ends the app, so that nothing is installed. On your own machine use `--kill`: the installer would install into `%LOCALAPPDATA%\Programs\DS Bot`, and an AppImage replaces itself. The download stays in `%LOCALAPPDATA%\dsbot-updater` (`~/.cache/dsbot-updater` on Linux). CI runs it without `--kill` on its installed app, then checks that the installed version is the new one and that the updated app passes `check-packed`; for an AppImage it checks that the file is the new one.
+It serves the feed folder, starts the app on throwaway folders and waits until the app has downloaded and verified the update. Then it ends the app the way the tray's Quit ends it, so that the app installs the update as it quits; with `--kill` it ends the app, so that nothing is installed. On your own machine use `--kill`: the installer would install into `%LOCALAPPDATA%\Programs\DS Bot`, and macOS / AppImage replace themselves in place. CI runs it without `--kill` on its installed app, then checks that the installed version is the new one and that the updated app passes `check-packed` (and `codesign --verify --deep --strict` on macOS); for an AppImage it checks that the file is the new one.
 
-On macOS and for a Linux deb, pass the app executable and a version to mock a newer release:
+For a Linux deb, pass the app executable and a version to mock a newer release:
 
 ```sh
 node scripts/check-update.mjs "<app executable>" 99.0.0
@@ -165,9 +167,9 @@ The launch URL of the Host is good for one use only. When the first load never c
 | `src/import.mjs` | The import of a Bot team from the user's DSH |
 | `src/move-data.mjs` | The move of the data location: which folders can take it, and the copy through a staging folder |
 | `src/updates.mjs` | The self-updates (Windows installer, Linux AppImage) and the release-page checks (macOS, Linux deb) |
-| `engine/` | On hold, not installed: the bundle `dsbot-engine` for the app's own window in `ui/` |
+| `engine/` | The pure-host bundle `dsbot-engine`: loopback webserver, host services, built-in agent presets, host-only directory picker, and the static UI server for `ui/dist` |
 | `test/` | `npm test`: the composition of the profile, the dependencies that the package needs, and the window and the tray (the main process runs there with the Electron parts as test doubles, in `test/helpers/`) |
-| `ui/` | On hold, not built or packaged: the app's own window. React, built with Vite (`vite.config.js`) into `ui/dist`. It draws the plugin's own Bot views from `../ds-bot/src/client/` (sidebar, chat rows, docks, dialogs and their stylesheets) and puts its own Markdown in place of DSH's. It uses ds-bot's `api/bot` channel and its live feed `api/bot/feed` |
+| `ui/` | The desktop app's own frontend. React, built with Vite (`vite.config.js`) into `ui/dist` (automatically via `prestart` / `prepack` / `predist`). It draws the plugin's own Bot views from `../ds-bot/src/client/` and talks exclusively to `api/bot` and `api/bot/feed` |
 | `assets/` | The app icon: `icon.svg`, `icon.png` (1024 px) and `icon.ico` (Windows, 16 to 256 px), and the tray marks: `tray.ico` (Windows), `tray.png` (Linux) and `trayTemplate.png` with its `@2x` (macOS). `npm run icon` (`scripts/icon.mjs`) draws them again from the Main Bot's whale in `../ds-bot` |
 | `electron-builder.yml`, `build/` | The package and the installers: app identity, files, icons, the Windows installer, the macOS zip and the Linux AppImage and deb |
 | `scripts/check-packed.mjs` | `npm run check-packed`: the check of a packaged app |

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { encodeUrlComponent } from './secrets.js'
+import { matchSecretRefs } from './secret-refs.js'
 import { own } from './store.js'
 import { sharedSkillProblem } from './skill-share.js'
 import { joinedShadow, NODE_ONLY_REASON } from './roster-join.js'
@@ -8,8 +9,35 @@ import { activeTasksOf } from './threads.js'
 
 const MCP_CLIENT = '@deepseek-ai/dsh-mcp-client'
 const NAME = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
-const SECRET_REFERENCE = /\$DSH_SECRET_([A-Z][A-Z0-9_]*)/g
+const SECRET_REFERENCE = /\$\{DSH_SECRET_([A-Z][A-Z0-9_]*)\}|\$DSH_SECRET_([A-Z][A-Z0-9_]*)/g
 const ENSURE_TIMEOUT_MS = 15_000
+
+const replaceSecretReferences = (raw, resolveName) =>
+  String(raw).replace(SECRET_REFERENCE, (_match, braced, bare) => resolveName(braced ?? bare))
+
+const sanitizeSecretSegment = (raw) => String(raw ?? '')
+  .replace(/[^A-Za-z0-9_]+/g, '_')
+  .replace(/_+/g, '_')
+  .replace(/^_+|_+$/g, '')
+  .toUpperCase()
+
+function referencedSecretNames(item) {
+  const names = new Set()
+  const scan = (raw) => {
+    if (typeof raw !== 'string') return
+    for (const match of raw.matchAll(SECRET_REFERENCE)) names.add(match[1] ?? match[2])
+  }
+  if (item?.kind === 'mcp') {
+    if (item.transport === 'stdio') {
+      for (const arg of item.args ?? []) scan(arg)
+      for (const val of Object.values(item.env ?? {})) scan(val)
+    } else {
+      scan(item.url)
+      for (const val of Object.values(item.headers ?? {})) scan(val)
+    }
+  }
+  return names
+}
 
 // Connector ids are reserved: a capability named like one would collide with
 // its mcp__<id>__* tool prefix. The connectors module registers its ids here.
@@ -105,7 +133,7 @@ export function install(rt) {
     if (!allowedToEdit(item, botId)) throw new Error(`Only ${item.createdBy ? 'its creator or a Main Bot' : 'a Main Bot'} can ${verb} ${item.name}.`)
     if (!rt.isMain(botId) && usedByOthers(item.name, botId)) throw new Error(`Another Bot uses ${item.name}, so only a Main Bot can ${verb} it.`)
   }
-  const itemInput = (body, { botId, ui }) => {
+  const buildItemInput = (body, { botId, ui }) => {
     const name = validateCapabilityName(body.name)
     const kind = body.kind
     if (!['mcp', 'skill', 'pack'].includes(kind)) throw new Error('Choose an MCP server, skill, or pack.')
@@ -166,16 +194,143 @@ export function install(rt) {
       }
       item.items = names
     }
-    items[name] = item
-    return item
+    return { item, previous }
+  }
+  const replaceSecretRefsInText = (text, secretNamesByRef) => {
+    let out = String(text ?? '')
+    for (const [ref] of matchSecretRefs(out)) {
+      const secretName = secretNamesByRef.get(ref)
+      if (secretName !== undefined) {
+        out = out.replaceAll(ref, `\${DSH_SECRET_${secretName}}`)
+      }
+    }
+    return out
+  }
+  const consumeSecretRefsInBody = async (body, { botId }) => {
+    if (!body || body.kind !== 'mcp' || !botId) return { body, createdSecrets: [] }
+    const capName = String(body.name ?? '').trim() || 'mcp'
+    const transport = body.transport === 'streamable-http' ? 'streamable-http' : 'stdio'
+    // 1. Collect all unique secret-ref handles in active transport fields BEFORE consuming any.
+    /** @type {Map<string, { hex: string, field: string }>} */
+    const refMeta = new Map()
+    const collectFromText = (raw, field) => {
+      if (typeof raw !== 'string') return
+      for (const [ref, hex] of matchSecretRefs(raw)) {
+        if (!refMeta.has(ref)) refMeta.set(ref, { hex, field })
+      }
+    }
+    if (transport === 'stdio') {
+      if (Array.isArray(body.args)) {
+        for (let i = 0; i < body.args.length; i += 1) collectFromText(body.args[i], `ARG_${i}`)
+      }
+      if (body.env && typeof body.env === 'object' && !Array.isArray(body.env)) {
+        for (const [key, val] of Object.entries(body.env)) collectFromText(val, key)
+      }
+    } else {
+      collectFromText(body.url, 'URL')
+      if (body.headers && typeof body.headers === 'object' && !Array.isArray(body.headers)) {
+        for (const [key, val] of Object.entries(body.headers)) collectFromText(val, key)
+      }
+    }
+    if (refMeta.size === 0) return { body, createdSecrets: [] }
+    if (typeof rt.secrets?.consumeRefs !== 'function' && typeof rt.secrets?.consumeRef !== 'function') {
+      throw new Error('Secret references can only be consumed by a Bot.')
+    }
+    if (rt.secretStoreStatus?.().locked) {
+      throw new Error('The secrets store is locked. Unlock it to use secret references.')
+    }
+
+    // 2. Atomically validate and consume every handle in one batch so a bad/expired
+    //    handle never destroys sibling valid handles.
+    const uniqueRefs = [...refMeta.keys()]
+    const resolvedValues = typeof rt.secrets.consumeRefs === 'function'
+      ? await rt.secrets.consumeRefs(uniqueRefs, { botId })
+      : new Map(await Promise.all(uniqueRefs.map(async ref => [ref, await rt.secrets.consumeRef(ref, { botId })])))
+
+    // 3. Store each resolved value in host-only scope [] and rewrite fields using braced
+    //    `${DSH_SECRET_<NAME>}` placeholders so adjacent uppercase/underscore suffixes stay unambiguous.
+    const secretNamesByRef = new Map()
+    const createdSecrets = []
+    try {
+      const capPart = sanitizeSecretSegment(capName) || 'MCP'
+      for (const [ref, { hex, field }] of refMeta.entries()) {
+        const fieldPart = sanitizeSecretSegment(field) || 'VALUE'
+        const suffix = hex.slice(0, 8).toUpperCase()
+        const prefix = `CAP_${capPart}_${fieldPart}`.replace(/_+/g, '_').slice(0, 55).replace(/_+$/, '')
+        const secretName = `${prefix}_${suffix}`
+        await rt.secretEndpoint('secret-set', {
+          name: secretName,
+          value: resolvedValues.get(ref),
+          purpose: `${capName} MCP capability`,
+          scope: [],
+        })
+        secretNamesByRef.set(ref, secretName)
+        createdSecrets.push(secretName)
+      }
+    } catch (error) {
+      for (const secretName of createdSecrets) {
+        await rt.secretEndpoint('secret-delete', { name: secretName }).catch(() => {})
+      }
+      throw error
+    }
+
+    const next = { ...body }
+    if (transport === 'stdio') {
+      if (Array.isArray(next.args)) {
+        next.args = next.args.map(arg => (typeof arg === 'string' ? replaceSecretRefsInText(arg, secretNamesByRef) : arg))
+      }
+      if (next.env && typeof next.env === 'object' && !Array.isArray(next.env)) {
+        next.env = Object.fromEntries(
+          Object.entries(next.env).map(([key, val]) => [key, typeof val === 'string' ? replaceSecretRefsInText(val, secretNamesByRef) : val]),
+        )
+      }
+    } else {
+      if (typeof next.url === 'string') {
+        next.url = replaceSecretRefsInText(next.url, secretNamesByRef)
+      }
+      if (next.headers && typeof next.headers === 'object' && !Array.isArray(next.headers)) {
+        next.headers = Object.fromEntries(
+          Object.entries(next.headers).map(([key, val]) => [key, typeof val === 'string' ? replaceSecretRefsInText(val, secretNamesByRef) : val]),
+        )
+      }
+    }
+    return { body: next, createdSecrets }
   }
   const capabilitySave = async (body, options = {}) => {
     await rt.load()
     writeCheck()
-    if (body?.teamReusable === true) await rt.loadSecrets()
-    const item = itemInput(body ?? {}, options)
-    await rt.save()
+    const input = body ?? {}
+    if (input.teamReusable === true) await rt.loadSecrets()
+    // Validate the full capability payload BEFORE consuming any one-time secret-ref handles.
+    const { previous } = buildItemInput(input, options)
+    const { body: resolvedBody, createdSecrets } = await consumeSecretRefsInBody(input, options)
+    const items = ensureLibrary()
+    let item
+    let nextOwned = []
+    try {
+      ;({ item } = buildItemInput(resolvedBody, options))
+      const referenced = referencedSecretNames(item)
+      const keptOwned = (previous?.ownedSecrets ?? []).filter(secretName => referenced.has(secretName))
+      nextOwned = [...new Set([...keptOwned, ...createdSecrets])]
+      if (nextOwned.length > 0) item.ownedSecrets = nextOwned
+      items[item.name] = item
+      await rt.save()
+    } catch (error) {
+      if (item?.name) {
+        if (previous !== undefined) items[item.name] = previous
+        else delete items[item.name]
+      }
+      for (const secretName of createdSecrets) {
+        await rt.secretEndpoint('secret-delete', { name: secretName }).catch(() => {})
+      }
+      throw error
+    }
     rt.markPeerRosterDirty?.()
+    for (const stale of previous?.ownedSecrets ?? []) {
+      if (!nextOwned.includes(stale)) {
+        await rt.secretEndpoint('secret-delete', { name: stale }).catch(() => {})
+      }
+    }
     return item
   }
   const capabilityDelete = async (name, { botId, ui } = {}) => {
@@ -194,6 +349,9 @@ export function install(rt) {
     }
     await rt.save()
     rt.markPeerRosterDirty?.()
+    for (const owned of item.ownedSecrets ?? []) {
+      await rt.secretEndpoint('secret-delete', { name: owned }).catch(() => {})
+    }
     return true
   }
   // Called with the Bot being deleted, after it left the team. The shared list belongs to
@@ -203,12 +361,18 @@ export function install(rt) {
   const dropOrphanCapabilities = (bot) => {
     const items = library()
     const packed = name => Object.values(items).some(item => item.kind === 'pack' && (item.items ?? []).includes(name))
+    const droppedSecrets = []
     for (const name of new Set([...(bot.capabilities ?? []), ...(bot.packs ?? [])])) {
       const item = own(items, name)
       if (item === undefined || item.kind !== 'mcp' || item.transport !== 'stdio' || item.approved === true) continue
       if (item.createdBy !== bot.id || usedByOthers(name, bot.id) || packed(name)) continue
       delete items[item.name]
+      for (const owned of item.ownedSecrets ?? []) droppedSecrets.push(owned)
     }
+    if (droppedSecrets.length === 0) return undefined
+    return Promise.allSettled(
+      droppedSecrets.map(name => rt.secretEndpoint('secret-delete', { name }).catch(() => {})),
+    )
   }
   const changeAttachment = async (endpoint, { name, bot: targetRef, mode }, callerId) => {
     await rt.load()
@@ -317,6 +481,7 @@ export function install(rt) {
     ...(item.env ? { env: { ...item.env } } : {}),
     ...(item.headers ? { headers: { ...item.headers } } : {}),
     ...(item.items ? { items: [...item.items] } : {}),
+    ...(item.ownedSecrets ? { ownedSecrets: [...item.ownedSecrets] } : {}),
   }))
 
   // What a failure says, for the user and for the nodes: Node's own errors carry a fixed message that says nothing
@@ -359,24 +524,22 @@ export function install(rt) {
     return pluginPromise
   }
   // `forNodes`: the hub's own mount of a shared MCP, which a key the user shared with the nodes may be used by.
-  function secretFor(name, botId, forNodes = false) {
-    const value = rt.canUseSecret(name, botId, { forNodes }) ? rt.secretValue(name) : undefined
-    if (value === undefined) throw new Error(`Secret ${name} is missing or unavailable for this Bot.`)
-    return value
-  }
-  function resolveValues(values, botId, forNodes = false) {
-    const resolved = {}
-    for (const [key, raw] of Object.entries(values ?? {})) {
-      resolved[key] = String(raw).replace(SECRET_REFERENCE, (_match, name) => secretFor(name, botId, forNodes))
-    }
-    return resolved
-  }
-  const resolveUrl = (url, botId, forNodes = false) => String(url).replace(SECRET_REFERENCE, (_match, name) => encodeUrlComponent(secretFor(name, botId, forNodes)))
-  const resolveList = (list, botId, forNodes = false) => (list ?? []).map(raw => String(raw).replace(SECRET_REFERENCE, (_match, name) => secretFor(name, botId, forNodes)))
   const configFor = (item, botId, forNodes = false) => {
     if (item.kind === 'skill') return { name: item.name, description: item.description, content: item.content }
-    if (item.transport === 'stdio') return { transport: 'stdio', serverName: item.name, command: item.command, args: resolveList(item.args, botId, forNodes), env: resolveValues(item.env, botId, forNodes), failOnStartupError: true }
-    return { transport: 'streamable-http', serverName: item.name, url: resolveUrl(item.url, botId, forNodes), headers: resolveValues(item.headers, botId, forNodes), failOnStartupError: true }
+    const getSecret = name => {
+      // A credential consumed by this capability is private to its local mount.
+      const owned = !forNodes && Array.isArray(item.ownedSecrets) && item.ownedSecrets.includes(name)
+      const value = (owned || rt.canUseSecret(name, botId, { forNodes })) ? rt.secretValue(name) : undefined
+      if (value === undefined) throw new Error(`Secret ${name} is missing or unavailable for this Bot.`)
+      return value
+    }
+    const resolve = raw => replaceSecretReferences(raw, getSecret)
+    const resolveMap = values => Object.fromEntries(Object.entries(values ?? {}).map(([key, raw]) => [key, resolve(raw)]))
+    if (item.transport === 'stdio') {
+      return { transport: 'stdio', serverName: item.name, command: item.command, args: (item.args ?? []).map(resolve), env: resolveMap(item.env), failOnStartupError: true }
+    }
+    const url = replaceSecretReferences(item.url, name => encodeUrlComponent(getSecret(name)))
+    return { transport: 'streamable-http', serverName: item.name, url, headers: resolveMap(item.headers), failOnStartupError: true }
   }
   const disposeMount = async mount => {
     if (mount) {
@@ -404,6 +567,12 @@ export function install(rt) {
       await drop()
       statusSet(bot.id, name, sessionId, { state: 'error', error: String(item.reason ?? 'The hub cannot reach it right now.').slice(0, 300) })
       return
+    }
+    if (!proxied && item.kind === 'mcp' && typeof rt.resolveExternalForBot === 'function') {
+      const secretNames = referencedSecretNames(item)
+      if (secretNames.size > 0) {
+        await rt.resolveExternalForBot(bot.id, { names: secretNames }).catch(() => {})
+      }
     }
     let config
     try {

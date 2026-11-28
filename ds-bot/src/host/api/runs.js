@@ -17,6 +17,8 @@ const RUNS_FILE = 'api-runs.json'
 const MAX_RUNS = 1_000
 const RUN_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000
 const EVENT_BUFFER_MAX = 400
+const API_VIA_SESSIONS = 128
+const API_VIA_ROWS = 256
 const IDEMPOTENCY_MAX_LEN = 200
 const ROOM_SETTLE_DEBOUNCE_MS = 180
 const TERMINAL_STATUSES = new Set(['completed', 'stopped', 'failed'])
@@ -61,8 +63,17 @@ export function createRunCoordinator(rt, auth) {
   const byRoom = new Map() // roomId -> Set<runId>
   const files = new Map() // fileRef -> { kind, sessionId, botId, roomId, seq, index, attachmentId, name, mime, size }
 
-  // API-originated user messages, keyed by sessionId -> { [seq]: tokenName }, for chat UI badges.
+  // Recent API-originated user messages, keyed by session then sequence.
   const apiVia = new Map()
+  const rememberApiVia = (sessionId, seq, name) => {
+    const rows = apiVia.get(sessionId) ?? new Map()
+    rows.delete(seq)
+    rows.set(seq, name)
+    if (rows.size > API_VIA_ROWS) rows.delete(rows.keys().next().value)
+    apiVia.delete(sessionId)
+    apiVia.set(sessionId, rows)
+    if (apiVia.size > API_VIA_SESSIONS) apiVia.delete(apiVia.keys().next().value)
+  }
   let saveTimer = null
   let disposed = false
 
@@ -521,7 +532,7 @@ export function createRunCoordinator(rt, auth) {
         const tracker = runId ? active.get(runId) : undefined
         if (tracker !== undefined) {
           if (Number.isInteger(event.seq)) {
-            apiVia.set(sid, { ...apiVia.get(sid), [event.seq]: tracker.run.tokenName || 'API' })
+            rememberApiVia(sid, event.seq, tracker.run.tokenName || 'API')
           }
           tracker.userSeq = event.seq
           tracker.run.sessionId = sid
@@ -1204,7 +1215,7 @@ export function createRunCoordinator(rt, auth) {
     for (const sessionId of apiVia.keys()) {
       if (!rt.chatOwners.has(sessionId) && !rt.roomOwners.has(sessionId)) apiVia.delete(sessionId)
     }
-    return Object.fromEntries([...apiVia.entries()].map(([sid, seqs]) => [sid, { ...seqs }]))
+    return Object.fromEntries([...apiVia].map(([sid, seqs]) => [sid, Object.fromEntries(seqs)]))
   }
 
   function dispose() {

@@ -551,3 +551,284 @@ test('BrowserView enters safari-permission, clears stale rows while refreshing m
   assert.match(errCard.props.flow.message, /cookie database is busy/i)
   inst.unmount()
 })
+
+test('PreviewCard toggles session persistence via DS Bot switch and passes persistSession to onApply', () => {
+  const h = createHarness()
+  const { PreviewCard } = h.exports
+  const applied = []
+  const inst = h.mount(PreviewCard, {
+    flow: {
+      id: 'p2',
+      preview: {
+        source: { label: 'Chrome — Personal' },
+        notes: ['session-cookies'],
+        warnings: [],
+        skipped: [],
+        sites: [{ site: 'github.com', cookies: 5, session: 2, localStorage: 0 }],
+      },
+    },
+    page: { url: 'https://github.com/Fei-Craft/DS-Bot' },
+    busy: false,
+    onApply: (opts) => applied.push(opts),
+    onCancel() {},
+  })
+  let tree = inst.render()
+  const sw = allNodes(tree, (n) => n.type === 'button' && n.props?.role === 'switch')[0]
+  assert.ok(sw, 'expected a role=switch toggle for session persistence')
+  assert.equal(sw.props['aria-checked'], true)
+  sw.props.onClick()
+  tree = inst.render()
+  const swAfter = allNodes(tree, (n) => n.type === 'button' && n.props?.role === 'switch')[0]
+  assert.equal(swAfter.props['aria-checked'], false)
+
+  const submitBtn = allNodes(tree, (n) => n.type === 'button' && n.props?.className === 'bt-import-primary')[0]
+  submitBtn.props.onClick()
+  assert.equal(applied.length, 1)
+  assert.equal(applied[0].sites, undefined)
+  assert.equal(applied[0].persistSession, false)
+  inst.unmount()
+})
+
+test('SafariPermissionCard keeps the primary CTA rightmost before and after permission grant', async () => {
+  const h = createHarness()
+  const { SafariPermissionCard } = h.exports
+  let resolveProbe = null
+  const imports = {
+    probe: () => new Promise((resolve) => { resolveProbe = resolve }),
+    openPermission: async () => ({ opened: true }),
+  }
+  const inst = h.mount(SafariPermissionCard, {
+    flow: { source: { id: 'safari:permission', name: 'Safari', label: 'Safari' }, info: {} },
+    busy: false,
+    imports,
+    onOpenPermission() {},
+    onRetrySource() {},
+    onCancel() {},
+  })
+  let tree = inst.render()
+  const actionsBefore = allNodes(tree, (n) => n.type === 'div' && n.props?.className === 'bt-import-actions')[0]
+  const btnsBefore = allNodes(actionsBefore, (n) => n.type === 'button')
+  assert.equal(btnsBefore.at(-1)?.props?.className, 'bt-import-primary')
+  assert.equal(textOf(btnsBefore.at(-1)), 'Open System Settings')
+
+  const [id, timer] = [...h.timers.entries()][0]
+  h.timers.delete(id)
+  timer.fn()
+  resolveProbe({ permissionGranted: true })
+  await new Promise((r) => setTimeout(r, 0))
+  tree = inst.render()
+  const actionsAfter = allNodes(tree, (n) => n.type === 'div' && n.props?.className === 'bt-import-actions')[0]
+  const btnsAfter = allNodes(actionsAfter, (n) => n.type === 'button')
+  assert.equal(btnsAfter.at(-1)?.props?.className, 'bt-import-primary')
+  assert.equal(textOf(btnsAfter.at(-1)), 'Import')
+  inst.unmount()
+})
+
+test('ImportCard disables Close and ignores Escape while apply is busy, but still lets connecting cancel on Escape', () => {
+  const h = createHarness()
+  const { ImportCard, PreviewCard } = h.exports
+  let canceled = 0
+  const previewFlow = {
+    stage: 'preview',
+    id: 'p-busy',
+    preview: {
+      source: { label: 'Chrome — Personal' },
+      notes: [],
+      warnings: [],
+      skipped: [],
+      sites: [{ site: 'github.com', cookies: 5, session: 0, localStorage: 0 }],
+    },
+  }
+  const inst = h.mount(ImportCard, {
+    flow: previewFlow,
+    page: { url: '' },
+    busy: true,
+    imports: {},
+    onApply() {},
+    onCancel: () => { canceled += 1 },
+    onDone() {},
+  })
+  inst.render()
+  h.window.dispatch('keydown', { key: 'Escape', isComposing: false, keyCode: 27 })
+  assert.equal(canceled, 0, 'Escape must not dismiss preview while apply is busy')
+  inst.unmount()
+
+  // PreviewCard header Close button is also disabled while busy.
+  const prevInst = h.mount(PreviewCard, {
+    flow: previewFlow,
+    page: { url: '' },
+    busy: true,
+    onApply() {},
+    onCancel: () => { canceled += 1 },
+  })
+  const prevTree = prevInst.render()
+  const headerNode = allNodes(prevTree, (n) => typeof n.type === 'function' && n.props?.onClose)[0]
+  assert.ok(headerNode, 'expected ImportHeader with onClose in non-inline PreviewCard')
+  assert.equal(headerNode.props.busy, true)
+  const closeBtn = allNodes(headerNode.type(headerNode.props), (n) => n.type === 'button' && n.props?.['aria-label'] === 'Close')[0]
+  assert.ok(closeBtn, 'expected Close button in non-inline PreviewCard header')
+  assert.equal(closeBtn.props.disabled, true)
+  prevInst.unmount()
+
+  // Connecting stage remains cancellable via Escape so live harvest can be aborted.
+  const connInst = h.mount(ImportCard, {
+    flow: { stage: 'connecting', source: { id: 'chrome:Default', name: 'Chrome', label: 'Chrome — Default' } },
+    page: { url: '' },
+    busy: true,
+    imports: {},
+    onApply() {},
+    onCancel: () => { canceled += 1 },
+    onDone() {},
+  })
+  connInst.render()
+  h.window.dispatch('keydown', { key: 'Escape', isComposing: false, keyCode: 27 })
+  assert.equal(canceled, 1, 'Escape must still cancel connecting stage')
+  connInst.unmount()
+
+  // Running stage (closeAndImport live read) remains cancellable via Escape and Cancel button.
+  const runInst = h.mount(ImportCard, {
+    flow: { stage: 'running', source: { id: 'chrome:Default', name: 'Chrome', label: 'Chrome — Default' } },
+    page: { url: '' },
+    busy: true,
+    imports: {},
+    onApply() {},
+    onCancel: () => { canceled += 1 },
+    onCloseAndImport() {},
+    onDone() {},
+  })
+  const runTree = runInst.render()
+  const runCancelBtn = allNodes(runTree, (n) => n.type === 'button' && textOf(n) === 'Cancel')[0]
+  assert.ok(runCancelBtn)
+  assert.notEqual(runCancelBtn.props.disabled, true)
+  h.window.dispatch('keydown', { key: 'Escape', isComposing: false, keyCode: 27 })
+  assert.equal(canceled, 2, 'Escape must still cancel busy running close-and-import read')
+  runInst.unmount()
+
+  // Overlay ImportMenu also disables Close and ignores Escape while busy (e.g. pickFile in flight).
+  let menuClosed = 0
+  const { ImportMenu } = h.exports
+  const menuInst = h.mount(ImportMenu, {
+    sources: [],
+    lastSourceId: null,
+    loading: false,
+    busy: true,
+    canPaste: true,
+    onFile() {},
+    onPaste() {},
+    onSource() {},
+    onClose: () => { menuClosed += 1 },
+  })
+  const menuTree = menuInst.render()
+  const menuHeader = allNodes(menuTree, (n) => typeof n.type === 'function' && n.props?.onClose)[0]
+  assert.ok(menuHeader)
+  assert.equal(menuHeader.props.busy, true)
+  const menuCloseBtn = allNodes(menuHeader.type(menuHeader.props), (n) => n.type === 'button' && n.props?.['aria-label'] === 'Close')[0]
+  assert.equal(menuCloseBtn.props.disabled, true)
+  h.window.dispatch('keydown', { key: 'Escape', isComposing: false, keyCode: 27 })
+  assert.equal(menuClosed, 0, 'Escape must not dismiss overlay ImportMenu while busy')
+  menuInst.unmount()
+})
+
+test('BrowserView hides takeover bar in read-only mode, shows external-window notice for external plugins, and keeps takeover for sidebar-controlled plugins', () => {
+  const h = createHarness()
+  const { BrowserView, browserPaneMode } = h.exports
+  const bot = { id: 'chief', name: 'Chief' }
+  const useBrowserPages = (sel) => sel({ 'tab-1': { url: '', title: '', loading: false, canGoBack: false, canGoForward: false, error: null } })
+  const openedSettings = []
+  const actions = {
+    browserShow() {},
+    browserNavigate: async () => true,
+    browserFocus() {},
+    browserCommand() {},
+    browserNewTab() {},
+    browserTakeover: async () => ({}),
+    browserStop: async () => ({}),
+    browserGiveBack: async () => ({}),
+    browserImport: { sources: async () => [], paste: async () => ({}) },
+    openSettings: (...args) => openedSettings.push(args),
+  }
+
+  // 1. Read-only mode: no takeover banner, normal read-along empty state with Import cookies.
+  assert.deepEqual({ ...browserPaneMode({ active: 'builtin:readonly', controlsPane: false, windowMode: 'readonly' }) }, {
+    active: 'builtin:readonly',
+    activeLabel: 'Read-only Browser',
+    controlsPane: false,
+    windowMode: 'readonly',
+    showTakeover: false,
+    isExternal: false,
+  })
+  const roInst = h.mount(BrowserView, {
+    bot, ownerId: bot.id, tabId: 'tab-1', leaving: false, landed: true, actions, useBrowserPages, hold: null,
+    browserSlot: { active: 'builtin:readonly', activeName: 'Read-only Browser', controlsPane: false, windowMode: 'readonly' },
+  })
+  const roTree = roInst.render()
+  assert.equal(allNodes(roTree, n => n.props?.className === 'bt-browser-takeover').length, 0)
+  assert.doesNotMatch(textOf(roTree), /The Bot controls this browser/)
+  assert.match(textOf(roTree), /Import cookies/)
+  roInst.unmount()
+
+  // 2. Sidebar-controlled built-in Playwright: shows takeover banner with Take over & Stop.
+  const paneInst = h.mount(BrowserView, {
+    bot, ownerId: bot.id, tabId: 'tab-1', leaving: false, landed: true, actions, useBrowserPages, hold: null,
+    browserSlot: { active: 'builtin:refs', activeName: 'Playwright (Refs)', controlsPane: true, windowMode: 'pane' },
+  })
+  const paneTree = paneInst.render()
+  const paneBanner = allNodes(paneTree, n => n.props?.className === 'bt-browser-takeover')[0]
+  assert.ok(paneBanner)
+  assert.equal(paneBanner.props['data-external'], undefined)
+  assert.match(textOf(paneBanner), /The Bot controls this browser/)
+  assert.ok(allNodes(paneBanner, n => n.type === 'button' && textOf(n) === 'Take over').length === 1)
+  assert.ok(allNodes(paneBanner, n => n.type === 'button' && textOf(n) === 'Stop').length === 1)
+  paneInst.unmount()
+
+  // 3. External window plugin (e.g. Ego Lite): no takeover banner; shows external-window notice + Switch button.
+  const extInst = h.mount(BrowserView, {
+    bot, ownerId: bot.id, tabId: 'tab-1', leaving: false, landed: true, actions, useBrowserPages, hold: null,
+    browserSlot: { active: 'dsh:dsh-ego-browser', activeName: 'Ego Lite Browser', controlsPane: false, windowMode: 'external' },
+  })
+  const extTree = extInst.render()
+  const extBanner = allNodes(extTree, n => n.props?.className === 'bt-browser-takeover')[0]
+  assert.ok(extBanner)
+  assert.equal(extBanner.props['data-external'], '')
+  assert.doesNotMatch(textOf(extTree), /The Bot controls this browser/)
+  assert.match(textOf(extBanner), /Ego Lite Browser opens in an external window, not this sidebar/)
+  const switchBtn = allNodes(extBanner, n => n.type === 'button' && textOf(n) === 'Switch')[0]
+  assert.ok(switchBtn)
+  switchBtn.props.onClick()
+  assert.deepEqual(openedSettings[0], ['plugins', 'browser'])
+  const emptySwitchBtn = allNodes(extTree, n => n.type === 'button' && textOf(n) === 'Switch browser plugin')[0]
+  assert.ok(emptySwitchBtn)
+  emptySwitchBtn.props.onClick()
+  assert.deepEqual(openedSettings[1], ['plugins', 'browser'])
+  extInst.unmount()
+
+  // 4. Active hold always remains releasable even after switching to an external plugin.
+  const heldExtInst = h.mount(BrowserView, {
+    bot, ownerId: bot.id, tabId: 'tab-1', leaving: false, landed: true, actions, useBrowserPages,
+    hold: { by: 'user', reason: 'takeover' },
+    browserSlot: { active: 'dsh:dsh-ego-browser', activeName: 'Ego Lite Browser', controlsPane: false, windowMode: 'external' },
+  })
+  const heldExtTree = heldExtInst.render()
+  assert.match(textOf(heldExtTree), /You control this browser/)
+  assert.ok(allNodes(heldExtTree, n => n.type === 'button' && textOf(n) === 'Give back').length === 1)
+  heldExtInst.unmount()
+
+  // 5. External mode without actions.openSettings must NOT fall back to Import cookies.
+  const { openSettings: _omitOpenSettings, ...actionsWithoutSettings } = actions
+  const noSettingsInst = h.mount(BrowserView, {
+    bot, ownerId: bot.id, tabId: 'tab-1', leaving: false, landed: true, actions: actionsWithoutSettings, useBrowserPages, hold: null,
+    browserSlot: { active: 'dsh:dsh-ego-browser', activeName: 'My Ego', customName: true, controlsPane: false, windowMode: 'external' },
+  })
+  const noSettingsTree = noSettingsInst.render()
+  assert.doesNotMatch(textOf(noSettingsTree), /Import cookies/)
+  assert.doesNotMatch(textOf(noSettingsTree), /Switch browser plugin/)
+  assert.match(textOf(noSettingsTree), /My Ego opens in an external window, not this sidebar/)
+  noSettingsInst.unmount()
+
+  // 6. browserPaneMode partial/missing fallbacks and custom controlsPane provider.
+  assert.equal(browserPaneMode(undefined).windowMode, 'readonly')
+  assert.equal(browserPaneMode(undefined).showTakeover, false)
+  assert.equal(browserPaneMode({ active: 'provider:custom-pane', controlsPane: true }).windowMode, 'pane')
+  assert.equal(browserPaneMode({ active: 'provider:custom-pane', controlsPane: true }).isExternal, false)
+  assert.equal(browserPaneMode({ active: 'dsh:dsh-ego-browser', activeName: 'My Ego', customName: true }).activeLabel, 'My Ego')
+})

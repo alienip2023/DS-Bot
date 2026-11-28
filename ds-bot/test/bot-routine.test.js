@@ -65,6 +65,19 @@ function world(t, { offline = false, reject = false, state } = {}) {
   return { rt, ctx, local, joined, call, create, due, event, prompts, frames, nodePrompts, sessions, persisted, legacy }
 }
 
+test('a routine does not dispatch if the claim cannot be saved', async t => {
+  const w = world(t)
+  const [task] = (await w.create()).tasks
+  const originalSave = w.rt.save
+  w.rt.save = async options => {
+    if (options?.required) throw new Error('lost write ownership')
+    return originalSave()
+  }
+  await assert.rejects(w.rt.runDueRoutines(Date.parse(task.scheduledAt)), /lost write ownership/)
+  assert.equal(w.prompts.length, 0)
+  assert.equal(w.rt.state.routines[task.id].scheduledAt, task.scheduledAt)
+})
+
 test('a Bot target is stored and listed by stable Bot identity', async t => {
   const w = world(t)
   const view = await w.create()

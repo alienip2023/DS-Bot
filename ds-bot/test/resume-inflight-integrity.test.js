@@ -117,6 +117,99 @@ test('success leaves no temp file behind', async t => {
   assert.deepEqual(readdirSync(home), ['inflight.json'])
 })
 
+test('a checkpoint written during recovery keeps the other interrupted turns', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] })
+  const home = dirOf(t)
+  const file = join(home, 'inflight.json')
+  const turns = { first: { botId: 'a', since: 1 }, second: { botId: 'b', since: 2 } }
+  writeFileSync(file, JSON.stringify({ turns, queued: {} }))
+  const started = Promise.withResolvers()
+  const checkpointWritten = Promise.withResolvers()
+  const unblock = Promise.withResolvers()
+  const finished = Promise.withResolvers()
+  const rename = fsp.rename
+  t.mock.method(fsp, 'rename', async (...args) => {
+    const result = await rename(...args)
+    if (args[1] === file) checkpointWritten.resolve()
+    return result
+  })
+  syncBuiltinESMExports()
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports() })
+  const h = start(home, {
+    restoreSilentNotes: async () => { started.resolve(); await unblock.promise },
+    reconcileTasksAfterRestart: async () => { finished.resolve() },
+  })
+  t.mock.timers.tick(RESUME_DELAY_MS)
+  await started.promise
+  try {
+    await checkpointWritten.promise
+    const checkpoint = JSON.parse(readFileSync(file, 'utf8'))
+    assert.equal(checkpoint.version, 1)
+    assert.deepEqual(checkpoint.turns, turns)
+  } finally {
+    unblock.resolve()
+    await finished.promise
+    await h.ctx.dispose()
+  }
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')).turns, {})
+})
+
+test('a recovered terminal turn is retired before recovery of a later turn finishes', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] })
+  const home = dirOf(t)
+  const file = join(home, 'inflight.json')
+  const first = { botId: 'a', since: 1, turn: 1, attempted: true, rejected: true, producedOutput: false, promptSubmitted: false }
+  const second = { botId: 'b', since: 2, turn: 1 }
+  writeFileSync(file, JSON.stringify({ turns: { first, second }, queued: {} }))
+  const started = Promise.withResolvers()
+  const unblock = Promise.withResolvers()
+  const finished = Promise.withResolvers()
+  const h = start(home, {
+    botOf: id => ({ id }),
+    resolveAgent: async sid => {
+      if (sid === 'second') { started.resolve(); await unblock.promise }
+      return { status: 'idle' }
+    },
+    reconcileTasksAfterRestart: async () => { finished.resolve() },
+  })
+  h.ctx.sessionController = {
+    async inspect(sid) {
+      return { events: sid !== 'first' ? [] : [
+        { type: 'turn/start', data: { turn: 1 } },
+        { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+      ] }
+    },
+  }
+  t.mock.timers.tick(RESUME_DELAY_MS)
+  await started.promise
+  try {
+    await h.ctx.dispose() // Wait for issued writes, as if this host stopped at the blocked Session.
+    assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')).turns, { second })
+    assert.deepEqual(h.delivered, [])
+  } finally {
+    unblock.resolve()
+    await finished.promise
+  }
+})
+
+test('a newer turn checkpoint cannot resurrect the previous turn after it ends', async t => {
+  const home = dirOf(t)
+  const file = join(home, 'inflight.json')
+  writeFileSync(file, JSON.stringify({ turns: { s1: { botId: 'a', since: 1, turn: 1 } }, queued: {} }))
+  const h = start(home, {
+    isBotSession: () => true,
+    chatOwners: new Map([['s1', 'a']]),
+    groupOwners: new Map(),
+    live: new Map(),
+  })
+  for (const listener of h.ctx.listeners.get('session/event')) {
+    listener({ id: 's1' }, { type: 'turn/start', data: { turn: 2 } })
+    listener({ id: 's1' }, { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } })
+  }
+  await h.ctx.dispose()
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')).turns, {})
+})
+
 for (const [name, bytes] of [['truncated JSON', '{"turns":{"s1":{"botId":'], ['not an object', '[1,2]'], ['garbage', 'xx\u0000yy']]) {
   test(`corrupt file (${name}) is kept aside, warned once, nothing delivered (2)`, async t => {
     const home = dirOf(t)

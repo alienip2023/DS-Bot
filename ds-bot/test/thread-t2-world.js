@@ -46,7 +46,7 @@ export function threadWorld({ home: givenHome, services } = {}) {
     async list() { return { items: [] } },
     async cancel() { return { accepted: true } },
   }
-  ctx.sessions = { flush: async (session) => { flushes.push(session?.id) } }
+  ctx.sessions = { get: id => agents.get(id)?.session, flush: async (session) => { flushes.push(session?.id); return true } }
   ctx.sessionTitle = { rename: async (session, title) => { titles.push({ sessionId: session?.id, title }) } }
   const workspace = { id: 'ws-1', path: join(tmpdir(), 'ds-bot-t2-team') }
   ctx.workspaceRegistry = {

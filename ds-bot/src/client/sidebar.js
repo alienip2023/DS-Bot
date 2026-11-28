@@ -3,16 +3,17 @@ import { createPortal } from 'react-dom'
 import { memo } from './memo.js'
 import { FishLogo } from './dsh-primitives.js'
 import { inkFill } from './inks.js'
-import { homeOf, isMainOf } from './sources.js'
+import { homeOf, isMainOf, sectionCollapsed } from './sources.js'
 import { currentPart, previewOf, relativeShort } from './text.js'
 import { PlusIcon, SearchIcon, SidebarIcon, GaugeIcon, ClockIcon, GearIcon, PinMarkIcon, ConnectorIcon, PlugIcon, SwitchIcon, CloudDownloadIcon, SignInIcon, SignOutIcon, SlidersIcon, ChevronRightIcon, DotsIcon, FolderIcon } from './icons.js'
 import { lookOf, MAIN_LOOK } from './characters.js'
-import { botState, BotMark, BotAvatar, RoomAvatar } from './mark.js'
+import { botState, lastTurnFailed, latestTurnOf, BotMark, BotAvatar, RoomAvatar } from './mark.js'
+export { botPendingOf } from './mark.js'
 import { AgentBadge } from './agent-badge.js'
 import { SidebarTaskPill, taskCountsOf } from './bot-tasks.js'
 import { reducedMotion } from './activity-row.js'
 import { Shimmer, workPhrase } from './cells.js'
-import { SPRING_GLIDE, SPRING_POP, SPRING_SHAPE, SPRING_TAP, stepMenuFocus, useLinger, useViewport, viewBottom } from './motion.js'
+import { SPRING_GLIDE, SPRING_POP, SPRING_SHAPE, SPRING_SLIDE, SPRING_TAP, liveSprings, stepMenuFocus, useLinger, useViewport, viewBottom } from './motion.js'
 import { joinedMachineLabel } from './joined-machine-label.js'
 import { hostText, t } from './i18n.js'
 import { clientErrors } from './diagnostics.js'
@@ -20,10 +21,11 @@ import { showsDshRow } from './dsh-offer.js'
 import { quietly } from './diagnostics.js'
 import { frameLayout, dragColumn, RAIL_WIDTH, FALLBACK_SIDEBAR_WIDTH, userSidebarToggle } from './frame-layout.js'
 import { chatRoom, dshCollapsed } from './frame-watch.js'
+import { ESCAPE_PRIORITY, useEscape } from './overlay-hooks.js'
+import { InboxEntry, waitLineOf, waitsOf } from './inbox.js'
 import { botRowClick, remoteHomeOf } from './row-actions.js'
 import { threadsStore } from './threads.js'
 import { sortThreads, canCreateThread } from './thread-target.js'
-import { useEscape } from './overlay-hooks.js'
 
 // Maximum retries to collapse DSH's own sidebar before stopping, so a shell that
 // stays uncollapsed never spins data-bt-collapsing and re-renders forever (#2050).
@@ -91,33 +93,10 @@ function bindPointerMenu(openMenu, menu) {
 const useFalse = () => false
 const useEmptyArrayJson = () => '[]'
 const useNullJson = () => 'null'
-const useEmptySectionWork = () => '0|0'
 
-// Whether an approval waits for the user: for a Bot, in its own chat; for a group,
-// from any of its members in that group (both DSH tool approvals and computer-use asks).
-const useApproval = (useWork, useComputer, matchApproval, matchAsk) => {
-  const useReadWork = useWork ?? useFalse
-  const useReadComputer = useComputer ?? useFalse
-  const tool = useReadWork(work => (work.approvals ?? []).some(matchApproval))
-  const app = useReadComputer(comp => Object.values(comp?.asks ?? {}).some(matchAsk))
-  return tool || app
-}
-
-const hasPendingRequest = list => Array.isArray(list) && list.some(entry => entry?.status === 'pending')
-
-// Pending user-action cards stored on the roster for one Bot's DM:
-// skill / AGENTS.md learning proposals, secret / connector / mail approvals,
-// and ask_user / show_view cards.
-export function botPendingOf(roster, bot) {
-  const id = bot.id
-  const part = currentPart(bot)
-  const learning = (roster?.learning?.[id]?.length ?? 0) > 0
-  const cardApproval = hasPendingRequest(roster?.secretRequests?.[id])
-    || hasPendingRequest(roster?.connectorRequests?.[id])
-    || hasPendingRequest(roster?.mailRequests?.[id])
-  const question = roster?.questions?.[part] !== undefined || roster?.views?.[part] !== undefined
-  return { learning, cardApproval, question }
-}
+// What waits for the user in a Bot's own chat or a group chat comes from the host's
+// one list (inbox.js), the same one the inbox page, the phone and the notifications
+// read: a group's cards mark the group's row, not the member's own chat (#1623).
 
 // Work running in group Sessions, as "botId|tool" keys so a row redraws only when it
 // changes: the groups one Bot works in, or the members at work in one group.
@@ -234,20 +213,14 @@ const sameBotRow = (a, b) => a.bot === b.bot
   && a.useSessionRetainInfo === b.useSessionRetainInfo
   && a.useActivity === b.useActivity
   && a.useWork === b.useWork
-  && a.useComputer === b.useComputer
   && a.roster.mainBotId === b.roster.mainBotId
   && a.roster.mainBotIds === b.roster.mainBotIds
   && a.roster.byId === b.roster.byId
   && a.roster.roomsById === b.roster.roomsById
   && a.roster.exchangeTurns === b.roster.exchangeTurns
-  && a.roster.learning === b.roster.learning
-  && a.roster.secretRequests === b.roster.secretRequests
-  && a.roster.connectorRequests === b.roster.connectorRequests
-  && a.roster.mailRequests === b.roster.mailRequests
-  && a.roster.questions === b.roster.questions
-  && a.roster.views === b.roster.views
+  && a.roster.inbox === b.roster.inbox
 
-const BotRow = memo(function BotRow({ bot, roster, actions, useSessions, useBotCompletions, useSessionStatus, useSessionRetainInfo, useActivity, useWork, useComputer, wide, marked, onDragStart }) {
+const BotRow = memo(function BotRow({ bot, roster, actions, useSessions, useBotCompletions, useSessionStatus, useSessionRetainInfo, useActivity, useWork, wide, marked, onDragStart }) {
   const id = bot.id
   const part = currentPart(bot)
   const preview = useSessions(list => previewOf(list, part, roster.exchangeTurns[part]))
@@ -256,38 +229,36 @@ const BotRow = memo(function BotRow({ bot, roster, actions, useSessions, useBotC
   const active = useSessionRetainInfo(part, info => (info?.retainedBy?.mainView ?? 0) > 0)
   const pendingInteraction = useSessionStatus(map => map.get(part)?.pendingInteraction !== undefined)
   const unread = pendingInteraction || completionUnread || (marked && !active)
+  const finished = completionUnread && !active
   useMarkedUnread(id, active, marked, actions)
   const main = isMainOf(roster, id)
   const tile = roster.mainBotId === id
-  const fgApproval = useApproval(
-    useWork,
-    useComputer,
-    entry => entry.roomId === undefined && entry.botId === id && entry.taskId === undefined && entry.answerable !== false,
-    ask => ask.roomId === undefined && ask.botId === id,
-  )
-  const useReadBgWork = useWork ?? useFalse
-  const bgApproval = useReadBgWork(work => (work.approvals ?? []).some(entry => entry.roomId === undefined && entry.botId === id && entry.taskId !== undefined && entry.answerable !== false))
-  const pending = botPendingOf(roster, bot)
-  const blockingApproval = fgApproval || pending.cardApproval
-  const nonBlockingApproval = bgApproval || pending.learning
-  const approval = blockingApproval || nonBlockingApproval
-  const alert = approval || pending.question
+  // What stops this chat (an approval, a card, a hand-off) overrides what it is doing;
+  // a background task's approval, a proposal or a fix shows only while it is idle.
+  const asks = waitsOf(roster, { botId: id })
+  const alert = asks.any
   const doing = useActivity(map => map[id])
   // Work in a group runs in a Session of its own, so the Bot's chat stays idle meanwhile.
   const groups = useGroupWork(useWork, rooms => Object.entries(rooms).flatMap(([roomId, entries]) => entries.filter(entry => entry.botId === id).map(entry => ({ id: roomId, ...doingOf(entry) }))))
   const away = !running && groups.length > 0
   // Group approvals live on the group's row and header island, not on the Bot's
-  // own DM avatar (#1623). Blocking DM approvals/questions override 'working' so
+  // own DM avatar (#1623). Blocking DM approvals/questions/handoffs override 'working' so
   // a running turn paused on a card still wears the alert mark; any remaining
   // 'alert' activity comes from a group, background-task, or unanswerable approval
   // and is stripped while the foreground turn runs.
-  const blockingAlert = blockingApproval || pending.question
-  const dmDoing = blockingAlert ? 'alert' : doing === 'alert' ? undefined : doing
-  const state = botState(running || away, dmDoing, alert)
-  const waitLine = blockingApproval ? t('Waiting for your approval') : pending.question ? t('Waiting for your answer') : null
-  const deferredWaitLine = nonBlockingApproval ? t('Waiting for your approval') : null
+  const taskCounts = taskCountsOf({ bot })
+  const failed = lastTurnFailed(bot, useSessions(list => latestTurnOf(list, part)))
+  const dmDoing = asks.blocking ? 'alert' : doing === 'alert' ? undefined : doing
+  const markAlert = Boolean(asks.blocking) || (asks.deferred !== undefined && asks.deferred.kind !== 'blocked') || taskCounts.waitingApproval > 0
+  const state = botState(running || away, dmDoing, markAlert, {
+    failed,
+    background: taskCounts.active > 0,
+    replied: finished,
+  })
+  const waitLine = waitLineOf(asks.blocking)
+  const deferredWaitLine = waitLineOf(asks.deferred)
   // A Bot running in its own chat previews what it is doing, like a group's row.
-  const runningLine = running && doing && doing !== 'alert' ? doingLine(doing) : null
+  const runningLine = running && !asks.blocking ? doingLine(dmDoing ?? 'working') : null
   const awayLine = away ? workLine(roster.roomsById[groups[0].id]?.name ?? t('a group chat'), groups[0], groups.length - 1) : null
   const useReadWaits = useWork ?? useNullJson
   const waitsRaw = useReadWaits(work => JSON.stringify(work.waiting?.[id] ?? null))
@@ -328,7 +299,6 @@ const BotRow = memo(function BotRow({ bot, roster, actions, useSessions, useBotC
     : peer
       ? [bot.worker?.hostname || bot.worker?.nodeId || '', bot.worker?.online === false ? '离线' : '在线'].filter(Boolean).join(' · ')
       : ''
-  const taskCounts = taskCountsOf({ bot })
   const openTasks = () => { actions.openSession(id); actions.openTaskDeck?.(id) }
   const label = [bot.name, machine, main ? t('Main Bot') : '', pinned ? t('Pinned') : '', running || away ? t('Working') : '', taskCounts.active > 0 ? t('{count} background tasks running', { count: taskCounts.active }) : '', waitsFor, waitLine || deferredWaitLine || '', unread ? t('Unread activity') : ''].filter(Boolean).join(', ')
   if (tile && wide) {
@@ -337,6 +307,7 @@ const BotRow = memo(function BotRow({ bot, roster, actions, useSessions, useBotC
       'data-bot-id': id, title: waitLine || deferredWaitLine || preview || bot.name, onClick: () => actions.openSession(id),
     },
     h(BotAvatar, { bot, size: 60, state, main: true }),
+    alert && !active && state !== 'alert' ? h('span', { className: 'bt-dot bt-dot-wait', 'aria-hidden': true }) : null,
     h('span', { className: 'bt-tile-name' }, bot.name),
     bot.role ? h('span', { className: 'bt-chip' }, bot.role) : null,
     h('button', {
@@ -405,10 +376,10 @@ const sameRoomRow = (a, b) => a.room === b.room
   && a.useSessionStatus === b.useSessionStatus
   && a.useSessionRetainInfo === b.useSessionRetainInfo
   && a.useWork === b.useWork
-  && a.useComputer === b.useComputer
   && a.roster.byId === b.roster.byId
+  && a.roster.inbox === b.roster.inbox
 
-const RoomRow = memo(function RoomRow({ room, roster, actions, useSessions, useSessionStatus, useSessionRetainInfo, useWork, useComputer, wide, marked, onDragStart }) {
+const RoomRow = memo(function RoomRow({ room, roster, actions, useSessions, useSessionStatus, useSessionRetainInfo, useWork, wide, marked, onDragStart }) {
   const id = room.id
   // The group's own Session is a chain of parts; the row shows the current one.
   const sessionId = room.sessionId ?? id
@@ -417,7 +388,10 @@ const RoomRow = memo(function RoomRow({ room, roster, actions, useSessions, useS
   const active = useSessionRetainInfo(sessionId, info => (info?.retainedBy?.mainView ?? 0) > 0)
   const unread = useSessionStatus(map => map.get(sessionId)?.completionUnread === true) || (marked && !active)
   useMarkedUnread(id, active, marked, actions)
-  const approval = useApproval(useWork, useComputer, entry => entry.roomId === id && entry.answerable !== false, ask => ask.roomId === id)
+  // Anything a member asked here, the group's goal, a relay pause.
+  const waits = waitsOf(roster, { roomId: id })
+  const approval = waits.any
+  const waitLine = waitLineOf(waits.blocking ?? waits.deferred)
   const members = useGroupWork(useWork, rooms => (rooms[id] ?? []).filter(entry => entry.botId !== undefined).map(entry => ({ id: entry.botId, ...doingOf(entry) })))
   const first = roster.byId[members[0]?.id]
   const workingLine = first ? workLine(first.name, members[0], members.length - 1) : null
@@ -425,7 +399,7 @@ const RoomRow = memo(function RoomRow({ room, roster, actions, useSessions, useS
   const pinned = room.pinned === true
   const taskCounts = taskCountsOf({ room, roster })
   const openTasks = () => { actions.openSession(id); actions.openTaskDeck?.(id) }
-  const label = [room.name, pinned ? t('Pinned') : '', members.length > 0 ? t('Working') : '', taskCounts.active > 0 ? t('{count} background tasks running', { count: taskCounts.active }) : '', approval ? t('Waiting for your approval') : ''].filter(Boolean).join(', ')
+  const label = [room.name, pinned ? t('Pinned') : '', members.length > 0 ? t('Working') : '', taskCounts.active > 0 ? t('{count} background tasks running', { count: taskCounts.active }) : '', waitLine ?? ''].filter(Boolean).join(', ')
   return h('button', {
     type: 'button', className: 'bt-row', 'aria-label': label, 'aria-current': active ? 'page' : undefined,
     'data-room-id': id, title: wide ? undefined : room.name,
@@ -438,7 +412,7 @@ const RoomRow = memo(function RoomRow({ room, roster, actions, useSessions, useS
   pinned && !wide ? h(PinMark) : null,
   wide ? h('span', { className: 'bt-row-body' },
     h('span', { className: 'bt-row-name' }, h('span', { className: 'bt-row-title' }, room.name), pinned ? h(PinMark) : null, h(SidebarTaskPill, { active: taskCounts.active, waitingApproval: taskCounts.waitingApproval, onClick: openTasks })),
-    approval ? h('span', { className: 'bt-row-preview bt-row-preview-wait' }, t('Waiting for your approval'))
+    approval ? h('span', { className: 'bt-row-preview bt-row-preview-wait' }, waitLine)
       : workingLine ? h('span', { className: 'bt-row-preview' }, workingLine)
         : preview ? h('span', { className: 'bt-row-preview' }, preview) : null) : null,
   wide && approval && !active ? h('span', { className: 'bt-unread bt-unread-wait', 'aria-hidden': true })
@@ -563,8 +537,14 @@ function renderSidebarEntry(entry, rowProps, markedUnread, onDragStart) {
       : h(AgentRow, { key: entry.item.id, ...rowProps, agent: entry.item, marked: markedUnread[entry.item.id] === true, onDragStart })
 }
 
+const entrySessionIds = entry => (
+  entry.kind === 'bot' ? [currentPart(entry.item)]
+    : entry.kind === 'room' ? [entry.item.sessionId ?? entry.item.id]
+      : entry.item.sessions ?? []
+)
+
 function SectionBlock({ section, entries, rowProps, markedUnread, renaming, dropTarget, onDragStart, onDragOverSec, onDropSec }) {
-  const { roster, actions, useSessions, useBotCompletions, useSessionStatus, useWork, useComputer, wide } = rowProps
+  const { roster, actions, useSessions, useBotCompletions, useSessionStatus, useWork, wide } = rowProps
   const input = useRef(null)
   useLayoutEffect(() => {
     if (!renaming) return
@@ -587,12 +567,7 @@ function SectionBlock({ section, entries, rowProps, markedUnread, renaming, drop
     }
     return list
   }, [visibleEntries, roster.byId])
-  const sessionIds = useMemo(() => entries.flatMap(entry => (
-    entry.kind === 'bot' ? [currentPart(entry.item)]
-      : entry.kind === 'room' ? [entry.item.sessionId ?? entry.item.id]
-        : entry.item.sessions ?? []
-  )), [entries])
-  const botParts = useMemo(() => new Set(entries.filter(entry => entry.kind === 'bot').map(entry => currentPart(entry.item))), [entries])
+  const sessionIds = useMemo(() => entries.flatMap(entrySessionIds), [entries])
   const activeSession = useSessions(list => sessionIds.find(id => (list.byId[id]?.retainedBy?.mainView ?? 0) > 0) ?? '')
   const activeEntry = useMemo(() => {
     if (activeSession === '') return undefined
@@ -602,42 +577,35 @@ function SectionBlock({ section, entries, rowProps, markedUnread, renaming, drop
           : (entry.item.sessions ?? []).includes(activeSession)
     ))
   }, [entries, activeSession])
-  const statusBits = useSessionStatus(map => JSON.stringify(sessionIds.map(id => [
-    id,
-    map.get(id)?.running === true ? 1 : 0,
-    (!botParts.has(id) && map.get(id)?.completionUnread === true) || map.get(id)?.pendingInteraction !== undefined ? 1 : 0,
-  ])))
   const shownEntries = useMemo(() => entries.filter(entry => (
     !entry.item.hidden || entry === activeEntry || (entry.kind === 'bot' && isMainOf(roster, entry.item.id))
   )), [entries, activeEntry, roster])
-  const useReadSectionWork = useWork ?? useEmptySectionWork
-  const workBits = useReadSectionWork(work => {
+  const shownSessionIds = useMemo(() => shownEntries.flatMap(entrySessionIds), [shownEntries])
+  const shownBotParts = useMemo(
+    () => new Set(shownEntries.filter(entry => entry.kind === 'bot').map(entry => currentPart(entry.item))),
+    [shownEntries],
+  )
+  const statusBits = useSessionStatus(map => JSON.stringify(shownSessionIds.map(id => [
+    id,
+    map.get(id)?.running === true ? 1 : 0,
+    (!shownBotParts.has(id) && map.get(id)?.completionUnread === true) || map.get(id)?.pendingInteraction !== undefined ? 1 : 0,
+  ])))
+  const useReadSectionWork = useWork ?? useFalse
+  const hasRoomWork = useReadSectionWork((work) => {
     const botIds = new Set(shownEntries.filter(e => e.kind === 'bot').map(e => e.item.id))
     const roomIds = new Set(shownEntries.filter(e => e.kind === 'room').map(e => e.item.id))
-    const approval = (work.approvals ?? []).some(a => a.answerable !== false && ((a.roomId === undefined && botIds.has(a.botId)) || roomIds.has(a.roomId)))
-    const roomWorking = Object.entries(work.rooms ?? {}).some(([rId, list]) => (
+    return Object.entries(work.rooms ?? {}).some(([rId, list]) => (
       (roomIds.has(rId) && list.some(e => e.botId !== undefined)) || list.some(e => botIds.has(e.botId))
     ))
-    return `${approval ? 1 : 0}|${roomWorking ? 1 : 0}`
-  })
-  const useReadSectionComputer = useComputer ?? useFalse
-  const hasComputerAsk = useReadSectionComputer(comp => {
-    const botIds = new Set(shownEntries.filter(e => e.kind === 'bot').map(e => e.item.id))
-    const roomIds = new Set(shownEntries.filter(e => e.kind === 'room').map(e => e.item.id))
-    return Object.values(comp?.asks ?? {}).some(ask => (ask.roomId === undefined && botIds.has(ask.botId)) || roomIds.has(ask.roomId))
   })
   const parsedStatuses = JSON.parse(statusBits)
-  const [hasApproval, hasRoomWork] = workBits.split('|').map(v => v === '1')
-  const hasPendingCard = shownEntries.some((entry) => {
-    if (entry.kind !== 'bot') return false
-    const pending = botPendingOf(roster, entry.item)
-    return pending.learning || pending.cardApproval || pending.question
-  })
-  const hasAlert = hasPendingCard || hasApproval || hasComputerAsk
+  const hasAlert = shownEntries.some(entry => (entry.kind === 'bot' || entry.kind === 'room')
+    && waitsOf(roster, entry.kind === 'bot' ? { botId: entry.item.id } : { roomId: entry.item.id }).any)
   const hasWorking = hasRoomWork || parsedStatuses.some(([, run]) => run === 1)
-  const hasBotUnread = useBotCompletions(unread => [...botParts].some(id => id !== activeSession && unread[id] === true))
+  const useReadSectionBotCompletions = useBotCompletions ?? useFalse
+  const hasBotUnread = useReadSectionBotCompletions(unread => [...shownBotParts].some(id => id !== activeSession && unread[id] === true))
   const hasUnread = hasBotUnread || parsedStatuses.some(([id, , unread]) => unread === 1 && id !== activeSession)
-    || entries.some(entry => markedUnread[entry.item.id] === true && entry !== activeEntry)
+    || shownEntries.some(entry => markedUnread[entry.item.id] === true && entry !== activeEntry)
   const statusKind = hasAlert ? 'alert' : hasWorking ? 'working' : hasUnread ? 'unread' : null
   const toggle = () => {
     void Promise.resolve(actions.saveSection({ id: section.id, collapsed: !section.collapsed })).catch(error => actions.reportError(error, 'section'))
@@ -760,8 +728,8 @@ function useListGlide(listRef, layout, key) {
 // collapsed sidebar: the open column or the avatar rail push the conversation
 // over, the drawer floats above it. Its right edge drags the open width, and
 // down to the rail.
-function LeftColumn({ mode, width, onGrip, leaving, entering, children }) {
-  return createPortal(h('div', { className: 'bt-leftcol', 'data-left': mode, 'data-entering': entering || undefined, 'data-leaving': leaving || undefined, 'aria-hidden': leaving || undefined, style: { width: `${width}px` } },
+function LeftColumn({ columnRef, mode, width, onGrip, leaving, children }) {
+  return createPortal(h('div', { ref: columnRef, className: 'bt-leftcol', 'data-left': mode, 'data-leaving': leaving || undefined, 'aria-hidden': leaving || undefined, style: { width: `${width}px` } },
     children,
     h('div', { className: 'bt-leftcol-grip', role: 'separator', 'aria-orientation': 'vertical', 'aria-label': t('Resize sidebar'), title: t('Resize sidebar'), onPointerDown: onGrip })), document.body)
 }
@@ -770,13 +738,13 @@ function LeftColumn({ mode, width, onGrip, leaving, entering, children }) {
 // Windows title bar it takes the shell's own place in the title band; elsewhere
 // it shows only while the column is hidden, since the column's own top row
 // carries it otherwise.
-function TitleToggle({ hidden, onToggle }) {
+function TitleToggle({ hidden, mode, onToggle }) {
   if (typeof document === 'undefined') return null
   const titlebar = document.documentElement.hasAttribute('data-windows-titlebar')
   if (!titlebar && !hidden) return null
   const label = t(hidden ? 'Expand sidebar' : 'Collapse sidebar')
   return createPortal(h('button', {
-    type: 'button', className: titlebar ? 'bt-title-toggle' : 'bt-round bt-title-toggle', 'aria-label': label, title: label, onClick: onToggle,
+    type: 'button', className: titlebar ? 'bt-title-toggle' : 'bt-round bt-title-toggle', 'data-left': mode, 'aria-label': label, title: label, onClick: onToggle,
   }, h(SidebarIcon)), document.body)
 }
 
@@ -811,6 +779,8 @@ export function TeamSidebar(props) {
   const panelYield = useUi(value => value.panelYield === true)
   const bootFailed = useUi(value => value.bootFailed === true)
   const renameSection = useUi(value => value.renameSection)
+  const sectionFolds = useUi(value => value.sectionFolds)
+  const inboxOpen = useUi(value => value.inbox === true)
   props.useRegistry(value => value)
   const frameSnap = props.useFrame ? props.useFrame(value => value) : { viewport: typeof window === 'undefined' ? 0 : window.innerWidth, sidebarWidth: FALLBACK_SIDEBAR_WIDTH, collapsedWidth: 0 }
   const pref = props.useSidebarPref ? props.useSidebarPref(value => value) : 'open'
@@ -819,14 +789,16 @@ export function TeamSidebar(props) {
     pref, drawer: leftDrawer,
     panel: details ? { view, yielded: panelYield } : null,
   })
-  // A drag of the column's edge shows where it would land, live.
+  // A drag of the column's edge shows where it would land, live; an explicit
+  // hide takes precedence so toggling the sidebar mid-drag aborts the drag.
   const [drag, setDrag] = useState(null)
-  const mode = drag?.left ?? layout.left
-  // A hidden column stays mounted for its slide out; `shown` is the mode it last had.
-  const [held, leaving] = useLinger(mode === 'hidden' ? null : mode, SPRING_SHAPE.duration)
-  const shown = held ?? mode
-  const firstColumn = useRef(true)
-  useLayoutEffect(() => { if (shown === 'hidden') firstColumn.current = false }, [shown])
+  const mode = layout.left === 'hidden' ? 'hidden' : (drag?.left ?? layout.left)
+  // A hidden column stays mounted until the slide spring reaches rest; `shown` is
+  // the last visible mode it slides out from.
+  const leftColRef = useRef(null)
+  const [heldMode, setHeldMode] = useState(mode === 'hidden' ? null : mode)
+  const shown = mode !== 'hidden' ? mode : (heldMode ?? 'hidden')
+  const leaving = mode === 'hidden' && heldMode !== null
   const wideContent = shown !== 'rail'
   const updated = useSessions(list => {
     const stamps = {}
@@ -855,7 +827,13 @@ export function TeamSidebar(props) {
     }
     return [...byNode.entries()].sort(([a], [b]) => a.localeCompare(b))
   }, [roster])
-  const sections = roster.sections ?? []
+  const sections = useMemo(() => {
+    const sections = roster.sections ?? []
+    return sectionFolds ? sections.map(section => {
+      const collapsed = sectionCollapsed(section, sectionFolds)
+      return collapsed === section.collapsed ? section : { ...section, collapsed }
+    }) : sections
+  }, [roster.sections, sectionFolds])
   const sectionSet = useMemo(() => new Set(sections.map(sec => sec.id)), [sections])
   const ungrouped = useMemo(
     () => order.filter(entry => !entry.item.sectionId || !sectionSet.has(entry.item.sectionId)),
@@ -892,11 +870,6 @@ export function TeamSidebar(props) {
       void Promise.resolve(actions.saveSection({ id: secId, collapsed: false })).catch(() => {})
     }
   }
-  const createNewSection = () => {
-    void Promise.resolve(actions.saveSection({}))
-      .then((sec) => { if (sec?.id) actions.beginSectionRename(sec.id) })
-      .catch(error => actions.reportError(error, 'section'))
-  }
 
   // Our column pushes the conversation over by what it takes beyond the shell's
   // collapsed track; a drawer floats over the rail's place, so it pushes as much
@@ -904,11 +877,198 @@ export function TeamSidebar(props) {
   const openWidth = drag?.width ?? frameSnap.sidebarWidth
   const ourWidth = shown === 'rail' ? RAIL_WIDTH : openWidth
   const pushed = mode === 'open' ? openWidth : mode === 'hidden' ? 0 : RAIL_WIDTH
+  const collapsedWidth = frameSnap.collapsedWidth ?? 0
+  const targetMargin = Math.max(0, pushed - collapsedWidth)
+  const targetSlide = mode === 'hidden' ? 0 : (mode === 'rail' ? RAIL_WIDTH : openWidth)
+  const settleTimer = useRef(0)
+  const springTimer = useRef(0)
+  const activeDrag = useRef(null)
+  const dragRef = useRef(drag)
+  dragRef.current = drag
+  const collapsedWidthRef = useRef(collapsedWidth)
+  collapsedWidthRef.current = collapsedWidth
+  const modeRef = useRef(mode)
+  modeRef.current = mode
+  // One critically damped spring drives .bt-leftcol's transform, _centerCol's
+  // left margin, and any open .bt-pane in the exact same animation frame commit.
+  // Keeping all three on the same frame prevents the compositor thread from
+  // running ahead of main-thread layout (which previously detached the scrollbar
+  // and painted the transparent macOS sidebar over the chat) and lets mid-flight
+  // reversals turn smoothly with preserved velocity.
+  const slideRef = useRef(null)
+  if (slideRef.current === null) {
+    const snapPx = (value) => {
+      const dpr = (typeof window !== 'undefined' && Number(window.devicePixelRatio) > 0) ? window.devicePixelRatio : 1
+      return Math.round(value * dpr) / dpr
+    }
+    const state = {
+      initialized: false,
+      prevHidden: false,
+      prevViewport: 0,
+      docked: shown !== 'drawer',
+      collapsedWidth,
+      width: ourWidth,
+      finalMargin: targetMargin,
+      finalPushed: pushed,
+      activeCols: [],
+      activePanes: [],
+      snapPx,
+      clearInline(restorePanes) {
+        for (const col of state.activeCols) col.style.removeProperty('margin-left')
+        state.activeCols = []
+        for (const pane of state.activePanes) {
+          if (restorePanes && pane.isConnected) pane.style.left = `${state.finalPushed}px`
+        }
+        state.activePanes = []
+      },
+      settle() {
+        state.springs.stop()
+        if (typeof document !== 'undefined') chatRoom.setLeft(state.finalMargin)
+        state.clearInline(true)
+        const col = leftColRef.current
+        if (col) {
+          delete col.dataset.sliding
+          col.style.transform = modeRef.current === 'hidden' ? `translate3d(${-state.width}px,0,0)` : ''
+        }
+        state.springs.seed({
+          slide: modeRef.current === 'hidden' ? 0 : state.width,
+          margin: state.finalMargin,
+          pane: state.finalPushed,
+        })
+      },
+      stop(clearDom) {
+        state.springs.stop()
+        if (!clearDom) return
+        state.clearInline(false)
+        const col = leftColRef.current
+        if (col) {
+          delete col.dataset.sliding
+          col.style.transform = ''
+        }
+      },
+      springs: null,
+    }
+    state.springs = liveSprings((values, moving) => {
+      const col = leftColRef.current
+      const width = state.width
+      if (moving) {
+        const slide = Math.max(0, Math.min(width, snapPx(values.slide)))
+        // When docked, derive margin directly from slide so a host with a non-zero
+        // collapsed track (e.g. 56px) stays flush with the column's right edge.
+        const margin = state.docked
+          ? Math.max(0, snapPx(slide - state.collapsedWidth))
+          : Math.max(0, snapPx(values.margin))
+        const paneLeft = state.docked ? slide : Math.max(0, snapPx(values.pane))
+        if (col) {
+          col.dataset.sliding = ''
+          col.style.transform = `translate3d(${Math.min(0, slide - width)}px,0,0)`
+        }
+        if (state.activeCols.length > 0) {
+          for (const center of state.activeCols) center.style.setProperty('margin-left', `${margin}px`, 'important')
+        } else if (typeof document !== 'undefined') {
+          chatRoom.setLeft(margin)
+        }
+        for (const pane of state.activePanes) pane.style.left = `${paneLeft}px`
+        return
+      }
+      if (typeof document !== 'undefined') chatRoom.setLeft(state.finalMargin)
+      state.clearInline(true)
+      if (col) {
+        delete col.dataset.sliding
+        // Keep the column parked off-screen until React unmounts it on hide.
+        col.style.transform = modeRef.current === 'hidden' ? `translate3d(${-width}px,0,0)` : ''
+      }
+      if (modeRef.current === 'hidden') setHeldMode(null)
+    })
+    slideRef.current = state
+  }
   useLayoutEffect(() => {
     if (typeof document === 'undefined') return
-    chatRoom.setLeft(Math.max(0, pushed - (frameSnap.collapsedWidth ?? 0)))
-  }, [pushed, frameSnap.collapsedWidth])
-  useEffect(() => () => { if (typeof document !== 'undefined') chatRoom.setLeft(null) }, [])
+    const state = slideRef.current
+    const current = activeDrag.current
+    let abortedDrag = false
+    if (current !== null && (mode === 'hidden' || (current.settling && (mode !== current.landedMode || pushed !== current.landedPushed)))) {
+      current.cancel(false)
+      abortedDrag = true
+    }
+    if (mode !== 'hidden') setHeldMode(mode)
+    const docked = shown !== 'drawer'
+    if (activeDrag.current !== null) {
+      state.springs.seed({ slide: targetSlide, margin: targetMargin, pane: pushed })
+      state.docked = docked
+      state.collapsedWidth = collapsedWidth
+      state.width = ourWidth
+      state.finalMargin = targetMargin
+      state.finalPushed = pushed
+      state.prevHidden = mode === 'hidden'
+      state.prevViewport = frameSnap.viewport
+      chatRoom.setLeft(targetMargin)
+      return
+    }
+    const isHidden = mode === 'hidden'
+    const col = leftColRef.current
+    const curves = { slide: SPRING_SLIDE, margin: SPRING_SLIDE, pane: SPRING_SLIDE }
+    if (!state.initialized) {
+      state.initialized = true
+      state.prevHidden = isHidden
+      state.prevViewport = frameSnap.viewport
+      state.docked = docked
+      state.collapsedWidth = collapsedWidth
+      state.width = ourWidth
+      state.finalMargin = targetMargin
+      state.finalPushed = pushed
+      state.springs.set({ slide: targetSlide, margin: targetMargin, pane: pushed }, curves, true)
+      return
+    }
+    const hiddenChanged = isHidden !== state.prevHidden
+    const viewportChanged = frameSnap.viewport !== state.prevViewport
+    state.prevHidden = isHidden
+    state.prevViewport = frameSnap.viewport
+    state.docked = docked
+    state.collapsedWidth = collapsedWidth
+    state.width = ourWidth
+    state.finalMargin = targetMargin
+    state.finalPushed = pushed
+    const inFlight = state.springs.isRunning()
+    const canAnimate = typeof requestAnimationFrame === 'function' && !reducedMotion() && !viewportChanged
+    if (abortedDrag && col) {
+      // Reconcile any direct DOM width written by startDrag before the slide starts.
+      col.style.width = `${ourWidth}px`
+    }
+    if (!canAnimate || (!hiddenChanged && !inFlight)) {
+      state.springs.set({ slide: targetSlide, margin: targetMargin, pane: pushed }, curves, true)
+      return
+    }
+    // If an active or settling drag was aborted by hiding, seed from the reconciled
+    // column width so .bt-leftcol width, state.width, and _centerCol margin match 1:1.
+    if (abortedDrag) {
+      const startPushed = docked ? ourWidth : RAIL_WIDTH
+      const startMargin = Math.max(0, startPushed - collapsedWidth)
+      state.springs.seed({ slide: ourWidth, margin: startMargin, pane: startPushed })
+      chatRoom.setLeft(startMargin)
+    }
+    state.activeCols = chatRoom.columns()
+    state.activePanes = [...document.querySelectorAll('.bt-pane')]
+    // Keep open panes pinned at the spring's current edge before first paint, since
+    // Overlays already updated their React `left` prop to the final target in this commit.
+    const liveNow = state.springs.current()
+    if (liveNow !== null && state.activePanes.length > 0) {
+      const paneNow = docked
+        ? Math.max(0, Math.min(ourWidth, state.snapPx(liveNow.slide)))
+        : Math.max(0, state.snapPx(liveNow.pane))
+      for (const pane of state.activePanes) pane.style.left = `${paneNow}px`
+    }
+    if (!isHidden && !inFlight && col) {
+      col.dataset.sliding = ''
+      col.style.transform = `translate3d(${-ourWidth}px,0,0)`
+    }
+    state.springs.set({ slide: targetSlide, margin: targetMargin, pane: pushed }, curves, false)
+  }, [mode, shown, ourWidth, pushed, targetMargin, targetSlide, collapsedWidth, frameSnap.viewport])
+  useEffect(() => () => {
+    activeDrag.current?.cancel(false)
+    slideRef.current?.stop(true)
+    if (typeof document !== 'undefined') chatRoom.setLeft(null)
+  }, [])
 
   // The edge drag: live while the pointer moves, the column's new state on release.
   // Per frame the drag writes the column's own inline style and each conversation
@@ -917,17 +1077,11 @@ export function TeamSidebar(props) {
   // when the drag crosses the rail's snap line, and the spring (`data-folding`)
   // rides that switch alone: it comes off when the switch settles, so a drag that
   // keeps going afterwards follows the cursor frame by frame again.
-  const settleTimer = useRef(0)
-  const springTimer = useRef(0)
-  useEffect(() => () => {
-    clearTimeout(settleTimer.current)
-    clearTimeout(springTimer.current)
-  }, [])
   const startDrag = (event) => {
     if (event.button !== 0) return
     event.preventDefault()
-    clearTimeout(settleTimer.current)
-    clearTimeout(springTimer.current)
+    slideRef.current?.settle()
+    activeDrag.current?.cancel(false)
     const grip = event.currentTarget
     const column = grip.parentElement
     // A re-grab can land while a previous spring still stands: the new drag owns
@@ -938,7 +1092,6 @@ export function TeamSidebar(props) {
     const columns = chatRoom.columns()
     for (const col of columns) col.style.setProperty('transition', 'none', 'important')
     const panes = [...document.querySelectorAll('.bt-pane')]
-    const offLeft = frameSnap.collapsedWidth ?? 0
     let last = null
     let liveLeft = mode
     let done = false
@@ -947,49 +1100,70 @@ export function TeamSidebar(props) {
       column.style.width = `${width}px`
       column.style.setProperty('--bt-lc-w', `${width}px`)
       const occupied = at.left === 'open' ? width : RAIL_WIDTH
-      const push = Math.max(0, occupied - offLeft)
+      const push = Math.max(0, occupied - collapsedWidthRef.current)
       for (const col of columns) col.style.setProperty('margin-left', `${push}px`, 'important')
       for (const pane of panes) pane.style.left = `${occupied}px`
     }
     // A snap crossing arms the spring for the switch's glide; the timer takes it
-    // back off once the switch has had its duration.
+    // back off once the switch has had its duration, or immediately if the pointer
+    // keeps resizing the open column past its minimum width.
     let springUntil = 0
     const springOff = () => {
+      if (springTimer.current) { clearTimeout(springTimer.current); springTimer.current = 0 }
       springUntil = 0
       delete column.dataset.folding
       for (const col of columns) col.style.setProperty('transition', 'none', 'important')
     }
     const springOn = () => {
       column.dataset.folding = ''
-      for (const col of columns) col.style.setProperty('transition', `margin-left ${SPRING_SHAPE.duration}ms ${SPRING_SHAPE.easing}`, 'important')
-      springUntil = performance.now() + SPRING_SHAPE.duration
-      clearTimeout(springTimer.current)
-      springTimer.current = setTimeout(springOff, SPRING_SHAPE.duration)
+      for (const col of columns) col.style.setProperty('transition', `margin-left ${SPRING_SLIDE.duration}ms ${SPRING_SLIDE.easing}`, 'important')
+      springUntil = performance.now() + SPRING_SLIDE.duration
+      if (springTimer.current) clearTimeout(springTimer.current)
+      springTimer.current = setTimeout(springOff, SPRING_SLIDE.duration)
     }
     const track = (x) => {
+      const prev = last
       last = dragColumn(x, window.innerWidth)
       if (last.left !== liveLeft) {
         liveLeft = last.left
         if (!reducedMotion()) springOn()
         setDrag(last)
+      } else if (springUntil > 0 && prev !== null && last.left !== 'rail' && last.width !== prev.width) {
+        springOff()
       }
       write(last)
     }
     const onMove = (move) => track(move.clientX)
+    const ends = ['pointerup', 'pointercancel', 'lostpointercapture']
     // The rules and props take the landed geometry back over; while the fold's
     // spring still runs this waits it out so the landing does not snap. The
     // inline `width` stays: it is the landed geometry, and React writes its width
     // prop only when the value changes, so removing it would leave the edge at
     // its CSS fallback (57px on the rail).
-    const finish = () => {
-      clearTimeout(springTimer.current)
-      if (column.isConnected && last !== null) chatRoom.setLeft(Math.max(0, (last.left === 'open' ? last.width : RAIL_WIDTH) - offLeft))
-      for (const col of columns) { col.style.removeProperty('margin-left'); col.style.removeProperty('transition') }
-      column.style.removeProperty('--bt-lc-w')
-      delete column.dataset.folding
-      chatRoom.hold(false)
+    const dragState = {
+      settling: false,
+      landedMode: null,
+      landedPushed: null,
+      cancel(commitLanded) {
+        if (!done) {
+          done = true
+          grip.removeEventListener('pointermove', onMove)
+          for (const name of ends) grip.removeEventListener(name, onEnd)
+          if (dragRef.current !== null) setDrag(null)
+        }
+        if (settleTimer.current) { clearTimeout(settleTimer.current); settleTimer.current = 0 }
+        if (springTimer.current) { clearTimeout(springTimer.current); springTimer.current = 0 }
+        if (activeDrag.current === dragState) activeDrag.current = null
+        if (commitLanded && column.isConnected && !column.hasAttribute('data-leaving') && modeRef.current !== 'hidden' && dragState.landedPushed !== null) {
+          chatRoom.setLeft(Math.max(0, dragState.landedPushed - collapsedWidthRef.current))
+        }
+        for (const col of columns) { col.style.removeProperty('margin-left'); col.style.removeProperty('transition') }
+        column.style.removeProperty('--bt-lc-w')
+        delete column.dataset.folding
+        chatRoom.hold(false)
+      },
     }
-    const ends = ['pointerup', 'pointercancel', 'lostpointercapture']
+    activeDrag.current = dragState
     const onEnd = (end) => {
       if (done) return
       done = true
@@ -997,7 +1171,7 @@ export function TeamSidebar(props) {
       grip.removeEventListener('pointermove', onMove)
       for (const name of ends) grip.removeEventListener(name, onEnd)
       setDrag(null)
-      if (last === null) { finish(); return }
+      if (last === null) { dragState.cancel(false); return }
       // The drag is the latest explicit gesture: it takes back a yielded panel's room.
       actions.setPanelYield?.(false)
       if (last.left === 'rail') { actions.setLeftDrawer?.(false); actions.setSidebarPref?.('rail') }
@@ -1006,8 +1180,11 @@ export function TeamSidebar(props) {
         actions.setSidebarPref?.('open')
         actions.setLeftDrawer?.(last.left === 'drawer')
       }
-      if (springUntil === 0) finish()
-      else settleTimer.current = setTimeout(finish, Math.max(0, springUntil - performance.now()) + 60)
+      dragState.settling = true
+      dragState.landedMode = last.left
+      dragState.landedPushed = last.left === 'open' ? last.width : RAIL_WIDTH
+      if (springUntil === 0) dragState.cancel(true)
+      else settleTimer.current = setTimeout(() => dragState.cancel(true), Math.max(0, springUntil - performance.now()) + 60)
     }
     grip.addEventListener('pointermove', onMove)
     for (const name of ends) grip.addEventListener(name, onEnd)
@@ -1104,9 +1281,14 @@ export function TeamSidebar(props) {
       openAgent: id => navigate(actions.openAgent, id),
       openAgentSession: id => navigate(actions.openAgentSession, id),
       newAgentSession: id => navigate(actions.newAgentSession, id),
+      openInbox: () => {
+        const result = actions.openInbox?.()
+        if (leftDrawerRef.current) actions.setLeftDrawer?.(false)
+        return result
+      },
     }
   }, [actions])
-  const rowProps = { roster, actions: rowActions, useSessions, useUi, useBotCompletions: props.useBotCompletions ?? useFalse, useSessionStatus: props.useSessionStatus, useSessionRetainInfo: props.useSessionRetainInfo, useActivity: props.useActivity, useWork: props.useWork, useComputer: props.useComputer, wide: wideContent }
+  const rowProps = { roster, actions: rowActions, useSessions, useUi, useBotCompletions: props.useBotCompletions ?? useFalse, useSessionStatus: props.useSessionStatus, useSessionRetainInfo: props.useSessionRetainInfo, useActivity: props.useActivity, useWork: props.useWork, wide: wideContent }
   // Typing while the sidebar has focus starts a search.
   const typeToSearch = (event) => {
     if (event.defaultPrevented || event.key.length !== 1 || event.key === ' ' || event.metaKey || event.ctrlKey || event.altKey || event.nativeEvent.isComposing) return
@@ -1138,8 +1320,8 @@ export function TeamSidebar(props) {
     ? h('div', { className: 'bt-side-top' },
         h('span', { className: 'bt-brand' }, h(BrandName)),
         h(UpdateButton, { useUpdate: props.useUpdate, actions }),
-        h('button', { type: 'button', className: 'bt-round', 'aria-label': t('New section'), title: t('New section'), onClick: createNewSection }, h(FolderIcon)),
         h('button', { type: 'button', className: 'bt-round', 'aria-label': t('Search'), title: t('Search'), onClick: () => actions.openPalette() }, h(SearchIcon)),
+        h(InboxEntry, { roster, open: inboxOpen, actions: rowActions }),
         h('button', { type: 'button', className: 'bt-round', 'aria-label': t('New…'), title: t('New…'), onClick: () => actions.openNewChat('new') }, h(PlusIcon)),
         h('button', { type: 'button', className: 'bt-round bt-side-collapse', 'aria-label': t('Collapse sidebar'), title: t('Collapse sidebar'), onClick: onToggle }, h(SidebarIcon)))
     : h('div', { className: 'bt-rail-top' },
@@ -1148,10 +1330,11 @@ export function TeamSidebar(props) {
         main ? h(BotRow, { ...rowProps, bot: main, marked: markedUnread[main.id] === true }) : roster.ready ? null : bootFailed ? h(BootFailed, { actions }) : h('div', { className: 'bt-hint' }, t('Setting up your Main Bot…')),
         h('span', { className: 'bt-rail-sep', 'aria-hidden': true }))
   // The foot stands in for the shell's hidden footer: the account avatar, and on
-  // the rail the new-chat button above it.
+  // the rail the inbox and new-chat buttons above it.
   const foot = wideContent
     ? h('div', { className: 'bt-leftcol-foot' }, h(AccountLauncher, { seat: false, actions }), h(PluginsButton, { actions }))
     : h('div', { className: 'bt-leftcol-foot bt-leftcol-foot-rail' },
+        h(InboxEntry, { roster, open: inboxOpen, rail: true, actions: rowActions }),
         h('button', { type: 'button', className: 'bt-round', 'aria-label': t('New…'), title: t('New…'), onClick: () => actions.openNewChat('new') }, h(PlusIcon)),
         h(AccountLauncher, { seat: false, actions }),
         h(PluginsButton, { actions }))
@@ -1193,9 +1376,10 @@ export function TeamSidebar(props) {
       })),
     ),
     foot)
+  const hideTitleToggle = props.hideTitleToggle === true
   return h(Fragment, null,
-    h(TitleToggle, { hidden: mode === 'hidden', onToggle }),
-    shown === 'hidden' ? null : h(LeftColumn, { mode: shown, width: ourWidth, onGrip: startDrag, leaving, entering: !firstColumn.current }, content))
+    hideTitleToggle ? null : h(TitleToggle, { hidden: mode === 'hidden', mode, onToggle }),
+    shown === 'hidden' ? null : h(LeftColumn, { columnRef: leftColRef, mode: shown, width: ourWidth, onGrip: startDrag, leaving }, content))
 }
 
 // The update button at the sidebar's top right: a cloud while a newer DS Bot —
@@ -1210,16 +1394,15 @@ function UpdateButton({ useUpdate, actions }) {
   const [error, setError] = useState('')
   const [dshError, setDshError] = useState('')
   const button = useRef(null)
+  useEscape(() => { setOpen(false); button.current?.focus() }, open, { priority: ESCAPE_PRIORITY.MENU })
   useEffect(() => {
     if (!open) return undefined
     const onDown = (event) => {
       if (event.target instanceof Element && (event.target.closest('.bt-update-pop') || button.current?.contains(event.target))) return
       setOpen(false)
     }
-    const onKey = (event) => { if (event.key === 'Escape' && !event.isComposing && event.keyCode !== 229) { event.stopPropagation(); setOpen(false); button.current?.focus() } }
     window.addEventListener('mousedown', onDown)
-    window.addEventListener('keydown', onKey, true)
-    return () => { window.removeEventListener('mousedown', onDown); window.removeEventListener('keydown', onKey, true) }
+    return () => { window.removeEventListener('mousedown', onDown) }
   }, [open])
   const phase = update?.phase ?? 'idle'
   const dsh = update?.dsh
@@ -1333,6 +1516,7 @@ export function AccountLauncher({ seat = true, settingsOpen, actions }) {
   const button = useRef(null)
   const menuRef = useRef(null)
   useEffect(() => { if (settingsOpen) setOpen(false) }, [settingsOpen])
+  useEscape(() => { setOpen(false); button.current?.focus() }, open, { priority: ESCAPE_PRIORITY.MENU })
   useEffect(() => {
     if (!open) return undefined
     const onDown = (event) => {
@@ -1340,8 +1524,7 @@ export function AccountLauncher({ seat = true, settingsOpen, actions }) {
       setOpen(false)
     }
     const onKey = (event) => {
-      if (stepMenuFocus(menuRef.current, event, button.current)) return
-      if (event.key === 'Escape' && !event.isComposing && event.keyCode !== 229) { event.stopPropagation(); setOpen(false); button.current?.focus() }
+      stepMenuFocus(menuRef.current, event, button.current)
     }
     window.addEventListener('mousedown', onDown)
     window.addEventListener('keydown', onKey, true)
@@ -1402,7 +1585,7 @@ export function AccountLauncher({ seat = true, settingsOpen, actions }) {
       [t('Usage'), GaugeIcon, () => actions.openSettings('usage')],
       openModels ? [t('Models and API keys'), SlidersIcon, () => openModels()] : null,
       [t('Connectors'), ConnectorIcon, () => actions.openConnectors()],
-      [t('Automation tasks'), ClockIcon, () => actions.selectPanel('schedules')],
+      [t('Scheduled tasks'), ClockIcon, () => (typeof actions.selectPanel === 'function' ? actions.selectPanel('schedules') : actions.openSettings('schedules'))],
       [t('Settings'), GearIcon, () => actions.openSettings('overview')],
     ].filter(Boolean),
     typeof actions.setSurface === 'function' ? [[t('Classic Agent mode'), SwitchIcon, () => actions.setSurface('agent')]] : null,
@@ -1423,7 +1606,14 @@ export function AccountLauncher({ seat = true, settingsOpen, actions }) {
           index > 0 ? h('div', { className: 'bt-menu-sep', role: 'separator' }) : null,
           group.map(([label, Icon, run, hint, stay]) => h('button', {
             key: label, type: 'button', role: 'menuitem',
-            onClick: () => { if (stay !== true) setOpen(false); void Promise.resolve(run()).catch(error => actions.reportError(error, 'menu')) },
+            onClick: () => {
+              if (stay !== true) setOpen(false)
+              try {
+                void Promise.resolve(run()).catch(error => actions.reportError?.(error, 'menu'))
+              } catch (error) {
+                actions.reportError?.(error, 'menu')
+              }
+            },
           }, h(Icon), h('span', { className: 'bt-menu-label' }, label), hint ? h('span', { className: 'bt-menu-hint' }, hint) : null))))), document.body) : null)
 }
 
@@ -1473,7 +1663,7 @@ function mainAvatarPlace(roster) {
 }
 
 // The avatar's box where the team column comes to rest. The column slides in when expanded
-// (bt-leftcol-in, from off the left edge), and measured mid-slide the avatar would be
+// (from off the left edge), and measured mid-slide the avatar would be
 // outside the page and the whale would have nowhere to land; offsetLeft and offsetTop leave the
 // slide's transform out.
 function restingBox(mark) {
@@ -1734,13 +1924,13 @@ export const SIDEBAR_CSS = `
 
 /* The DSH Agent row and its expanding Session list. The black whale is the
    harness's own mark, so the row reads as "plain dsh" next to the Bot marks. */
-.bt-agent-ava{flex:none;width:36px;height:36px;border-radius:50%;corner-shape:round;display:inline-flex;align-items:center;justify-content:center;background:var(--bt-hover);color:var(--bt-ink)}
+.bt-agent-ava{flex:none;width:36px;height:36px;border-radius:50%;corner-shape:round;display:inline-flex;align-items:center;justify-content:center;background:transparent;color:var(--bt-ink)}
 .bt-agent-ava.bt-run{animation:bt-agent-pulse 1.4s ease-in-out infinite}
 @keyframes bt-agent-pulse{0%,100%{opacity:1}50%{opacity:.55}}
 .bt-agent-sub{display:grid;grid-template-rows:0fr;transition:grid-template-rows ${SPRING_SHAPE.duration}ms ${SPRING_SHAPE.easing}}
 .bt-agent-sub[data-open]{grid-template-rows:1fr}
 .bt-agent-sub-in{overflow:hidden;min-height:0;margin-left:44px}
-.bt-agent-sub-row{display:flex;align-items:center;gap:8px;width:100%;padding:5px 10px 5px 8px;border:0;border-radius:8px;background:none;color:var(--bt-ink-2);font:inherit;font-size:13px;line-height:20px;text-align:left;cursor:pointer}
+.bt-agent-sub-row{display:flex;align-items:center;gap:8px;width:100%;box-sizing:border-box;padding:5px 10px 5px 8px;border:0;border-radius:8px;background:none;color:var(--bt-ink-2);font:inherit;font-size:13px;line-height:20px;text-align:left;cursor:pointer}
 .bt-agent-sub-row:hover{background:var(--bt-hover);color:var(--bt-ink)}
 .bt-agent-sub-row[aria-current=page]{background:var(--bt-hover);color:var(--bt-ink);font-weight:500}
 /* .bt-agent-sub-in clips for the expand animation and the rows touch its edges, so the ring goes inside. */
@@ -1756,7 +1946,7 @@ export const SIDEBAR_CSS = `
 .bt-thread-toggle svg{width:14px;height:14px;transition:transform .15s ease}
 .bt-thread-toggle[aria-expanded=true] svg{transform:rotate(90deg)}
 .bt-agent-edit{padding:3px 10px 3px 4px}
-.bt-agent-edit input{width:100%;border:0;border-radius:6px;background:var(--bt-hover);color:var(--bt-ink);font:inherit;font-size:13px;line-height:20px;padding:2px 8px;outline:none;box-shadow:inset 0 0 0 .5px var(--bt-line-2)}
+.bt-agent-edit input{width:100%;box-sizing:border-box;border:0;border-radius:6px;background:var(--bt-hover);color:var(--bt-ink);font:inherit;font-size:13px;line-height:20px;padding:2px 8px;outline:none;box-shadow:inset 0 0 0 .5px var(--bt-line-2)}
 .bt-agent-sub[data-open] .bt-agent-sub-row{animation:bt-agent-row-in .24s ease both;animation-delay:calc(var(--i, 0)*30ms)}
 @keyframes bt-agent-row-in{from{opacity:0;filter:var(--bt-fx-blur-4,blur(4px))}to{opacity:1;filter:none}}
 @media (prefers-reduced-motion:reduce){.bt-agent-sub{transition:none}.bt-agent-sub .bt-agent-sub-row{animation:none}}
@@ -1801,7 +1991,7 @@ export const SIDEBAR_CSS = `
 .bt-sec-act:focus-visible{outline:2px solid var(--bt-accent);outline-offset:-2px}
 .bt-sec-act svg{width:13px;height:13px}
 .bt-sec-edit{display:flex;align-items:center;height:30px;padding:0 4px}
-.bt-sec-edit input{width:100%;height:24px;padding:0 8px;border:0;border-radius:6px;background:var(--bt-card);color:var(--bt-ink);font:inherit;font-size:12px;line-height:16px;font-weight:600;outline:none;box-shadow:inset 0 0 0 1.5px var(--bt-accent)}
+.bt-sec-edit input{width:100%;box-sizing:border-box;height:24px;padding:0 8px;border:0;border-radius:6px;background:var(--bt-card);color:var(--bt-ink);font:inherit;font-size:12px;line-height:16px;font-weight:600;outline:none;box-shadow:inset 0 0 0 1.5px var(--bt-accent)}
 .bt-sec-body{display:grid;grid-template-rows:1fr;transition:grid-template-rows ${SPRING_SHAPE.duration}ms ${SPRING_SHAPE.easing}}
 .bt-sec[data-collapsed=true] .bt-sec-body{grid-template-rows:0fr}
 .bt-sec-body-in{overflow:hidden;min-height:0;display:flex;flex-direction:column;gap:3px;position:relative}

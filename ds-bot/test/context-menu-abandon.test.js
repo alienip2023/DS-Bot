@@ -45,11 +45,11 @@ const nodes = (tree, match, found = []) => {
   return found
 }
 const menuitems = tree => nodes(tree, node => node.type === 'button')
-const menuFor = (waiting) => {
+const menuFor = (waiting, extra = {}) => {
   const calls = []
-  const actions = { closeMenu() {}, reportError() {}, setFlags() {}, markUnread() {}, abandonWork: id => calls.push(id) }
+  const actions = { closeMenu() {}, reportError() {}, setFlags() {}, markUnread() {}, abandonWork: id => calls.push(id), openExchange: (...pair) => calls.push(pair) }
   const useWork = selector => selector({ waiting })
-  const tree = ContextMenu({ menu: { kind: 'bot', id: 'b', x: 10, y: 10 }, roster, actions, useWork })
+  const tree = ContextMenu({ menu: { kind: 'bot', id: 'b', x: 10, y: 10 }, roster: { ...roster, byId: { ...roster.byId, ...extra } }, actions, useWork })
   return { calls, buttons: menuitems(tree) }
 }
 const labelOf = button => button.children.find(child => child?.props?.className === 'bt-menu-label')?.children?.[0]
@@ -69,6 +69,20 @@ test('a Bot that is not waiting has no such item', () => {
     const { buttons } = menuFor(waiting)
     assert.equal(buttons.some(button => String(labelOf(button)).startsWith('Give up waiting for')), false)
   }
+})
+
+test('an already returned result opens the exchange, without offering to abandon it', () => {
+  const { buttons, calls } = menuFor({
+    b: {
+      waits: [{ id: 'w2', name: 'Editor' }],
+      batches: [{ returned: [{ id: 'w1', from: 'c', outcome: 'done' }] }],
+    },
+  }, { c: { id: 'c', name: 'Tester' } })
+  assert.equal(buttons.some(button => labelOf(button) === 'Give up waiting for Tester'), false)
+  const read = buttons.find(button => labelOf(button) === 'View returned work from Tester')
+  assert.ok(read)
+  read.props.onClick()
+  assert.deepEqual(calls, [['b', 'c']])
 })
 
 test('a node Bot has no Duplicate item (a hub copy would carry the node\'s model and folder); a hub Bot keeps it', () => {

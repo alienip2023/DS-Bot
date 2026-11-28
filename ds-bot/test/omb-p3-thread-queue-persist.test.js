@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { setImmediate as settle } from 'node:timers/promises'
 import { threadWorld, makeBot } from './thread-t2-world.js'
@@ -39,9 +39,9 @@ async function queuedPair(second = 'second') {
   return { w, bot, id }
 }
 
-async function restart(w, runningSession) {
+async function restart(w, runningSession, services) {
   await w.ctx.dispose()
-  const next = threadWorld({ home: w.home })
+  const next = threadWorld({ home: w.home, services })
   if (runningSession !== undefined) next.agentOf(runningSession).status = 'running'
   const warnings = []
   next.rt.warn = (...args) => {
@@ -52,14 +52,19 @@ async function restart(w, runningSession) {
   return { next, warnings }
 }
 
-test('PERSIST-WRITE stores only the waiting user send and its seven fields', async () => {
+test('PERSIST-WRITE stores the waiting user send with its original request ID', async () => {
   const second = 'second '.repeat(30).trimEnd()
   const { w, bot, id } = await queuedPair(second)
   const [queued] = w.rt.threadQueueLive(bot.id).queued
-  assert.deepEqual(readQueue(w), {
-    version: 1,
-    items: [{ queueId: queued.queueId, botId: bot.id, threadId: queued.threadId, sessionId: id, preview: queued.preview, text: second, enqueuedAt: queued.enqueuedAt }],
+  const saved = readQueue(w)
+  assert.equal(saved.version, 1)
+  assert.equal(saved.items.length, 1)
+  const [item] = saved.items
+  assert.deepEqual({ ...item, requestId: undefined }, {
+    queueId: queued.queueId, botId: bot.id, threadId: queued.threadId, sessionId: id,
+    preview: queued.preview, text: second, enqueuedAt: queued.enqueuedAt, requestId: undefined,
   })
+  assert.match(item.requestId, /^[0-9a-f-]{36}$/)
 })
 
 test('PERSIST-LONG replays the full controller prompt once after restart', async () => {
@@ -87,18 +92,65 @@ test('PERSIST-LONG replays the full controller prompt once after restart', async
   assert.deepEqual(texts(next), [text])
   assert.deepEqual(itemsOf(next), [])
   assert.equal(next.prompts[0].request.sessionId, threadSession)
+  assert.equal(next.prompts[0].request.requestId, 'long-prompt')
   end(next, threadSession)
   const { next: again } = await restart(next)
   assert.deepEqual(texts(again), [])
 })
 
-test('PERSIST-DRAIN removes the second send when it starts', async () => {
+test('PERSIST-DRAIN removes the second send after the Session takes it', async () => {
   const { w, id } = await queuedPair()
   assert.equal(itemsOf(w).length, 1)
   end(w, id)
   await settle()
   assert.deepEqual(texts(w), ['first', 'second'])
   assert.deepEqual(itemsOf(w), [])
+})
+
+test('PERSIST-PRE-ADMISSION keeps the item on disk while the Session submission is held', async () => {
+  const { w, id } = await queuedPair()
+  const [record] = itemsOf(w)
+  const entered = Promise.withResolvers()
+  const submit = Promise.withResolvers()
+  const realSend = w.rt.sendUser
+  w.rt.sendUser = async (payload) => {
+    entered.resolve(payload)
+    await submit.promise
+  }
+  try {
+    end(w, id)
+    const payload = await entered.promise
+    assert.equal(payload.requestId, record.requestId)
+    assert.deepEqual(itemsOf(w), [record])
+    const { next } = await restart(w)
+    assert.deepEqual(texts(next), ['second'])
+    assert.equal(next.prompts[0].request.requestId, record.requestId)
+  } finally {
+    submit.reject(new Error('original host exited before submission'))
+    w.rt.sendUser = realSend
+  }
+})
+
+test('PERSIST-ACK-WINDOW retires an accepted request on reboot without prompting again', async () => {
+  const { w, id } = await queuedPair()
+  const [record] = itemsOf(w)
+  w.ctx.sessions.flush = async () => false
+  end(w, id)
+  await settle()
+  assert.deepEqual(texts(w), ['first', 'second'])
+  const requestId = w.prompts[1].request.requestId
+  assert.equal(requestId, record.requestId)
+  assert.deepEqual(itemsOf(w), [record])
+
+  const receipt = { id: 'accepted-message', source: { kind: 'user', rpcId: requestId } }
+  const events = [
+    { type: 'agent/inbox/spliced', data: { target: 'next-turn', start: 0, removedCount: 0, inserted: [receipt] } },
+    { type: 'agent/inbox/spliced', data: { target: 'next-turn', start: 0, removedCount: 1, inserted: [] } },
+  ]
+  const services = { sessionQuery: { async readSession(sid) { return { events: sid === id ? events : [] } } } }
+  const { next } = await restart(w, undefined, services)
+  assert.deepEqual(texts(next), [])
+  assert.deepEqual(itemsOf(next), [])
 })
 
 test('PERSIST-RESTART waits for the active Session and sends the persisted text once', async () => {
@@ -129,6 +181,21 @@ test('PERSIST-CANCEL removes the queued send and leaves the first turn running',
   assert.deepEqual(texts(w), ['first'])
 })
 
+test('PERSIST-CANCEL-FAIL does not report success while the send remains on disk', async () => {
+  const { w, bot } = await queuedPair()
+  const [entry] = itemsOf(w)
+  const temporary = `${pathOf(w)}.tmp`
+  mkdirSync(temporary)
+  try {
+    const result = await w.call('thread-queue-cancel', { botId: bot.id, queueId: entry.queueId })
+    assert.equal(result.ok, false)
+    assert.deepEqual(itemsOf(w), [entry])
+    assert.equal(w.rt.threadQueueLive(bot.id).queued[0].queueId, entry.queueId)
+  } finally {
+    rmdirSync(temporary)
+  }
+})
+
 test('PERSIST-BAD warns once for invalid JSON and replays nothing', async () => {
   const w = threadWorld()
   await makeBot(w)
@@ -143,7 +210,7 @@ test('PERSIST-ORDER skips invalid records and restores valid sends by enqueuedAt
   const { w, id } = await queuedPair()
   const [second] = itemsOf(w)
   writeQueue(w, [
-    { ...second, queueId: 'third', preview: 'third', text: 'third', enqueuedAt: second.enqueuedAt + 1 },
+    { ...second, queueId: 'third', requestId: undefined, preview: 'third', text: 'third', enqueuedAt: second.enqueuedAt + 1 },
     { ...second, queueId: 'stale', sessionId: 'old-session' },
     { ...second, queueId: 'missing', preview: undefined },
     { ...second, queueId: 'legacy', text: undefined },

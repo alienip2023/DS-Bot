@@ -138,6 +138,25 @@ const textOf = content => content.map(block => block.text ?? '').join('\n')
 // Work model W2 (docs/plans/2026-11-24-work-model.md): a request goes to the work thread of the pair — one standing
 // background task of the recipient for this sender's conversation — never into the user's chat with the recipient.
 const threadOf = (rt, botId, senderId) => (rt.botOf(botId).tasks ?? []).find(task => task.origin === 'bot-work' && task.workFor?.botId === senderId)
+test('concurrent first requests of the same pair open just one work thread', async (t) => {
+  const { rt, stop } = await start(team())
+  t.after(stop)
+  const open = rt.openTaskPart
+  let opens = 0
+  rt.openTaskPart = async (...args) => {
+    opens += 1
+    await new Promise(resolve => setImmediate(resolve))
+    return open(...args)
+  }
+  const pick = () => rt.workThreadFor(rt.botOf('b'), rt.botOf('a'), 'a')
+  const [first, second] = await Promise.all([pick(), pick()])
+  assert.equal(opens, 1)
+  assert.equal(first.sessionId, second.sessionId)
+  assert.equal(first.task, second.task)
+  assert.equal(first.opened, true)
+  assert.equal(second.opened, false)
+})
+
 test('message_bot opens the pair\'s work thread; a request goes there, never into the user\'s chat with the Bot', async (t) => {
   const { rt, agents, emit, tool, stop } = await start(team())
   t.after(stop)
@@ -751,9 +770,9 @@ test('a Bot\'s answer waits for the work it handed on, and carries what came bac
 test('a Bot may take part in the same work again, but not message one that waits for its result', async (t) => {
   const team = await start(threeBots())
   t.after(team.stop)
-  const { agents, tool } = team
+  const { agents, emit, tool } = team
   // Chief designs, Writer builds, Tester reviews; then Chief accepts.
-  const { take, end } = await handedOn(team)
+  const { take, end, sessionOf } = await handedOn(team)
   end('b')
   take('c')
   // The guard answers with a result, not a failed call: the turn goes on with the
@@ -763,6 +782,9 @@ test('a Bot may take part in the same work again, but not message one that waits
   assert.match(await tool('message_bot', { to: 'Writer', message: 'it passes' }, 'c'), refused)
   assert.deepEqual(callsOf(agents, 'a'), [])
   assert.equal(callsOf(agents, 'b').length, 1)
+  const sid = sessionOf('c')
+  emit(sid, 'tool/call', { callId: 't1', name: 'read', arguments: '{}' })
+  emit(sid, 'tool/result', { turn: 1, step: 1, message: { role: 'tool', toolCallId: 't1', content: [{ type: 'text', text: 'ok' }], isError: false } })
   end('c', 'it passes')
   await settled(() => callsOf(agents, 'b').length === 2)
   take('b')
@@ -770,7 +792,8 @@ test('a Bot may take part in the same work again, but not message one that waits
   await settled(() => callsOf(agents, 'a').length === 1)
   take('a')
   // With the result in hand, Chief asks Tester again, and Tester may ask Writer.
-  assert.match(await tool('message_bot', { to: 'Tester', message: 'check the last part once more' }, 'a'), /^Delivered to Tester/)
+  const result = callsOf(agents, 'a').at(-1)[1].source
+  assert.match(await tool('message_bot', { to: 'Tester', message: 'check the last part once more', follow_up_to: result.resultRef ?? result.workRef }, 'a'), /^Delivered to Tester/)
   end('a')
   take('c')
   assert.match(await tool('message_bot', { to: 'Writer', message: 'what did you change last?' }, 'c'), /^Delivered to Writer/)

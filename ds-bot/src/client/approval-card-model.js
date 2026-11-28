@@ -16,8 +16,10 @@ export const rowBinding = row => (
 // and names the fixed text to show. `answerable: false` is unavailable; a row that is
 // unbound or belongs to another Bot or room is never answered from this card.
 export function planAnswer(row, { botId, roomId } = {}, choice) {
-  if (choice !== 'allow' && choice !== 'reject') return { kind: 'block', state: 'unbound' }
   if (row?.answerable !== true) return { kind: 'block', state: 'unavailable' }
+  if (choice !== 'allow' && choice !== 'reject' && (choice !== 'always' || !row.alwaysAllow)) {
+    return { kind: 'block', state: 'unbound' }
+  }
   // A background-task approval (taskId) may belong to a Bot's own chat, which has no room:
   // it only has to match the Bot, and the room too when the card knows one. A foreground
   // approval of the Bot's own chat (no room, no task) is answered only on that Bot's own
@@ -33,6 +35,19 @@ export function planAnswer(row, { botId, roomId } = {}, choice) {
   }
   const binding = rowBinding(row)
   if (binding === undefined) return { kind: 'block', state: 'unbound' }
+  return { kind: 'send', id: row.id, choice, binding }
+}
+
+// A Classic Agent has no Bot ID. Its own card can represent a subagent, but
+// the answer must still carry the subagent row's binding, not the parent's.
+export function planClassicAnswer(row, ownerSessionId, choice) {
+  if (row?.answerable !== true) return { kind: 'block', state: 'unavailable' }
+  const binding = rowBinding(row)
+  if (!binding || !filled(row.id) || !filled(ownerSessionId) || row.botId || row.roomId || row.taskId
+    || (row.sessionId !== ownerSessionId && row.ownerSessionId !== ownerSessionId)
+    || (choice !== 'allow' && choice !== 'reject' && (choice !== 'always' || !row.alwaysAllow))) {
+    return { kind: 'block', state: 'unbound' }
+  }
   return { kind: 'send', id: row.id, choice, binding }
 }
 

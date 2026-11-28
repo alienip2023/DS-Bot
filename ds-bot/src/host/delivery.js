@@ -5,7 +5,9 @@ import { HISTORY_TIMEOUT_MS, LONG_HEAD, MESSAGE_INLINE_MAX, READ_LINE_MAX, SOURC
 import { joinedShadow, refuseJoinedDispatch } from './roster-join.js'
 import { headOf, textOf } from './text.js'
 import { classify } from './msg-classes.js'
-import { sameConversation, threadCurrentOfPart } from './threads.js'
+import { isContextOnlySource } from './context-messages.js'
+import { addressedSession, sameConversation, threadCurrentOfPart } from './threads.js'
+import { workNotes } from './work-notes.js'
 
 // For remote dispatch, control is local, an answer is refused, everything else is work.
 // An answer is not new work: never dispatch it to another machine.
@@ -18,6 +20,11 @@ export function install(rt) {
   const queuedDeliveries = new Set()
   let disposed = false
   ctx.effect?.(() => () => { disposed = true }, 'ds-bot: visible delivery turns')
+  const addressedNotes = workNotes(rt)
+  rt.enqueueWorkNote = addressedNotes.enqueue
+  rt.workNoteTaken = addressedNotes.taken
+  rt.unreadWorkNotes = addressedNotes.unreadCount
+  rt.clearWorkNotes = addressedNotes.clear
 
   const resolveAgent = async (sessionId) => {
     if (ctx.fiber?.uid === null || ctx.sessionController === undefined) {
@@ -35,9 +42,10 @@ export function install(rt) {
     return !Array.isArray(log) || log.some(event => event?.type === 'system/message')
   }
 
-  const headerFor = (role, fromName, roomName, audience, note, deferred = false, { resumed = false, retried = false, resent = false, abandoned = false, abandonedReason, asker } = {}) => {
+  const headerFor = (role, fromName, roomName, audience, note, deferred = false, { resumed = false, retried = false, resent = false, abandoned = false, abandonedReason, asker, workRef } = {}) => {
     const label = note ?? 'new message'
     const reportLabel = note ?? 'replies to your post'
+    const tag = workRef ? ` #${workRef}` : ''
     // What came back for work another Bot gave this one says where its answer goes.
     const goesOn = asker === undefined ? '' : ` · for the work ${asker} asked you for; your answer goes to ${asker} once everything you handed on is back`
     // Silent one-way notices keep their exact header regardless of deferred/resent flags.
@@ -57,10 +65,15 @@ export function install(rt) {
     if (role === 'continue' && note !== undefined) return `[Retry after a failed turn · ${note}]`
     if (retried && role !== 'room') return '[Your last reply wrote a tool call as text, so nothing ran]'
     if (resumed && role === 'resume') return '[DeepSeek Harness restarted while you were working]'
-    if (resumed && role !== 'room') return `[Message from ${fromName} · DeepSeek Harness restarted while you were working on it]`
-    if (resent && role === 'reply') return `[Reply from ${fromName} · DeepSeek Harness restarted before it could reach you]`
-    if (resent && role !== 'room') return `[Message from ${fromName} · DeepSeek Harness restarted before it could reach you]`
-    if (role === 'reply') return `[Reply from ${fromName}${goesOn}]`
+    if (resumed && role === 'reply') return `[Work${tag} closed · continue processing its result after restart]`
+    if (resumed && role !== 'room') return `[Work${tag} from ${fromName} · DeepSeek Harness restarted while you were working on it]`
+    if (resent && role === 'reply') return `[Work${tag} completed by ${fromName} · DeepSeek Harness restarted before it could reach you]`
+    if (resent && role === 'ask_back') return `[Work${tag} · ${fromName} asks before continuing · DeepSeek Harness restarted before it could reach you · call answer_work or cancel_work]`
+    if (resent && role === 'answer') return `[Work${tag} · ${fromName} answered your question · DeepSeek Harness restarted before it could reach you · continue and reply when done]`
+    if (resent && role !== 'room') return `[Work${tag} from ${fromName} · DeepSeek Harness restarted before it could reach you]`
+    if (role === 'reply') return `[Work${tag} completed by ${fromName} · closed${goesOn}; reply [PASS] if nothing needs to be told to the user]`
+    if (role === 'ask_back') return `[Work${tag} · ${fromName} asks before continuing${goesOn} · call answer_work to unblock or cancel_work to stop]`
+    if (role === 'answer') return `[Work${tag} · ${fromName} answered your question · continue and reply when done]`
     if (role === 'stopped') return `[Stopped by ${fromName}]`
     if (role === 'room') return `[Group chat "${roomName}" · ${label}]`
     if (role === 'report') return `[Group chat "${roomName}" · ${reportLabel}${goesOn}]`
@@ -90,6 +103,27 @@ export function install(rt) {
   const flushingSilent = new Set()
   const isBusyAgent = (agent, sessionId) => agent?.status === 'running' || rt.live?.get(sessionId)?.turn !== undefined
   const syncSilent = (sessionId) => { rt.noteSilent?.(sessionId, pendingSilent.get(sessionId)) }
+  const switchingOwnerOf = (sessionId) => (
+    sessionId !== undefined && state.switching != null && Object.hasOwn(state.switching, sessionId)
+      ? state.switching[sessionId]
+      : undefined
+  )
+  const appendUniqueSilent = (targetList, entries, toSessionId) => {
+    const seenIds = new Set(targetList.map(item => item?.message?.source?.exchangeId).filter(Boolean))
+    const seenMsgIds = new Set(targetList.map(item => item?.message?.id).filter(Boolean))
+    for (const entry of entries ?? []) {
+      if (entry?.message === undefined) continue
+      const exId = entry.message?.source?.exchangeId
+      const msgId = entry.message?.id
+      if ((exId !== undefined && seenIds.has(exId)) || (msgId !== undefined && seenMsgIds.has(msgId))) continue
+      if (exId !== undefined) seenIds.add(exId)
+      if (msgId !== undefined) seenMsgIds.add(msgId)
+      targetList.push({
+        message: entry.message,
+        ...(entry.ledger !== undefined ? { ledger: { ...entry.ledger, sessionId: toSessionId } } : {}),
+      })
+    }
+  }
   const waitIdleBriefly = (agent, timeoutMs = 2000) => {
     if (typeof agent?.whenIdle !== 'function') return Promise.resolve()
     return new Promise((resolve) => {
@@ -159,7 +193,7 @@ export function install(rt) {
     try {
       const agent = await resolveAgent(sessionId).catch(() => undefined)
       if (agent === undefined) {
-        if (rt.selfOf?.(sessionId) === undefined) {
+        if (rt.selfOf?.(sessionId) === undefined && switchingOwnerOf(sessionId) === undefined) {
           pendingSilent.delete(sessionId)
           syncSilent(sessionId)
         }
@@ -198,24 +232,30 @@ export function install(rt) {
   const takeSilentNotes = (sessionId) => takeSilentEntries(sessionId).map(entry => entry.message)
   const moveSilentNotes = (fromSessionId, toSessionId, { awaitFlush = false, rethrow = false } = {}) => {
     if (fromSessionId === undefined || toSessionId === undefined || fromSessionId === toSessionId) return Promise.resolve()
-    const entries = takeSilentEntries(fromSessionId)
-    if (entries.length > 0) {
-      const targetList = pendingSilent.get(toSessionId) ?? []
-      const seenIds = new Set(targetList.map(item => item?.message?.source?.exchangeId).filter(Boolean))
-      const seenMsgIds = new Set(targetList.map(item => item?.message?.id).filter(Boolean))
-      for (const entry of entries) {
-        const exId = entry?.message?.source?.exchangeId
-        const msgId = entry?.message?.id
-        if ((exId !== undefined && seenIds.has(exId)) || (msgId !== undefined && seenMsgIds.has(msgId))) continue
-        if (exId !== undefined) seenIds.add(exId)
-        if (msgId !== undefined) seenMsgIds.add(msgId)
-        targetList.push({
-          message: entry.message,
-          ...(entry.ledger !== undefined ? { ledger: { ...entry.ledger, sessionId: toSessionId } } : {}),
-        })
+    const fromStartup = rt.peekStartupSilent?.(fromSessionId) ?? []
+    const fromMemory = pendingSilent.get(fromSessionId) ?? []
+    const entries = fromStartup.length > 0 ? [...fromStartup, ...fromMemory] : fromMemory
+    const toStartup = rt.peekStartupSilent?.(toSessionId) ?? []
+    if (entries.length > 0 || toStartup.length > 0) {
+      const existingTarget = pendingSilent.get(toSessionId) ?? []
+      const targetList = []
+      appendUniqueSilent(targetList, toStartup, toSessionId)
+      appendUniqueSilent(targetList, existingTarget, toSessionId)
+      appendUniqueSilent(targetList, entries, toSessionId)
+      // Persist destination before removing source so a crash mid-move never drops notes.
+      if (targetList.length > 0) {
+        pendingSilent.set(toSessionId, targetList)
+        syncSilent(toSessionId)
       }
-      pendingSilent.set(toSessionId, targetList)
-      syncSilent(toSessionId)
+      if (toStartup.length > 0) rt.clearStartupSilent?.(toSessionId)
+      if (pendingSilent.has(fromSessionId) || fromStartup.length > 0) {
+        pendingSilent.delete(fromSessionId)
+        rt.clearStartupSilent?.(fromSessionId)
+        syncSilent(fromSessionId)
+      }
+    } else if (pendingSilent.has(fromSessionId)) {
+      pendingSilent.delete(fromSessionId)
+      syncSilent(fromSessionId)
     }
     if (!pendingSilent.has(toSessionId)) return Promise.resolve()
     if (awaitFlush) return flushSilentNotes(toSessionId, { rethrow })
@@ -227,31 +267,31 @@ export function install(rt) {
     const touched = new Set()
     for (const [oldSid, list] of Object.entries(savedMap)) {
       if (!Array.isArray(list) || list.length === 0) continue
-      const botId = rt.selfOf?.(oldSid)
+      const switching = switchingOwnerOf(oldSid)
+      const botId = rt.selfOf?.(oldSid) ?? switching?.botId
       const bot = botId === undefined ? undefined : rt.botOf(botId)
       if (bot === undefined) continue
       const groupOwner = rt.groupOwners?.get(oldSid)
+      const switchingRoom = switching?.roomId !== undefined ? rt.roomOf(switching.roomId) : undefined
       const destSid = groupOwner !== undefined
         ? (rt.roomOf(groupOwner.roomId)?.sessions?.[botId] ?? oldSid)
-        : (threadCurrentOfPart(bot, oldSid) ?? (rt.isBotSession?.(oldSid) ? oldSid : rt.chatOf(botId)))
+        : switchingRoom !== undefined
+          ? (switchingRoom.sessions?.[botId] ?? oldSid)
+          : (threadCurrentOfPart(bot, oldSid)
+            ?? (switching?.next !== undefined && rt.chatOwners?.has(switching.next) ? switching.next : undefined)
+            ?? (rt.isBotSession?.(oldSid) ? oldSid : rt.chatOf(botId)))
       if (destSid === undefined) continue
       const destList = pendingSilent.get(destSid) ?? []
-      const seenIds = new Set(destList.map(item => item?.message?.source?.exchangeId).filter(Boolean))
-      for (const raw of list) {
-        const message = raw?.message
-        if (message === undefined) continue
-        const exId = message?.source?.exchangeId
-        if (exId !== undefined && seenIds.has(exId)) continue
-        if (exId !== undefined) seenIds.add(exId)
-        destList.push({
-          message,
-          ...(raw.ledger !== undefined ? { ledger: { ...raw.ledger, sessionId: destSid } } : {}),
-        })
-      }
+      appendUniqueSilent(destList, list, destSid)
       if (destList.length > 0) {
         pendingSilent.set(destSid, destList)
         syncSilent(destSid)
         touched.add(destSid)
+      }
+      if (destSid !== oldSid) {
+        pendingSilent.delete(oldSid)
+        rt.clearStartupSilent?.(oldSid)
+        syncSilent(oldSid)
       }
     }
     for (const sid of touched) await flushSilentNotes(sid)
@@ -265,16 +305,10 @@ export function install(rt) {
     return true
   }
 
-  const NON_WAKING_PRE_STEP_KINDS = new Set([
-    'working-directory', 'runtime-context', 'time-context', 'ds-bot-time-context',
-    'bot-memory', 'skill-catalog', 'compact-checkpoint', 'snapshot',
-  ])
   const isWakingPreStepMessage = (msg) => {
     const src = msg?.source
     if (src === undefined) return true
-    if (src.form === 'snapshot' || NON_WAKING_PRE_STEP_KINDS.has(src.kind)) return false
-    if (src.kind === SOURCE_KIND && (src.silent === true || ['note', 'cancelled'].includes(src.role))) return false
-    return true
+    return !isContextOnlySource(src)
   }
 
   // Deterministically prepend any buffered silent notices before step 1 of a real
@@ -302,7 +336,7 @@ export function install(rt) {
   })
 
   // Roles recorded as team exchanges.
-  const EXCHANGE_ROLES = new Set(['request', 'reply', 'stopped'])
+  const EXCHANGE_ROLES = new Set(['request', 'reply', 'stopped', 'ask_back', 'answer', 'cancelled', 'note'])
   const TASK_ROLES = new Set(['task', 'task-followup', 'task-report'])
   // Drawn as one line from its `kind: 'bot'` source (who handed back), never as text the user typed.
   const RESULT_ROLES = new Set(['results'])
@@ -507,10 +541,11 @@ export function install(rt) {
   // result that came back goes on with. `merged`: a request that takes in an earlier
   // one its recipient had not read, under that one's exchange. `fromPart`: the Session
   // of the sending Bot, which a reply comes back to when that is a background part.
-  async function deliver({ fromId, fromName: senderName, pairFrom, toId, sessionId, text, role, replyTo, roomId, audience, note, exchangeId = randomUUID(), untilSent = false, steer = false, wake = true, afterCancel = false, deferred = false, resumed = false, retried = false, resent = false, merged = false, abandoned = false, abandonedReason, recordExchange = true, askedBy, fromRoomId, fromPart, images = [], files = [], length, work, taskId, imOrigin, failureRequestId, joinedTurn = false, joinedAsync = false, wait = false, stopped = false, results, resultFrom }) {
+  async function deliver({ fromId, fromName: senderName, pairFrom, toId, sessionId, address, text, role, replyTo, roomId, audience, note, exchangeId = randomUUID(), transferId, untilSent = false, steer = false, wake = true, afterCancel = false, deferred = false, resumed = false, retried = false, resent = false, merged = false, abandoned = false, abandonedReason, recordExchange = true, askedBy, resultRef, follows, batchKey, resumedUpstream = false, fromRoomId, fromPart, images = [], files = [], length, work, workRef, askWork, taskId, imOrigin, failureRequestId, joinedTurn = false, joinedAsync = false, wait = false, stopped = false, results, resultFrom, stillWanted }) {
     const from = rt.botOf(fromId)
     const to = rt.botOf(toId)
     if (to === undefined) throw Object.assign(new Error(`Unknown Bot ${toId}`), { delivered: false })
+    const resolvedWorkRef = workRef ?? rt.workRefOf?.(role === 'reply' ? replyTo : askWork ?? work ?? exchangeId)
     // Joined members have no local model turn to settle the group's waiter.
     // Route their result through the same collection/late-reply path as local members.
     if (role === 'reply' && roomId && joinedShadow(from) && rt.roomOf?.(roomId)) {
@@ -576,9 +611,12 @@ export function install(rt) {
       form: 'relay',
       role,
       exchangeId,
+      ...(transferId ? { transferId } : {}),
       senderName: fromName,
       ...(wake === false ? { silent: true } : {}),
       ...(work ? { work } : {}),
+      ...(resolvedWorkRef ? { workRef: resolvedWorkRef } : {}),
+      ...(askWork ? { askWork } : {}),
       ...(taskId ? { taskId } : {}),
       ...(imOrigin ? { imOrigin } : {}),
       ...(fromId ? { senderSessionId: fromId } : {}),
@@ -590,6 +628,10 @@ export function install(rt) {
       ...(resumed ? { resumed: true } : {}),
       ...(retried ? { retried: true } : {}),
       ...(askedBy ? { askedBy } : {}),
+      ...(resultRef ? { resultRef } : {}),
+      ...(follows ? { follows } : {}),
+      ...(batchKey ? { batchKey } : {}),
+      ...(resumedUpstream ? { resumedUpstream: true } : {}),
       ...(fromRoomId ? { senderRoomId: fromRoomId } : {}),
       ...(joinedTurn ? { joinedTurn: true } : {}),
       ...(abandoned ? { abandoned: true } : {}),
@@ -597,13 +639,18 @@ export function install(rt) {
       ...(Array.isArray(resultFrom) && resultFrom.length > 0 ? { resultFrom } : {}),
       ...(role === 'results' && note ? { note } : {}),
     }
-    const targetSessionId = sessionId ?? rt.chatOf(toId)
     await writeBook()
+    const targetSessionId = address
+      ? (addressedSession(rt, toId, address) ?? (['reply', 'report'].includes(role) ? rt.chatOf(toId) : undefined))
+      : (sessionId ?? rt.chatOf(toId))
+    if (targetSessionId === undefined && address) {
+      throw Object.assign(new Error('The delivery recipient is no longer active'), { code: 'bot/unresolved-return', delivered: false })
+    }
     await rt.ensureCapabilities(targetSessionId)
     const agent = await resolveAgent(targetSessionId)
     const message = createUserMessage({
       content: [
-        { type: 'text', text: `${headerFor(role, fromName, room?.name, audience, note, deferred, { resumed, retried, resent, abandoned, abandonedReason, asker })}\n${text}` },
+        { type: 'text', text: `${headerFor(role, fromName, room?.name, audience, note, deferred, { resumed, retried, resent, abandoned, abandonedReason, asker, workRef: resolvedWorkRef })}\n${text}` },
         ...images.map(attachment => ({ type: 'image', attachment })),
         ...files.map(attachment => ({ type: 'file', attachment })),
       ],
@@ -675,7 +722,10 @@ export function install(rt) {
         try {
           const pendingIds = pendingMessageIds(agent)
           for (const entry of takenSilent) injectIfNotPending(agent, entry.message, pendingIds)
-          if (steer) agent.steer(message)
+          // A request can only steer busy work in its own pair's standing thread.
+          const task = role === 'request' && steer ? rt.taskBySession?.(targetSessionId)?.task : undefined
+          const samePair = task?.origin === 'bot-work' && task.workFor?.botId === fromId && task.workFor?.part === rt.partKeyOf?.(fromPart)
+          if (steer && (role !== 'request' || samePair || !isBusyAgent(agent, targetSessionId))) agent.steer(message)
           else agent.followup(message)
           woke = true
         } catch (error) {
@@ -696,6 +746,7 @@ export function install(rt) {
     // Visible input is already on the timeline; the serial gate orders its wake
     // behind the Bot's current turn (thread-model §4.5).
     const run = async () => {
+      if (stillWanted?.() === false) return
       await send()
     }
     if (typeof rt.sendThreadTurn === 'function') {

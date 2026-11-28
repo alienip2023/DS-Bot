@@ -44,9 +44,9 @@ R1–R4 之后实机反复出现：回复进了用户排队区、node 间只有�
 
 ## W3 落地：跨机器的 work
 
-- **一条路**：交给别的机器上的 Bot（节点上的 peer 行、主控上的 joined 影子）的 `message_bot`，和交给本机 Bot 一样开一个子 work（挂在本回合的 work 或根 work 下），再发一个 `work/handoff` 帧；对方机器把它当本机的请求放进这对的工作线程（W2），做完发回 `work/result`；这边按 work id 把结果写进那件 work，全部回来后续跑一次（W1）。结果从不作为消息投递、从不 steer。
+- **一条路**：交给别的机器上的 Bot（节点上的 peer 行、主控上的 joined 影子）的 `message_bot`，和交给本机 Bot 一样开一个子 work（挂在本回合的 work 或根 work 下），再发一个 `work/handoff` 帧。收件方在 Bot 自己的主会话排队处理，不创建 `bot.tasks` 项；主控页面仍从该会话复制记录。做完发回 `work/result`；发问方按 work ID 记账，当前批次等齐后只投递一次合并结果（W1）。
 - **帧**（走 AC 可靠通道 `docs/reliable-link.md`，恰好处理一次；节点之间经主控存转）：
-  - `work/handoff { id, from, to, part, text }`：`from`/`to` 是全队通用的 Bot 引用（主控 Bot 用自己的 id，节点 Bot 用 `joined:<节点>:<本地 id>`）；`part` 是发问方那段对话的稳定名字，收件方据此选工作线程。
+  - `work/handoff { id, from, to, part, text }`：`from`/`to` 是全队通用的 Bot 引用（主控 Bot 用自己的 id，节点 Bot 用 `joined:<节点>:<本地 id>`）；保留 `part` 供旧版接收端兼容，新接收端不据此开工作线程。
   - `work/status { id, status }`：收件方收下后回 `queued`，发问方据此在两人的对话记录里标"已送达"。
   - `work/result { id, outcome, text }`：`outcome` 为 `done` / `failed` / `stopped`。
   - `work/cancel { id }`：用户在发问方放弃等待时发出；收件方停下那件 work 的回合（只认它登记过的 work）、不再回答。

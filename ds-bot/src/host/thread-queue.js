@@ -198,7 +198,6 @@ export function install(rt) {
     slot.running = { queueId: entry.queueId, threadId: entry.threadId, sessionId: entry.sessionId, startedAt: Date.now(), kind: entry.kind }
     slot.entry = entry
     entry.startedAt = slot.running.startedAt
-    removePending(entry)
     if (entry.releaseOn === 'turn-end') {
       // Armed before `run`: a Session that starts and ends its turn quickly must still
       // find a listener, and a prompt that is refused must not leave the Bot held.
@@ -223,9 +222,35 @@ export function install(rt) {
       entry.probe.unref?.()
     }
     try {
-      await entry.run()
+      const saved = pending.get(entry.queueId)
+      if (saved !== undefined) {
+        const args = { ref: saved.sessionId, sessionId: entry.sessionId, requestId: saved.requestId, includeClaims: true }
+        const receipt = await rt.findAdmittedForSend?.(args)
+        if (receipt?.admitted === true) {
+          if (receipt.durable === true
+            || (receipt.sessionId !== undefined && await rt.confirmSessionFlushed?.(receipt.sessionId, saved.requestId) === true)) {
+            removePending(entry)
+          }
+          release(entry)
+          return
+        }
+        if (receipt === undefined && await rt.isAdmittedForSend?.({ ...args, durable: true })) {
+          removePending(entry)
+          release(entry)
+          return
+        }
+      }
+      if (unloaded() || disposed) {
+        release(entry)
+        return
+      }
+      const result = await entry.run(entry.requestId, saved !== undefined)
       entry.accepted = true
       entry.acceptedAt = Date.now()
+      if (saved !== undefined) {
+        if (result?.durable === true || await rt.confirmSessionFlushed?.(result?.sessionId ?? entry.sessionId, saved.requestId) === true) removePending(entry)
+        else rt.warn?.('ds-bot: could not confirm durable Session admission; keeping the queued send for %s', entry.sessionId)
+      }
     } catch (error) {
       if (typeof error?.code === 'string' && slot.running?.queueId === entry.queueId) {
         slot.state = 'failed'
@@ -268,8 +293,10 @@ export function install(rt) {
       await run()
       return { queued: false }
     }
+    const queueId = restored?.queueId ?? randomUUID()
     const entry = {
-      queueId: restored?.queueId ?? randomUUID(),
+      queueId,
+      requestId: restored?.requestId ?? (hasText(spec.requestId) ? spec.requestId : queueId),
       botId: owner.botId,
       threadId: owner.threadId,
       sessionId: owner.sessionId,
@@ -293,22 +320,26 @@ export function install(rt) {
       await start(slot, entry)
       return { queued: false, queueId: entry.queueId }
     }
-    slot.queue.push(entry)
     // Bot-only actions (e.g. routines) have their own recovery and no explicit send Session.
-    if (path !== undefined && restored === undefined && spec.kind === 'send' && spec.sessionId === owner.sessionId) {
+    if (path !== undefined && restored === undefined && spec.kind === 'send' &&
+        spec.sessionId === owner.sessionId && localBot(owner.botId)) {
       const text = spec.text ?? spec.preview
       if (hasText(text)) {
         pending.set(entry.queueId, savedItem({ ...entry, text }))
-        persist()
+        if (!persist()) {
+          pending.delete(entry.queueId)
+          throw Object.assign(new Error('Could not save the waiting message'), { code: 'bot/queue-save' })
+        }
       }
     }
+    slot.queue.push(entry)
     if (signal !== undefined && typeof signal.addEventListener === 'function') {
       entry.onAbort = () => {
         const at = slot.queue.findIndex(candidate => candidate.queueId === entry.queueId)
         if (at === -1) return
+        if (!cancelled(entry)) return
         slot.queue.splice(at, 1)
         clearAbort(entry)
-        cancelled(entry)
       }
       signal.addEventListener('abort', entry.onAbort, { once: true })
     }
@@ -334,13 +365,17 @@ export function install(rt) {
     }
     if (file.items.length === 0) return
     await rt.load()
-    if (unloaded() || rt.readOnly?.() !== undefined) return
+    if (unloaded() || disposed || rt.readOnly?.() !== undefined) return
     const valid = new Map()
     for (const item of file.items) {
       const thread = threadOf(rt.state, item?.threadId)
+      const target = ownerOf(item ?? {})
+      const moved = item?.threadId === mainThreadId(item?.botId) &&
+        (rt.pastOwners?.get(item.sessionId)?.botId === item.botId || rt.taskOwners?.get(item.sessionId)?.botId === item.botId)
       if (!hasText(item?.queueId) || !hasText(item.botId) || !hasText(item.sessionId) || typeof item.preview !== 'string' || !hasText(item.text) ||
           !Number.isFinite(item.enqueuedAt) || valid.has(item.queueId) || thread?.botId !== item.botId ||
-          thread.archived || rt.botOf(item.botId) === undefined || ownerOf(item)?.sessionId !== item.sessionId) {
+          (item.requestId !== undefined && !hasText(item.requestId)) || thread.archived || !localBot(item.botId) ||
+          !hasText(target?.sessionId) || (target.sessionId !== item.sessionId && !moved)) {
         rt.warn?.('ds-bot: skipping invalid or stale thread-queue.json item')
         continue
       }
@@ -357,7 +392,7 @@ export function install(rt) {
       })))
       return { botId, agents }
     }))
-    if (unloaded()) return
+    if (unloaded() || disposed) return
     for (const { botId, agents } of active) {
       const running = agents.find(({ sessionId, agent }) => !endedDuringRestore.has(sessionId) &&
         (agent?.status === 'running' || rt.live?.get(sessionId)?.turn !== undefined))
@@ -373,10 +408,11 @@ export function install(rt) {
     for (const item of items) pending.set(item.queueId, item)
     if (valid.size !== file.items.length) persist()
     for (const item of items) {
-      const { botId, threadId, sessionId, preview, text } = item
+      const { botId, threadId, requestId, preview, text } = item
+      const sessionId = ownerOf(item)?.sessionId
       void rt.sendThreadTurn({
-        botId, threadId, sessionId, kind: 'send', preview,
-        run: () => rt.sendUser({ sessionId, content: [{ type: 'text', text }] }),
+        botId, threadId, sessionId, requestId, kind: 'send', preview,
+        run: () => rt.sendUser({ sessionId, requestId, content: [{ type: 'text', text }], queueReceipt: true }),
       }, item).catch(error => rt.warn?.('ds-bot: restored thread queue turn for %s failed: %s', botId, error))
     }
   }
@@ -413,9 +449,10 @@ export function install(rt) {
     if (slot === undefined) return { cancelled: false, remaining: 0 }
     const at = slot.queue.findIndex(entry => entry.queueId === queueId)
     if (at === -1) return { cancelled: false, remaining: slot.queue.length }
-    const [gone] = slot.queue.splice(at, 1)
+    const gone = slot.queue[at]
+    if (!cancelled(gone)) throw Object.assign(new Error('Could not save the queue cancellation'), { code: 'bot/queue-save' })
+    slot.queue.splice(at, 1)
     clearAbort(gone)
-    cancelled(gone)
     return { cancelled: true, remaining: slot.queue.length }
   }
 
@@ -467,26 +504,35 @@ export function install(rt) {
   const pending = new Map()
   const endedDuringRestore = new Set()
   let ready
+  let disposed = false
   const unloaded = () => ctx.fiber?.uid === null
 
   function persist() {
-    if (unloaded() || rt.readOnly?.() !== undefined) return
+    if (unloaded() || disposed || rt.readOnly?.() !== undefined) return false
     try {
       const temp = `${path}.tmp`
       writeFileSync(temp, JSON.stringify({ version: QUEUE_VERSION, items: [...pending.values()] }), { mode: 0o600 })
       renameSync(temp, path)
+      return true
     } catch (error) {
       rt.warn?.('ds-bot: could not save thread-queue.json (%s)', error.code)
+      return false
     }
   }
 
   function removePending(entry) {
-    if (pending.delete(entry.queueId)) persist()
+    const record = pending.get(entry.queueId)
+    if (record === undefined) return true
+    pending.delete(entry.queueId)
+    if (persist()) return true
+    pending.set(entry.queueId, record)
+    return false
   }
 
   const cancelled = entry => {
-    removePending(entry)
+    if (!removePending(entry)) return false
     void Promise.resolve().then(() => entry.onCancel?.()).catch(error => rt.warn?.('ds-bot: queued cancellation failed: %s', error))
+    return true
   }
 
   Object.assign(rt, {
@@ -497,6 +543,16 @@ export function install(rt) {
     dropThreadQueue: forget,
     dropThreadQueueSession: dropSession,
   })
+  ctx.effect(() => () => {
+    disposed = true
+    for (const slot of slots.values()) {
+      if (slot.entry !== null) {
+        clearWatch(slot.entry)
+        clearAbort(slot.entry)
+      }
+      for (const entry of slot.queue) clearAbort(entry)
+    }
+  }, 'ds-bot: thread queue')
   if (path !== undefined) {
     ready = Promise.resolve().then(restoreQueue)
       .catch(() => rt.warn?.('ds-bot: could not restore thread-queue.json'))
@@ -510,6 +566,6 @@ export function install(rt) {
 const QUEUE_VERSION = 1
 const hasText = value => typeof value === 'string' && value.trim() !== ''
 
-function savedItem({ queueId, botId, threadId, sessionId, preview, text, enqueuedAt }) {
-  return { queueId, botId, threadId, sessionId, preview, text, enqueuedAt }
+function savedItem({ queueId, requestId = queueId, botId, threadId, sessionId, preview, text, enqueuedAt }) {
+  return { queueId, requestId, botId, threadId, sessionId, preview, text, enqueuedAt }
 }

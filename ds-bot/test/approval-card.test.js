@@ -180,5 +180,5 @@ test('A3b the room reaches the card: MemberApprovals and the drawer both pass it
   const tree = m.memberApprovals({ entry: { state: 'ask', approvals: [ROW] }, bot: BOT, room: ROOM, actions: spy().actions })
   assert.equal(tree.children.flat(Infinity)[0].props.room.id, 'r1')
   const drawer = readFileSync(fileURLToPath(new URL('../src/client/details-drawer.js', import.meta.url)), 'utf8')
-  assert.match(drawer, /h\(MemberApprovals, \{ entry, bot: member, room, actions \}\)/)
+  assert.match(drawer, /h\(MemberApprovals, \{ entry, bot: member, room, actions, readOnly: Boolean\(roster\?\.readOnly\) \}\)/)
 })

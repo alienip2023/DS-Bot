@@ -6,7 +6,7 @@ import { currentPart } from './text.js'
 import { isJoinedRemote } from './joined-errors.js'
 import { GearIcon, PinIcon, UnreadIcon, PencilIcon, StarLineIcon, CopyIcon, HideIcon, TrashIcon, DuplicateIcon, FolderIcon, PlusIcon, CheckIcon, PeopleIcon, SignOutIcon } from './icons.js'
 import { BotMark, RoomAvatar } from './mark.js'
-import { useEscape } from './overlay-hooks.js'
+import { ESCAPE_PRIORITY, useEscape } from './overlay-hooks.js'
 import { stepMenuFocus, useViewport, viewBottom } from './motion.js'
 import { t } from './i18n.js'
 
@@ -33,7 +33,7 @@ function sectionMoveItems(entry, roster, actions) {
 const useNullWork = () => 'null'
 
 export function ContextMenu({ menu, roster, actions, useWork, leaving = false }) {
-  useEscape(() => actions.closeMenu(), !leaving)
+  useEscape(() => actions.closeMenu(), !leaving, { priority: ESCAPE_PRIORITY.MENU })
   const ref = useRef(null)
   const trigger = useRef(typeof document === 'undefined' ? null : document.activeElement)
   const [armedDelete, setArmedDelete] = useState(false)
@@ -85,6 +85,9 @@ export function ContextMenu({ menu, roster, actions, useWork, leaving = false })
       bot && isMainBot && mainCount > 1 ? [t('Remove Main Bot role'), StarLineIcon, () => actions.setMain(bot.id, false)] : null,
     ],
     [[t('Copy conversation ID'), CopyIcon, () => navigator.clipboard?.writeText(bot ? currentPart(bot) : menu.id)]],
+    bot ? [...new Map((waits?.batches ?? []).flatMap(batch => batch.returned ?? [])
+      .filter(item => item.from && roster.byId[item.from]).map(item => [item.from, item])).values()]
+      .map(item => [t('View returned work from {name}', { name: roster.byId[item.from].name }), CheckIcon, () => actions.openExchange(bot.id, item.from)]) : [],
     bot ? (waits?.waits ?? []).map(item => [t('Give up waiting for {name}', { name: item.name ?? t('a Bot') }), SignOutIcon, () => actions.abandonWork(item.id)]) : [],
     [
       isMainBot ? null : [t('Hide from sidebar'), HideIcon, () => actions.setFlags(menu.id, { hidden: true })],

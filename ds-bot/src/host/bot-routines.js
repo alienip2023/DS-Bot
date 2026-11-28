@@ -129,7 +129,7 @@ export function installBotRoutines(rt) {
       else task.scheduledAt = occurrence.nextScheduledAt
       // Reserve before sending. An interrupted/uncertain dispatch is recorded on
       // restart, never blindly replayed into a second real Bot turn.
-      try { await rt.save() } catch (error) { rt.state.routines[task.id] = previous; throw error }
+      try { await rt.save({ required: true }) } catch (error) { rt.state.routines[task.id] = previous; throw error }
       const controller = new AbortController()
       jobs.set(task.id, controller)
       const runTurn = async () => {

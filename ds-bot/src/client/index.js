@@ -2,11 +2,12 @@ import { call } from './api.js'
 import { isHex, inkText, paintCss } from './inks.js'
 import { DEFAULT_MASK, SHAPES, markupCache, maskOf } from './characters.js'
 import { createSource, EMPTY_ROSTER, homeOf, indexRoster, isAgentSession } from './sources.js'
-import { teamActions } from './team-actions.js'
-import { themeCss, shellTokens, registry, registerShape, registerTheme, allThemes, layoutOf, effectsOf, widthOf, flatWidthOf } from './themes.js'
+import { sectionFoldWrites, teamActions } from './team-actions.js'
+import { themeCss, shellTokens, surfaceColors, registry, registerShape, registerTheme, allThemes, themesOf, layoutOf, effectsOf, widthOf, flatWidthOf } from './themes.js'
+import { appearanceCss, backgroundShown, onSafeAppearance, pictureUrl, safeAppearance, userCss, watchSafeAppearance } from './appearance.js'
 import { readSkinSurfaceVars, writeSkinSurfaceVars } from './skin.js'
 import { MENTION_ORIGIN, currentPart } from './text.js'
-import { SHELL_CSS, CONVERSATION_CSS, botOwnCss, installStyles, installCompiledStyles, RETURN_TOKENS } from './styles.js'
+import { SHELL_CSS, CONVERSATION_CSS, botOwnCss, installStyles, installLastStyles, installCompiledStyles, RETURN_TOKENS } from './styles.js'
 import { lookOf } from './mark.js'
 import { TeamSidebar, YouAvatar, AccountLauncher, FooterAccount, BrandMark, BrandName, BotReturn, SIDEBAR_CSS, RETURN_CSS, holdShellShortcuts } from './sidebar.js'
 import { threadsStore } from './threads.js'
@@ -43,6 +44,7 @@ import { CONNECTORS_PAGE_CSS } from './connectors-page.js'
 import { PROVIDERS_CSS } from './providers-page.js'
 import { LearningDock, LearningTurnTail, PendingLearning, LEARNING_CSS } from './learning-card.js'
 import { MODEL_CSS, ModelChoiceDock, DeepSeekSignIn } from './model-menu.js'
+import { AGENT_PRESET_CSS } from './agent-preset-menu.js'
 import { BOT_SETTINGS_CSS } from './bot-settings.js'
 import { BOT_MODELS_CSS } from './bot-models-page.js'
 import { AGENT_CARDS_CSS } from './agent-cards.js'
@@ -51,6 +53,9 @@ import { GROUP_SETTINGS_CSS } from './group-settings.js'
 import { FOLDER_CSS } from './folder-menu.js'
 import { USAGE_CSS } from './usage-page.js'
 import { SCHEDULE_CSS } from './schedules.js'
+import { APPEARANCE_PAGE_CSS } from './appearance-page.js'
+import { SHORTCUTS_PAGE_CSS } from './shortcuts-page.js'
+import { registerPluginShortcuts } from './plugin-shortcuts.js'
 import { STORAGE, migrateStorage } from './storage.js'
 import { noteLeft, setUnread, sharedMap, toggleReaction } from './shared-map.js'
 import { freePriority, groupsFor, readMode, surfaceGroups, writeMode } from './surface.js'
@@ -60,7 +65,9 @@ import { steerQueued } from './enter-steer.js'
 import { installCommandActions } from './command-actions.js'
 import { RIGHTBAR_ATTRIBUTES, columnOpened, createSwitchWindow, drawerOpened, rightColumnOpen } from './right-panel.js'
 import { ErrorToast, FEEDBACK_CSS } from './feedback.js'
+import { PRIVACY_CSS } from './privacy-page.js'
 import { ABOUT_CSS } from './about.js'
+import { INBOX_CSS } from './inbox.js'
 import { MEMBER_CSS, MemberDock } from './member-status.js'
 import { TASK_CSS } from './task-board.js'
 import { IM_CSS } from './im-page.js'
@@ -75,6 +82,7 @@ import { createQuestionDrafts } from './question-draft.js'
 import { OPENING_CSS, bindOpeningWait } from './opening.js'
 import { noticeApprovals } from './approval-notices.js'
 import { listedOpener } from './open-listed.js'
+import { installTitle } from './branding.js'
 import { threadSessionOpener } from './thread-open.js'
 import { threadOwnerResolver } from './thread-owner.js'
 import { admitThreadPage, forgetThreadPage, readThreadPage, rememberThreadPage, restoreThreadPage } from './thread-restore.js'
@@ -86,13 +94,38 @@ import { TextSelectionAction, ANNOTATION_CSS } from './text-annotation.js'
 import { installAgentForks } from './agent-fork.js'
 import { createAvatarRefCache } from './avatar-refs.js'
 import { watchBotCompletions } from './bot-completions.js'
+import { callServiceMethod, createSessionStatusSource, hasContextProperty, readServiceMember } from './host-service.js'
 
-export const inject = ['sessions', 'uiWorkspace', 'uiConversation', 'slots', 'theme', 'layout']
+export const inject = ['sessions', 'uiWorkspace', 'uiConversation', 'uiSession', 'slots', 'theme', 'layout']
 
 const WINDOWS = globalThis.navigator?.userAgentData?.platform === 'Windows' || /^Win/u.test(globalThis.navigator?.platform ?? '')
 
 export function apply(ctx) {
-  ctx.effect(() => installLocale(ctx.get('locale')), 'ds-bot: interface copy')
+  ctx.effect(() => installTitle(document), 'ds-bot: window title')
+  // Install synchronously when `locale` is already active so cold-start `state` pulls
+  // and desktop tray labels use the user's language on the first tick, while the child
+  // `ctx.inject(['locale'], ...)` fiber handles late arrival and reloads.
+  ctx.effect(() => {
+    const initialLocale = ctx.get('locale')
+    let offInitial = initialLocale ? installLocale(initialLocale) : null
+    const releaseInitial = () => {
+      const off = offInitial
+      offInitial = null
+      off?.()
+    }
+    const fiber = ctx.inject(['locale'], (scope) => {
+      scope.effect(() => {
+        releaseInitial()
+        return installLocale(scope.locale)
+      }, 'ds-bot: interface copy')
+    })
+    return () => {
+      releaseInitial()
+      return fiber.dispose()
+    }
+  }, 'ds-bot: interface copy lifecycle')
+  const sessionStatus = createSessionStatusSource(ctx)
+  ctx.effect(() => () => sessionStatus.dispose(), 'ds-bot: session status')
   migrateStorage()
   // The core restores the main view from its own saved Session id as soon as its
   // lists are ready, and only a Session already in the list can be restored. A
@@ -113,7 +146,7 @@ export function apply(ctx) {
   let seenAt = seenStore.read()
   // `details` is the panel's subject (a Session id); `view` picks details or the
   // subject Bot's browser inside it.
-  const ui = createSource({ details: null, view: 'details', renaming: false, tab: null, side: null, task: null, taskDeck: null, newChat: null, exchange: null, menu: null, voice: null, palette: null, quote: null, paste: {}, pendingOpen: null, settings: null, memory: null, toast: null, signIn: null, renameAgent: null, unread: unreadStore.read(), reactions: reactionStore.read(), visits: {}, panelYield: false, leftDrawer: false, bootFailed: false, goalCompose: null, goalOpen: null, approvalOpen: null })
+  const ui = createSource({ details: null, view: 'details', renaming: false, tab: null, side: null, task: null, taskDeck: null, newChat: null, exchange: null, menu: null, voice: null, palette: null, quote: null, paste: {}, pendingOpen: null, settings: null, releaseNotes: null, memory: null, toast: null, signIn: null, renameAgent: null, unread: unreadStore.read(), reactions: reactionStore.read(), visits: {}, panelYield: false, leftDrawer: false, bootFailed: false, goalCompose: null, goalOpen: null, approvalOpen: null, inbox: false })
   // The left column's kept preference, and the frame geometry the layout rules
   // in frame-layout.js read: the window and the shell's collapsed track come from
   // installFrameWatch, the open column's width is the user's own.
@@ -139,9 +172,8 @@ export function apply(ctx) {
   const isAgentSessionId = id => isAgentSession(roster.getSnapshot(), agentSessionCache, id) || pendingAdopt.has(id)
   const agentOfSession = id => roster.getSnapshot().agentOf[id] ?? pendingAdopt.get(id)
   // The workspace a Session lives in, for follow-up creates and switch detection.
-  const workspaces = ctx.get('workspaces')
   const workspaceOf = (sessionId) => {
-    const items = workspaces?.list?.getSnapshot()?.items ?? []
+    const items = readServiceMember(ctx, 'workspaces', 'list')?.getSnapshot()?.items ?? []
     return items.find(item => item.sessionIds?.includes(sessionId))?.workspaceId
   }
   // A navigation this plugin started: the surface effect trusts the id it lands on.
@@ -219,6 +251,7 @@ export function apply(ctx) {
   // Pulls can overlap (the poll and a navigation); an older answer never wins.
   let pulls = 0
   let applied = 0
+  const foldWrites = sectionFoldWrites()
   let avatarIncomplete = false
   const pull = async () => {
     const order = ++pulls
@@ -259,6 +292,9 @@ export function apply(ctx) {
     if (value.imVia !== undefined && JSON.stringify(value.imVia) !== JSON.stringify(current.imVia ?? {})) live.imVia = value.imVia
     if (value.apiVia !== undefined && JSON.stringify(value.apiVia) !== JSON.stringify(current.apiVia ?? {})) live.apiVia = value.apiVia
     if (value.plugins !== undefined && JSON.stringify(value.plugins) !== JSON.stringify(current.plugins ?? null)) live.plugins = value.plugins
+    if (value.inbox !== undefined && JSON.stringify(value.inbox) !== JSON.stringify(current.inbox ?? null)) live.inbox = value.inbox
+    if (value.telemetryPrompt !== undefined && Boolean(value.telemetryPrompt) !== Boolean(current.telemetryPrompt)) live.telemetryPrompt = Boolean(value.telemetryPrompt)
+    if (value.releaseNotes !== undefined && JSON.stringify(value.releaseNotes) !== JSON.stringify(current.releaseNotes ?? null)) live.releaseNotes = value.releaseNotes
     // The read-only notice goes once this host takes the team over from a dsh that
     // closed, without a reload: the window holds the answer's live fields until then.
     if (value.readOnly !== undefined && (value.readOnly ?? null) !== (current.readOnly ?? null)) live.readOnly = value.readOnly
@@ -281,7 +317,7 @@ export function apply(ctx) {
     }
     // On a browser with no visit record yet, everything already there counts as seen.
     if (Object.keys(seenAt).length === 0) leaveVisits([...hydrated.bots, ...hydrated.rooms].map(entry => entry.id))
-    roster.set(indexRoster(hydrated))
+    roster.set(indexRoster({ ...hydrated, sections: foldWrites.reconcile(hydrated.sections, hydrated.revision) }))
     try {
       const ids = (hydrated.agents ?? []).flatMap(agent => agent.sessions ?? [])
       localStorage.setItem(STORAGE.agentSessions, JSON.stringify(ids))
@@ -464,14 +500,21 @@ export function apply(ctx) {
 
   // The chosen theme lives in the team state so every device shares it; the local
   // copy only avoids a flash of the default theme before the first state pull.
+  // The Session the main view holds open, if any.
+  const shownSessionId = () => Object.values(ctx.sessions.list.getSnapshot().byId ?? {}).find(session => (session?.retainedBy?.mainView ?? 0) > 0)?.id
   const installTheme = () => {
     const style = installStyles('', 'theme')
+    // The appearance, and the user's own stylesheet after every DS Bot sheet.
+    const look = installStyles('', 'appearance')
+    const userSheet = installLastStyles('user-stylesheet')
     let key = ''
     let releaseTokens = null
     let activeTheme = null
     // A third-party skin's glass sliders change DSH's background tokens; the surfaces
     // follow them through --bt-skin-*, and nothing is set while the tokens are opaque.
-    const skin = writeSkinSurfaceVars(document, () => (activeTheme === null ? {} : readSkinSurfaceVars(document, activeTheme)))
+    // DS Bot's own background sets the panes itself (appearance.js); the skin bridge then stays out.
+    let ownBackground = false
+    const skin = writeSkinSurfaceVars(document, () => (activeTheme === null || ownBackground ? {} : readSkinSurfaceVars(document, activeTheme)))
     let skinRaf = 0
     const scheduleSkin = () => {
       if (skinRaf) return
@@ -503,15 +546,25 @@ export function apply(ctx) {
     const render = () => {
       const snapshot = roster.getSnapshot()
       const prefs = snapshot.ready ? snapshot.prefs ?? {} : savedPrefs
-      const themes = allThemes()
+      const themes = themesOf(prefs)
       const id = themes[prefs.theme] ? prefs.theme : 'deepseek'
+      // The open chat's own background, over the team's (docs/plans/2026-11-21-appearance.md).
+      const open = shownSessionId()
+      const chat = open === undefined ? undefined : snapshot.byId?.[open] ?? snapshot.roomsById?.[open]
+      const safe = safeAppearance()
+      const lookCss = appearanceCss({ appearance: prefs.appearance, theme: themes[id], background: chat?.background, pictureUrl: picture => pictureUrl(picture, call, render), safe, user: false })
+      if (look.textContent !== lookCss) look.textContent = lookCss
+      const mine = userCss(prefs.appearance, safe)
+      if (userSheet.textContent !== mine) userSheet.textContent = mine
+      const through = backgroundShown({ appearance: prefs.appearance, background: chat?.background, pictureUrl: picture => pictureUrl(picture, call, render), safe })
+      ownBackground = through
       const accent = isHex(prefs.accent) ? prefs.accent : undefined
       const motion = prefs.motion === 'quiet' || prefs.motion === 'lively' ? prefs.motion : 'normal'
       const layout = layoutOf(prefs)
       const effects = effectsOf(prefs)
       const width = widthOf(prefs)
       const flatWidth = flatWidthOf(prefs)
-      const next = `${id}|${accent ?? ''}|${motion}|${layout}|${effects}|${width}|${flatWidth}|${registry.getSnapshot()}`
+      const next = `${id}|${JSON.stringify(themes[id])}|${accent ?? ''}|${motion}|${layout}|${effects}|${width}|${flatWidth}|${through}|${registry.getSnapshot()}`
       if (next === key) return
       key = next
       if (document.body.dataset.btMotion !== motion) document.body.dataset.btMotion = motion
@@ -526,7 +579,7 @@ export function apply(ctx) {
       activeTheme = themes[id]
       skin.apply()
       const release = releaseTokens
-      releaseTokens = ctx.theme.overrideTokens('ds-bot', shellTokens(themes[id]))
+      releaseTokens = ctx.theme.overrideTokens('ds-bot', shellTokens(themes[id], through ? surfaceColors(themes[id]) : undefined))
       if (typeof release === 'function') release()
       if (snapshot.ready) {
         try { localStorage.setItem(PREFS_KEY, JSON.stringify({ theme: prefs.theme, accent: prefs.accent, motion: prefs.motion, layout: prefs.layout, effects: prefs.effects, width: prefs.width, flatWidth: prefs.flatWidth, thinking: prefs.thinking, defaultBotModel: prefs.defaultBotModel, enterToSend: prefs.enterToSend })) } catch { /* storage unavailable */ }
@@ -535,9 +588,20 @@ export function apply(ctx) {
     render()
     const offRoster = roster.subscribe(render)
     const offRegistry = registry.subscribe(render)
+    const offShown = ctx.sessions.list.subscribe(render)
+    const offSafe = onSafeAppearance((on) => {
+      render()
+      if (on) actions.notice?.(t('Safe appearance: the background and your stylesheet are off in this window. Turn them back on in Settings → Appearance.'))
+    })
+    const stopSafe = watchSafeAppearance()
     return () => {
       offRoster()
       offRegistry()
+      offShown()
+      offSafe()
+      stopSafe()
+      look.remove()
+      userSheet.remove()
       offTheme()
       if (skinRaf && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(skinRaf)
       observer?.disconnect()
@@ -648,7 +712,21 @@ export function apply(ctx) {
     openingWait.begin({ target, id: owner?.id ?? target, name: owner?.name ?? '' })
   }
   const endOpening = () => { openingWait.end() }
-  const show = listedOpener({ list: ctx.sessions.list, refresh: () => Promise.resolve(ctx.sessions.refresh?.()).catch(quietly('refresh sessions')), open: (target) => { expected = target; ctx.uiWorkspace.openSession(target) }, current: mainView, begin: beginOpening, done: endOpening })
+  // A wait that cannot succeed. The roster already knows a Bot lost this Session (the
+  // Host marks it when a model selection comes back not-found): keep the cover as a
+  // failure card with a way out. Standalone DSH Agent sessions have no cover, so report
+  // the failure directly when one never arrives.
+  const failOpening = (target, reason = 'missing') => {
+    if (ownerOfSession(target) === undefined) {
+      endOpening()
+      actions.reportError(new Error(t(reason === 'timeout' ? 'This session is not available yet.' : 'This session is no longer available.')), 'open-session')
+      return
+    }
+    openingWait.fail(target, reason)
+  }
+  const lostSession = (target) => (roster.getSnapshot().bots ?? []).some(bot => bot.sessionMissing === target)
+  const recovering = new Set()
+  const show = listedOpener({ list: ctx.sessions.list, refresh: () => Promise.resolve(ctx.sessions.refresh?.()).catch(quietly('refresh sessions')), open: (target) => { expected = target; ctx.uiWorkspace.openSession(target) }, current: mainView, begin: beginOpening, done: endOpening, fail: failOpening, gone: lostSession })
   // Whether the open Bot panel is folded away for lack of room: its opener then
   // means "show it" (the column yields), not "close it". A panel shown because
   // the column already yielded is not folded, so its opener closes it.
@@ -765,7 +843,7 @@ export function apply(ctx) {
     return () => { done = true; offList(); clearTimeout(timer) }
   }, 'ds-bot: restore the last Thread page')
   const actions = {
-    ...teamActions({ call, after, partFor, roster, ui, live, cards, heldCards, turnClock, panelFolded, questionDrafts, openSession: id => actions.openSession(id), ...sessionProbes(ctx, quietly) }),
+    ...teamActions({ call, after, partFor, roster, ui, live, cards, heldCards, turnClock, panelFolded, questionDrafts, foldWrites, openSession: id => actions.openSession(id), ...sessionProbes(ctx, quietly) }),
     // The files a group row names open DSH's own review tab for that turn. The tab reads
     // the changes of the Session the shell shows, so that Session is opened first; the same
     // call then retries until its right column is mounted. This jump is the one place a
@@ -796,10 +874,38 @@ export function apply(ctx) {
       // Not a Thread page: the next restore must not put one back.
       forgetThreadPage()
       navSeq += 1
-      ui.set(state => (state.newChat || state.exchange || state.menu || state.palette || state.groupSearch ? { ...state, newChat: null, exchange: null, menu: null, palette: null, groupSearch: null } : state))
-      setPlain(false)
       const target = partFor(id)
+      const fromInbox = ui.getSnapshot().inbox === true
+      ui.set(state => (state.newChat || state.exchange || state.menu || state.palette || state.groupSearch || state.inbox || state.inboxTarget
+        ? { ...state, newChat: null, exchange: null, menu: null, palette: null, groupSearch: null, inbox: false, inboxTarget: fromInbox ? target : null }
+        : state))
+      setPlain(false)
       show(target)
+    },
+    retryOpening: (target) => {
+      if (!target) return
+      show(target)
+    },
+    // The Bot's current Session is gone from the library: a fresh part takes its place
+    // (the Host makes it without the lost part), then that part is opened. The failure
+    // card stays meanwhile, so a failed try leaves the way out on screen.
+    recoverOpening: async (botId) => {
+      if (recovering.has(botId)) return
+      recovering.add(botId)
+      const seq = ++navSeq
+      try {
+        await after(call('recover-session', { botId }))
+        if (seq !== navSeq) return
+        const bot = roster.getSnapshot().byId[botId]
+        if (bot === undefined) { endOpening(); return }
+        navSeq += 1
+        setPlain(false)
+        show(currentPart(bot))
+      } catch (error) {
+        actions.reportError(error, 'reopen-session')
+      } finally {
+        recovering.delete(botId)
+      }
     },
     // The conversation replacements withdraw for a plain Session; set the surface
     // before the navigation so the Bot skin never flashes.
@@ -808,7 +914,8 @@ export function apply(ctx) {
       if (threadBot === undefined) forgetThreadPage()
       else rememberThreadPage({ botId: threadBot, sessionId })
       navSeq += 1
-      ui.set(state => ({ ...state, newChat: null, exchange: null, menu: null, palette: null, groupSearch: null, details: null, view: 'details', renaming: false, tab: null, task: null, taskDeck: null }))
+      const fromInbox = ui.getSnapshot().inbox === true
+      ui.set(state => ({ ...state, newChat: null, exchange: null, menu: null, palette: null, groupSearch: null, inbox: false, inboxTarget: fromInbox ? sessionId : null, details: null, view: 'details', renaming: false, tab: null, task: null, taskDeck: null }))
       setPlain(true)
       show(sessionId)
     },
@@ -950,7 +1057,7 @@ export function apply(ctx) {
         return
       }
       if (mode === 'agent') {
-        ui.set(state => ({ ...state, details: null, view: 'details', task: null, taskDeck: null, settings: null, palette: null, groupSearch: null, newChat: null, menu: null, voice: null, exchange: null, memory: null, toast: null, goalOpen: null, goalCompose: null, approvalOpen: null }))
+        ui.set(state => ({ ...state, details: null, view: 'details', task: null, taskDeck: null, settings: null, palette: null, groupSearch: null, newChat: null, inbox: false, menu: null, voice: null, exchange: null, memory: null, toast: null, goalOpen: null, goalCompose: null, approvalOpen: null }))
       }
       writeMode(mode)
       surface.set(state => ({ ...state, mode }))
@@ -991,7 +1098,20 @@ export function apply(ctx) {
         if (!bot) return
         browsers.ensureTabs(bot.id)
         if (browsers.tabs.getSnapshot()[bot.id]?.active == null) browsers.openTab(bot.id)
-        ui.set(state => ({ ...state, details: id, view: 'browser', renaming: false, tab: null, panelYield: yieldBrowser(state) }))
+        ui.set(state => ({ ...state, inbox: false, details: id, view: 'browser', renaming: false, tab: null, panelYield: yieldBrowser(state) }))
+      },
+      toggleBrowser: (id) => {
+        const snap = roster.getSnapshot()
+        if (snap.browser === false) return
+        const bot = snap.byId?.[id]
+        if (!bot) return
+        const state = ui.getSnapshot()
+        const detailsBotId = state.details ? (snap.byId?.[state.details]?.id ?? state.details) : null
+        if (state.details && state.view === 'browser' && detailsBotId === bot.id) {
+          actions.closePanel()
+          return
+        }
+        actions.openBrowser(bot.id)
       },
       // '+' on the strip or the drawer's new-tab card: a blank tab in the browser view.
       browserNewTab: (id) => {
@@ -999,7 +1119,7 @@ export function apply(ctx) {
         if (!bot) return null
         browsers.ensureTabs(bot.id)
         const tabId = browsers.openTab(bot.id)
-        ui.set(state => ({ ...state, details: id, view: 'browser', renaming: false, tab: null, panelYield: yieldBrowser(state) }))
+        ui.set(state => ({ ...state, inbox: false, details: id, view: 'browser', renaming: false, tab: null, panelYield: yieldBrowser(state) }))
         return tabId
       },
       // A drawer card: its tab active, the panel on the browser view.
@@ -1043,7 +1163,11 @@ export function apply(ctx) {
         launch: typeof bridge.importLaunch === 'function' ? (source) => bridge.importLaunch(source) : null,
         openPermission: typeof bridge.importOpenPermission === 'function' ? () => bridge.importOpenPermission() : null,
         live: (source, close, requestId) => bridge.importLive(source, close, requestId),
-        apply: (botId, pending, options) => bridge.importApply(`bot:${botId}`, pending, options),
+        apply: (botId, pending, options) => bridge.importApply(
+          Array.isArray(botId) ? botId.map((id) => `bot:${id}`) : `bot:${botId}`,
+          pending,
+          options,
+        ),
         cancel: (pending) => bridge.importCancel(pending),
       } : null,
     })
@@ -1053,7 +1177,7 @@ export function apply(ctx) {
   actions.canSignIn = () => Boolean(actions.signInEntry())
   actions.signIn = () => ui.set(state => ({ ...state, signIn: (state.signIn ?? 0) + 1 }))
   actions.closeSignIn = () => ui.set(state => ({ ...state, signIn: null }))
-  actions.accountT = () => ctx.get('locale').bind('settings.account')
+  actions.accountT = () => ctx.get('locale')?.bind?.('settings.account') ?? (key => key)
   // DS Bot's own Plugins panel works consistently in both the desktop app and plugin mode.
   actions.hasPlugins = () => true
   actions.openPlugins = (focus = null) => actions.openSettings('plugins', focus)
@@ -1233,13 +1357,28 @@ export function apply(ctx) {
       return () => { if (typeof off === 'function') off() }
     }, 'ds-bot: computer actions')
   }
-  const face = () => ({ actions, hooks: { roster, ui, activity, work, memoryNews, registry, turnClock, live, computer, cards, heldCards, rescuedDrafts: questionDrafts.rescued, browserPages, browserTabs, browserHolds, surface, update, frame, sidebarPref, settingsShellHeld } })
+  const face = () => ({ actions, hooks: { roster, ui, activity, work, memoryNews, registry, turnClock, live, computer, cards, heldCards, rescuedDrafts: questionDrafts.rescued, browserPages, browserTabs, browserHolds, botCompletions, surface, update, frame, sidebarPref, settingsShellHeld } })
   // Since DSH 0.2.1-alpha.3 user text is drawn by rules and a content factory, not the
   // primitives' text projection; the user's bubble draws with either (user-message.js).
   const hostDrawsUserText = typeof ctx.uiConversation?.userText?.register === 'function'
   // DS Bot's own rows in the `/` menu of a Bot chat and a group chat (the DSH rows stay;
   // the host module stops their execution there).
   ctx.effect(() => installCommandActions(ctx, { roster, actions }), 'ds-bot: bot command actions')
+  // Register core DS Bot commands into DSH's shortcut catalog (plugin mode).
+  ctx.inject(['shortcuts'], (scope) => {
+    scope.effect(() => registerPluginShortcuts(scope.shortcuts, {
+      roster,
+      ui,
+      surface,
+      actions,
+      mainView,
+      sessionsById: () => ctx.sessions.list.getSnapshot().byId,
+      onError: (id, error) => {
+        noteClientError(`shortcut:${id}`, error)
+        console.error(`ds-bot: failed to register shortcut "${id}":`, error)
+      },
+    }), 'ds-bot: bot shortcuts')
+  })
   // DS Bot holds the settings seat in every mode, Agent mode included: the bundle patch
   // turns DSH's own shell off, and this one draws DSH's settings pages in DS Bot's dialog.
   ctx.effect(() => {
@@ -1289,14 +1428,13 @@ export function apply(ctx) {
   // question disappears externally (never on explicit submit, skip, scroll, or switch).
   ctx.effect(() => {
     const offRoster = roster.subscribe(() => { questionDrafts.reconcileRoster(roster.getSnapshot()) })
-    const sessionStatus = ctx.get('uiSession')?.sessionStatus
-    const offStatus = sessionStatus?.subscribe?.(() => { questionDrafts.reconcileBlocking(sessionStatus.getSnapshot(), roster.getSnapshot()) })
-    return () => { offRoster(); offStatus?.() }
+    const offStatus = sessionStatus.source.subscribe(() => { questionDrafts.reconcileBlocking(sessionStatus.source.getSnapshot(), roster.getSnapshot()) })
+    return () => { offRoster(); offStatus() }
   }, 'ds-bot: rescue interrupted question drafts')
   ctx.effect(() => noticeApprovals({
     work,
     roster,
-    shownSession: () => Object.values(ctx.sessions.list.getSnapshot().byId ?? {}).find(session => (session?.retainedBy?.mainView ?? 0) > 0)?.id,
+    shownSession: shownSessionId,
     openSession: id => actions.openSession(id),
   }), 'ds-bot: approval notifications')
   const assistantFace = (sessionId) => {
@@ -1347,7 +1485,17 @@ export function apply(ctx) {
   actions.steerQueued = async (sessionId) => {
     const session = ctx.sessions.binding(sessionId)?.session
     if (session === undefined) return
-    if (await steerQueued(session) === 'failed') {
+    const steerBatch = roster.getSnapshot().byId?.[sessionId] !== undefined
+      ? async (ids) => {
+          try {
+            const result = await actions.steerQueueBatch(sessionId, ids)
+            return result?.fallback === true ? 'fallback' : 'done'
+          } catch (error) {
+            return error?.code === 'bot/not-found' ? 'fallback' : 'failed'
+          }
+        }
+      : undefined
+    if (await steerQueued(session, steerBatch) === 'failed') {
       actions.reportError(new Error(t('Couldn’t steer the queued messages. Try again.')), 'steer-queue')
     }
   }
@@ -1376,7 +1524,7 @@ export function apply(ctx) {
     // The column takes the drawer's space: hand it over first.
     actions.closePanel()
     try {
-      ctx.get('sidebarRight')?.openTab('terminal')
+      callServiceMethod(ctx, 'sidebarRight', 'openTab', 'terminal')
     } catch (error) {
       actions.reportError(error, 'right-sidebar')
     }
@@ -1386,7 +1534,7 @@ export function apply(ctx) {
   actions.openFiles = () => {
     actions.closePanel()
     try {
-      ctx.get('sidebarRight')?.openTab('files')
+      callServiceMethod(ctx, 'sidebarRight', 'openTab', 'files')
     } catch (error) {
       actions.reportError(error, 'right-sidebar')
     }
@@ -1399,39 +1547,54 @@ export function apply(ctx) {
   // an attribute batch inside it is the switch revealing that Session's own
   // column — the drawer wins and folds it back — while one outside it is the
   // user's own opening and takes the space.
-  ctx.effect(() => {
-    const sidebar = ctx.get('sidebarRight')
-    if (!sidebar) return undefined
-    let open = rightColumnOpen(document)
-    // Long enough for a fullscreen panel's slide, which reports only once it ends.
-    const switchWindow = createSwitchWindow(done => setTimeout(done, 400))
-    const collapseColumn = () => {
-      try {
-        if (sidebar.isExpanded()) sidebar.toggleExpanded()
-      } catch (error) {
-        actions.reportError(error, 'right-sidebar')
+  ctx.inject(['sidebarRight'], (scope) => {
+    scope.effect(() => {
+      let open = rightColumnOpen(document)
+      // Long enough for a fullscreen panel's slide, which reports only once it ends.
+      const switchWindow = createSwitchWindow(done => setTimeout(done, 400))
+      const collapseColumn = () => {
+        try {
+          if (callServiceMethod(scope, 'sidebarRight', 'isExpanded')) callServiceMethod(scope, 'sidebarRight', 'toggleExpanded')
+        } catch (error) {
+          actions.reportError(error, 'right-sidebar')
+        }
       }
-    }
-    const observer = new MutationObserver(() => {
-      const next = rightColumnOpen(document)
-      const opening = next && !open
-      open = next
-      const verdict = opening ? columnOpened(ui.getSnapshot().details !== null, switchWindow.pending) : null
-      if (verdict === 'close-drawer') actions.closePanel()
-      else if (verdict === 'collapse-column') collapseColumn()
-    })
-    observer.observe(document.documentElement, {
-      subtree: true, attributes: true, attributeFilter: RIGHTBAR_ATTRIBUTES,
-    })
-    const offMounted = sidebar.mounted.subscribe(() => switchWindow.moved())
-    let drawer = ui.getSnapshot().details !== null
-    const offUi = ui.subscribe(() => {
-      const next = ui.getSnapshot().details !== null
-      if (next && !drawer && drawerOpened(rightColumnOpen(document)) === 'collapse-column') collapseColumn()
-      drawer = next
-    })
-    return () => { observer.disconnect(); offMounted(); offUi() }
-  }, 'ds-bot: one right panel')
+      const observer = new MutationObserver(() => {
+        const next = rightColumnOpen(document)
+        const opening = next && !open
+        open = next
+        const verdict = opening ? columnOpened(ui.getSnapshot().details !== null, switchWindow.pending) : null
+        if (verdict === 'close-drawer') actions.closePanel()
+        else if (verdict === 'collapse-column') collapseColumn()
+      })
+      observer.observe(document.documentElement, {
+        subtree: true, attributes: true, attributeFilter: RIGHTBAR_ATTRIBUTES,
+      })
+      let offDirectMounted = null
+      const releaseDirectMounted = () => {
+        const off = offDirectMounted
+        offDirectMounted = null
+        off?.()
+      }
+      const mountedFiber = scope.inject(['sidebarRight.mounted'], (mountedScope) => {
+        mountedScope.effect(() => {
+          releaseDirectMounted()
+          const off = mountedScope['sidebarRight.mounted']?.subscribe?.(() => switchWindow.moved())
+          return () => { off?.() }
+        }, 'ds-bot: sidebarRight.mounted')
+      })
+      if (!hasContextProperty(scope, 'sidebarRight.mounted')) {
+        offDirectMounted = scope.sidebarRight?.mounted?.subscribe?.(() => switchWindow.moved()) ?? null
+      }
+      let drawer = ui.getSnapshot().details !== null
+      const offUi = ui.subscribe(() => {
+        const next = ui.getSnapshot().details !== null
+        if (next && !drawer && drawerOpened(rightColumnOpen(document)) === 'collapse-column') collapseColumn()
+        drawer = next
+      })
+      return () => { observer.disconnect(); releaseDirectMounted(); mountedFiber.dispose(); offUi() }
+    }, 'ds-bot: one right panel')
+  })
 
   // A Bot surface owns the cells it shadows. It starts far below the -10 that plugins
   // commonly use and goes below whatever already holds the cell, so a plugin that
@@ -1506,12 +1669,17 @@ export function apply(ctx) {
   const SHELL_SHEETS = [
     [SHELL_CSS, 'shell'],
     [SIDEBAR_CSS, 'sidebar'],
+    [INBOX_CSS, 'inbox'],
     [SECRET_CSS + CONNECTOR_CSS + CONNECTORS_PAGE_CSS + PROVIDERS_CSS, 'secrets'],
     [LEARNING_CSS, 'learning'],
+    [AGENT_PRESET_CSS, 'agent-presets'],
     [MODEL_CSS + FOLDER_CSS + BOT_SETTINGS_CSS + BOT_MODELS_CSS + AGENT_CARDS_CSS + GROUP_SETTINGS_CSS + AVATAR_LIBRARY_CSS, 'models'],
     [USAGE_CSS, 'usage'],
     [SCHEDULE_CSS, 'schedules'],
+    [APPEARANCE_PAGE_CSS, 'appearance-page'],
+    [SHORTCUTS_PAGE_CSS, 'shortcuts-page'],
     [FEEDBACK_CSS, 'feedback'],
+    [PRIVACY_CSS, 'privacy'],
     [ABOUT_CSS, 'about'],
     [MEMBER_CSS, 'members'],
     [TASK_CSS, 'tasks'],
@@ -1540,7 +1708,7 @@ export function apply(ctx) {
     syncEffects()
     const snapshot = roster.getSnapshot()
     const prefs = snapshot.ready ? snapshot.prefs ?? {} : savedPrefs
-    const themes = allThemes()
+    const themes = themesOf(prefs)
     const theme = themes[prefs.theme] ?? themes.deepseek
     const offs = [
       roster.subscribe(syncEffects),
@@ -1772,7 +1940,7 @@ export function apply(ctx) {
   }, 'ds-bot: agent surface')
 
   ctx.effect(() => watchBotCompletions({
-    roster, sessions: ctx.sessions.list, statuses: ctx.get('uiSession')?.sessionStatus, unread: botCompletions,
+    roster, sessions: ctx.sessions.list, statuses: sessionStatus.source, unread: botCompletions, ui,
   }), 'ds-bot: sidebar completions')
 
   ctx.effect(() => {

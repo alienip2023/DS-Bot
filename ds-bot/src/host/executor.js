@@ -206,10 +206,11 @@ async function sendLocal({ bot, text, rt, tracker }) {
   const sessionId = rt.chatOf?.(bot.id) ?? bot.id
   const turnId = randomUUID()
   tracker?.start(turnId, bot.id)
-  const run = async () => {
+  const run = async (_, queueReceipt) => {
     try {
-      await rt.sendUser({ sessionId, content: [{ type: 'text', text: text ?? '' }], requestId: turnId })
+      const result = await rt.sendUser({ sessionId, content: [{ type: 'text', text: text ?? '' }], requestId: turnId, ...(queueReceipt === true ? { queueReceipt } : {}) })
       tracker?.finish(turnId, { status: 'done' })
+      return result
     } catch (err) {
       tracker?.finish(turnId, { status: 'failed', error: String(err?.code ?? err?.message ?? err) })
       throw err

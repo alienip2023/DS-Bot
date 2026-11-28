@@ -217,7 +217,7 @@ async function createRestartHost(t, home, logs, services, inspectOverride) {
   const host = { ctx, rt, agentOf, emit, stop: () => ctx.dispose() }
   return host
 }
-test('a failed turn with steered follow-ups pushes only one failure notice per request_id and settles open works', async (t) => {
+for (const legacy of [false, true]) test(`a failed turn with ${legacy ? 'a pre-upgrade' : 'a current'} steered follow-up reports each failure once and settles open works`, async (t) => {
   const { home, rt, agents, tool, stepGate, modes, deliveries } = await createLoopRig(t)
   // Chief's requests go to Writer's work thread for Chief (work model W2).
   const writer = () => [...agents.keys()].find(id => id.startsWith('bw-')) ?? 'b'
@@ -226,8 +226,16 @@ test('a failed turn with steered follow-ups pushes only one failure notice per r
   await tool('message_bot', { to: 'Writer', message: 'Run task 1' }, 'a')
   await settle(() => modes.callCount >= 1 && rt.live.get(writer())?.tool === 'wait_step')
 
-  // While Writer is mid-turn, Chief steers a follow-up update (default when: 'now').
-  await tool('message_bot', { to: 'Writer', message: 'Also include check 2' }, 'a')
+  if (legacy) {
+    // Upgrade can leave a previously steered request in the inbox.
+    const recipient = agents.get(writer())
+    const previous = recipient.session.snapshotEvents().find(event => event.type === 'user/message' && event.data.source?.role === 'request').data
+    const id = 'earlier-steered-work'
+    const work = rt.openWork(id, { from: 'a', to: 'b', toSession: writer(), goal: 'Also include check 2' })
+    recipient.steer({ ...previous, id, source: { ...previous.source, exchangeId: id, workRef: work.ref } })
+  } else {
+    await tool('message_bot', { to: 'Writer', message: 'Also include check 2' }, 'a')
+  }
   await settle(() => agents.get(writer()).inbox.nextStep.length === 1)
 
   // Let wait_step finish so Writer claims the steered follow-up and hits INVALID_REQUEST.
@@ -902,10 +910,13 @@ test('recovery does not hand a request back again when the normal path delivered
 test('a deferred delivery that failed is sent again on retry in the same run', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const home = mkdtempSync(join(tmpdir(), 'ds-bot-dedup-retry-'))
-  t.after(() => rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 }))
+  let host
+  t.after(async () => {
+    await host?.stop()
+    rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
+  })
   writeFileSync(join(home, 'state.json'), JSON.stringify(baseSeed()))
-  const host = await createRestartHost(t, home, new Map())
-  t.after(() => host.stop())
+  host = await createRestartHost(t, home, new Map())
   const agent = host.agentOf('b')
   const followup = agent.followup
   let follows = 0
@@ -924,10 +935,13 @@ test('a deferred delivery that failed is sent again on retry in the same run', a
 test('a concurrent duplicate waits for the delivery already going and shares its failure', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const home = mkdtempSync(join(tmpdir(), 'ds-bot-dedup-concurrent-'))
-  t.after(() => rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 }))
+  let host
+  t.after(async () => {
+    await host?.stop()
+    rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
+  })
   writeFileSync(join(home, 'state.json'), JSON.stringify(baseSeed()))
-  const host = await createRestartHost(t, home, new Map())
-  t.after(() => host.stop())
+  host = await createRestartHost(t, home, new Map())
   const agent = host.agentOf('b')
   const followup = agent.followup
   let follows = 0

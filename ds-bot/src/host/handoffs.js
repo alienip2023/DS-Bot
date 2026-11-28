@@ -9,13 +9,14 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { readdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
-import { LATE_ANSWER, MESSAGE_INLINE_MAX, TEXT_KEPT } from './constants.js'
+import { isAckLikeText, LATE_ANSWER, MESSAGE_INLINE_MAX, PAIR_LOOP_TTL_MS, TEXT_KEPT, WORK_ASK_BACK_LIMIT } from './constants.js'
 import { normalizeImOrigin, sameImOrigin } from './im/origin.js'
 import { headOf } from './text.js'
-import { ownChatSessions } from './threads.js'
+import { isActiveTask, ownChatSessions, threadCurrentOfPart, threadOfPart } from './threads.js'
 
 const own = (obj, key) => (obj != null && typeof key === 'string' && Object.hasOwn(obj, key) ? obj[key] : undefined)
 const safeKey = key => typeof key === 'string' && key !== '' && key !== '__proto__' && key !== 'constructor' && key !== 'prototype'
+const contentKey = text => createHash('sha256').update(String(text ?? '').trim()).digest('hex')
 
 const minutes = since => {
   const count = Math.floor((Date.now() - since) / 60_000)
@@ -45,6 +46,50 @@ export function install(rt) {
   }
   const nameOf = id => rt.botOf(id)?.name
 
+  const closedWorks = () => (state.closedWorks ??= {})
+  const pairLoops = () => (state.pairLoops ??= {})
+  const CLOSED_KEPT = 100
+  const pairKey = (a, b) => [String(a), String(b)].sort().join(':')
+  const nextWorkRef = () => {
+    state.workSeq = (Number.isInteger(state.workSeq) && state.workSeq >= 0 ? state.workSeq : 0) + 1
+    return `W${state.workSeq}`
+  }
+  const rememberClosed = (id, entry) => {
+    if (!safeKey(id)) return
+    const map = closedWorks()
+    map[id] = entry
+    const ids = Object.keys(map)
+    if (ids.length > CLOSED_KEPT) {
+      for (const old of ids.sort((a, b) => (map[a].at ?? 0) - (map[b].at ?? 0)).slice(0, ids.length - CLOSED_KEPT)) delete map[old]
+    }
+  }
+  const normalizeRef = ref => {
+    const text = String(ref ?? '').trim()
+    const match = /^#?(w\d+)$/i.exec(text)
+    return match === null ? undefined : match[1].toUpperCase()
+  }
+  function resolveWork(refOrId) {
+    const key = String(refOrId ?? '').trim()
+    if (key === '') return undefined
+    const direct = own(works(), key)
+    if (direct !== undefined) return { id: key, work: direct }
+    const ref = normalizeRef(key)
+    if (ref === undefined) return undefined
+    for (const [id, work] of Object.entries(works())) {
+      if (work?.ref === ref) return { id, work }
+    }
+    return undefined
+  }
+  function closedWorkOf(refOrId) {
+    const key = String(refOrId ?? '').trim()
+    if (key === '') return undefined
+    const direct = own(closedWorks(), key)
+    if (direct !== undefined) return direct
+    const ref = normalizeRef(key)
+    if (ref === undefined) return undefined
+    return Object.values(closedWorks()).find(entry => entry?.ref === ref)
+  }
+
   // The whole result of a work, in a file of its own: state.json is written whole on
   // every save, so it keeps only the start of a long result, and a restart would cut
   // that result short before it reached the Bot that asked for it.
@@ -59,6 +104,14 @@ export function install(rt) {
   const keptName = file => (typeof file === 'string' && /^[A-Za-z0-9_-]+\.txt$/.test(file) ? file : undefined)
   const writes = () => rt.readOnly?.() === undefined
   let savedWrites = 0
+  let startupSweepDone = typeof ctx?.effect !== 'function'
+  // Files written by this process before the one-shot startup orphan sweep finishes
+  // belong to live dropResults() bookkeeping, not to a prior crashed host.
+  const createdBeforeStartupSweep = new Set()
+  const finishStartupSweep = () => {
+    startupSweepDone = true
+    createdBeforeStartupSweep.clear()
+  }
   const tracksSaved = typeof rt.onSaved === 'function'
   if (tracksSaved) rt.onSaved(() => { savedWrites += 1 })
 
@@ -73,6 +126,7 @@ export function install(rt) {
       mkdirSync(resultsDir, { recursive: true })
       writeFileSync(temp, text, 'utf8')
       renameSync(temp, path)
+      if (!startupSweepDone) createdBeforeStartupSweep.add(name)
       return name
     } catch (error) {
       rt.warn('ds-bot: result of work %s not kept whole: %s', id, error)
@@ -123,18 +177,22 @@ export function install(rt) {
 
   // Startup async sweep for orphan `handoff-results/*.txt` files left behind by a crash.
   async function pruneOrphanResultFiles() {
-    if (!writes()) return
-    let entries
     try {
-      entries = await readdir(resultsDir)
-    } catch {
-      return
-    }
-    const referenced = referencedInWorks(works())
-    for (const file of entries) {
-      const name = keptName(file)
-      if (name === undefined || referenced.has(name)) continue
-      await rm(resultPath(name), { force: true }).catch(() => {})
+      if (!writes()) return
+      let entries
+      try {
+        entries = await readdir(resultsDir)
+      } catch {
+        return
+      }
+      const referenced = referencedInWorks(works())
+      for (const file of entries) {
+        const name = keptName(file)
+        if (name === undefined || referenced.has(name) || createdBeforeStartupSweep.has(name)) continue
+        await rm(resultPath(name), { force: true }).catch(() => {})
+      }
+    } finally {
+      finishStartupSweep()
     }
   }
 
@@ -169,15 +227,340 @@ export function install(rt) {
   // sender for this work, kept out of public views and Session logs.
   // No clock runs on a work (docs/plans/2026-11-24-work-model.md): a Bot that waits for the user's approval, or
   // a machine that is away, keeps the work open, and the status line says whom it waits for.
-  function openWork(id, { from, to, parent, fromRoom, room, name, child, fromPart, imOrigin }) {
+  function openWork(id, { from, to, parent, fromRoom, room, name, child, fromPart, imOrigin, toSession, toTaskId, goal, state: initialState = 'open', paused }) {
     if (!safeKey(id)) return undefined
     const above = parent === undefined ? undefined : own(works(), parent)
     const cleanOrigin = normalizeImOrigin(imOrigin)
-    works()[id] = { ...(from ? { from } : {}), ...(to ? { to } : {}), ...(room ? { room } : {}), ...(above ? { parent } : {}), ...(fromRoom ? { fromRoom } : {}), ...(fromPart ? { fromPart } : {}), ...(name ? { name } : {}), ...(child ? { child } : {}), ...(cleanOrigin ? { imOrigin: cleanOrigin } : {}), open: [], results: [], at: Date.now() }
+    // Only assign visible #W… refs to Bot-to-Bot delegations, not internal subagents,
+    // background tasks, or group posts, so user-facing work numbers stay contiguous.
+    const ref = from !== undefined && to !== undefined && room === undefined && child === undefined ? nextWorkRef() : undefined
+    works()[id] = {
+      ...(ref !== undefined ? { ref } : {}),
+      state: initialState,
+      ...(from ? { from } : {}),
+      ...(to ? { to } : {}),
+      ...(room ? { room } : {}),
+      ...(above ? { parent } : {}),
+      ...(fromRoom ? { fromRoom } : {}),
+      ...(fromPart ? { fromPart } : {}),
+      ...(toSession ? { toSession } : {}),
+      ...(toTaskId ? { toTaskId } : {}),
+      ...(name ? { name } : {}),
+      ...(child ? { child } : {}),
+      ...(cleanOrigin ? { imOrigin: cleanOrigin } : {}),
+      ...(typeof goal === 'string' && goal.trim() !== '' ? { goal: headOf(goal.trim().replace(/\s+/g, ' '), 80), goalKey: contentKey(goal) } : {}),
+      ...(paused !== undefined ? { paused } : {}),
+      rounds: 0,
+      worked: false,
+      open: [],
+      results: [],
+      at: Date.now(),
+    }
+    rt.noteWorkOpened?.(id)
     if (above !== undefined) above.open.push(id)
     log('open', id, { ...(from ? { from } : {}), ...(to ? { to } : {}), ...(room ? { room } : {}), ...(above ? { parent } : {}) })
     save()
     return works()[id]
+  }
+
+  function setWorkTargetSession(id, toSession, toTaskId) {
+    const work = own(works(), id)
+    if (work === undefined) return
+    if (toSession) work.toSession = toSession
+    else if (toSession === null || toSession === '') delete work.toSession
+    if (toTaskId) work.toTaskId = toTaskId
+    else if (toTaskId === null || toTaskId === '') delete work.toTaskId
+    save()
+  }
+
+  const workRefOf = id => own(works(), id)?.ref ?? own(closedWorks(), id)?.ref
+  const workStateOf = id => {
+    const work = own(works(), id)
+    return work === undefined ? undefined : (work.state ?? 'open')
+  }
+  function markWorkWorked(id) {
+    const work = own(works(), id)
+    if (work === undefined || work.worked === true) return
+    work.worked = true
+    save()
+  }
+
+  // Pair loop guard: tracks consecutive Bot-to-Bot delegations between (a, b) since the
+  // last user message to either Bot, expiring after PAIR_LOOP_TTL_MS of inactivity.
+  // Reciprocal zero-work bounces (B -> A right after A -> B) or ACK/wrap-up ping-pong
+  // pause immediately after one empty round-trip. Rework compares both the assignment
+  // and its result hash so distinct steps of a long pure-LLM chain keep going.
+  function noteWorkCompleted(fromId, toId, { worked = false, id, goalKey, text = '' } = {}) {
+    if (!fromId || !toId || fromId === toId) return
+    const key = pairKey(fromId, toId)
+    const map = pairLoops()
+    const now = Date.now()
+    for (const [entryKey, item] of Object.entries(map)) {
+      if (entryKey !== key && now - (item?.lastAt ?? 0) > PAIR_LOOP_TTL_MS) delete map[entryKey]
+    }
+    const prev = own(map, key)
+    const fresh = prev !== undefined && now - (prev.lastAt ?? 0) <= PAIR_LOOP_TTL_MS
+    const entry = fresh ? prev : { idleBounces: 0, reworkBounces: 0, lastAt: 0 }
+    const resultKey = contentKey(text)
+    const repeated = goalKey !== undefined && entry.lastFrom === fromId && entry.goalKey === goalKey && entry.resultKey === resultKey
+    entry.reworkBounces = repeated ? (entry.reworkBounces ?? 1) + 1 : 1
+    entry.goalKey = goalKey
+    entry.resultKey = resultKey
+    entry.idleBounces = worked === true ? 0 : (entry.idleBounces ?? 0) + 1
+    entry.lastWorked = worked === true
+    entry.lastFrom = fromId
+    entry.lastTo = toId
+    entry.lastAck = worked !== true && isAckLikeText(text)
+    entry.lastAt = now
+    if (id !== undefined) entry.lastWorkId = id
+    map[key] = entry
+    save()
+  }
+  function resetPairLoop(a, b) {
+    if (!a || !b) return
+    const key = pairKey(a, b)
+    if (own(pairLoops(), key) === undefined) return
+    delete pairLoops()[key]
+    save()
+  }
+  function resetBotLoops(botId) {
+    if (!botId) return
+    const map = pairLoops()
+    let changed = false
+    for (const key of Object.keys(map)) {
+      const [a, b] = key.split(':')
+      if (a === botId || b === botId) {
+        delete map[key]
+        changed = true
+      }
+    }
+    if (changed) save()
+  }
+  function checkPairLoop(fromId, toId, { callerWorked = false, text = '', followUp = false } = {}) {
+    if (!fromId || !toId || fromId === toId) return { ok: true }
+    for (const [id, work] of Object.entries(works())) {
+      if (work?.state === 'paused' && ((work.from === fromId && work.to === toId) || (work.from === toId && work.to === fromId))) {
+        return { blocked: 'already_paused', id, work }
+      }
+    }
+    const entry = own(pairLoops(), pairKey(fromId, toId))
+    if (entry === undefined) return { ok: true }
+    if (Date.now() - (entry.lastAt ?? 0) > PAIR_LOOP_TTL_MS) return { ok: true }
+    if (!callerWorked && !followUp) {
+      const idleBounces = entry.idleBounces ?? 0
+      const reciprocalOrAck = entry.lastFrom === toId || entry.lastAck === true || isAckLikeText(text)
+      if (idleBounces >= 1 && reciprocalOrAck) {
+        return { pause: 'idle_loop', bounces: idleBounces + 1 }
+      }
+    }
+    if (!callerWorked && entry.reworkBounces >= 2 && entry.lastFrom === fromId && entry.goalKey === contentKey(text)) {
+      return { pause: 'rework_limit', bounces: entry.reworkBounces }
+    }
+    return { ok: true }
+  }
+
+  // Worker asks the caller a blocking question without closing the work.
+  // Bounded by WORK_ASK_BACK_LIMIT (and pauses earlier if bouncing with zero real work).
+  function askBackWork(id, question, { worked = false, text, files, length } = {}) {
+    const work = own(works(), id)
+    if (work === undefined) return { error: 'not_found' }
+    const current = work.state ?? 'open'
+    if (current !== 'open') return { error: `state_${current}`, work }
+    if (!work.from || !work.to) return { error: 'no_caller', work }
+    const didWork = worked === true || work.worked === true
+    const rounds = (work.rounds ?? 0) + 1
+    work.rounds = rounds
+    const boundedQuestion = headOf(String(question ?? '').trim(), 400)
+    work.question = boundedQuestion
+    // Pause if clarifications hit the checkpoint, or on a 2nd ask_back with 0 real work.
+    if (rounds > WORK_ASK_BACK_LIMIT || (!didWork && rounds >= 2)) {
+      work.state = 'paused'
+      work.paused = {
+        reason: 'ask_back_limit',
+        kind: 'ask_back',
+        question: boundedQuestion,
+        ...(typeof text === 'string' && text !== '' ? { text } : {}),
+        ...(Array.isArray(files) && files.length > 0 ? { files } : {}),
+        ...(length !== undefined ? { length } : {}),
+        rounds,
+        at: Date.now(),
+      }
+      save()
+      return { status: 'paused', id, work }
+    }
+    work.state = 'need_input'
+    save()
+    return { status: 'asked', id, work }
+  }
+
+  // Caller answers an ask_back question and hands control back to the worker.
+  function answerWork(id) {
+    const work = own(works(), id)
+    if (work === undefined) return { error: 'not_found' }
+    if ((work.state ?? 'open') !== 'need_input') return { error: `state_${work.state ?? 'open'}`, work }
+    work.state = 'open'
+    delete work.question
+    work.worked = false
+    save()
+    return { status: 'answered', id, work }
+  }
+
+  // Cancels an open, need_input, or paused work cleanly (terminal state).
+  function cancelWork(id, { reason = '', by } = {}) {
+    const work = own(works(), id)
+    if (work === undefined) return undefined
+    const snapshot = { id, ...work }
+    const { parent } = work
+    delete works()[id]
+    rememberClosed(id, {
+      id,
+      ref: work.ref,
+      from: work.from,
+      to: work.to,
+      status: 'cancelled',
+      ...(by ? { by } : {}),
+      ...(reason ? { reason: headOf(reason, 200) } : {}),
+      at: Date.now(),
+    })
+    for (const child of Object.values(works())) if (child.parent === id) delete child.parent
+    const above = own(works(), parent)
+    if (above !== undefined) above.open = above.open.filter(other => other !== id)
+    for (const result of work.results ?? []) whole.delete(result.id)
+    rt.clearWorkNotes?.(id)
+    const savedBefore = savedWrites
+    void rt.save().then(() => {
+      dropResults(work.results, savedBefore)
+    }).catch(() => {})
+    return snapshot
+  }
+
+  // Owner Bot of a work node: the delegated worker `to`, or for a task sub-work (`child`),
+  // the Bot running that background task (`from`).
+  const ownerBotOfWork = work => work?.to ?? (work?.child !== undefined ? work.from : undefined)
+  // Upstream Bot that originally requested a work node, walking past internal task wrappers.
+  const rootAsker = (work) => {
+    const seen = new Set()
+    let cur = work
+    while (cur !== undefined && cur.to === undefined && cur.child !== undefined && cur.parent !== undefined && !seen.has(cur.parent)) {
+      seen.add(cur.parent)
+      cur = own(works(), cur.parent)
+    }
+    return cur?.from
+  }
+
+  // Resolves an active background task thread that initiated a top-level work (`parent === undefined`).
+  const activeTaskThreadOf = (work) => {
+    const callerBot = work?.from === undefined ? undefined : rt.botOf(work.from)
+    if (callerBot === undefined || work.fromPart === undefined) return undefined
+    const taskThread = threadOfPart(callerBot, work.fromPart)
+    const task = taskThread?.thread === 'task' ? callerBot.tasks?.[taskThread.index] : undefined
+    if (task === undefined || !isActiveTask(task)) return undefined
+    const targetSession = threadCurrentOfPart(callerBot, work.fromPart) ?? task.sessionId
+    return { callerBot, task, targetSession }
+  }
+
+  // Wakes a waiting parent work (or an active background task thread) when one of its
+  // delegated children is cancelled or stopped externally, so it never hangs forever.
+  function notifyParentCancelled(snapshot, { reason = '', by, bySession, byLabel = 'the user' } = {}) {
+    const targetName = rt.botOf(snapshot?.to)?.name ?? snapshot?.name ?? 'the teammate'
+    const label = snapshot?.ref ? ` #${snapshot.ref}` : ''
+    const why = reason.trim()
+    const summary = `Delegated work${label} to ${targetName} was cancelled by ${byLabel}${why ? ` (${why})` : ''}. Continue with your own work without waiting for ${targetName}.`
+    if (snapshot?.parent === undefined) {
+      const waitingTask = activeTaskThreadOf(snapshot)
+      const workerStopped = by === snapshot.to && by !== snapshot.from
+      if (waitingTask === undefined && (!workerStopped || (snapshot.fromPart && threadOfPart(rt.botOf(snapshot.from), snapshot.fromPart)?.thread === 'task'))) {
+        return Promise.resolve(false)
+      }
+      const callerBot = waitingTask?.callerBot ?? rt.botOf(snapshot.from)
+      if (callerBot === undefined) return Promise.resolve(false)
+      const targetSession = waitingTask?.targetSession ?? rt.chatOf(callerBot.id)
+      if (by === callerBot.id && targetSession !== undefined && bySession === targetSession && rt.live?.get(targetSession)?.turn !== undefined) {
+        return Promise.resolve(false)
+      }
+      return rt.deliver({
+        fromId: rt.botOf(snapshot.to)?.id,
+        fromName: targetName,
+        toId: callerBot.id,
+        ...(targetSession ? { sessionId: targetSession } : {}),
+        text: summary,
+        role: 'reply',
+        replyTo: snapshot.id,
+        ...(snapshot.ref ? { workRef: snapshot.ref } : {}),
+        recordExchange: false,
+        exchangeId: randomUUID(),
+      }).then(() => true, (error) => {
+        rt.warn('ds-bot: task continuation after cancel failed: %s', error)
+        return false
+      })
+    }
+    const parent = own(works(), snapshot.parent)
+    const parentBotId = ownerBotOfWork(parent)
+    if (parent === undefined || parentBotId === undefined) return Promise.resolve(false)
+    const parentBot = rt.botOf(parentBotId)
+    if (parentBot === undefined) return Promise.resolve(false)
+    const backRoom = rt.roomOf(snapshot.fromRoom)?.sessions?.[parentBotId]
+    const targetSession = backRoom
+      ?? (snapshot.fromPart ? threadCurrentOfPart(parentBot, snapshot.fromPart) : undefined)
+      ?? (parent.toSession ? threadCurrentOfPart(parentBot, parent.toSession) : undefined)
+      ?? rt.chatOf(parentBotId)
+    // If the parent Bot itself cancelled this child while actively running the same turn,
+    // its current turn already knows and will finish the parent naturally when the turn ends.
+    const targetLive = targetSession === undefined ? undefined : rt.live?.get(targetSession)
+    const sameTurn = by === parentBotId && targetLive?.turn !== undefined && (
+      bySession !== undefined
+        ? bySession === targetSession
+        : rt.workOf?.(targetLive.info) === snapshot.parent
+    )
+    if (sameTurn) return Promise.resolve(false)
+    parent.results = [...(parent.results ?? []), { id: snapshot.id, name: targetName, text: headOf(summary, TEXT_KEPT), cancelled: true, at: Date.now() }]
+    save()
+    return rt.deliver({
+      fromId: rt.botOf(snapshot.to)?.id,
+      fromName: targetName,
+      toId: parentBotId,
+      ...(targetSession ? { sessionId: targetSession } : {}),
+      text: summary,
+      role: 'reply',
+      replyTo: snapshot.id,
+      work: snapshot.parent,
+      ...(snapshot.ref ? { workRef: snapshot.ref } : {}),
+      recordExchange: false,
+      exchangeId: randomUUID(),
+    }).then(() => true, (error) => {
+      rt.warn('ds-bot: parent continuation after cancel failed: %s', error)
+      return false
+    })
+  }
+
+  const needInputWorksFor = (callerId) => Object.entries(works())
+    .filter(([, work]) => work?.from === callerId && work.state === 'need_input')
+    .map(([id, work]) => ({ id, work }))
+  const openWorksBetween = (fromId, toId) => Object.entries(works())
+    .filter(([, work]) => work?.from === fromId && work.to === toId && (work.state ?? 'open') !== 'closed')
+    .map(([id, work]) => ({ id, work }))
+
+  function pausedWorksView() {
+    const out = []
+    for (const [id, work] of Object.entries(works())) {
+      if (work?.state !== 'paused' || work.paused === undefined) continue
+      out.push({
+        id,
+        ref: work.ref ?? null,
+        from: work.from ?? null,
+        fromName: nameOf(work.from) ?? null,
+        to: work.to ?? null,
+        toName: nameOf(work.to) ?? null,
+        reason: work.paused.reason,
+        kind: work.paused.kind,
+        goal: work.goal ?? headOf(work.paused.text ?? '', 200),
+        ...(work.paused.question ? { question: headOf(work.paused.question, 200) } : {}),
+        ...(work.paused.bounces !== undefined ? { bounces: work.paused.bounces } : {}),
+        ...(work.paused.rounds !== undefined ? { rounds: work.paused.rounds } : {}),
+        at: work.paused.at ?? work.at ?? Date.now(),
+      })
+    }
+    return out.sort((a, b) => a.at - b.at)
   }
 
   const workImOrigin = (id) => {
@@ -250,6 +633,7 @@ export function install(rt) {
   function openRootWork({ to, part }) {
     const id = randomUUID()
     works()[id] = { to, origin: 'person', part, open: [], results: [], at: Date.now() }
+    rt.noteWorkOpened?.(id)
     log('open', id, { to, origin: 'person' })
     save()
     return id
@@ -259,6 +643,12 @@ export function install(rt) {
   // Handed on and not handed back yet; handed back and not read yet.
   const outstandingOf = work => work.open.filter(id => !(work.results ?? []).some(result => result.id === id))
   const unreadOf = work => (work.results ?? []).filter(result => work.open.includes(result.id))
+  const readyResultsOf = (work) => {
+    if (outstandingOf(work).length > 0) return []
+    const unread = unreadOf(work)
+    return unread.every(result => result.resume === true) ? unread : []
+  }
+  const sameResultIds = (a, b) => Array.isArray(a) && a.length === b.length && a.every((other, i) => other === b[i])
 
   // All a work handed on is back: the Bot goes on with it in ONE message, in the conversation the work is done in,
   // with every result that came back (OpenMausBot's resume). Never queued as the user's input. When the turn doing
@@ -271,9 +661,8 @@ export function install(rt) {
   function resumeWork(id) {
     const work = works()[id]
     if (work === undefined || work.to === undefined || work.resume !== undefined) return false
-    if (outstandingOf(work).length > 0) return false
-    const unread = unreadOf(work)
-    if (unread.length === 0 || unread.some(result => result.resume !== true)) return false
+    const unread = readyResultsOf(work)
+    if (unread.length === 0) return false
     const bot = rt.botOf(work.to)
     // Only a Bot that runs on this machine is resumed here; one on another machine (a peer row, a joined shadow, a
     // remote worker) has its work on its own machine (W3: work frames), and nothing is sent to it from here.
@@ -340,8 +729,15 @@ export function install(rt) {
   // The answer to work `id` is on its way, with `result` from `name`. Returns the work
   // it goes on with. That work keeps waiting until a turn reads the answer (`taken`).
   function closeWork(id, name, text, extra = {}) {
-    const work = works()[id]
+    const work = own(works(), id)
     if (work === undefined) return undefined
+    if (work.ref !== undefined) {
+      rememberClosed(id, {
+        ref: work.ref, at: Date.now(), from: work.from, to: work.to,
+        status: extra.abandoned === true ? 'abandoned' : 'completed',
+        worked: work.worked === true || extra.worked === true,
+      })
+    }
     delete works()[id]
     // What it still waits for comes back to it alone.
     for (const child of Object.values(works())) if (child.parent === id) delete child.parent
@@ -404,6 +800,7 @@ export function install(rt) {
     if (waiting === undefined || rt.botOf(waiting) === undefined) return
     void rt.deliver({
       fromName: late.name ?? 'the subagent', toId: waiting, text: LATE_ANSWER + text, role: 'reply',
+      replyTo: id, ...(late.ref ? { workRef: late.ref } : {}),
       exchangeId: randomUUID(), recordExchange: false,
     }).catch(error => rt.warn('ds-bot: the late result of %s did not reach %s: %s', late.name ?? 'a subagent', waiting, error))
   }
@@ -426,6 +823,7 @@ export function install(rt) {
     if (above !== undefined) above.open = above.open.filter(other => other !== id)
     for (const result of work.results ?? []) whole.delete(result.id)
     log('dropped', id)
+    rt.clearWorkNotes?.(id)
     const savedBefore = savedWrites
     void rt.save().then(() => {
       dropResults(work.results, savedBefore)
@@ -547,8 +945,10 @@ export function install(rt) {
       if (result.failed === true) return `${result.name} could not send its reply to you; what it had answered:\n${text}${cut}`
       return `${result.name}:\n${text}${cut}`
     })
-    const body = results.length === 0 ? said || `${botName} finished without a reply.`
+    let body = results.length === 0 ? said || `${botName} finished without a reply.`
       : [said || `${botName} finished and wrote nothing more.`, `[Handed back to ${botName} for this work]`, ...results].join('\n\n')
+    const unreadNotes = rt.unreadWorkNotes?.(workId, work)
+    if (unreadNotes > 0) body += `\n\n[${botName} finished before reading ${unreadNotes} queued work update(s). They were not applied.]`
     // The request reached its target only after a restart; the answer says so.
     return work?.late === true ? `[This request reached ${botName} only after DeepSeek Harness restarted.]\n\n${body}` : body
   }
@@ -591,9 +991,14 @@ export function install(rt) {
   function waitingView() {
     const view = {}
     const add = (list, id) => { if (id !== undefined && !list.includes(id)) list.push(id) }
-    for (const { work, out } of held(busyWith([...rt.live.keys()]))) {
+    for (const { id, work, out } of held(busyWith([...rt.live.keys()]))) {
       if (out.length === 0) continue
-      const entry = view[work.to] ??= { bots: [], rooms: [], for: [], waits: [] }
+      const entry = view[work.to] ??= { bots: [], rooms: [], for: [], waits: [], batches: [] }
+      const returned = unreadOf(work).map(result => ({
+        id: result.id, from: result.from, name: result.name,
+        outcome: result.abandoned === true ? 'abandoned' : result.outcome ?? (result.failed === true ? 'failed' : 'done'),
+      }))
+      entry.batches.push({ id, part: work.part, total: work.open.length, pending: outstandingOf(work), returned })
       for (const { id, work: child } of out) {
         add(child.room ? entry.rooms : entry.bots, child.room ?? child.to)
         entry.waits.push({ id, ...(child.room ? { room: child.room, name: rt.roomOf(child.room)?.name } : { to: child.to, name: nameOf(child.to) ?? child.name }) })
@@ -684,15 +1089,30 @@ export function install(rt) {
   async function reconcileLostResumes() {
     if (rt.readOnly?.() !== undefined) return
     for (const [id, work] of Object.entries(works())) {
-      if (!Array.isArray(work.resume) || work.to === undefined) continue
+      if (work.to === undefined) continue
+      const marker = work.resume
+      const ids = Array.isArray(marker) ? marker : readyResultsOf(work).map(result => result.id)
+      if (ids.length === 0) continue
       const sessionId = (work.part === undefined ? undefined : rt.resumeTargetOf?.(work.part)) ?? rt.chatOf(work.to)
       const agent = await rt.resolveAgent(sessionId).catch(() => undefined)
       const session = agent?.session
       if (session === undefined) continue
       const events = typeof session.snapshotEvents === 'function' ? session.snapshotEvents() : Array.isArray(session.log) ? session.log : undefined
       if (events === undefined) continue
-      const there = events.some(event => event?.type === 'user/message' && event.data?.source?.role === 'results' && event.data.source.work === id)
-      if (there || works()[id]?.resume !== work.resume) continue
+      if (works()[id] !== work || work.resume !== marker) continue
+      if (marker === undefined && !sameResultIds(readyResultsOf(work).map(result => result.id), ids)) continue
+      const there = events.some(event => {
+        const source = event?.data?.source
+        return event?.type === 'user/message' && source?.role === 'results' && source.work === id && sameResultIds(source.results, ids)
+      })
+      if (there) {
+        // The session can commit first if the state write for the marker was still in flight.
+        if (marker === undefined) {
+          work.resume = ids
+          save()
+        }
+        continue
+      }
       delete work.resume
       log('resume-lost', id)
       save()
@@ -712,10 +1132,12 @@ export function install(rt) {
           return pruneOrphanResultFiles()
         })
         .catch(error => rt.warn('ds-bot: lost waits not settled: %s', error))
-      void rt.load().then(() => reconcileLostResumes()).catch(error => rt.warn('ds-bot: lost resumes not sent again: %s', error))
+        .then(() => reconcileLostResumes())
+        .finally(finishStartupSweep)
     }, 0)
     return () => {
       clearTimeout(timer)
+      finishStartupSweep()
       offAdopted?.()
       whole.clear()
     }
@@ -790,31 +1212,6 @@ export function install(rt) {
     return lines.join('; ')
   }
 
-  // All works whose Bot is currently paused (needs_input or no_progress), projected from
-  // state.works so the inbox can surface them without a coordDb.
-  function pausedWorksView() {
-    const out = []
-    for (const [id, lw] of Object.entries(state.works ?? {})) {
-      if (!lw || typeof lw !== 'object' || lw.state !== 'paused') continue
-      const detail = lw.paused ?? {}
-      out.push({
-        id,
-        ref: lw.ref ?? null,
-        from: lw.from ?? null,
-        fromName: lw.from ? (nameOf(lw.from) ?? null) : null,
-        to: lw.to ?? null,
-        toName: lw.to ? (nameOf(lw.to) ?? null) : null,
-        reason: detail.reason ?? 'paused',
-        kind: detail.kind ?? 'no_progress',
-        goal: lw.goal ?? headOf(detail.message ?? detail.text ?? '', 200),
-        ...(detail.question ? { question: headOf(detail.question, 200) } : {}),
-        ...(detail.bounces !== undefined ? { bounces: detail.bounces } : {}),
-        at: typeof detail.at === 'number' ? detail.at : (lw.at ?? 0),
-      })
-    }
-    return out.sort((a, b) => a.at - b.at)
-  }
-
   // P3: When a Bot enters blocked state, immediately notify any Bot waiting on its work.
   // The blocking code is safe to share (it's an error category, not credentials).
   function notifyBlockedDelegators(botId, code) {
@@ -834,5 +1231,8 @@ export function install(rt) {
     workImOrigin, mergeWorkImOrigin, rememberImReplyOrigin, imReplyOrigin,
     answerText, upstreamOf, sameWork, forgetBotWork: forgetBot, statusOf, waitingView, pausedWorksView,
     settleSubWork, subWorkRun, nameSubWork, abandonWork, abandonedWork: takeAbandoned, notifyBlockedDelegators,
+    setWorkTargetSession, resolveWork, closedWorkOf, workRefOf, workStateOf, markWorkWorked,
+    askBackWork, answerWork, cancelWork, notifyParentCancelled, needInputWorksFor, openWorksBetween,
+    noteWorkCompleted, checkPairLoop, resetPairLoop, resetBotLoops,
   })
 }

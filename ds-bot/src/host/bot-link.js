@@ -21,6 +21,7 @@ const ATTACH_MS = 5_000
 const OUTCOMES = new Set(['done', 'failed', 'stopped'])
 const CHAIN_MAX = 16
 const sameRef = (a, b) => a?.id === b?.id && a?.nodeId === b?.nodeId
+const sendingResults = new WeakSet()
 
 /** The Bots waiting above work `parent`, root first, as team refs (fork.125): what came from another machine, then
  *  each asker here, then `sender`. Sent with `work/handoff` so the other machine can refuse loops and depth. */
@@ -96,12 +97,12 @@ export function botOfRef(rt, ref) {
 }
 
 // One frame to the machine `nodeId` over AC's reliable link. False when this machine has no link at all.
-function post(rt, nodeId, type, data) {
+function post(rt, nodeId, type, data, options) {
   const network = networkOf(rt)
   if (typeof network?.post !== 'function' || typeof nodeId !== 'string' || nodeId === '') return false
-  if (ownNodeId(rt) === HUB) network.post(nodeId, type, data)
-  else network.post(type, data, nodeId === HUB ? {} : { to: nodeId })
-  return true
+  return ownNodeId(rt) === HUB
+    ? network.post(nodeId, type, data, options) !== false
+    : network.post(type, data, { ...options, ...(nodeId === HUB ? {} : { to: nodeId }) }) !== false
 }
 /** One frame to the machine `nodeId` over the reliable link; false when it could not be handed to AC. */
 export function postFrame(rt, nodeId, type, data) {
@@ -150,21 +151,36 @@ export async function handoff(rt, { sender, target, text, parent, fromPart }) {
 /** Is work `id` one a Bot of another machine handed here (its answer goes back as `work/result`)? */
 export const owes = (rt, id) => typeof id === 'string' && rt.state.works?.[id]?.link !== undefined
 
-/** The answer to work a Bot of another machine handed here: closes it here, and sends it home. */
+/** Retain the answer until Cluster durably accepts it under the same transport id. */
 export async function answer(rt, { id, text, outcome = 'done' }) {
   const work = rt.state.works?.[id]
   const link = work?.link
   if (link === undefined) return false
-  const name = rt.botOf(work.to)?.name ?? 'the other Bot'
-  const body = String(text ?? '').slice(0, TEXT_MAX)
-  rt.closeWork(id, name, body)
-  post(rt, link.nodeId, 'work/result', { id, outcome: OUTCOMES.has(outcome) ? outcome : 'done', text: body })
-  const replyId = randomUUID()
-  await notePair(rt, { from: work.to, to: work.from, id: replyId, role: 'reply', text: body, replyTo: id })
-  await rt.markPairDelivered?.(work.to, work.from, replyId)
-  const me = rt.botOf(work.to)
-  if (me !== undefined && link.from !== undefined) copyToHub(rt, link.nodeId, { from: refOf(rt, me), to: link.from, id: replyId, role: 'reply', text: body, replyTo: id })
-  return true
+  link.pendingResult ??= {
+    rid: randomUUID(), text: String(text ?? '').slice(0, TEXT_MAX),
+    outcome: OUTCOMES.has(outcome) ? outcome : 'done',
+  }
+  return sendPendingResult(rt, id, work)
+}
+
+async function sendPendingResult(rt, id, work) {
+  const link = work.link
+  const { rid, outcome, text } = link.pendingResult
+  if (sendingResults.has(work)) return false
+  sendingResults.add(work)
+  try {
+    await rt.save({ required: true })
+    if (rt.state.works?.[id] !== work || rt.isStoppedWork?.(id)) return false
+    if (!post(rt, link.nodeId, 'work/result', { id, outcome, text }, { rid })) return false
+    await notePair(rt, { from: work.to, to: work.from, id: rid, role: 'reply', text, replyTo: id })
+    await rt.markPairDelivered?.(work.to, work.from, rid)
+    const me = rt.botOf(work.to)
+    if (me !== undefined && link.from !== undefined) copyToHub(rt, link.nodeId, { from: refOf(rt, me), to: link.from, id: rid, role: 'reply', text, replyTo: id })
+    if (rt.state.works?.[id] === work) rt.closeWork(id, me?.name ?? 'the other Bot', text)
+    return true
+  } finally {
+    sendingResults.delete(work)
+  }
 }
 
 /** The user gave up waiting for work handed to another machine: it stops there, and answers no more. */
@@ -214,11 +230,10 @@ async function onHandoff(rt, msg) {
     return
   }
   rt.openWork(data.id, { from: asker.id, to: to.id })
-  rt.state.works[data.id].link = { nodeId: msg.from, from: data.from }
+  rt.state.works[data.id].link = { nodeId: msg.from, from: data.from, foreground: true }
   if (chain.length > 0) rt.state.works[data.id].chain = chain
-  const thread = await rt.workThreadFor(to, asker, `remote:${typeof data.part === 'string' ? data.part.slice(0, 200) : msg.from}`)
-  await rt.workThreadTakes(thread.task, data.id)
-  await rt.deliver({ fromId: asker.id, toId: to.id, sessionId: thread.sessionId, text: String(data.text ?? ''), role: 'request', exchangeId: data.id })
+  // The delivery gate serializes the assignment with the Bot's own chat turns.
+  await rt.deliver({ fromId: asker.id, toId: to.id, text: String(data.text ?? ''), role: 'request', exchangeId: data.id, stillWanted: () => !rt.isStoppedWork?.(data.id) })
   post(rt, msg.from, 'work/status', { id: data.id, status: 'queued' })
 }
 
@@ -341,8 +356,16 @@ export function install(rt) {
       }))
     }
   }
-  attach()
-  const timer = setInterval(attach, ATTACH_MS)
+  const tick = () => {
+    attach()
+    if (typeof attached?.post !== 'function') return
+    for (const [id, work] of Object.entries(rt.state.works ?? {})) {
+      if (work?.link?.pendingResult === undefined) continue
+      void sendPendingResult(rt, id, work).catch(error => rt.warn?.('ds-bot: retrying work result %s: %s', id, error?.message ?? error))
+    }
+  }
+  tick()
+  const timer = setInterval(tick, ATTACH_MS)
   timer.unref?.()
   rt.link = {
     handoff: args => handoff(rt, args),

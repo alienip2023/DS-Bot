@@ -24,6 +24,7 @@ const KEY_CODES = new Set(['MISSING_CREDENTIAL', 'INVALID_CREDENTIAL', 'AUTH'])
 // Until the credentials change the host keeps these on the Bot, and a retry would fail
 // the same way, so Retry waits for the fix.
 const CREDENTIAL_CODES = new Set([...KEY_CODES, ...SIGNED_OUT])
+const PAUSED_CODES = new Set(['TURN_PAUSED_LOOP', 'TURN_PAUSED_SWITCH_LIMIT'])
 
 // The sentence for one failure. `status` is the HTTP status, when the host has it.
 export function failureText(code, { name, provider, status, ref }) {
@@ -56,7 +57,10 @@ export function failureText(code, { name, provider, status, ref }) {
     case 'RATE_LIMIT': return t('Too many requests. Wait a moment, then try again.')
     case 'SERVER': return t('The model service failed.')
     case 'INTERRUPTED': return t('DeepSeek Harness stopped before this turn finished.')
+    case 'CONTEXT_WINDOW_EXCEEDED': return t('This conversation no longer fits in the context window. Start a new part to continue.')
     case 'MODEL_SWITCH_COMPACTION_FAILED': return t("The conversation could not be compacted for this model. Try again or choose another model.")
+    case 'TURN_PAUSED_LOOP': return t('{name} paused because tool calls kept failing or repeating. Reply with guidance or click Continue.', { name })
+    case 'TURN_PAUSED_SWITCH_LIMIT': return t('{name} paused after switching conversation parts several times without stopping. Reply with guidance or click Continue.', { name })
     default: return knownFailure(code) ?? t('This turn failed.')
   }
 }
@@ -76,6 +80,8 @@ export function fixesFor(code, { canSignIn, official, topUp, onAccount = false }
     case 'CONTENT_REFUSED': return []
     case 'QUOTA': return official ? ['top-up'] : []
     case 'ACCOUNT_QUOTA': return topUp ? ['top-up'] : []
+    case 'NO_ADAPTER': return ['model']
+    case 'CONTEXT_WINDOW_EXCEEDED': return ['new-part', 'model']
     // The fix is on the main: this window cannot set a model or level for a Bot the
     // main manages, and offering one here would suggest a change that does not apply.
     case 'E_BOT_MODEL_UNAVAILABLE':
@@ -95,6 +101,7 @@ const FIX_LABELS = {
   'sign-in': signedIn => (signedIn ? t('Use the DeepSeek account') : t('Sign in with a DeepSeek account')),
   'use-account': () => t('Use a DeepSeek account instead'),
   'sign-in-again': () => t('Sign in again'),
+  'new-part': () => t('Start a new part'),
   model: () => t('Pick another model'),
   'top-up': () => t('Top up ↗'),
 }
@@ -187,6 +194,7 @@ export function FailureCell({ node, sessionId, useRoster, useTurnClock, actions 
   const topUp = topUpOf(account)
   const [keying, setKeying] = useState(false)
   const [retry, setRetry] = useState('idle')
+  const [switching, setSwitching] = useState('idle')
   const [error, setError] = useState('')
   // A sign-in started here to leave a failing key route, with the model the Bot was on.
   const [joining, setJoining] = useState(null)
@@ -236,12 +244,19 @@ export function FailureCell({ node, sessionId, useRoster, useTurnClock, actions 
     setJoining({ from: bot.model })
     actions.signIn()
   }
+  const startNewPart = () => {
+    setSwitching('busy')
+    setError('')
+    void Promise.resolve(actions.newPart(bot.id, sessionId))
+      .then(() => setSwitching('sent'), (failure) => { setSwitching('idle'); setError(hostText(failure?.message ?? String(failure))) })
+  }
   const runs = {
     key: keyHere ? () => setKeying(value => !value) : keyElsewhere,
     rekey: keyHere ? () => setKeying(value => !value) : keyElsewhere,
     'sign-in': viaAccount,
     'use-account': viaAccount,
     'sign-in-again': () => actions.signIn(),
+    'new-part': typeof actions.newPart === 'function' ? startNewPart : undefined,
     model: actions.showDetails ? () => actions.showDetails(sessionId) : undefined,
     'model-settings': manageModels(actions),
   }
@@ -263,10 +278,14 @@ export function FailureCell({ node, sessionId, useRoster, useTurnClock, actions 
     if (fix === 'top-up') {
       return h('a', { key: fix, className: `${className} bt-fail-link`, href: data.code === 'ACCOUNT_QUOTA' ? topUp : TOP_UP_URL, target: '_blank', rel: 'noopener noreferrer' }, FIX_LABELS[fix]())
     }
+    if (fix === 'new-part') {
+      return h('button', { key: fix, type: 'button', className, disabled: switching !== 'idle', onClick: startNewPart }, switching === 'idle' ? FIX_LABELS[fix]() : t('Starting a new part…'))
+    }
     const toggles = keyHere && (fix === 'key' || fix === 'rekey')
     return h('button', { key: fix, type: 'button', className, 'aria-expanded': toggles ? keying : undefined, onClick: () => runs[fix]() }, FIX_LABELS[fix](signedIn))
   }
-  const retryButton = primary => h('button', { key: 'retry', type: 'button', className: primary ? 'bt-send bt-fail-go' : 'bt-soft bt-soft-sm', disabled: retry !== 'idle', onClick: resume }, retry === 'idle' ? t('Retry') : t('Retrying…'))
+  const paused = PAUSED_CODES.has(data.code)
+  const retryButton = primary => h('button', { key: 'retry', type: 'button', className: primary ? 'bt-send bt-fail-go' : 'bt-soft bt-soft-sm', disabled: retry !== 'idle', onClick: resume }, retry === 'idle' ? (paused ? t('Continue') : t('Retry')) : (paused ? t('Continuing…') : t('Retrying…')))
   const row = retryFirst
     ? [retryButton(true), ...fixes.map(fix => button(fix, false))]
     : [...fixes.map((fix, index) => button(fix, index === 0)), retrying ? retryButton(false) : null]
